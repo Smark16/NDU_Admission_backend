@@ -1,0 +1,568 @@
+from accounts.models import Campus
+from .models import *
+from rest_framework.views import APIView
+from django.shortcuts import get_object_or_404
+from rest_framework import generics, status
+from rest_framework.permissions import *
+from rest_framework.response import Response
+from .serializers import *
+from rest_framework.parsers import MultiPartParser, FormParser
+from django.utils import timezone
+from rest_framework.decorators import api_view, permission_classes
+from audit.utils import log_audit_event
+from .utils.notification import create_notification
+from django.core.mail import send_mail
+from django.conf import settings
+from django.db import transaction
+
+import logging
+import json
+
+logger = logging.getLogger(__name__)
+
+# ===========================applications ===========================================
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def create_applications(request):
+    with transaction.atomic():
+        try:
+            data = request.data.copy()
+            files = request.FILES
+
+            # Extract files
+            doc_files = files.getlist('documents')          
+            doc_types = request.data.getlist('document_types', [])  
+            passport_photo = files.get('passport_photo')
+
+            # Parse JSON strings from frontend
+            olevel_results = request.data.get('olevel_results', '[]')
+            if isinstance(olevel_results, str):
+                olevel_results = json.loads(olevel_results)
+
+            alevel_results = request.data.get('alevel_results', '[]')
+            if isinstance(alevel_results, str):
+                alevel_results = json.loads(alevel_results)
+
+            # Create main application
+            serializer = ApplicationSerializer(data=data, context={'request': request})
+            if not serializer.is_valid():
+                return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+            application = serializer.save(
+                applicant=request.user,
+                status='submitted'
+            )
+
+            # Save passport photo (optional)
+            if passport_photo:
+                application.passport_photo = passport_photo
+                application.save(update_fields=['passport_photo'])
+
+            # Save O-Level Results
+            for item in olevel_results:
+                subject_id = item.get('subject')
+                grade = item.get('grade')
+
+                if not subject_id or not grade:
+                    continue
+
+                try:
+                    subject = OLevelSubject.objects.get(id=subject_id)
+                    OLevelResult.objects.create(
+                        application=application,
+                        subject=subject,
+                        grade=grade.upper()
+                    )
+                except OLevelSubject.DoesNotExist:
+                    logger.warning(f"O-Level Subject ID {subject_id} not found")
+                    continue
+
+            # Save A-Level Results
+            for item in alevel_results:
+                subject_id = item.get('subject')
+                grade = item.get('grade')
+
+                if not subject_id or not grade:
+                    continue
+
+                try:
+                    subject = ALevelSubject.objects.get(id=subject_id)
+                    ALevelResult.objects.create(
+                        application=application,
+                        subject=subject,
+                        grade=grade.upper()
+                    )
+                except ALevelSubject.DoesNotExist:
+                    logger.warning(f"A-Level Subject ID {subject_id} not found")
+                    continue
+
+            # Save Documents (optional + file_url saved!)
+            for i, file in enumerate(doc_files):
+                doc_type = doc_types[i] if i < len(doc_types) else "Others"
+                doc = ApplicationDocument(
+                    application=application,
+                    file=file,
+                    name=file.name.split('.')[0][:25],
+                    document_type=doc_type
+                )
+                doc.save()  # Save file first
+
+                # Generate and save full URL
+                doc.file_url = request.build_absolute_uri(doc.file.url)
+                doc.save(update_fields=['file_url'])
+
+            # Send confirmation email
+            try:
+                send_mail(
+                    subject="Application Submitted Successfully!",
+                    message=(
+                        f"Dear {application.first_name} {application.last_name},\n\n"
+                        f"Your application has been successfully submitted to Ndejje University.\n"
+                        f"Application ID: {application.id}\n"
+                        f"Submitted on: {application.created_at.strftime('%d %B %Y')}\n\n"
+                        f"We will review your application and get back to you soon.\n\n"
+                        f"Thank you,\nNdejje University Admissions Team"
+                    ),
+                    from_email=settings.DEFAULT_FROM_EMAIL,
+                    recipient_list=[application.email],
+                    fail_silently=False,
+                )
+
+                create_notification(request.user, "Application Submitted", "Your application has been successfully submitted.")
+            except Exception as e:
+                logger.error(f"Failed to send email: {e}")
+
+            return Response({
+                "message": "Application submitted successfully!",
+                "application_id": application.id,
+                "submitted_at": application.created_at.isoformat()
+            }, status=status.HTTP_201_CREATED)
+
+        except Exception as e:
+            logger.error(f"Application submission failed: {str(e)}", exc_info=True)
+            return Response(
+                {"error": "An unexpected error occurred. Please try again."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+# list applications
+class ListApplications(generics.ListAPIView):
+    queryset = Application.objects.select_related('applicant', 'batch', 'campus').prefetch_related('programs')
+    serializer_class = ApplicationSerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+# delete application
+class DeleteApplication(generics.RetrieveDestroyAPIView):
+    queryset = Application.objects.all()
+    serializer_class = ApplicationSerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+    def delete(self, request,*args, **kwargs):
+        instance = self.get_object()
+        instance.delete()
+
+        return Response({"detail":"Application delete successfully"})
+
+# get single application
+class SingleApplication(generics.RetrieveAPIView):
+    queryset = Application.objects.all()
+    serializer_class = ApplicationSerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+    def get(self, request, application_id):
+        try:
+            application = Application.objects.prefetch_related('programs').select_related(
+                'applicant', 'batch', 'campus', 'academic_level', 'reviewed_by').get(pk=application_id)
+
+            serializer = ApplicationSerializer(application)
+            return Response(serializer.data, status=200)
+        except Application.DoesNotExist:
+            return Response({"detail":"Application not found"})
+
+    
+# ================================subjects================================================
+
+# create O subjects
+class CreateOlevelSubjects(generics.CreateAPIView):
+    queryset = OLevelSubject.objects.all()
+    serializer_class = OlevelSubjectSerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+class ListOlevelSubjects(generics.ListAPIView):
+    queryset = OLevelSubject.objects.all()
+    serializer_class = OlevelSubjectSerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+class EditOlevelSubjecgts(generics.UpdateAPIView):
+    queryset = OLevelSubject.objects.all()
+    serializer_class = OlevelSubjectSerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+    def put(self, request, *args, **kwargs):
+        instance = self.get_object()
+        serializer = self.serializer_class(instance, data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+
+        return Response(serializer.data, status=200)
+    
+class DeleteOlevelSubjects(generics.RetrieveDestroyAPIView):
+    queryset = OLevelSubject.objects.all()
+    serializer_class = OlevelSubjectSerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+    def delete(self, request, *args, **kwargs):
+        instance = self.get_object()
+        instance.delete()
+
+        return Response({"detail":"subject deleted successfully"})
+
+# =============================================A level subjects===============================================================
+class CreateAlevelSubjects(generics.CreateAPIView):
+    queryset = ALevelSubject.objects.all()
+    serializer_class = AlevelSubjectSerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+class ListAlevelSubjects(generics.ListAPIView):
+    queryset = ALevelSubject.objects.all()
+    serializer_class = AlevelSubjectSerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+class EditAlevelSubjecgts(generics.UpdateAPIView):
+    queryset = ALevelSubject.objects.all()
+    serializer_class = AlevelSubjectSerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+    def put(self, request, *args, **kwargs):
+        instance = self.get_object()
+        serializer = self.serializer_class(instance, data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+
+        return Response(serializer.data, status=200)
+    
+class DeleteAlevelSubjects(generics.RetrieveDestroyAPIView):
+    queryset = ALevelSubject.objects.all()
+    serializer_class = AlevelSubjectSerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+    def delete(self, request, *args, **kwargs):
+        instance = self.get_object()
+        instance.delete()
+
+        return Response({"detail":"subject deleted successfully"})
+        
+# ========================================================Batch=================================================
+
+#create batch
+class CreateBatch(generics.CreateAPIView):
+    queryset = Batch.objects.all()
+    serializer_class = BatchSerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+        
+# list batch
+class ListBatch(generics.ListAPIView):
+    queryset = Batch.objects.prefetch_related('programs').select_related('created_by').order_by('-created_at')
+    serializer_class = BatchSerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+# edit batch
+class EditBatch(generics.ListAPIView):
+    queryset = Batch.objects.all()
+    serializer_class = BatchSerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+    def put(self, request, *args, **kwargs):
+        instance = self.get_object()
+        serializer = self.serializer_class(instance, data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+
+        return Response(serializer.data, status=200)
+    
+# delete batch
+class DeleteBatch(generics.RetrieveDestroyAPIView):
+    queryset = Batch.objects.all()
+    serializer_class = BatchSerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+    def delete(self, request, *args, **kwargs):
+        instance = self.get_object()
+        instance.delete()
+
+        return Response({"detail":"batch deleted successfully"})
+    
+# get active batch
+class GetActiveApplicationBatch(generics.ListAPIView):
+    queryset = Batch.objects.all()
+    serializer_class = BatchSerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+    def get(self, request):
+        try:
+            now = timezone.now()
+            batch = Batch.objects.get(application_start_date__lte=now,  application_end_date__gte=now, is_active=True)
+            serializer = self.serializer_class(batch)
+            return Response(serializer.data, status=200)
+        except Exception as e:
+            return Response({
+                "detail":str(e),
+                "is_active":False
+            }, status=400)
+
+    
+# =========================================================Applicant Dashboard===============================
+class ApplicantDashboard(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+
+        # Get the most recent application
+        application = Application.objects.filter(applicant=user).order_by('-created_at').first()
+
+        if not application:
+            return Response(
+                {"detail": "You have not submitted any application yet."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # Base data from application
+        base_data = {
+            "id":application.id,
+            "batch": application.batch.name if application.batch else None,
+            "campus": application.campus.name,
+            "applied_date": application.created_at,
+            "application_status": application.status,
+            "admission_letter_pdf": application.admission_letter_pdf.url if application.admission_letter_pdf else None
+        }
+
+        # Try to get admission record
+        admission = AdmittedStudent.objects.filter(application=application).order_by('-created_at').first()
+
+        if not admission:
+            return Response({
+                **base_data,
+                "program": "In Progress",
+                "student_id": "No student number",
+                "has_admission": False,
+            })
+
+        # If admission exists
+        return Response({
+            **base_data,
+            "program": admission.admitted_program.name,
+            "campus": admission.admitted_campus.name,  
+            "student_id": admission.student_id,
+            "has_admission": True,
+            "is_registered": admission.is_registered,  
+        })
+    
+# =========================================Application details=====================================================
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def application_detail(request, application_id):
+    # 1. Get application safely
+    application = get_object_or_404(Application, pk=application_id, applicant=request.user)
+
+    # 2. Get related data
+    olevel_results = OLevelResult.objects.filter(application=application).select_related('subject')
+    alevel_results = ALevelResult.objects.filter(application=application).select_related('subject')
+    documents = ApplicationDocument.objects.filter(application=application)
+
+    # 3. Serialize everything
+    data = {
+        'application': ApplicationSerializer(application).data,
+        'olevel_results': OlevelResultSerializer(olevel_results, many=True).data,
+        'alevel_results': AlevelResultSerializer(alevel_results, many=True).data,
+        'documents':  DocumentSerializer(documents, many=True).data,
+    }
+
+    return Response(data, status=status.HTTP_200_OK)
+
+# review application
+class ReviewApplication(generics.RetrieveAPIView):
+    queryset = Batch.objects.all()
+    serializer_class = BatchSerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+    def get(self, request, application_id):
+        application = get_object_or_404(Application, pk=application_id)
+        user = request.user
+
+        application.reviewed_by = user
+        application.status = 'under Review'
+        application.save()
+
+        # 2. Get related data
+        olevel_results = OLevelResult.objects.filter(application=application).select_related('subject')
+        alevel_results = ALevelResult.objects.filter(application=application).select_related('subject')
+        documents = ApplicationDocument.objects.filter(application=application)
+
+        # 3. Serialize everything
+        data = {
+            'application': ApplicationSerializer(application).data,
+            'olevel_results': OlevelResultSerializer(olevel_results, many=True).data,
+            'alevel_results': AlevelResultSerializer(alevel_results, many=True).data,
+            'documents':  DocumentSerializer(documents, many=True).data,
+        }
+
+        return Response(data, status=status.HTTP_200_OK)
+
+# ==================================================Academic Levels==========================================
+
+# create level
+class CreateAcademicLevels(generics.CreateAPIView):
+    queryset = AcademicLevel.objects.all()
+    serializer_class = AcademicLevelSerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+# list level
+class ListAcademicLevel(generics.ListAPIView):
+    queryset = AcademicLevel.objects.filter(is_active=True)
+    serializer_class = AcademicLevelSerializer
+    permission_classes = [IsAuthenticated]
+
+# edit level
+class UpdateAcademicLevel(generics.UpdateAPIView):
+    queryset = AcademicLevel.objects.all()
+    serializer_class = AcademicLevelSerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+    def put(self, request, *args, **kwargs):
+        instance = self.get_object()
+        serializer = self.serializer_class(instance, data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+
+        return Response(serializer.data, status=200)
+    
+# delete level
+class DeleteAcademicLevel(generics.RetrieveDestroyAPIView):
+    queryset = AcademicLevel.objects.all()
+    serializer_class = AcademicLevelSerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+    def delete(self, request, *args, **kwargs):
+        instance = self.get_object()
+        instance.delete()
+
+        return Response({"detail":"academic Level deleted successfully"})
+
+# ============================================faculties============================
+class ListFaculties(generics.ListCreateAPIView):
+    queryset = Faculty.objects.prefetch_related('campuses')
+    serializer_class = FacultySerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+class CreateFaculty(generics.CreateAPIView):
+    queryset = Faculty.objects.all()
+    serializer_class = FacultySerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+class UpdateFaculty(generics.UpdateAPIView):
+    queryset = Faculty.objects.all()
+    serializer_class = FacultySerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+    def update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        serializer = self.serializer_class(instance, data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+
+        return Response(serializer.data, status=200)
+    
+class DeleteFaculty(generics.RetrieveDestroyAPIView):
+    queryset = Faculty.objects.all()
+    serializer_class = FacultySerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+    def delete(self, request, *args, **kwargs):
+        instance = self.get_object()
+        instance.delete()
+
+        return Response({"detail":"faculty deleted successfully"})
+
+# change status
+class ChangeFacultyStatus(APIView):
+    queryset = Faculty.objects.all()
+    serializer_class = FacultySerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+    def patch(self, request, *args, **kwargs):
+        faculty_id = self.kwargs['pk']
+        newStatus = request.data.get('is_active')
+        try:
+            faculty = Faculty.objects.prefetch_related('campuses').get(pk=faculty_id)
+            faculty.is_active = newStatus
+            faculty.save()
+
+            serializer = self.serializer_class(faculty)
+            return Response(serializer.data, status=200)
+        except Exception as e:
+            return Response({"detail":str(e)}, status=400)
+        
+# ===========================================================Admissions=======================================================
+
+# create admission
+class AdmitStudent(generics.CreateAPIView):
+    queryset = AdmittedStudent.objects.all()
+    serializer_class = AdmittedStudentSerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+        
+# list Admitted students
+class ListAdmittedStudents(generics.ListAPIView):
+    queryset = AdmittedStudent.objects.select_related(
+        'admitted_program__faculty',
+        'admitted_batch',
+        'admitted_campus',
+        'admitted_by',
+        'application__applicant'
+    ).all()
+
+    serializer_class = AdmittedStudentListSerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+# Admin dashboard stats
+class AdminDashboardStats(APIView):
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        total_applications = Application.objects.all().count()
+        pending_applications = Application.objects.filter(status='submitted').count()
+        admitted_students = AdmittedStudent.objects.filter(is_registered=True).count()
+        rejected_students = Application.objects.filter(status='rejected').count()
+        total_batches = Batch.objects.all().count()
+        active_batches = Batch.objects.filter(is_active=True).count()
+
+        return Response({
+            "totalApplication":total_applications,
+            "pendingApplications":pending_applications,
+            "admittedStudents":admitted_students,
+            "rejectedStudents":rejected_students,
+            "total_batches":total_batches,
+            "activeBatches":active_batches
+        }, status=200)
+
+# ===================================================notifications======================================
+# list user notifications
+class ListNotifications(generics.ListAPIView):
+    queryset = PortalNotification.objects.select_related('recipient')
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    serializer_class = NotificationSerializer
+
+    def get(self, request):
+        user_notifications = PortalNotification.objects.select_related('recipient').filter(recipient=request.user)
+        serializer = self.serializer_class(user_notifications, many=True)
+
+        return Response(serializer.data, status=200)
+
+
+
+
+
+
+

@@ -1,0 +1,52 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+*.so
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+venv*/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Database
+db.sqlite3
+*.sqlite3
+*.db
+
+# Media & Static (never commit user uploads or collected static)
+media/
+staticfiles/
+static_collected/
+
+# Logs — ONLY ignore log files, keep folder structure
+*.log
+logs/
+!logs/.gitkeep
+
+# IDE & Editor files
+.idea/
+.vscode/
+*.sublime-*
+*.swp
+*.swo
+*.bak
+.DS_Store
+Thumbs.db
+
+# Django specific
+local_settings.py
+migrations/__pycache__/
+*.log.*
+*.pid
+*.seed
+*.sqlite3-journal
