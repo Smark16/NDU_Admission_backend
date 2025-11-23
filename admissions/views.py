@@ -60,12 +60,18 @@ def create_applications(request):
                 application.save(update_fields=['passport_photo'])
 
             # Save O-Level Results
+            seen_olevel_subjects = set()
             for item in olevel_results:
                 subject_id = item.get('subject')
                 grade = item.get('grade')
 
                 if not subject_id or not grade:
                     continue
+
+                if subject_id in seen_olevel_subjects:
+                    return Response({"detail":f"Duplicate O-Level subject: {subject.name}. You can only add each subject once."}, status=400)
+                else:
+                    seen_olevel_subjects.add(subject_id)
 
                 try:
                     subject = OLevelSubject.objects.get(id=subject_id)
@@ -79,12 +85,18 @@ def create_applications(request):
                     continue
 
             # Save A-Level Results
+            seen_alevel_subjects = set()
             for item in alevel_results:
                 subject_id = item.get('subject')
                 grade = item.get('grade')
 
                 if not subject_id or not grade:
                     continue
+
+                if subject_id in seen_alevel_subjects:
+                    return Response({"detail":f"Duplicate A-Level subject: {subject.name}. You can only add each subject once."}, status=400)
+                else:
+                    seen_alevel_subjects.add(subject_id)
 
                 try:
                     subject = ALevelSubject.objects.get(id=subject_id)
@@ -106,7 +118,7 @@ def create_applications(request):
                     name=file.name.split('.')[0][:25],
                     document_type=doc_type
                 )
-                doc.save()  # Save file first
+                doc.save()  
 
                 # Generate and save full URL
                 doc.file_url = request.build_absolute_uri(doc.file.url)
@@ -132,6 +144,7 @@ def create_applications(request):
                 create_notification(request.user, "Application Submitted", "Your application has been successfully submitted.")
             except Exception as e:
                 logger.error(f"Failed to send email: {e}")
+                return Response({"detail":"Failed to send email please check connection"}, status=400)
 
             return Response({
                 "message": "Application submitted successfully!",
@@ -142,14 +155,14 @@ def create_applications(request):
         except Exception as e:
             logger.error(f"Application submission failed: {str(e)}", exc_info=True)
             return Response(
-                {"error": "An unexpected error occurred. Please try again."},
+                {"detail": str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
 # list applications
 class ListApplications(generics.ListAPIView):
-    queryset = Application.objects.select_related('applicant', 'batch', 'campus').prefetch_related('programs')
-    serializer_class = ApplicationSerializer
+    queryset = Application.objects.all()
+    serializer_class = ListApplicationsSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
 # delete application
@@ -179,6 +192,31 @@ class SingleApplication(generics.RetrieveAPIView):
             return Response(serializer.data, status=200)
         except Application.DoesNotExist:
             return Response({"detail":"Application not found"})
+        
+# change application status
+class ChangeApplicationStatus(APIView):
+    queryset = Application.objects.all()
+    serializer_class = ApplicationSerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+    def patch(self, request, *args, **kwargs):
+        try:
+            with transaction.atomic():
+                app_id = self.kwargs['pk']
+                newStatus = request.data.get('status')
+
+                try:
+                    application = Application.objects.prefetch_related('programs').select_related(
+                      'applicant', 'batch', 'campus', 'academic_level', 'reviewed_by').get(pk=app_id)
+                    application.status = newStatus
+                    application.save()
+
+                    return Response({"detail":"status changed successfully"})
+                except Application.DoesNotExist:
+                    return Response({"detail":"student Application does not exist"})
+                    
+        except Exception as e:
+            return Response({"detail":str(e)})
 
     
 # ================================subjects================================================
@@ -356,7 +394,7 @@ class ApplicantDashboard(APIView):
             "campus": admission.admitted_campus.name,  
             "student_id": admission.student_id,
             "has_admission": True,
-            "is_registered": admission.is_registered,  
+            "is_admitted": admission.is_admitted,  
         })
     
 # =========================================Application details=====================================================
@@ -383,33 +421,40 @@ def application_detail(request, application_id):
     return Response(data, status=status.HTTP_200_OK)
 
 # review application
-class ReviewApplication(generics.RetrieveAPIView):
-    queryset = Batch.objects.all()
-    serializer_class = BatchSerializer
-    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+class ReviewApplication(APIView):
+    permission_classes = [IsAuthenticated]
 
     def get(self, request, application_id):
-        application = get_object_or_404(Application, pk=application_id)
-        user = request.user
 
-        application.reviewed_by = user
-        application.status = 'under Review'
-        application.save()
+        # Update status WITHOUT loading relations → ONLY 1 DB query
+        Application.objects.filter(
+            pk=application_id,
+            status__in=['pending', 'submitted', 'in_progress']  # your own states
+        ).update(
+            status='under_review',
+            reviewed_by=request.user,
+            reviewed_at=timezone.now()
+        )
 
-        # 2. Get related data
+        # Fetch optimized object AFTER update
+        application = Application.objects.select_related(
+            'applicant', 'batch', 'campus', 'academic_level', 'reviewed_by'
+        ).prefetch_related('programs').get(pk=application_id)
+
+        # Related queries
         olevel_results = OLevelResult.objects.filter(application=application).select_related('subject')
         alevel_results = ALevelResult.objects.filter(application=application).select_related('subject')
-        documents = ApplicationDocument.objects.filter(application=application)
+        documents = ApplicationDocument.objects.filter(application=application).select_related('application')
 
-        # 3. Serialize everything
         data = {
-            'application': ApplicationSerializer(application).data,
-            'olevel_results': OlevelResultSerializer(olevel_results, many=True).data,
-            'alevel_results': AlevelResultSerializer(alevel_results, many=True).data,
-            'documents':  DocumentSerializer(documents, many=True).data,
+            'application': ApplicationDetailSerializer(application).data,
+            'olevel_results': ListOlevelResultSerializer(olevel_results, many=True).data,
+            'alevel_results': ListAlevelResultSerializer(alevel_results, many=True).data,
+            'documents': DocumentSerializer(documents, many=True).data,
         }
 
-        return Response(data, status=status.HTTP_200_OK)
+        return Response(data)
+
 
 # ==================================================Academic Levels==========================================
 
@@ -512,6 +557,61 @@ class AdmitStudent(generics.CreateAPIView):
     queryset = AdmittedStudent.objects.all()
     serializer_class = AdmittedStudentSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+    def create(self, request, *args, **kwargs):
+        try:
+            with transaction.atomic():
+                serializer = self.get_serializer(data=request.data)
+                serializer.is_valid(raise_exception=True)
+                admission = serializer.save()
+                
+                try:  
+                    application = Application.objects.select_related('applicant', 'batch', 'campus').prefetch_related('programs').get(pk=admission.application_id)
+                    application.status = 'accepted'
+                    application.save()
+
+                     # Send confirmation email
+                except Application.DoesNotExist:
+                    return Response({"detail":"Student application doesnt exist"}, status=400)
+                
+                try:
+                    send_mail(
+                        subject="Congratulations! You have been admitted to Ndejje University",
+
+                        message=(
+                            f"Dear {application.first_name} {application.last_name},\n\n"
+                            f"CONGRATULATIONS!\n\n"
+                            f"We are delighted to inform you that your application has been **successfully reviewed and ACCEPTED**.\n\n"
+                            f"You have been offered admission to study:\n"
+                            f"• Program: {admission.admitted_program.name}\n"
+                            f"• Campus: {admission.admitted_campus.name}\n"
+                            f"• Study Mode: {application.study_mode}\n"
+                            f"• Batch: {admission.admitted_batch.name} ({admission.admitted_batch.academic_year})\n\n"
+                            f"Your provisional admission letter will be sent shortly.\n\n"
+                            f"We look forward to welcoming you to the Ndejje University family!\n\n"
+                            f"Warm regards,\n"
+                            f"Admissions Office\n"
+                            f"Ndejje University\n"
+                            f"Email: admissions@ndejjeuniversity.ac.ug\n"
+                            f"Website: www.ndejjeuniversity.ac.ug"
+                        ),
+
+                        from_email=settings.DEFAULT_FROM_EMAIL,
+                        recipient_list=[application.email],
+                        fail_silently=False,
+                    )
+
+                    create_notification(application.applicant, "Admission successfull", "Congratulations! You have been admitted to Ndejje University")
+                except Exception as e:
+                    logger.error(f"Failed to send email: {e}")
+                    return Response({"detail":"Failed to send email please check connection"}, status=400)
+
+                
+                serializer = self.serializer_class(admission)
+                return Response(serializer.data, status=201)
+        except Exception as e:
+            return Response({"detail":str(e)}, status=400)
+
         
 # list Admitted students
 class ListAdmittedStudents(generics.ListAPIView):

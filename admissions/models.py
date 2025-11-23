@@ -89,26 +89,26 @@ class ALevelSubject(models.Model):
 
 class Application(models.Model): 
     applicant = models.ForeignKey(User, on_delete=models.CASCADE, related_name='applications')
-    batch = models.ForeignKey(Batch, on_delete=models.CASCADE, related_name='applications', null=True, blank=True, help_text="Batch will be assigned during admission")
+    batch = models.ForeignKey(Batch, on_delete=models.CASCADE, related_name='applications')
     campus = models.ForeignKey(Campus, on_delete=models.CASCADE, related_name='applications')
-    programs = models.ManyToManyField(Program, related_name='application_programs', blank=True, help_text="Programs the applicant applied for")
-    academic_level = models.ForeignKey(AcademicLevel, on_delete=models.CASCADE, null=True, blank=True)
+    programs = models.ManyToManyField(Program, related_name='application_programs')
+    academic_level = models.ForeignKey(AcademicLevel, on_delete=models.CASCADE)
     study_mode = models.CharField(max_length=10)
     # Personal Information
     first_name = models.CharField(max_length=100)
     last_name = models.CharField(max_length=100)
     middle_name = models.CharField(max_length=100, blank=True)
     date_of_birth = models.DateField()
-    gender = models.CharField(max_length=10, choices=[('male', 'Male'), ('female', 'Female')])
+    gender = models.CharField(max_length=10)
     nationality = models.CharField(max_length=100)
     phone = models.CharField(max_length=20)
     email = models.EmailField()
     address = models.TextField()
     
     # Next of Kin Information
-    next_of_kin_name = models.CharField(max_length=200, blank=True, help_text="Full name of next of kin")
-    next_of_kin_contact = models.CharField(max_length=20, blank=True, help_text="Phone number of next of kin")
-    next_of_kin_relationship = models.CharField(max_length=20, blank=True)
+    next_of_kin_name = models.CharField(max_length=200)
+    next_of_kin_contact = models.CharField(max_length=20)
+    next_of_kin_relationship = models.CharField(max_length=20)
     
     # O-Level Information
     olevel_year = models.PositiveIntegerField()
@@ -128,7 +128,7 @@ class Application(models.Model):
     class_of_award = models.CharField(max_length=200, blank=True, null=True)
 
     # Document uploads
-    passport_photo = models.ImageField(upload_to='passport_photos/', blank=True, null=True, help_text="Passport Photo (JPG/PNG, ≤ 2MB)")
+    passport_photo = models.ImageField(upload_to='passport_photos/')
     payment_proof = models.FileField(upload_to='payment_proofs/', blank=True, null=True, help_text="Payment Proof (PDF)")
     
     # Application Status
@@ -190,7 +190,7 @@ class ApplicationDocument(models.Model):
     name = models.CharField(max_length=25, null=True, blank=True)
     document_type = models.CharField(max_length=30)
     file_url = models.URLField(max_length=100, null=True, blank=True)
-    file = models.FileField(upload_to='application_documents/', null=True, blank=True)
+    file = models.FileField(upload_to='application_documents/')
     uploaded_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

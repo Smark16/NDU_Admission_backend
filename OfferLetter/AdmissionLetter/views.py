@@ -15,6 +15,13 @@ from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
 from admissions.models import Application, AdmittedStudent
 from .utils.letters import render_docx_from_template, save_docx_to_field, convert_docx_to_pdf_bytes, save_docx_to_field
+from admissions.utils.notification import create_notification
+from django.core.mail import send_mail
+from django.conf import settings
+
+import logging
+logger = logging.getLogger(__name__)
+
 
 # Create your views here.
 
@@ -70,7 +77,7 @@ def send_offer_letter(request, applicant_id):
 
     admission = get_object_or_404(AdmittedStudent, application=applicant)
 
-    # choose a template (you may allow selecting one via POST param)
+    # choose a template 
     template = (
     OfferLetterTemplate.objects
     .filter(programs__id=admission.admitted_program_id)
@@ -79,16 +86,15 @@ def send_offer_letter(request, applicant_id):
     .first()
      )
     if not template:
-        return Response({"detail": "No template uploaded"}, status=400)
+        return Response({"detail": "No template for this program is uploaded yet"}, status=400)
 
     # build context dictionary for placeholders
     context = {
         "full_name": f"{applicant.first_name} {applicant.last_name}",
         "student_no": admission.student_id or "TBD",
         "reg_no": admission.reg_no or "TBD",
-        "program_name": admission.admitted_program.name ,
-        "fees": admission.admitted_program.application_fee,   # ensure fields exist
-        "duration": admission.admitted_program.duration_years,
+        "program_name": admission.admitted_program.name,
+        "duration": admission.admitted_program.max_years,
         "campus": admission.admitted_campus,
         # add any other placeholders
     }
@@ -126,6 +132,35 @@ def send_offer_letter(request, applicant_id):
     applicant.save()
 
     # Optionally send email/notification to student here
+    try:
+        send_mail(
+          subject="Admission letter sent successfully",
+
+            message=(
+                f"Dear {applicant.first_name} {applicant.last_name},\n\n"
+                f"CONGRATULATIONS!\n\n"
+                f"We are delighted to inform you that your admission letter has been **successfully sent to your portal**.\n\n"
+                f"Next Steps:\n"
+                f"1. Log in to your portal to download your official admission letter\n"
+                f"2. Confirm every thing is ok and sign where necessary\n"
+                f"3. Complete registration before the deadline\n\n"
+                f"We look forward to welcoming you to the Ndejje University family!\n\n"
+                f"Warm regards,\n"
+                f"Admissions Office\n"
+                f"Ndejje University\n"
+                f"Email: admissions@ndejjeuniversity.ac.ug\n"
+                f"Website: www.ndejjeuniversity.ac.ug"
+                    ),
+
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[applicant.email],
+                fail_silently=False,
+                    )
+
+        create_notification(applicant.applicant, "Admission letter sent successfully", "Your adimission Letter has been successfully delivered.")
+    except Exception as e:
+        logger.error(f"Failed to send email: {e}")
+        return Response({"detail":"Failed to send email please check connection"}, status=400)
 
     return Response({
         "detail": "Offer letter generated and attached",

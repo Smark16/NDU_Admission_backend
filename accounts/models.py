@@ -26,6 +26,17 @@ class User(AbstractUser):
     is_staff = models.BooleanField(default=False)
     is_applicant = models.BooleanField(default=False)
 
+    @property
+    def full_name(self):
+        if self.first_name and self.last_name:
+            return f"{self.first_name} {self.last_name}".strip()
+        elif self.first_name:
+            return self.first_name
+        elif self.last_name:
+            return self.last_name
+        else:
+            return self.username
+
     def __str__(self):
         return f"{self.get_full_name()}"
     

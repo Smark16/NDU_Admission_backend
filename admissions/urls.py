@@ -14,6 +14,7 @@ urlpatterns = [
     path('application_detail/<int:application_id>', views.application_detail),
     path('review_application/<int:application_id>', views.ReviewApplication.as_view()),
     path('single_app/<int:application_id>', views.SingleApplication.as_view()),
+    path('change_applicatio_status/<int:pk>', views.ChangeApplicationStatus.as_view()),
 
     # Subject Urls
 
