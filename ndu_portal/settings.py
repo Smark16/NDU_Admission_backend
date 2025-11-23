@@ -12,7 +12,7 @@ SECRET_KEY = config('SECRET_KEY', default='django-insecure-change-this-in-produc
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = config('DEBUG', default=True, cast=bool)
 
-ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1', cast=lambda v: [s.strip() for s in v.split(',')])
+ALLOWED_HOSTS = ['*']
 
 # Application definition
 DJANGO_APPS = [
@@ -209,11 +209,13 @@ MOBILE_MONEY_API_KEY = config('MOBILE_MONEY_API_KEY', default='')
 # }
 
 CSRF_TRUSTED_ORIGINS = [
-    'http://localhost:5173'
+    'http://localhost:5173',
+    'https://ndu-admission-frontend.onrender.com'
 ]
 
 CORS_ALLOWED_ORIGINS = [
-   'http://localhost:5173'
+   'http://localhost:5173',
+   'https://ndu-admission-frontend.onrender.com'
 ]
 
 CORS_ALLOW_CREDENTIALS = True
