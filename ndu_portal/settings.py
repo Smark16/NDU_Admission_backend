@@ -208,7 +208,8 @@ MOBILE_MONEY_API_KEY = config('MOBILE_MONEY_API_KEY', default='')
 
 CSRF_TRUSTED_ORIGINS = [
     'http://localhost:5173',
-    'https://ndu-admission-frontend.onrender.com'
+    'https://ndu-admission-frontend.onrender.com',
+    'https://ndu-admission-backend.onrender.com'
 ]
 
 CORS_ALLOWED_ORIGINS = [
