@@ -1,74 +1,74 @@
-from django.shortcuts import render, redirect
-from django.contrib.auth.decorators import login_required
-from django.contrib import messages
-from django.core.paginator import Paginator
-from django.db.models import Q
-from audit.models import AuditLog, UserActivity
+from rest_framework import generics
+from rest_framework.permissions import *
+from .models import *
+from rest_framework.response import Response
+from rest_framework.views import APIView
+from .serializers import *
+from easyaudit.models import CRUDEvent
 
-@login_required
-def audit_logs(request):
-    """View audit logs (super admin only)"""
-    if request.user.role != 'super_admin':
-        messages.error(request, 'You do not have permission to access this page.')
-        return redirect('admissions:dashboard')
-    
-    logs = AuditLog.objects.all()
-    
-    # Search functionality
-    search = request.GET.get('search')
-    if search:
-        logs = logs.filter(
-            Q(user__username__icontains=search) |
-            Q(action__icontains=search) |
-            Q(description__icontains=search)
-        )
-    
-    # Pagination
-    paginator = Paginator(logs, 50)
-    page_number = request.GET.get('page')
-    page_obj = paginator.get_page(page_number)
-    
-    context = {
-        'page_obj': page_obj,
-        'search': search,
-    }
-    
-    return render(request, 'audit/audit_logs.html', context)
+class ListAuditLogs(generics.ListAPIView):
+    queryset = AuditLog.objects.select_related('user')
+    serializer_class = AuditLogSerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
-@login_required
-def user_activities(request):
-    """View user activities (super admin only)"""
-    if request.user.role != 'super_admin':
-        messages.error(request, 'You do not have permission to access this page.')
-        return redirect('admissions:dashboard')
+# delete logs
+class DeleteAuditLogs(generics.RetrieveDestroyAPIView):
+    queryset = AuditLog.objects.select_related('user')
+    serializer_class = AuditLogSerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+    def delete(self, request, *args, **kwargs):
+        instance = self.get_object()
+        instance.delete()
+
+        return Response({"detail":"Auth Logs deleted successfully"})
     
-    activities = UserActivity.objects.all()
+# delete all Auth logs
+class DeleteAllAuthLogs(APIView):
+    queryset = AuditLog.objects.select_related('user')
+    serializer_class = AuditLogSerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+    def delete(self, request, *args, **kwargs):
+        authlogs = AuditLog.objects.select_related('user')
+        authlogs.delete()
+
+        return Response({"details":"All auth logs have been deleted"})
+
+# =======================================easy audit logs================================
+class ListLogsView(generics.ListAPIView):
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    serializer_class = LogSerializer
+
+    def get_queryset(self):
+        return CRUDEvent.objects.all()\
+            .select_related('user', 'content_type')\
+            .prefetch_related('content_type')\
+            .order_by('-datetime')
     
-    # Search functionality
-    search = request.GET.get('search')
-    if search:
-        activities = activities.filter(
-            Q(user__username__icontains=search) |
-            Q(activity_type__icontains=search) |
-            Q(description__icontains=search)
-        )
+# delete crud logs
+class DeleteCrudlogs(generics.RetrieveDestroyAPIView):
+    queryset = CRUDEvent.objects.all()
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    serializer_class = LogSerializer
+
+    def delete(self, request, *args, **kwargs):
+        instance = self.get_object()
+        instance.delete()
+
+        return Response({"detail":"Crud Logs deleted successfully"})
     
-    # Pagination
-    paginator = Paginator(activities, 50)
-    page_number = request.GET.get('page')
-    page_obj = paginator.get_page(page_number)
-    
-    context = {
-        'page_obj': page_obj,
-        'search': search,
-    }
-    
-    return render(request, 'audit/user_activities.html', context)
+# delete all crud logs
+class DeleteAllCrudLogs(APIView):
+    queryset = CRUDEvent.objects.all()
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    serializer_class = LogSerializer
 
+    def delete(self, request, *args, **kwargs):
+        crudlogs = CRUDEvent.objects.all()\
+            .select_related('user', 'content_type')\
+            .prefetch_related('content_type')\
+            .order_by('-datetime')
+        crudlogs.delete()
 
-
-
-
-
-
-
+        return Response({"details":"All crud logs have been deleted"})

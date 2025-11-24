@@ -23,6 +23,21 @@ class AcademicLevelSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 # ============================================applications==========================================================
+
+# db application serializer
+class CudApplicationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Application
+        fields = '__all__'
+
+# single application
+class SingleApplicationSerializer(serializers.ModelSerializer):
+    programs = ProgramSerializer(read_only=True, many=True)
+    campus = CampusSerializer(read_only=True)
+    class Meta:
+        model = Application
+        fields = ['id', 'first_name', 'last_name', 'email', 'phone', 'date_of_birth', 'nationality', 'gender', 'programs', 'campus']
+
 class ApplicationSerializer(serializers.ModelSerializer):
     class Meta:
         model = Application

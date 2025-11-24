@@ -2,7 +2,7 @@ from django.contrib import admin
 from django.utils.html import format_html
 from admissions.models import *
 from payments.models import Payment, MobileMoneyTransaction
-from audit.models import AuditLog, UserActivity
+from audit.models import AuditLog
 
 @admin.register(Faculty)
 class FacultyAdmin(admin.ModelAdmin):
@@ -85,14 +85,6 @@ class MobileMoneyTransactionAdmin(admin.ModelAdmin):
 class AuditLogAdmin(admin.ModelAdmin):
     list_display = ['user', 'action', 'description', 'timestamp']
     list_filter = ['action', 'timestamp']
-    search_fields = ['user__username', 'description']
-    readonly_fields = ['timestamp']
-    ordering = ['-timestamp']
-
-@admin.register(UserActivity)
-class UserActivityAdmin(admin.ModelAdmin):
-    list_display = ['user', 'activity_type', 'timestamp']
-    list_filter = ['activity_type', 'timestamp']
     search_fields = ['user__username', 'description']
     readonly_fields = ['timestamp']
     ordering = ['-timestamp']

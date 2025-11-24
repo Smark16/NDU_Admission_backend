@@ -1,5 +1,5 @@
 from django.contrib.contenttypes.models import ContentType
-from audit.models import AuditLog, UserActivity
+from audit.models import AuditLog
 
 def log_audit_event(user, action, obj=None, description="", request=None):
     """Utility function to log audit events"""
@@ -29,7 +29,7 @@ def log_audit_event(user, action, obj=None, description="", request=None):
         )
     except Exception as e:
         # Log error but don't break the application
-        pass
+        print('Audit log error', e)
 
 def get_client_ip(request):
     """Get client IP address from request"""
