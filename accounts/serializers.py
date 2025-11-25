@@ -114,22 +114,22 @@ class RegisterSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({'role': f'Role "{role_name}" does not exist.'})
 
         # Send email
-        subject = "Account Created Successfully"
-        message = (
-            f"Hello {user.first_name or user.email},\n\n"
-            f"Your account has been created successfully.\n\n"
-            f"Email: {user.email}\n"
-            f"Password: {password}\n\n"
-            f"Please log in and change your password."
-        )
+        # subject = "Account Created Successfully"
+        # message = (
+        #     f"Hello {user.first_name or user.email},\n\n"
+        #     f"Your account has been created successfully.\n\n"
+        #     f"Email: {user.email}\n"
+        #     f"Password: {password}\n\n"
+        #     f"Please log in and change your password."
+        # )
 
-        send_mail(
-            subject,
-            message,
-            settings.DEFAULT_FROM_EMAIL,
-            [user.email],
-            fail_silently=False,
-        )
+        # send_mail(
+        #     subject,
+        #     message,
+        #     settings.DEFAULT_FROM_EMAIL,
+        #     [user.email],
+        #     fail_silently=False,
+        # )
 
         return user
    

@@ -137,7 +137,8 @@ class DocumentSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 
-# faculty serializer
+# ========================================faculty========================================== 
+# list faculty serializer
 class FacultySerializer(serializers.ModelSerializer):
     class Meta:
         model = Faculty

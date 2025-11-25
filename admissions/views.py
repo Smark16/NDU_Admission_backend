@@ -131,22 +131,22 @@ def create_applications(request):
             ApplicationDocument.objects.bulk_create(document_objs, batch_size=50)
 
             # === ASYNC EMAIL SEND (DO NOT BLOCK REQUEST) ===
-            threading.Thread(
-                target=send_mail,
-                kwargs={
-                    "subject": "Application Submitted Successfully!",
-                    "message": f"Dear {application.first_name} {application.last_name},\n\n"
-                               f"Your application has been successfully submitted to Ndejje University.\n"
-                               f"Application ID: {application.id}\n"
-                               f"Submitted on: {application.created_at.strftime('%d %B %Y')}\n\n"
-                               f"We will review your application and get back to you soon.\n\n"
-                               f"Thank you,\nNdejje University Admissions Team",
-                    "from_email": settings.DEFAULT_FROM_EMAIL,
-                    "recipient_list": [application.email],
-                    "fail_silently": True,
-                },
-                daemon=True
-            ).start()
+            # threading.Thread(
+            #     target=send_mail,
+            #     kwargs={
+            #         "subject": "Application Submitted Successfully!",
+            #         "message": f"Dear {application.first_name} {application.last_name},\n\n"
+            #                    f"Your application has been successfully submitted to Ndejje University.\n"
+            #                    f"Application ID: {application.id}\n"
+            #                    f"Submitted on: {application.created_at.strftime('%d %B %Y')}\n\n"
+            #                    f"We will review your application and get back to you soon.\n\n"
+            #                    f"Thank you,\nNdejje University Admissions Team",
+            #         "from_email": settings.DEFAULT_FROM_EMAIL,
+            #         "recipient_list": [application.email],
+            #         "fail_silently": True,
+            #     },
+            #     daemon=True
+            # ).start()
 
             create_notification(request.user, "Application Submitted", "Your application has been successfully submitted.")
 
@@ -162,143 +162,6 @@ def create_applications(request):
         except Exception as e:
             logger.error(f"Application submission failed: {e}", exc_info=True)
             return Response({"detail": str(e)}, status=500)
-
-# @api_view(['POST'])
-# @permission_classes([IsAuthenticated])
-# def create_applications(request):
-#     with transaction.atomic():
-#         try:
-#             data = request.data.copy()
-#             files = request.FILES
-
-#             # Extract files
-#             doc_files = files.getlist('documents')          
-#             doc_types = request.data.getlist('document_types', [])  
-#             passport_photo = files.get('passport_photo')
-
-#             # Parse JSON strings from frontend
-#             olevel_results = request.data.get('olevel_results', '[]')
-#             if isinstance(olevel_results, str):
-#                 olevel_results = json.loads(olevel_results)
-
-#             alevel_results = request.data.get('alevel_results', '[]')
-#             if isinstance(alevel_results, str):
-#                 alevel_results = json.loads(alevel_results)
-
-#             # Create main application
-#             serializer = CudApplicationSerializer(data=data, context={'request': request})
-#             if not serializer.is_valid():
-#                 return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-#             application = serializer.save(
-#                 applicant=request.user,
-#                 status='submitted'
-#             )
-
-#             # Save passport photo (optional)
-#             if passport_photo:
-#                 application.passport_photo = passport_photo
-#                 application.save(update_fields=['passport_photo'])
-
-#             # Save O-Level Results
-#             seen_olevel_subjects = set()
-#             for item in olevel_results:
-#                 subject_id = item.get('subject')
-#                 grade = item.get('grade')
-
-#                 if not subject_id or not grade:
-#                     continue
-
-#                 if subject_id in seen_olevel_subjects:
-#                     return Response({"detail":f"Duplicate O-Level subject: {subject.name}. You can only add each subject once."}, status=400)
-#                 else:
-#                     seen_olevel_subjects.add(subject_id)
-
-#                 try:
-#                     subject = OLevelSubject.objects.get(id=subject_id)
-#                     OLevelResult.objects.create(
-#                         application=application,
-#                         subject=subject,
-#                         grade=grade.upper()
-#                     )
-#                 except OLevelSubject.DoesNotExist:
-#                     logger.warning(f"O-Level Subject ID {subject_id} not found")
-#                     continue
-
-#             # Save A-Level Results
-#             seen_alevel_subjects = set()
-#             for item in alevel_results:
-#                 subject_id = item.get('subject')
-#                 grade = item.get('grade')
-
-#                 if not subject_id or not grade:
-#                     continue
-
-#                 if subject_id in seen_alevel_subjects:
-#                     return Response({"detail":f"Duplicate A-Level subject: {subject.name}. You can only add each subject once."}, status=400)
-#                 else:
-#                     seen_alevel_subjects.add(subject_id)
-
-#                 try:
-#                     subject = ALevelSubject.objects.get(id=subject_id)
-#                     ALevelResult.objects.create(
-#                         application=application,
-#                         subject=subject,
-#                         grade=grade.upper()
-#                     )
-#                 except ALevelSubject.DoesNotExist:
-#                     logger.warning(f"A-Level Subject ID {subject_id} not found")
-#                     continue
-
-#             # Save Documents (optional + file_url saved!)
-#             for i, file in enumerate(doc_files):
-#                 doc_type = doc_types[i] if i < len(doc_types) else "Others"
-#                 doc = ApplicationDocument(
-#                     application=application,
-#                     file=file,
-#                     name=file.name.split('.')[0][:25],
-#                     document_type=doc_type
-#                 )
-#                 doc.save()  
-
-#                 # Generate and save full URL
-#                 doc.file_url = request.build_absolute_uri(doc.file.url)
-#                 doc.save(update_fields=['file_url'])
-
-#             # Send confirmation email
-#             try:
-#                 send_mail(
-#                     subject="Application Submitted Successfully!",
-#                     message=(
-#                         f"Dear {application.first_name} {application.last_name},\n\n"
-#                         f"Your application has been successfully submitted to Ndejje University.\n"
-#                         f"Application ID: {application.id}\n"
-#                         f"Submitted on: {application.created_at.strftime('%d %B %Y')}\n\n"
-#                         f"We will review your application and get back to you soon.\n\n"
-#                         f"Thank you,\nNdejje University Admissions Team"
-#                     ),
-#                     from_email=settings.DEFAULT_FROM_EMAIL,
-#                     recipient_list=[application.email],
-#                     fail_silently=False,
-#                 )
-
-#                 create_notification(request.user, "Application Submitted", "Your application has been successfully submitted.")
-#             except Exception as e:
-#                 logger.error(f"Failed to send email: {e}")
-#                 return Response({"detail":"Failed to send email please check connection"}, status=400)
-
-#             return Response({
-#                 "message": "Application submitted successfully!",
-#                 "application_id": application.id,
-#                 "submitted_at": application.created_at.isoformat()
-#             }, status=status.HTTP_201_CREATED)
-
-#         except Exception as e:
-#             logger.error(f"Application submission failed: {str(e)}", exc_info=True)
-#             return Response(
-#                 {"detail": str(e)},
-#                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
-#             )
 
 # list applications
 class ListApplications(generics.ListAPIView):
@@ -442,7 +305,7 @@ class CreateBatch(generics.CreateAPIView):
         
 # list batch
 class ListBatch(generics.ListAPIView):
-    queryset = Batch.objects.prefetch_related('programs').select_related('created_by').order_by('-created_at')
+    queryset = Batch.objects.prefetch_related('programs', 'programs__campuses').select_related('created_by').order_by('-created_at')
     serializer_class = BatchSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
@@ -474,14 +337,16 @@ class DeleteBatch(generics.RetrieveDestroyAPIView):
     
 # get active batch
 class GetActiveApplicationBatch(generics.ListAPIView):
-    queryset = Batch.objects.all()
+    queryset = Batch.objects.prefetch_related('programs', 'programs__campuses').select_related('created_by')
     serializer_class = BatchSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
     def get(self, request):
         try:
             now = timezone.now()
-            batch = Batch.objects.get(application_start_date__lte=now,  application_end_date__gte=now, is_active=True)
+            batch = Batch.objects.prefetch_related('programs', 'programs__campuses').select_related('created_by').get(
+                application_start_date__lte=now,  application_end_date__gte=now, is_active=True
+                )
             serializer = self.serializer_class(batch)
             return Response(serializer.data, status=200)
         except Exception as e:
