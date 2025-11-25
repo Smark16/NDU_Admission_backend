@@ -131,22 +131,22 @@ def create_applications(request):
             ApplicationDocument.objects.bulk_create(document_objs, batch_size=50)
 
             # === ASYNC EMAIL SEND (DO NOT BLOCK REQUEST) ===
-            # threading.Thread(
-            #     target=send_mail,
-            #     kwargs={
-            #         "subject": "Application Submitted Successfully!",
-            #         "message": f"Dear {application.first_name} {application.last_name},\n\n"
-            #                    f"Your application has been successfully submitted to Ndejje University.\n"
-            #                    f"Application ID: {application.id}\n"
-            #                    f"Submitted on: {application.created_at.strftime('%d %B %Y')}\n\n"
-            #                    f"We will review your application and get back to you soon.\n\n"
-            #                    f"Thank you,\nNdejje University Admissions Team",
-            #         "from_email": settings.DEFAULT_FROM_EMAIL,
-            #         "recipient_list": [application.email],
-            #         "fail_silently": True,
-            #     },
-            #     daemon=True
-            # ).start()
+            threading.Thread(
+                target=send_mail,
+                kwargs={
+                    "subject": "Application Submitted Successfully!",
+                    "message": f"Dear {application.first_name} {application.last_name},\n\n"
+                               f"Your application has been successfully submitted to Ndejje University.\n"
+                               f"Application ID: {application.id}\n"
+                               f"Submitted on: {application.created_at.strftime('%d %B %Y')}\n\n"
+                               f"We will review your application and get back to you soon.\n\n"
+                               f"Thank you,\nNdejje University Admissions Team",
+                    "from_email": settings.DEFAULT_FROM_EMAIL,
+                    "recipient_list": [application.email],
+                    "fail_silently": True,
+                },
+                daemon=True
+            ).start()
 
             create_notification(request.user, "Application Submitted", "Your application has been successfully submitted.")
 
