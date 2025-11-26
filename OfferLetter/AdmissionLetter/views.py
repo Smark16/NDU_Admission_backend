@@ -6,6 +6,7 @@ from rest_framework.permissions import *
 from rest_framework.parsers import MultiPartParser, FormParser
 from .models import *
 from .serializers import *
+from django.utils import timezone
 
 import os
 from django.core.files.base import ContentFile
@@ -23,6 +24,7 @@ from django.db import close_old_connections
 import logging
 import platform
 logger = logging.getLogger(__name__)
+
 
 if platform.system() == "Windows":
     try:
@@ -81,9 +83,6 @@ class DeleteTemplate(generics.RetrieveDestroyAPIView):
 # ================================================Offer letters======================================================
 # The function that runs in the background thread (the heavy lifting)
 def convert_and_save_pdf_task(docx_bytes_local, applicant_id_local):
-    """
-    Handles PDF conversion, saving, status update, and notification in a background thread.
-    """
     # 1. Thread safety: Close old connections from the main thread
     close_old_connections()
     
@@ -101,6 +100,16 @@ def convert_and_save_pdf_task(docx_bytes_local, applicant_id_local):
         # 2. Re-fetch the applicant inside the thread
         applicant_local = Application.objects.get(id=applicant_id_local)
 
+         # Step 1: DOCX saved → update status
+        applicant_local.offer_letter_status = "docx_generated"
+        applicant_local.offer_letter_progress = 30
+        applicant_local.save(update_fields=['offer_letter_status', 'offer_letter_progress'])
+
+         # Step 2: Start PDF conversion
+        applicant_local.offer_letter_status = "converting_pdf"
+        applicant_local.offer_letter_progress = 50
+        applicant_local.save(update_fields=['offer_letter_status', 'offer_letter_progress'])
+
         # 3. Save DOCX to a temp file for conversion
         # Using NamedTemporaryFile within the thread for its lifecycle
         tmp = NamedTemporaryFile(delete=False, suffix=".docx")
@@ -115,6 +124,11 @@ def convert_and_save_pdf_task(docx_bytes_local, applicant_id_local):
         pdf_bytes = convert_docx_to_pdf_bytes(tmp_path) 
         
         logger.info(f"PDF conversion successful for applicant {applicant_id_local}")
+
+         # Step 3: PDF ready
+        applicant_local.offer_letter_status = "pdf_ready"
+        applicant_local.offer_letter_progress = 90
+        applicant_local.save(update_fields=['offer_letter_status', 'offer_letter_progress'])
 
         # 5. Save the resulting PDF bytes
         pdf_filename = f"OfferLetter_{applicant_id_local}.pdf"
@@ -148,8 +162,12 @@ def convert_and_save_pdf_task(docx_bytes_local, applicant_id_local):
                 recipient_list=[applicant_local.email],
                 fail_silently=False,
             )
+
+            applicant_local.offer_letter_status = "email_sent"
+            applicant_local.offer_letter_progress = 100
+            applicant_local.save(update_fields=['offer_letter_status', 'offer_letter_progress'])
             # Assuming create_notification is available
-            # create_notification(applicant_local.applicant, "Admission letter sent successfully", "Your admission Letter has been successfully delivered.")
+            create_notification(applicant_local.applicant, "Admission letter sent successfully", "Your admission Letter has been successfully delivered.")
         except Exception as e:
             logger.error(f"Failed to send email/notification for {applicant_id_local}: {e}")
 
@@ -157,6 +175,10 @@ def convert_and_save_pdf_task(docx_bytes_local, applicant_id_local):
         logger.error(f"Applicant with ID {applicant_id_local} not found in background thread.")
     except Exception as e:
         # Log the error if PDF conversion fails
+        applicant_local.offer_letter_status = "failed"
+        applicant_local.offer_letter_progress = 0
+        applicant_local.save(update_fields=['offer_letter_status', 'offer_letter_progress'])
+        logger.error(f"PDF failed: {e}")
         logger.error(f"Critical error during PDF generation for {applicant_id_local}: {e}", exc_info=True)
     finally:
         # 7. Cleanup temp file
@@ -169,7 +191,6 @@ def convert_and_save_pdf_task(docx_bytes_local, applicant_id_local):
                 pythoncom.CoUninitialize()
             except Exception as e:
                  logger.warning(f"CoUninitialize failed for thread: {e}")
-
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
@@ -195,8 +216,10 @@ def send_offer_letter(request, applicant_id):
         "student_no": admission.student_id or "TBD",
         "reg_no": admission.reg_no or "TBD",
         "program_name": admission.admitted_program.name,
-        "duration": admission.admitted_program.max_years,
+        "min_years": admission.admitted_program.max_years,
+        "max_years":admission.admitted_program.min_years,
         "campus": admission.admitted_campus,
+        "study_mode":applicant.study_mode
     }
 
     # 3. Render DOCX bytes (Synchronous and fast)
@@ -224,6 +247,18 @@ def send_offer_letter(request, applicant_id):
         "detail": "Offer letter DOCX saved. PDF generation, status update, and email are starting in the background.",
         "status": "processing",
         "docx_url": applicant.admission_letter_docx.url 
+    })
+
+# offer letter status
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def offer_letter_status(request, applicant_id):
+    app = get_object_or_404(Application, id=applicant_id)
+    return Response({
+        "status": app.offer_letter_status,
+        "progress": app.offer_letter_progress,
+        "docx_url": app.admission_letter_docx.url if app.admission_letter_docx else None,
+        "pdf_url": app.admission_letter_pdf.url if app.admission_letter_pdf else None,
     })
     
 # @api_view(['POST'])

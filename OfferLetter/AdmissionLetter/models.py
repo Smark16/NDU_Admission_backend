@@ -1,11 +1,13 @@
 from django.db import models
 from Programs.models import Program
+# from cloudinary.models import CloudinaryField
 
 # Create your models here.
 
 class OfferLetterTemplate(models.Model):
     name = models.CharField(max_length=40, blank=True, null=True)
     file = models.FileField(upload_to='admission_template/')
+    # file = CloudinaryField('document',folder='admission_Folder/templates/', resource_type='raw')
     file_url = models.URLField(max_length=200, blank=True, null=True)
     programs = models.ManyToManyField(Program)
     status = models.CharField(default="active")

@@ -3,6 +3,7 @@ from pathlib import Path
 from decouple import config
 from datetime import timedelta
 from .env import BASE_DIR, env
+import cloudinary
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 env.read_env(os.path.join(BASE_DIR, '.env'))
@@ -32,7 +33,9 @@ THIRD_PARTY_APPS = [
     'django_extensions',
     "rest_framework",
     "corsheaders",
-    'easyaudit'
+    'easyaudit',
+    # 'cloudinary_storage',
+    # 'cloudinary',
 ]
 
 LOCAL_APPS = [
@@ -90,17 +93,24 @@ TEMPLATES = [
 WSGI_APPLICATION = 'ndu_portal.wsgi.application'
 
 # Database
-# if DEBUG:
-#     DATABASES = {
-#         'default': {
-#             'ENGINE': 'django.db.backends.sqlite3',
-#             'NAME': BASE_DIR / 'db.sqlite3',
-#         }
-#     }
-# else:
-DATABASES = {
-    'default': env.db()  
-  }
+if DEBUG:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'db.sqlite3',
+        }
+    }
+else:
+ DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.postgresql',
+        "NAME": env("DB_NAME"),
+        "USER": env("DB_USER"),
+        "PASSWORD": env("DB_PASSWORD"),
+        "HOST": env("DB_HOST"),
+        "PORT": env.int("DB_PORT", default=5432),
+    }
+}
 
 # Password validation
 AUTH_PASSWORD_VALIDATORS = [
@@ -127,9 +137,6 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 STATIC_URL = '/static/'
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
-STATICFILES_DIRS = [
-    BASE_DIR / 'static',
-]
 
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
@@ -139,6 +146,8 @@ MEDIA_ROOT = BASE_DIR / 'media'
 
 # Default primary key field type
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+SITE_ID=1
 
 # Custom User Model
 AUTH_USER_MODEL = 'accounts.User'
@@ -165,56 +174,33 @@ DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
 MOBILE_MONEY_API_URL = config('MOBILE_MONEY_API_URL', default='')
 MOBILE_MONEY_API_KEY = config('MOBILE_MONEY_API_KEY', default='')
 
-# Logging Configuration
-# LOGGING = {
-#     'version': 1,
-#     'disable_existing_loggers': False,
-#     'formatters': {
-#         'verbose': {
-#             'format': '{levelname} {asctime} {module} {process:d} {thread:d} {message}',
-#             'style': '{',
-#         },
-#     },
-#     'handlers': {
-#         'file': {
-#             'level': 'INFO',
-#             'class': 'logging.FileHandler',
-#             'filename': BASE_DIR / 'logs' / 'django.log',
-#             'formatter': 'verbose',
-#         },
-#         'console': {
-#             'level': 'DEBUG',
-#             'class': 'logging.StreamHandler',
-#             'formatter': 'verbose',
-#         },
-#     },
-#     'root': {
-#         'handlers': ['console', 'file'],
-#         'level': 'INFO',
-#     },
-#     'loggers': {
-#         'django': {
-#             'handlers': ['console', 'file'],
-#             'level': 'INFO',
-#             'propagate': False,
-#         },
-#         'audit': {
-#             'handlers': ['file'],
-#             'level': 'INFO',
-#             'propagate': False,
-#         },
-#     },
+# Explicitly configure Cloudinary
+# CLOUDINARY_STORAGE = {
+#     'CLOUD_NAME': 'dnsx36nia',
+#     'API_KEY': env('CLOUDINARY_API_KEY'),
+#     'API_SECRET': env('CLOUDINARY_API_SECRET'),
+#     'SECURE': 'TRUE'
 # }
+
+# cloudinary.config(
+#     cloud_name=CLOUDINARY_STORAGE['CLOUD_NAME'],
+#     api_key=CLOUDINARY_STORAGE['API_KEY'],
+#     api_secret=CLOUDINARY_STORAGE['API_SECRET'],
+# )
+
+DEFAULT_FILE_STORAGE = 'cloudinary_storage.storage.MediaCloudinaryStorage'
 
 CSRF_TRUSTED_ORIGINS = [
     'http://localhost:5173',
     'https://ndu-admission-frontend.onrender.com',
     'https://ndu-admission-backend.onrender.com'
+    'http://172.17.31.147'
 ]
 
 CORS_ALLOWED_ORIGINS = [
    'http://localhost:5173',
-   'https://ndu-admission-frontend.onrender.com'
+   'https://ndu-admission-frontend.onrender.com',
+   'http://172.17.31.147'
 ]
 
 CORS_ALLOW_CREDENTIALS = True

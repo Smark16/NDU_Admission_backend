@@ -3,6 +3,7 @@ from django.contrib.auth.models import AbstractUser
 from django.core.validators import RegexValidator
 from django.utils.translation import gettext_lazy as _
 from django.db.models.signals import post_save
+# from cloudinary.models import CloudinaryField
 
 class Campus(models.Model):
     name = models.CharField(max_length=100, unique=True)
@@ -47,6 +48,7 @@ class Profile(models.Model):
     email = models.EmailField(max_length=100)
     phone = models.PositiveBigIntegerField()
     profile_photo = models.ImageField(upload_to='passport_photos/')
+    # profile_photo = CloudinaryField('profile_photo', folder='admission_Folder/images')
     is_staff = models.BooleanField(default=False)
     is_applicant = models.BooleanField(default=False)
     date_joined = models.DateTimeField()

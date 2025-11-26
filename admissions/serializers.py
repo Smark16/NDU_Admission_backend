@@ -132,10 +132,11 @@ class AlevelSubjectSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 class DocumentSerializer(serializers.ModelSerializer):
+    file_url = serializers.CharField(source='file.url', read_only=True)
+
     class Meta:
         model = ApplicationDocument
-        fields = '__all__'
-
+        fields = ['id', 'name', 'document_type', 'file', 'file_url', 'uploaded_at', 'application']
 
 # ========================================faculty========================================== 
 # list faculty serializer
