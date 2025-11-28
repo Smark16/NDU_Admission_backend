@@ -34,7 +34,7 @@ class AcademicLevel(models.Model):
 
 class Batch(models.Model):
     name = models.CharField(max_length=100)
-    code = models.CharField(max_length=20, unique=True)
+    code = models.CharField(max_length=20)
     programs = models.ManyToManyField(Program, related_name='batches')
     academic_year = models.CharField(max_length=15, blank=True)
     application_start_date = models.DateField()

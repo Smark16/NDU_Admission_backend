@@ -22,7 +22,6 @@ import json
 logger = logging.getLogger(__name__)
 
 # ===========================applications ===========================================
-
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def create_applications(request):
@@ -31,106 +30,79 @@ def create_applications(request):
             data = request.data.copy()
             files = request.FILES
 
-            # Extract files
+            # Extract everything
             doc_files = files.getlist("documents")
             doc_types = request.data.getlist("document_types", [])
             passport_photo = files.get("passport_photo")
-
-            # Parse O-Level + A-Level
             olevel_results = json.loads(request.data.get("olevel_results", "[]"))
             alevel_results = json.loads(request.data.get("alevel_results", "[]"))
 
-            # Create Application
-            serializer = CudApplicationSerializer(
-                data=data, context={"request": request}
-            )
+            # Validate main application data
+            serializer = CudApplicationSerializer(data=data, context={"request": request})
             serializer.is_valid(raise_exception=True)
 
-            application = serializer.save(
-                applicant=request.user,
-                status="submitted"
-            )
+            # remove M-2-M data
+            programs_data = serializer.validated_data.pop('programs', None)
 
-            # One save for passport (if exists)
+            application = Application(**serializer.validated_data)
+            application.applicant = request.user
+            application.status = "submitted"
             if passport_photo:
                 application.passport_photo = passport_photo
 
-            application.save()  # only ONE save()
+            # Validate & prepare all child objects
 
-            # === OPTIMIZE SUBJECT FETCH (NO DB IN LOOPS) ===
-            olevel_subjects = {
-                s.id: s for s in OLevelSubject.objects.filter(
-                    id__in=[o["subject"] for o in olevel_results]
-                )
-            }
-
-            alevel_subjects = {
-                s.id: s for s in ALevelSubject.objects.filter(
-                    id__in=[a["subject"] for a in alevel_results]
-                )
-            }
-
-            # === BULK CREATE OLEVEL RESULTS ===
+            # === O-Level ===
+            olevel_subjects = {s.id: s for s in OLevelSubject.objects.filter(id__in=[o["subject"] for o in olevel_results])}
             olevel_bulk = []
             seen = set()
-
             for item in olevel_results:
                 sid = item["subject"]
                 if sid in seen:
                     return Response({"detail": "Duplicate O-Level subject"}, status=400)
                 seen.add(sid)
-
                 subject = olevel_subjects.get(sid)
-                if subject:
-                    olevel_bulk.append(
-                        OLevelResult(
-                            application=application,
-                            subject=subject,
-                            grade=item["grade"].upper(),
-                        )
-                    )
+                if not subject:
+                    return Response({f"Invalid O-Level subject: {sid}"}, status=400)
+                olevel_bulk.append(OLevelResult(application=application, subject=subject, grade=item["grade"].upper()))
 
-            OLevelResult.objects.bulk_create(olevel_bulk, batch_size=50)
-
-            # === BULK CREATE ALEVEL RESULTS ===
+            # === A-Level ===
+            alevel_subjects = {s.id: s for s in ALevelSubject.objects.filter(id__in=[a["subject"] for a in alevel_results])}
             alevel_bulk = []
             seen = set()
-
             for item in alevel_results:
                 sid = item["subject"]
                 if sid in seen:
                     return Response({"detail": "Duplicate A-Level subject"}, status=400)
                 seen.add(sid)
-
                 subject = alevel_subjects.get(sid)
-                if subject:
-                    alevel_bulk.append(
-                        ALevelResult(
-                            application=application,
-                            subject=subject,
-                            grade=item["grade"].upper(),
-                        )
-                    )
+                if not subject:
+                    return Response({f"Invalid A-Level subject: {sid}"}, status=400)
+                alevel_bulk.append(ALevelResult(application=application, subject=subject, grade=item["grade"].upper()))
 
-            ALevelResult.objects.bulk_create(alevel_bulk, batch_size=50)
-
-            # === BULK CREATE DOCUMENTS ===
+            # === Documents ===
             document_objs = []
             for i, file in enumerate(doc_files):
                 doc_type = doc_types[i] if i < len(doc_types) else "Others"
+                document_objs.append(ApplicationDocument(
+                    application=application,
+                    file=file,
+                    name=file.name.split('.')[0][:50],
+                    document_type=doc_type,
+                ))
 
-                document_objs.append(
-                    ApplicationDocument(
-                        application=application,
-                        file=file,
-                        name=file.name.split('.')[0][:25],
-                        document_type=doc_type,
-                    )
-                )
+            # NOW SAVE EVERYTHING
+            application.save()  
 
+            # save M-2-M field
+            if programs_data:
+               application.programs.set(programs_data) 
+
+            OLevelResult.objects.bulk_create(olevel_bulk, batch_size=50)
+            ALevelResult.objects.bulk_create(alevel_bulk, batch_size=50)
             ApplicationDocument.objects.bulk_create(document_objs, batch_size=50)
 
-            # === ASYNC EMAIL SEND (DO NOT BLOCK REQUEST) ===
+            # === Success: Send email & notification ===
             threading.Thread(
                 target=send_mail,
                 kwargs={
@@ -139,7 +111,6 @@ def create_applications(request):
                                f"Your application has been successfully submitted to Ndejje University.\n"
                                f"Application ID: {application.id}\n"
                                f"Submitted on: {application.created_at.strftime('%d %B %Y')}\n\n"
-                               f"We will review your application and get back to you soon.\n\n"
                                f"Thank you,\nNdejje University Admissions Team",
                     "from_email": settings.DEFAULT_FROM_EMAIL,
                     "recipient_list": [application.email],
@@ -150,19 +121,17 @@ def create_applications(request):
 
             create_notification(request.user, "Application Submitted", "Your application has been successfully submitted.")
 
-            # Return response
-            return Response(
-                {
-                    "message": "Application submitted successfully!",
-                    "application_id": application.id,
-                },
-                status=status.HTTP_201_CREATED,
-            )
+            return Response({
+                "message": "Application submitted successfully!",
+                "application_id": application.id,
+            }, status=status.HTTP_201_CREATED)
 
+        except ValueError as e:
+            return Response({"detail": str(e)}, status=400)
         except Exception as e:
             logger.error(f"Application submission failed: {e}", exc_info=True)
-            return Response({"detail": str(e)}, status=500)
-
+            return Response({"detail": "An error occurred. Please try again."}, status=500)
+        
 # list applications
 class ListApplications(generics.ListAPIView):
     queryset = Application.objects.all()
