@@ -20,8 +20,6 @@ class ProgramSerializer(serializers.ModelSerializer):
 class ListProgramsSerializer(serializers.ModelSerializer):
     faculty = serializers.CharField(source='faculty.name', read_only=True, allow_null=True)
     academic_level = serializers.CharField(source='academic_level.name', read_only=True)
-    
-    # This shows the string representation of each campus (usually campus.name)
     # campuses = serializers.StringRelatedField(many=True, read_only=True)
 
     class Meta:

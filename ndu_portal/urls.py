@@ -15,7 +15,7 @@ urlpatterns = [
     path('api/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
     path('api-auth/', include('rest_framework.urls')),
 
-    path('admin/', admin.site.urls),
+    path('django_admin/', admin.site.urls),
     path('api/accounts/', include('accounts.urls')),
     path('api/admissions/', include('admissions.urls')),
     path('api/payments/', include('payments.urls')),
