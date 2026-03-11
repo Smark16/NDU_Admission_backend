@@ -4,7 +4,7 @@ from django.utils import timezone
 from accounts.models import User, Campus
 from Programs.models import Program
 from .utils.academic_year import get_current_academic_year
-# from cloudinary.models import CloudinaryField
+from .utils.reference import generate_reference
 
 class Faculty(models.Model):
     name = models.CharField(max_length=200, unique=True)
@@ -104,7 +104,10 @@ class Application(models.Model):
     nationality = models.CharField(max_length=100)
     phone = models.CharField(max_length=20)
     email = models.EmailField()
-    address = models.TextField()
+    address = models.TextField(max_length=40, blank=True, null=True)
+    nin = models.CharField(max_length=20, blank=True, null=True)
+    passport_number = models.CharField(max_length=20, blank=True, null=True)
+    disabled = models.CharField(max_length=5, null=True, blank=True)
     
     # Next of Kin Information
     next_of_kin_name = models.CharField(max_length=200)
@@ -130,11 +133,11 @@ class Application(models.Model):
 
     # Document uploads
     passport_photo = models.ImageField(upload_to='passport_photos/')
-    # passport_photo = CloudinaryField('passport_photo', folder='admission_Folder/images')
     payment_proof = models.FileField(upload_to='payment_proofs/', blank=True, null=True, help_text="Payment Proof (PDF)")
-    # payment_proof = CloudinaryField('payment_proof', folder='admission_Folder/images', blank=True, null=True)
+   
     # Application Status
     status = models.CharField(max_length=20, default='draft')
+    application_reference = models.CharField(max_length=20, unique=True, blank=True, null=True)
     application_fee_paid = models.BooleanField(default=False)
     application_fee_amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     
@@ -147,9 +150,7 @@ class Application(models.Model):
     admission_letter_pdf = models.FileField(upload_to="admission_template/", null=True, blank=True)
     offer_letter_status = models.CharField(max_length=20, default='pending')
     offer_letter_progress = models.IntegerField(default=0)
-    # admission_letter_docx = CloudinaryField('admission_letter_docx',folder='admission_Folder/templates/',resource_type='raw', null=True, blank=True)
-    # admission_letter_pdf = CloudinaryField('admission_letter_pdf',folder='admission_Folder/templates/',resource_type='raw', null=True,blank=True)
-    
+   
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -197,7 +198,6 @@ class ApplicationDocument(models.Model):
     document_type = models.CharField(max_length=30)
     file_url = models.URLField(max_length=100, null=True, blank=True)
     file = models.FileField(upload_to='application_documents/')
-    # file = CloudinaryField('document',folder='admission_Folder/documents/', resource_type='raw')
     uploaded_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

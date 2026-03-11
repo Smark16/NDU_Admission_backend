@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.utils.html import format_html
 from admissions.models import *
-from payments.models import Payment, MobileMoneyTransaction
+from payments.models import ApplicationPayment
 from audit.models import AuditLog
 
 @admin.register(Faculty)
@@ -68,18 +68,11 @@ class ApplicationDocumentAdmin(admin.ModelAdmin):
     list_filter = ['uploaded_at']
     search_fields = ['application__first_name', 'application__last_name']
 
-@admin.register(Payment)
-class PaymentAdmin(admin.ModelAdmin):
-    list_display = ['application', 'amount', 'payment_method', 'status', 'created_at']
-    list_filter = ['status', 'payment_method', 'created_at']
-    search_fields = ['application__first_name', 'application__last_name', 'transaction_id']
-
-@admin.register(MobileMoneyTransaction)
-class MobileMoneyTransactionAdmin(admin.ModelAdmin):
-    list_display = ['payment', 'phone_number', 'network', 'transaction_reference', 'created_at']
-    list_filter = ['network', 'created_at']
-    search_fields = ['phone_number', 'transaction_reference']
-
+# @admin.register(ApplicationPayment)
+# class PaymentAdmin(admin.ModelAdmin):
+#     list_display = ['application', 'amount', 'payment_method', 'status', 'created_at']
+#     list_filter = ['status', 'payment_method', 'created_at']
+#     search_fields = ['application__first_name', 'application__last_name', 'transaction_id']
 
 @admin.register(AuditLog)
 class AuditLogAdmin(admin.ModelAdmin):

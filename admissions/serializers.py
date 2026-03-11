@@ -65,7 +65,7 @@ class ApplicationDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model = Application
         fields = ['id', 'first_name', 'last_name', 'date_of_birth', 'gender', 'nationality', 'phone', 'email',
-                  'batch', 'olevel_school', 'olevel_year', 'alevel_school', 'alevel_year', 'address',
+                  'batch',"nin", "passport_number","disabled", 'olevel_school', 'olevel_year', 'alevel_school', 'alevel_year', 'address',
                   'status', 'application_fee_amount', 'created_at', 'reviewed_at', 'passport_photo','reviewed_by']
     
 # o level subject
@@ -185,6 +185,18 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
         if not obj.admitted_program.faculty:
             return "__"
         return obj.admitted_program.faculty.name
+    
+# admission detail serializer
+class AdmissionDetailSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AdmittedStudent
+        fields = ['id', 'student_id', 'reg_no','admission_notes', 'admitted_program', 'admitted_campus', 'application']
+
+    def to_representation(self, instance):
+        response = super().to_representation(instance)
+        response['admitted_program'] = ProgramSerializer(instance.admitted_program).data
+        response['admitted_campus'] = CampusSerializer(instance.admitted_campus).data
+        return response
     
 # notification serializers
 class NotificationSerializer(serializers.ModelSerializer):

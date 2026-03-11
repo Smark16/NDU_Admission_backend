@@ -8,7 +8,6 @@ from rest_framework.response import Response
 from .serializers import *
 from rest_framework.parsers import MultiPartParser, FormParser
 from audit.utils import log_audit_event
-from rest_framework.parsers import MultiPartParser, FormParser
 import pandas as pd
 from thefuzz import process, fuzz
 from django.db import transaction

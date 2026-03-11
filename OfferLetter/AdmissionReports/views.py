@@ -92,11 +92,7 @@ class ViewFacultyAdmissions(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        print("QUERIES BEFORE:", len(connection.queries))
 
-        # --------------------------------------------------------------
-        # 1. ONE query – all admitted students + foreign-key objects
-        # --------------------------------------------------------------
         admitted_students = list(
             AdmittedStudent.objects
             .select_related(
@@ -325,8 +321,8 @@ class ExportFacultyAdmissionsExcel(APIView):
         ]
 
         rows = []
-
-        for adm in admitted_students:
+        # for adm in admitted_students:
+        for adm in qs.iterator(chunk_size=1000):
             app   = adm.application
             batch = adm.admitted_batch
 

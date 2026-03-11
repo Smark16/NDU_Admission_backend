@@ -3,7 +3,6 @@ from pathlib import Path
 from decouple import config
 from datetime import timedelta
 from .env import BASE_DIR, env
-# import cloudinary
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 env.read_env(os.path.join(BASE_DIR, '.env'))
@@ -34,8 +33,6 @@ THIRD_PARTY_APPS = [
     "rest_framework",
     "corsheaders",
     'easyaudit',
-    # 'cloudinary_storage',
-    # 'cloudinary',
 ]
 
 LOCAL_APPS = [
@@ -170,25 +167,9 @@ EMAIL_HOST_USER = 'agrilink143@gmail.com'
 EMAIL_HOST_PASSWORD = 'mmxj qbjf xpxn ceez' 
 DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
 
-# Mobile Money Configuration
-MOBILE_MONEY_API_URL = config('MOBILE_MONEY_API_URL', default='')
-MOBILE_MONEY_API_KEY = config('MOBILE_MONEY_API_KEY', default='')
-
-# Explicitly configure Cloudinary
-# CLOUDINARY_STORAGE = {
-#     'CLOUD_NAME': 'dnsx36nia',
-#     'API_KEY': env('CLOUDINARY_API_KEY'),
-#     'API_SECRET': env('CLOUDINARY_API_SECRET'),
-#     'SECURE': 'TRUE'
-# }
-
-# cloudinary.config(
-#     cloud_name=CLOUDINARY_STORAGE['CLOUD_NAME'],
-#     api_key=CLOUDINARY_STORAGE['API_KEY'],
-#     api_secret=CLOUDINARY_STORAGE['API_SECRET'],
-# )
-
-DEFAULT_FILE_STORAGE = 'cloudinary_storage.storage.MediaCloudinaryStorage'
+# school pay configuration
+SCHOOL_PAY_CODE = env('SCHOOL_PAY_CODE')
+SCHOOL_PAY_PASSWORD = env('SCHOOL_PAY_PASSWORD')
 
 CSRF_TRUSTED_ORIGINS = [
     'http://localhost:5173',

@@ -52,7 +52,10 @@ urlpatterns = [
     
     # Admission Management URLs
     path('create_admissions', views.AdmitStudent.as_view()),
+    path('update_admission/<int:pk>/', views.UpdateAdmittedStudent.as_view()),
     path('list_admitted_students',  views.ListAdmittedStudents.as_view()),
+    path('delete_admission/<int:pk>/', views.DeleteAdmittedStudent.as_view()),
+    path('candidate_admission/<int:admission_id>/', views.CandidateAdmission.as_view()),
 
     # notifications
     path('list_user_notification', views.ListNotifications.as_view())

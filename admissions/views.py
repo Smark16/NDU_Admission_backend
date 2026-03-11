@@ -15,6 +15,10 @@ from django.core.mail import send_mail
 from django.conf import settings
 from django.db import transaction
 import threading
+from .utils.validate_photo import validate_passport_photo
+from .utils.email import send_admission_update
+from payments.models import ApplicationPayment
+from django.db.models import Q
 
 import logging
 import json
@@ -29,6 +33,26 @@ def create_applications(request):
         try:
             data = request.data.copy()
             files = request.FILES
+            # ext_ref = request.data.get("external_reference")
+
+            # if not ext_ref:
+            #     return Response(
+            #         {"detail": "Payment reference is required"},
+            #         status=400
+            #     )
+
+            # try:
+            #     payment = ApplicationPayment.objects.select_for_update().get(
+            #         external_reference=ext_ref,
+            #         user=request.user,
+            #         status="PAID",
+            #         application__isnull=True 
+            #     )
+            # except ApplicationPayment.DoesNotExist:
+            #     return Response(
+            #         {"detail": "Invalid, unpaid, or already used payment reference"},
+            #         status=400
+            #     )
 
             # Extract everything
             doc_files = files.getlist("documents")
@@ -47,7 +71,11 @@ def create_applications(request):
             application = Application(**serializer.validated_data)
             application.applicant = request.user
             application.status = "submitted"
+            # application.application_fee_paid = True
+            # application.application_fee_amount = payment.amount
+            # application.application_reference = payment.external_reference
             if passport_photo:
+                validate_passport_photo(passport_photo)
                 application.passport_photo = passport_photo
 
             # Validate & prepare all child objects
@@ -92,7 +120,9 @@ def create_applications(request):
                 ))
 
             # NOW SAVE EVERYTHING
-            application.save()  
+            application.save() 
+            # payment.application = application
+            # payment.save(update_fields=["application"]) 
 
             # save M-2-M field
             if programs_data:
@@ -130,11 +160,11 @@ def create_applications(request):
             return Response({"detail": str(e)}, status=400)
         except Exception as e:
             logger.error(f"Application submission failed: {e}", exc_info=True)
-            return Response({"detail": "An error occurred. Please try again."}, status=500)
+            return Response({"detail": str(e)}, status=500)
         
 # list applications
 class ListApplications(generics.ListAPIView):
-    queryset = Application.objects.all()
+    queryset = Application.objects.filter(~Q(status__in=['draft','Admitted', 'rejected'])).order_by('created_at')
     serializer_class = ListApplicationsSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
@@ -600,64 +630,6 @@ class AdmitStudent(generics.CreateAPIView):
 
         except Exception as e:
             return Response({"detail": str(e)}, status=400)
-# class AdmitStudent(generics.CreateAPIView):
-#     queryset = AdmittedStudent.objects.all()
-#     serializer_class = AdmittedStudentSerializer
-#     permission_classes = [IsAuthenticated, DjangoModelPermissions]
-
-#     def create(self, request, *args, **kwargs):
-#         try:
-#             with transaction.atomic():
-#                 serializer = self.get_serializer(data=request.data)
-#                 serializer.is_valid(raise_exception=True)
-#                 admission = serializer.save()
-                
-#                 try:  
-#                     application = Application.objects.select_related('applicant', 'batch', 'campus').prefetch_related('programs').get(pk=admission.application_id)
-#                     application.status = 'accepted'
-#                     application.save()
-
-#                      # Send confirmation email
-#                 except Application.DoesNotExist:
-#                     return Response({"detail":"Student application doesnt exist"}, status=400)
-                
-#                 try:
-#                     send_mail(
-#                         subject="Congratulations! You have been admitted to Ndejje University",
-
-#                         message=(
-#                             f"Dear {application.first_name} {application.last_name},\n\n"
-#                             f"CONGRATULATIONS!\n\n"
-#                             f"We are delighted to inform you that your application has been **successfully reviewed and ACCEPTED**.\n\n"
-#                             f"You have been offered admission to study:\n"
-#                             f"• Program: {admission.admitted_program.name}\n"
-#                             f"• Campus: {admission.admitted_campus.name}\n"
-#                             f"• Study Mode: {application.study_mode}\n"
-#                             f"• Batch: {admission.admitted_batch.name} ({admission.admitted_batch.academic_year})\n\n"
-#                             f"Your provisional admission letter will be sent shortly.\n\n"
-#                             f"We look forward to welcoming you to the Ndejje University family!\n\n"
-#                             f"Warm regards,\n"
-#                             f"Admissions Office\n"
-#                             f"Ndejje University\n"
-#                             f"Email: admissions@ndejjeuniversity.ac.ug\n"
-#                             f"Website: www.ndejjeuniversity.ac.ug"
-#                         ),
-
-#                         from_email=settings.DEFAULT_FROM_EMAIL,
-#                         recipient_list=[application.email],
-#                         fail_silently=False,
-#                     )
-
-#                     create_notification(application.applicant, "Admission successfull", "Congratulations! You have been admitted to Ndejje University")
-#                 except Exception as e:
-#                     logger.error(f"Failed to send email: {e}")
-#                     return Response({"detail":"Failed to send email please check connection"}, status=400)
-
-                
-#                 serializer = self.serializer_class(admission)
-#                 return Response(serializer.data, status=201)
-#         except Exception as e:
-#             return Response({"detail":str(e)}, status=400)
  
 # list Admitted students
 class ListAdmittedStudents(generics.ListAPIView):
@@ -671,6 +643,38 @@ class ListAdmittedStudents(generics.ListAPIView):
 
     serializer_class = AdmittedStudentListSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+# update admitted students
+class UpdateAdmittedStudent(generics.UpdateAPIView):
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    queryset = AdmittedStudent.objects.all()
+    serializer_class = AdmittedStudentSerializer
+
+    @transaction.atomic
+    def perform_update(self, serializer):
+        data = serializer.save()
+        if data:
+            send_admission_update(data)
+
+# candidate admission
+class CandidateAdmission(generics.RetrieveAPIView):
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    queryset = AdmittedStudent.objects.select_related(
+        'admitted_program',
+        'admitted_batch',
+        'admitted_campus',
+        'admitted_by',
+    ).prefetch_related('admitted_program__campuses')
+    serializer_class = AdmissionDetailSerializer
+    lookup_field = "id"
+    lookup_url_kwarg = "admission_id"
+
+
+# delete admitted student
+class DeleteAdmittedStudent(generics.DestroyAPIView):
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    queryset = AdmittedStudent.objects.all()
+    serializer_class = AdmittedStudentSerializer
 
 # Admin dashboard stats
 class AdminDashboardStats(APIView):
