@@ -164,7 +164,7 @@ def create_applications(request):
         
 # list applications
 class ListApplications(generics.ListAPIView):
-    queryset = Application.objects.filter(~Q(status__in=['draft','Admitted', 'rejected'])).order_by('created_at')
+    queryset = Application.objects.filter(~Q(status__in=['draft','Admitted', 'rejected', 'accepted'])).order_by('created_at')
     serializer_class = ListApplicationsSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
 

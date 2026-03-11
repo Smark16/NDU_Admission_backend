@@ -1,4 +1,6 @@
-import cv2
+## Install the headless version of OpenCV (recommended for servers) to avoid CV2 errors related to missing GUI libraries. If you need GUI features, use the standard opencv-python package instead.
+#pip install opencv-python-headless => to manage dependencies better and avoid conflicts with GUI libraries on servers. If you need GUI features, use opencv-python instead.
+import cv2 
 import numpy as np
 from PIL import Image, ImageStat
 from django.core.exceptions import ValidationError
