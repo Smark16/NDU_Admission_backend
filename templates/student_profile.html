@@ -1,0 +1,325 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Applicant Profile - {{ application.full_name }}</title>
+  <style>
+    @page {
+      size: A4;
+      margin: 2.5cm 2cm;
+    }
+
+    body {
+      font-family: 'Times New Roman', Times, serif;
+      font-size: 11pt;
+      line-height: 1.5;
+      color: #1a1a1a;
+    }
+
+    .header {
+      text-align: center;
+      margin-bottom: 30px;
+      border-bottom: 3px solid #1a3c0f;
+      padding-bottom: 15px;
+    }
+
+    .logo-title {
+      font-size: 22pt;
+      font-weight: bold;
+      color: #1a3c0f;
+      margin: 0;
+    }
+
+    .sub-title {
+      font-size: 14pt;
+      color: #444;
+      margin: 8px 0 4px 0;
+    }
+
+    .ref-info {
+      font-size: 10pt;
+      color: #555;
+      margin-top: 8px;
+    }
+
+    .content {
+      margin: 30px 0;
+    }
+
+    h2.section-title {
+      color: #1a3c0f;
+      font-size: 14pt;
+      border-bottom: 2px solid #e0e0e0;
+      padding-bottom: 6px;
+      margin: 30px 0 15px 0;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+    }
+
+    .info-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px 24px;
+    }
+
+    .info-item {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .label {
+      font-size: 9pt;
+      color: #666;
+      font-weight: bold;
+      margin-bottom: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .value {
+      font-size: 11pt;
+      font-weight: 500;
+      color: #222;
+    }
+
+    .status-pill {
+      display: inline-block;
+      padding: 6px 14px;
+      border-radius: 20px;
+      font-size: 10pt;
+      font-weight: bold;
+      color: white;
+    }
+
+    .status-admitted { background-color: #2e7d32; }
+    .status-pending   { background-color: #f57c00; }
+    .status-rejected  { background-color: #c62828; }
+
+    .fee-status {
+      font-weight: bold;
+      padding: 2px 8px;
+      border-radius: 4px;
+    }
+
+    .fee-paid    { background-color: #4caf50; color: white; }
+    .fee-unpaid  { background-color: #e53935; color: white; }
+
+    table.subject-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 12px;
+    }
+
+    table.subject-table th,
+    table.subject-table td {
+      padding: 8px 10px;
+      border: 1px solid #ddd;
+      text-align: left;
+    }
+
+    table.subject-table th {
+      background-color: #f5f5f5;
+      font-weight: bold;
+      color: #444;
+    }
+
+    .signature-section {
+      margin-top: 60px;
+      display: flex;
+      justify-content: space-between;
+      gap: 40px;
+    }
+
+    .signature-block {
+      flex: 1;
+      text-align: center;
+      border-top: 2px solid #333;
+      padding-top: 50px;
+      position: relative;
+    }
+
+    .signature-block::before {
+      content: "___________________________";
+      position: absolute;
+      top: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-size: 16pt;
+      color: #333;
+    }
+
+    .footer {
+      margin-top: 60px;
+      text-align: center;
+      font-size: 9pt;
+      color: #777;
+      border-top: 1px solid #ddd;
+      padding-top: 15px;
+    }
+
+    .page-number {
+      position: fixed;
+      bottom: 20px;
+      right: 30px;
+      font-size: 9pt;
+      color: #999;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Header -->
+  <div class="header">
+    <h1 class="logo-title">NDEJJE UNIVERSITY</h1>
+    <p class="sub-title">STUDENT APPLICATION LETTER</p>
+    <div class="ref-info">
+      Application Reference: <strong>{{ application.application_reference|default:"N/A" }}</strong>  
+        •  
+      Batch: <strong>{{ application.batch.name }}</strong>  
+        •  
+      Date: <strong>{{ today|date:"d F Y" }}</strong>
+    </div>
+  </div>
+
+  <!-- Content -->
+  <div class="content">
+
+    <!-- Personal Information -->
+    <h2 class="section-title">Personal Details</h2>
+    <div class="info-grid">
+      <div class="info-item">
+        <div class="label">Full Name</div>
+        <div class="value">{{ application.full_name }}</div>
+      </div>
+      <div class="info-item">
+        <div class="label">Date of Birth</div>
+        <div class="value">{{ application.date_of_birth|date:"d/m/Y" }}</div>
+      </div>
+      <div class="info-item">
+        <div class="label">Gender</div>
+        <div class="value">{{ application.gender|title }}</div>
+      </div>
+      <div class="info-item">
+        <div class="label">Nationality</div>
+        <div class="value">{{ application.nationality }}</div>
+      </div>
+      <div class="info-item">
+        <div class="label">Email</div>
+        <div class="value">{{ application.email }}</div>
+      </div>
+      <div class="info-item">
+        <div class="label">Phone</div>
+        <div class="value">{{ application.phone }}</div>
+      </div>
+      <div class="info-item">
+        <div class="label">NIN / Passport No.</div>
+        <div class="value">{{ application.nin|default:application.passport_number|default:"N/A" }}</div>
+      </div>
+      <div class="info-item">
+        <div class="label">Disability Status</div>
+        <div class="value">{{ application.disabled|default:"None" }}</div>
+      </div>
+      <div class="info-item" style="grid-column: 1 / -1;">
+        <div class="label">Address</div>
+        <div class="value">{{ application.address|default:"Not provided" }}</div>
+      </div>
+    </div>
+
+    <!-- Academic Information -->
+    <h2 class="section-title">Academic Qualifications</h2>
+
+    <div style="margin-bottom: 24px;">
+      <strong>O-Level ({{ application.olevel_year }}) – {{ application.olevel_school }}</strong>
+      <table class="subject-table">
+        <thead>
+          <tr>
+            <th>Subject</th>
+            <th>Grade</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for result in olevel_results %}
+            <tr>
+              <td>{{ result.subject.name }}</td>
+              <td>{{ result.grade }}</td>
+            </tr>
+          {% empty %}
+            <tr><td colspan="2" style="text-align:center; color:#888;">No O-Level results recorded</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <div>
+      <strong>A-Level ({{ application.alevel_year }}) – {{ application.alevel_school }} ({{ application.alevel_combination }})</strong>
+      <table class="subject-table">
+        <thead>
+          <tr>
+            <th>Subject</th>
+            <th>Grade</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for result in alevel_results %}
+            <tr>
+              <td>{{ result.subject.name }}</td>
+              <td>{{ result.grade }}</td>
+            </tr>
+          {% empty %}
+            <tr><td colspan="2" style="text-align:center; color:#888;">No A-Level results recorded</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Admission Decision -->
+    <h2 class="section-title">Admission Decision</h2>
+    <div style="background:#f8fafc; padding:20px; border:1px solid #d1e8ff; border-radius:6px; margin:20px 0;">
+      <p style="font-size:13pt; margin:0 0 12px 0; font-weight:bold; color:#1a3c0f;">
+        {% if application.offer_letter_status == 'accepted' %}
+          Congratulations! You have been **successfully admitted** to:
+        {% else %}
+          Your application has been **reviewed** 
+        {% endif %}
+      </p>
+      <!-- <p style="font-size:16pt; margin:12px 0; font-weight:bold; color:#2e7d32; text-align:center;">
+        {{ application.offer_letter_status|title }}
+      </p> -->
+      <p style="font-size:11pt; color:#444; margin-top:16px;">
+        Program: <strong>{{ application.programs.first.name|default:"N/A" }}</strong><br>
+        Campus: <strong>{{ application.campus.name|default:"N/A" }}</strong><br>
+        Academic Level: <strong>{{ application.academic_level.name }}</strong><br>
+        Study Mode: <strong>{{ application.study_mode|title }}</strong>
+      </p>
+    </div>
+
+    <!-- Signature Section -->
+    <div class="signature-section">
+      <div class="signature-block">
+        <div class="label" style="margin-bottom:8px;">Academic Registrar / Authorized Officer</div>
+        <p style="font-size:10pt; color:#555; margin:0 0 40px 0;">
+          On behalf of the Admissions Board, I confirm that the above-named applicant has been fully admitted / registered.
+        </p>
+        <div style="margin-top:60px;">
+          <div style="border-top:2px solid #333; width:70%; margin:0 auto;"></div>
+          <p style="margin:8px 0 0 0; font-size:10pt;">Academic Registrar<br>
+            <span style="color:#777; font-size:9pt;">Date: {{ today|date:"d F Y" }}</span>
+          </p>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Footer -->
+  <div class="footer">
+    <p>Official Document – Confidential – For Admission Purposes Only</p>
+    <p>Generated on {{ today|date:"d F Y" }} • Application Ref: {{ application.application_reference|default:"N/A" }}</p>
+  </div>
+
+  <!-- Page number -->
+  <div class="page-number">Page <span class="pageNumber"></span> of <span class="totalPages"></span></div>
+
+</body>
+</html>

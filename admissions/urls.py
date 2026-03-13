@@ -56,6 +56,7 @@ urlpatterns = [
     path('list_admitted_students',  views.ListAdmittedStudents.as_view()),
     path('delete_admission/<int:pk>/', views.DeleteAdmittedStudent.as_view()),
     path('candidate_admission/<int:admission_id>/', views.CandidateAdmission.as_view()),
+    path('student-profile/pdf/<int:application_id>/', views.DownloadAdmissionPDF.as_view(), name='download_admission_pdf'),
 
     # notifications
     path('list_user_notification', views.ListNotifications.as_view())

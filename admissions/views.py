@@ -23,6 +23,12 @@ from django.db.models import Q
 import logging
 import json
 
+from weasyprint import HTML
+from django.shortcuts import get_object_or_404
+from django.http import HttpResponse
+from django.template.loader import render_to_string
+from datetime import date
+
 logger = logging.getLogger(__name__)
 
 # ===========================applications ===========================================
@@ -710,9 +716,49 @@ class ListNotifications(generics.ListAPIView):
 
         return Response(serializer.data, status=200)
 
+#========================================pdf download=================================================
 
+class DownloadAdmissionPDF(APIView):
+    permission_classes = [IsAuthenticated]
 
+    def get(self, request, application_id):
+        # Get the application – make sure it belongs to the logged-in user or admin
+        application = get_object_or_404(
+            Application,
+            id=application_id,
+            # applicant=request.user  # ← uncomment if only applicant can download own letter
+        )
 
+        # Fetch related data
+        olevel_results = OLevelResult.objects.filter(application=application).select_related('subject')
+        alevel_results = ALevelResult.objects.filter(application=application).select_related('subject')
+
+        # Current date for the letter
+        today = date.today()
+
+        # Render template
+        html_string = render_to_string(
+            'student_profile.html',
+            {
+                'application': application,
+                'olevel_results': olevel_results,
+                'alevel_results': alevel_results,
+                'today': today,
+            },
+            request=request
+        )
+
+        # Generate PDF with WeasyPrint
+        pdf_file = HTML(string=html_string, base_url=request.build_absolute_uri()).write_pdf()
+
+        # Response as downloadable PDF
+        response = HttpResponse(content_type='application/pdf')
+        response['Content-Disposition'] = (
+            f'attachment; filename="Admission_Letter_{application.full_name.replace(" ", "_")}_{application.application_reference or "N-A"}.pdf"'
+        )
+        response.write(pdf_file)
+
+        return response
 
 
 
