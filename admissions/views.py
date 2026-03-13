@@ -15,7 +15,7 @@ from django.core.mail import send_mail
 from django.conf import settings
 from django.db import transaction
 import threading
-from .utils.validate_photo import validate_passport_photo
+# from .utils.validate_photo import validate_passport_photo
 from .utils.email import send_admission_update
 from payments.models import ApplicationPayment
 from django.db.models import Q
@@ -75,7 +75,7 @@ def create_applications(request):
             # application.application_fee_amount = payment.amount
             # application.application_reference = payment.external_reference
             if passport_photo:
-                validate_passport_photo(passport_photo)
+                # validate_passport_photo(passport_photo)
                 application.passport_photo = passport_photo
 
             # Validate & prepare all child objects

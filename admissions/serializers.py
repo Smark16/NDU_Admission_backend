@@ -176,6 +176,7 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
             'batch',
             'admission_date',
             'is_registered',
+            'application',
             'is_admitted'
         ]
 
