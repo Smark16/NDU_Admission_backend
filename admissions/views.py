@@ -35,10 +35,28 @@ logger = logging.getLogger(__name__)
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def create_applications(request):
+    MAX_FILE_SIZE = settings.FILE_UPLOAD_MAX_MEMORY_SIZE
+    
+    for file_obj in request.FILES.getlist('documents', []):
+        if file_obj.size > MAX_FILE_SIZE:
+            return Response(
+                {"detail": f"Each document must be ≤ 10 MB. '{file_obj.name}' is too large ({file_obj.size / (1024*1024):.1f} MB)."},
+                    status=400
+                ) 
+                      
+    if 'passport_photo' in request.FILES:
+            photo = request.FILES['passport_photo']
+            if photo.size > MAX_FILE_SIZE:
+                return Response(
+                    {"detail": f"Passport photo must be ≤ 10 MB. '{photo.name}' is too large ({photo.size / (1024*1024):.1f} MB)."},
+                        status=400
+                )          
+            
     with transaction.atomic():
         try:
             data = request.data.copy()
             files = request.FILES
+
             # ext_ref = request.data.get("external_reference")
 
             # if not ext_ref:
@@ -60,6 +78,7 @@ def create_applications(request):
             #         status=400
             #     )
 
+
             # Extract everything
             doc_files = files.getlist("documents")
             doc_types = request.data.getlist("document_types", [])
@@ -80,6 +99,7 @@ def create_applications(request):
             # application.application_fee_paid = True
             # application.application_fee_amount = payment.amount
             # application.application_reference = payment.external_reference
+
             if passport_photo:
                 # validate_passport_photo(passport_photo)
                 application.passport_photo = passport_photo
