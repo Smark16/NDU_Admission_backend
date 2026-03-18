@@ -8,7 +8,7 @@ from django.conf import settings
 class SchoolPayClient:
     def __init__(self):
         self.school_code = settings.SCHOOL_PAY_CODE  
-        self.password = "1cS\J9V876'i"
+        self.password = settings.SCHOOL_PAY_PASSWORD
 
         print('code', self.school_code, 'password', self.password)
 
