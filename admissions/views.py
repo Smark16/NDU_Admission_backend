@@ -712,7 +712,7 @@ class AdmitStudent(generics.CreateAPIView):
                             f"You have been offered admission to study:\n"
                             f"• Program: {admission.admitted_program.name}\n"
                             f"• Campus: {admission.admitted_campus.name}\n"
-                            f"• Study Mode: {application.study_mode}\n"
+                            f"• Study Mode: {admission.study_mode}\n"
                             f"• Batch: {admission.admitted_batch.name} ({admission.admitted_batch.academic_year})\n\n"
                             f"Your provisional admission letter will be sent shortly.\n\n"
                             f"We look forward to welcoming you to the Ndejje University family!\n\n"
@@ -869,6 +869,7 @@ class DownloadAdmissionPDF(APIView):
         response.write(pdf_file)
 
         return response
+
 
 
 

@@ -205,6 +205,7 @@ class ApplicationDocument(models.Model):
 class AdmittedStudent(models.Model):
     application = models.OneToOneField(Application, on_delete=models.CASCADE, related_name='admission')
     student_id = models.CharField(max_length=50, unique=True)
+    study_mode = models.CharField(max_length=5)
     reg_no = models.CharField(max_length=100, unique=True)
     admitted_program = models.ForeignKey(Program, on_delete=models.CASCADE)
     admitted_batch = models.ForeignKey(Batch, on_delete=models.CASCADE, related_name='admitted_students', null=True, blank=True)

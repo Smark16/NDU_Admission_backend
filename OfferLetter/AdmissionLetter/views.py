@@ -219,7 +219,7 @@ def send_offer_letter(request, applicant_id):
         "min_years": admission.admitted_program.max_years,
         "max_years":admission.admitted_program.min_years,
         "campus": admission.admitted_campus,
-        "study_mode":applicant.study_mode
+        "study_mode":admission.study_mode
     }
 
     # 3. Render DOCX bytes (Synchronous and fast)
