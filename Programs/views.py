@@ -7,16 +7,14 @@ from rest_framework.permissions import *
 from rest_framework.response import Response
 from .serializers import *
 from rest_framework.parsers import MultiPartParser, FormParser
-from audit.utils import log_audit_event
 import pandas as pd
-from thefuzz import process, fuzz
 from django.db import transaction
 from django.utils import timezone
-from django.core.exceptions import ValidationError
 from admissions.models import Faculty, AcademicLevel
 from accounts.models import Campus
 from .utils.excel import create_workbook
 from django.http import HttpResponse
+from django.utils.timezone import localtime
 
 # Create your views here.
 
@@ -360,3 +358,89 @@ class HandleBulkUpload(generics.CreateAPIView):
                 "error": "Server error during upload",
                 "details": str(e)
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+# ===========================================================Download Excel sheet===============================
+class handleProgramExport(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+         qs = (
+              Program.objects.select_related('faculty','academic_level').prefetch_related('campuses')
+         )
+
+         headers = [
+            "ID", "PROGRAM NAME","SHORT FORM","CODE", "FACULTY","ACADEMIC_LEVEL",
+            "CAMPUSES","MIN YEARS","MAX YEARS","STATUS", "CREATED AT"
+        ]
+
+         rows = []
+
+         for program in qs.iterator(chunk_size=1000):
+            campuses_str = ", ".join(
+                campus.name for campus in program.campuses.all()
+            ) or "—"
+            rows.append([
+                   program.id,
+                   program.name,
+                   program.short_form,
+                   program.code,
+                   program.faculty.name,
+                   program.academic_level.name,
+                   campuses_str,
+                   program.min_years,
+                   program.max_years,
+                   program.is_active,
+                   localtime(program.created_at).replace(tzinfo=None),
+              ])
+
+         wb = create_workbook(headers, rows, sheet_name="Intake Programs")
+
+         now = timezone.localtime(timezone.now())
+         date_str = now.strftime("%Y-%m-%d")
+
+         response = HttpResponse(
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+         )
+         response["Content-Disposition"] = (
+            f'attachment; filename="intake_programs_{date_str}.xlsx"'
+        )
+         wb.save(response)
+         return response
+
+# ===========================Preview Programs============================================
+class PreviewProgramsFromCSV(APIView):
+    parser_classes = [MultiPartParser]
+
+    def post(self, request):
+        file = request.FILES.get("file")
+
+        if not file:
+            return Response({"error": "No file uploaded"}, status=400)
+
+        file_name = file.name.lower()
+
+        try:
+            if file_name.endswith(".xlsx"):
+                df = pd.read_excel(file, engine="openpyxl")
+            else:
+                df = pd.read_csv(file, sep=None, engine="python")
+
+            df.columns = df.columns.str.strip().str.upper()
+
+            if "ID" not in df.columns:
+                return Response({"error": "ID column required"}, status=400)
+
+            ids = df["ID"].dropna().astype(int).tolist()
+
+            programs = Program.objects.filter(id__in=ids)
+
+            return Response({
+                "programs": ProgramSerializer(programs, many=True).data,
+                "count": programs.count()
+            })
+
+        except Exception as e:
+            return Response({
+                "error": "Failed to process file",
+                "details": str(e)
+            }, status=500)

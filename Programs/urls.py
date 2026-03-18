@@ -9,5 +9,9 @@ urlpatterns = [
     path('delete_program/<int:pk>', DeleteProgram.as_view()),
     path('bulk_upload', HandleBulkUpload.as_view()),
     path('change_status/<int:pk>', ChangeProgramStatus.as_view()),
-    path("download_program_sheet", ExportProgramTemplateView.as_view())
+    path("download_program_sheet", ExportProgramTemplateView.as_view()),
+
+    # preview programs
+    path('export_program_data', handleProgramExport.as_view()),
+    path("preview_programs", PreviewProgramsFromCSV.as_view())
 ]

@@ -15,6 +15,9 @@ from .models import *
 
 from audit.utils import log_audit_event
 
+# caching
+from django.core.cache import cache
+
 # login view
 class ObtainTokenView(TokenObtainPairView):
     serializer_class = ObtainSerializer
@@ -178,10 +181,29 @@ class CreateCampus(generics.CreateAPIView):
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
 # list campus
+
 class ListCampus(generics.ListAPIView):
     queryset = Campus.objects.all()
     serializer_class = CampusSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+    def get(self, request, *args, **kwargs):
+        cache_key = 'all_campuses_list'
+
+        # Try cache first
+        cached_data = cache.get(cache_key)
+        if cached_data is not None:
+            return Response(cached_data)
+
+        # Get fresh data
+        queryset = self.get_queryset()
+        serializer = self.get_serializer(queryset, many=True)
+        data = serializer.data
+
+        # Cache for 24 hours (86,400 seconds)
+        cache.set(cache_key, data, timeout=60 * 60 * 24)
+
+        return Response(data)
 
 # edit campus
 class EditCampus(generics.UpdateAPIView):

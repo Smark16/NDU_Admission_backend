@@ -89,6 +89,17 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'ndu_portal.wsgi.application'
 
+# caching
+CACHES = {
+    "default": {
+        "BACKEND": "django_redis.cache.RedisCache",
+        "LOCATION": "redis://127.0.0.1:6379/1",
+        "OPTIONS": {
+            "CLIENT_CLASS": "django_redis.client.DefaultClient",
+        }
+    }
+}
+
 # Database
 if DEBUG:
     DATABASES = {
@@ -174,7 +185,7 @@ SCHOOL_PAY_PASSWORD = env('SCHOOL_PAY_PASSWORD')
 CSRF_TRUSTED_ORIGINS = [
     'http://localhost:5173',
     'https://ndu-admission-frontend.onrender.com',
-    'https://ndu-admission-backend.onrender.com'
+    'https://ndu-admission-backend.onrender.com',
     'http://172.17.31.147'
 ]
 

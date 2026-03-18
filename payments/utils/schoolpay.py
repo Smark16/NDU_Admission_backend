@@ -7,9 +7,15 @@ from django.conf import settings
 
 class SchoolPayClient:
     def __init__(self):
-        self.school_code = settings.SCHOOL_PAY_CODE  # Assuming you have SCHOOL_PAY_CODE in settings
-        self.password = settings.SCHOOL_PAY_PASSWORD
-        self.base_url = "https://schoolpay.co.ug/AndroidRS/AdhocPayments"
+        self.school_code = settings.SCHOOL_PAY_CODE  
+        self.password = "1cS\J9V876'i"
+
+        print('code', self.school_code, 'password', self.password)
+
+        if settings.DEBUG:
+          self.base_url = "https://schoolpaytest.servicecops.com/uatpaymentapi/AndroidRS/AdhocPayments"
+        else:
+           self.base_url = "https://schoolpay.co.ug/paymentapi/AndroidRS/AdhocPayments"
         
         # Session with retries (3 attempts, backoff)
         self.session = requests.Session()
@@ -19,7 +25,7 @@ class SchoolPayClient:
 
     def generate_hash(self, reference):
         raw_string = f"{self.school_code}{reference}{self.password}"
-        return hashlib.md5(raw_string.encode()).hexdigest().upper()  # Uppercase as per docs (assuming)
+        return hashlib.md5(raw_string.encode()).hexdigest().upper()  
 
     def request_payment(self, amount, phone, ext_ref, first_name, last_name, reason):
         hash_val = self.generate_hash(ext_ref)
@@ -28,7 +34,7 @@ class SchoolPayClient:
         payload = {
             "amount": float(amount),
             "externalReference": ext_ref,
-            "phoneNumber": phone,  # 077... or 25677...
+            "phoneNumber": phone,  
             "firstName": first_name,
             "lastName": last_name,
             "reason": reason
@@ -39,11 +45,10 @@ class SchoolPayClient:
             response.raise_for_status()
             return response.json()
         except requests.RequestException as e:
-            # Log error (use logging module)
             raise ValueError(f"Payment request failed: {str(e)}")
 
     def check_status(self, payment_ref):
-        hash_val = self.generate_hash(payment_ref)  # Identifying ref = payment_ref for Check
+        hash_val = self.generate_hash(payment_ref) 
         url = f"{self.base_url}/Check/{self.school_code}/{hash_val}/{payment_ref}"
         
         try:

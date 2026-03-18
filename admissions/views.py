@@ -29,6 +29,9 @@ from django.http import HttpResponse
 from django.template.loader import render_to_string
 from datetime import date
 
+# caching
+from django.core.cache import cache
+
 logger = logging.getLogger(__name__)
 
 # ===========================applications ===========================================
@@ -261,6 +264,24 @@ class ListOlevelSubjects(generics.ListAPIView):
     serializer_class = OlevelSubjectSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
+    def get(self, request, *args, **kwargs):
+        cache_key = 'all_olevel_subjects_list'
+
+        # Try cache first
+        cached_data = cache.get(cache_key)
+        if cached_data is not None:
+            return Response(cached_data)
+
+        # Get fresh data
+        queryset = self.get_queryset()
+        serializer = self.get_serializer(queryset, many=True)
+        data = serializer.data
+
+        # Cache for 24 hours (86,400 seconds)
+        cache.set(cache_key, data, timeout=60 * 60 * 24)
+
+        return Response(data)
+
 class EditOlevelSubjecgts(generics.UpdateAPIView):
     queryset = OLevelSubject.objects.all()
     serializer_class = OlevelSubjectSerializer
@@ -291,10 +312,29 @@ class CreateAlevelSubjects(generics.CreateAPIView):
     serializer_class = AlevelSubjectSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
+
 class ListAlevelSubjects(generics.ListAPIView):
     queryset = ALevelSubject.objects.all()
     serializer_class = AlevelSubjectSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+    def get(self, request, *args, **kwargs):
+        cache_key = 'all_alevel_subjects_list'
+
+        # Try cache first
+        cached_data = cache.get(cache_key)
+        if cached_data is not None:
+            return Response(cached_data)
+
+        # Get fresh data
+        queryset = self.get_queryset()
+        serializer = self.get_serializer(queryset, many=True)
+        data = serializer.data
+
+        # Cache for 24 hours (86,400 seconds)
+        cache.set(cache_key, data, timeout=60 * 60 * 24)
+
+        return Response(data)
 
 class EditAlevelSubjecgts(generics.UpdateAPIView):
     queryset = ALevelSubject.objects.all()
@@ -362,23 +402,55 @@ class DeleteBatch(generics.RetrieveDestroyAPIView):
     
 # get active batch
 class GetActiveApplicationBatch(generics.ListAPIView):
-    queryset = Batch.objects.prefetch_related('programs', 'programs__campuses').select_related('created_by')
-    serializer_class = BatchSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    queryset = Batch.objects.all()
+    serializer_class = BatchSerializer
 
     def get(self, request):
+        now = timezone.now()
+
+        # Get current version (fallback to 0 if missing)
+        version = cache.get('active_batch_version', 0)
+
+        cache_key = f'active_batch_{version}'
+
+        # Try cache first
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return Response(cached, status=status.HTTP_200_OK)
+
         try:
-            now = timezone.now()
-            batch = Batch.objects.prefetch_related('programs', 'programs__campuses').select_related('created_by').get(
-                application_start_date__lte=now,  application_end_date__gte=now, is_active=True
+            # Optimized query
+            batch = (
+                Batch.objects
+                .select_related('created_by')
+                .prefetch_related('programs', 'programs__campuses')
+                .get(
+                    application_start_date__lte=now,
+                    application_end_date__gte=now,
+                    is_active=True
                 )
-            serializer = self.serializer_class(batch)
-            return Response(serializer.data, status=200)
+            )
+
+            serializer = self.get_serializer(batch)
+            data = serializer.data
+
+            # Cache for 24 hours
+            cache.set(cache_key, data, timeout=60 * 60 * 24)
+
+            return Response(data, status=status.HTTP_200_OK)
+
+        except Batch.DoesNotExist:
+            return Response({
+                "detail": "No active application batch found",
+                "is_active": False
+            }, status=status.HTTP_404_NOT_FOUND)
+
         except Exception as e:
             return Response({
-                "detail":str(e),
-                "is_active":False
-            }, status=400)
+                "detail": str(e),
+                "is_active": False
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     
 # =========================================================Applicant Dashboard===============================
@@ -499,6 +571,24 @@ class ListAcademicLevel(generics.ListAPIView):
     queryset = AcademicLevel.objects.filter(is_active=True)
     serializer_class = AcademicLevelSerializer
     permission_classes = [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        cache_key = 'active_academic_levels_list'
+
+        # Try cache first
+        cached_data = cache.get(cache_key)
+        if cached_data is not None:
+            return Response(cached_data)
+
+        # Get fresh data
+        queryset = self.get_queryset()
+        serializer = self.get_serializer(queryset, many=True)
+        data = serializer.data
+
+        # Cache for 24 hours (86,400 seconds)
+        cache.set(cache_key, data, timeout=60 * 60 * 24)
+
+        return Response(data)
 
 # edit level
 class UpdateAcademicLevel(generics.UpdateAPIView):
