@@ -94,7 +94,6 @@ class Application(models.Model):
     campus = models.ForeignKey(Campus, on_delete=models.CASCADE, related_name='applications')
     programs = models.ManyToManyField(Program, related_name='application_programs')
     academic_level = models.ForeignKey(AcademicLevel, on_delete=models.CASCADE)
-    study_mode = models.CharField(max_length=10)
     # Personal Information
     first_name = models.CharField(max_length=100)
     last_name = models.CharField(max_length=100)
