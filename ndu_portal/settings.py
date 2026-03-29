@@ -200,14 +200,14 @@ BACKEND_URL=env('BACKEND_URL')
 
 CSRF_TRUSTED_ORIGINS = [
     'http://localhost:5173',
-    'https://ndu-admission-frontend.onrender.com',
-    'https://ndu-admission-backend.onrender.com',
+    'https://applications.ndu.ac.ug',
+    'https://applications-admin.ndu.ac.ug',
     'http://172.17.31.147'
 ]
 
 CORS_ALLOWED_ORIGINS = [
    'http://localhost:5173',
-   'https://ndu-admission-frontend.onrender.com',
+   'https://applications.ndu.ac.ug',
    'http://172.17.31.147'
 ]
 

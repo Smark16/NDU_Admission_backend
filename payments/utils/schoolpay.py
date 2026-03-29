@@ -8,14 +8,14 @@ from django.conf import settings
 class SchoolPayClient:
     def __init__(self):
         self.school_code = settings.SCHOOL_PAY_CODE  
-        self.password = "1cS\J9V876'i"
+        self.password = settings.SCHOOL_PAY_PASSWORD
 
-        print('code', self.school_code, 'password', self.password)
+        self.base_url = "https://schoolpaytest.servicecops.com/uatpaymentapi/AndroidRS/AdhocPayments"
 
-        if settings.DEBUG:
-          self.base_url = "https://schoolpaytest.servicecops.com/uatpaymentapi/AndroidRS/AdhocPayments"
-        else:
-           self.base_url = "https://schoolpay.co.ug/paymentapi/AndroidRS/AdhocPayments"
+        # if settings.DEBUG:
+        #   self.base_url = "https://schoolpaytest.servicecops.com/uatpaymentapi/AndroidRS/AdhocPayments"
+        # else:
+        #    self.base_url = "https://schoolpay.co.ug/paymentapi/AndroidRS/AdhocPayments"
         
         # Session with retries (3 attempts, backoff)
         self.session = requests.Session()
