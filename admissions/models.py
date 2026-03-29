@@ -125,10 +125,10 @@ class Application(models.Model):
     alevel_combination = models.CharField(max_length=5)
     
     # Additional Qualifications
-    additional_qualification_institution = models.CharField(max_length=200, blank=True, help_text="Institution Name")
-    additional_qualification_type = models.CharField(max_length=20, blank=True)
-    additional_qualification_year = models.PositiveIntegerField(blank=True, null=True, help_text="Award Year")
-    class_of_award = models.CharField(max_length=200, blank=True, null=True)
+    # additional_qualification_institution = models.CharField(max_length=200, blank=True, help_text="Institution Name")
+    # additional_qualification_type = models.CharField(max_length=20, blank=True)
+    # additional_qualification_year = models.PositiveIntegerField(blank=True, null=True, help_text="Award Year")
+    # class_of_award = models.CharField(max_length=200, blank=True, null=True)
 
     # Document uploads
     passport_photo = models.ImageField(upload_to='passport_photos/')
@@ -156,6 +156,12 @@ class Application(models.Model):
     class Meta:
         ordering = ['-created_at']
 
+        indexes = [
+            models.Index(fields=['status', 'created_at']),
+            models.Index(fields=['applicant']),
+            models.Index(fields=['batch'])
+        ]
+
     def __str__(self):
         return f"{self.first_name} {self.last_name}"
 
@@ -174,6 +180,10 @@ class OLevelResult(models.Model):
         verbose_name = "O-Level Result"
         verbose_name_plural = "O-Level Results"
 
+        indexes = [
+            models.Index(fields=['application'])
+        ]
+
     def __str__(self):
         return f"{self.application.full_name} - {self.subject.name}: {self.grade}"
 
@@ -187,6 +197,10 @@ class ALevelResult(models.Model):
         unique_together = ['application', 'subject']
         verbose_name = "A-Level Result"
         verbose_name_plural = "A-Level Results"
+
+        indexes = [
+            models.Index(fields=['application'])
+        ]
 
     def __str__(self):
         return f"{self.application.full_name} - {self.subject.name}: {self.grade}"
@@ -202,13 +216,24 @@ class ApplicationDocument(models.Model):
     class Meta:
         ordering = ['-uploaded_at']
 
+        indexes = [
+            models.Index(fields=['application'])
+        ]
+
+class AdditionalQualifications(models.Model):
+    application = models.ForeignKey(Application, on_delete=models.CASCADE, related_name='additionals', null=True, blank=True)
+    additional_qualification_institution = models.CharField(max_length=200, blank=True, help_text="Institution Name")
+    additional_qualification_type = models.CharField(max_length=20, blank=True)
+    additional_qualification_year = models.PositiveIntegerField(blank=True, null=True, help_text="Award Year")
+    class_of_award = models.CharField(max_length=200, blank=True, null=True)
+
 class AdmittedStudent(models.Model):
     application = models.OneToOneField(Application, on_delete=models.CASCADE, related_name='admission')
     student_id = models.CharField(max_length=50, unique=True)
     study_mode = models.CharField(max_length=5)
     reg_no = models.CharField(max_length=100, unique=True)
     admitted_program = models.ForeignKey(Program, on_delete=models.CASCADE)
-    admitted_batch = models.ForeignKey(Batch, on_delete=models.CASCADE, related_name='admitted_students', null=True, blank=True)
+    admitted_batch = models.ForeignKey(Batch, on_delete=models.CASCADE, related_name='admitted_students')
     admitted_campus = models.ForeignKey(Campus, on_delete=models.CASCADE, related_name='admitted_students')
     
     # Admission information
@@ -232,6 +257,13 @@ class AdmittedStudent(models.Model):
         ordering = ['-admission_date']
         verbose_name = "Admitted Student"
         verbose_name_plural = "Admitted Students"
+ 
+        indexes = [
+            models.Index(fields=['application', 'created_at']),
+            models.Index(fields=['is_registered']),
+            models.Index(fields=['admitted_batch', 'is_admitted']),
+            models.Index(fields=['is_admitted'])
+        ]
     
     def __str__(self):
         return f"{self.application.full_name} - {self.student_id}"
@@ -257,6 +289,10 @@ class PortalNotification(models.Model):
 
     class Meta:
         ordering = ['-created_at']
+
+        indexes = [
+            models.Index(fields=['recipient']),
+        ]
 
     def __str__(self):
         return f"{self.recipient.email} - {self.title}"

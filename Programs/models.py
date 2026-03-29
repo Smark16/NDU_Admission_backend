@@ -18,6 +18,11 @@ class Program(models.Model):
 
     class Meta:
         ordering = ['name']
+    
+        indexes = [
+                models.Index(fields=['code']),
+                models.Index(fields=['name']),
+            ]
 
     def __str__(self):
         return f"{self.name}"

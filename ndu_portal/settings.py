@@ -3,6 +3,7 @@ from pathlib import Path
 from decouple import config
 from datetime import timedelta
 from .env import BASE_DIR, env
+from celery.schedules import crontab
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 env.read_env(os.path.join(BASE_DIR, '.env'))
@@ -169,18 +170,33 @@ FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024  # 10MB
 DATA_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024  # 10MB
 FILE_UPLOAD_PERMISSIONS = 0o644
 
-# Email Configuration
-EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-EMAIL_HOST = 'smtp.gmail.com'        
-EMAIL_PORT = 587
-EMAIL_USE_TLS = True
-EMAIL_HOST_USER = 'agrilink143@gmail.com'
-EMAIL_HOST_PASSWORD = 'mmxj qbjf xpxn ceez' 
-DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
+# Celery Configuration
+CELERY_BROKER_URL = "redis://127.0.0.1:6379/0"   
+CELERY_RESULT_BACKEND = "redis://127.0.0.1:6379/0" 
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_SERIALIZER = "json"
+CELERY_TIMEZONE = "Africa/Kampala"
+
+CELERY_BEAT_SCHEDULE = {
+    "process-delayed-payments-every-fiveminutes": {
+        "task": "payments.tasks.auto_process_delayed_payments",
+        "schedule": crontab(minute="*/5"),
+    }
+}
 
 # school pay configuration
 SCHOOL_PAY_CODE = env('SCHOOL_PAY_CODE')
 SCHOOL_PAY_PASSWORD = env('SCHOOL_PAY_PASSWORD')
+
+# send grid
+SENDGRID_API_KEY=env('SENDGRID_API_KEY')
+
+# login url
+LOGIN_URL=env('LOGIN_URL')
+
+# backend url
+BACKEND_URL=env('BACKEND_URL')
 
 CSRF_TRUSTED_ORIGINS = [
     'http://localhost:5173',

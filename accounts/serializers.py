@@ -3,8 +3,10 @@ from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from django.contrib.auth.models import Group, Permission
 from django.contrib.auth.password_validation import validate_password
 from .models import User, Campus, Profile
-from django.core.mail import send_mail
+from .tasks import celery_send_account_email
 from django.conf import settings
+from django.utils.http import urlsafe_base64_decode
+from django.contrib.auth.tokens import default_token_generator
 
 # serializers
 
@@ -40,6 +42,7 @@ class ObtainSerializer(TokenObtainPairSerializer):
         token['phone'] = user.phone
         token['email'] = user.email 
         token['username'] = user.username
+        token['permissions'] = list(user.get_all_permissions()) 
 
         return token
     
@@ -100,7 +103,7 @@ class RegisterSerializer(serializers.ModelSerializer):
 
         # Assign campuses (ManyToMany field)
         if campuses:
-            user.campuses.set(campuses)  # ✅ correct way for ManyToMany
+            user.campuses.set(campuses) 
 
         user.set_password(password)
         user.save()
@@ -114,23 +117,41 @@ class RegisterSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({'role': f'Role "{role_name}" does not exist.'})
 
         # Send email
-        # subject = "Account Created Successfully"
-        # message = (
-        #     f"Hello {user.first_name or user.email},\n\n"
-        #     f"Your account has been created successfully.\n\n"
-        #     f"Email: {user.email}\n"
-        #     f"Password: {password}\n\n"
-        #     f"Please log in and change your password."
-        # )
+        celery_send_account_email.delay(user.id, password)
 
-        # send_mail(
-        #     subject,
-        #     message,
-        #     settings.DEFAULT_FROM_EMAIL,
-        #     [user.email],
-        #     fail_silently=False,
-        # )
+        return user
 
+#login password reset
+class ResetPasswordSerializer(serializers.Serializer):
+    password = serializers.CharField(write_only=True, required=True, validators=[validate_password])
+    password2 = serializers.CharField(write_only=True, required=True)
+    uidb64 = serializers.CharField(write_only=True, required=True) 
+    token = serializers.CharField(write_only=True, required=True)  
+
+    class Meta:
+        model = User
+        fields = ('password', 'password2', 'uidb64', 'token')
+
+    def validate(self, attrs):
+        # Check if the new password and its confirmation match
+        if attrs['password'] != attrs['password2']:
+            raise serializers.ValidationError({"password": "Password fields didn't match."})
+
+        # Decode user ID from uidb64 and check token validity
+        try:
+            uid = urlsafe_base64_decode(attrs['uidb64']).decode()
+            user = User.objects.get(pk=uid)
+        except (TypeError, ValueError, OverflowError, User.DoesNotExist):
+            raise serializers.ValidationError({"uidb64": "Invalid user."})
+
+        attrs['user'] = user  
+        return attrs
+
+    def save(self, **kwargs):
+        # Reset the user's password
+        user = self.validated_data['user']
+        user.set_password(self.validated_data['password'])
+        user.save()
         return user
    
 # list role

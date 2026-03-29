@@ -9,14 +9,10 @@ from .serializers import *
 from rest_framework.parsers import MultiPartParser, FormParser
 from django.utils import timezone
 from rest_framework.decorators import api_view, permission_classes
-from audit.utils import log_audit_event
-from .utils.notification import create_notification
-from django.core.mail import send_mail
 from django.conf import settings
 from django.db import transaction
-import threading
 # from .utils.validate_photo import validate_passport_photo
-from .utils.email import send_admission_update
+from .tasks import celery_send_application_email, celery_application_notification, celery_admission_email, celery_admission_update
 from payments.models import ApplicationPayment
 from django.db.models import Q
 
@@ -60,27 +56,35 @@ def create_applications(request):
             data = request.data.copy()
             files = request.FILES
 
-            # ext_ref = request.data.get("external_reference")
+            ext_ref = request.data.get("external_reference")
 
-            # if not ext_ref:
-            #     return Response(
-            #         {"detail": "Payment reference is required"},
-            #         status=400
-            #     )
+            if not ext_ref:
+                return Response(
+                    {"detail": "Payment reference is required"},
+                    status=400
+                )
 
-            # try:
-            #     payment = ApplicationPayment.objects.select_for_update().get(
-            #         external_reference=ext_ref,
-            #         user=request.user,
-            #         status="PAID",
-            #         application__isnull=True 
-            #     )
-            # except ApplicationPayment.DoesNotExist:
-            #     return Response(
-            #         {"detail": "Invalid, unpaid, or already used payment reference"},
-            #         status=400
-            #     )
+            try:
+                payment = ApplicationPayment.objects.select_for_update().get(
+                    external_reference=ext_ref,
+                    user=request.user,
+                    status="PAID",
+                    application__isnull=True 
+                )
+            except ApplicationPayment.DoesNotExist:
+                return Response(
+                    {"detail": "Invalid, unpaid, or already used payment reference"},
+                    status=400
+                )
 
+            # additional qualifications
+            additional_qualifications = []
+            try:
+                additional_qual_str = request.data.get("additional_qualifications", "[]")
+                if additional_qual_str:
+                    additional_qualifications = json.loads(additional_qual_str)
+            except (json.JSONDecodeError, TypeError):
+                additional_qualifications = []
 
             # Extract everything
             doc_files = files.getlist("documents")
@@ -99,9 +103,9 @@ def create_applications(request):
             application = Application(**serializer.validated_data)
             application.applicant = request.user
             application.status = "submitted"
-            # application.application_fee_paid = True
-            # application.application_fee_amount = payment.amount
-            # application.application_reference = payment.external_reference
+            application.application_fee_paid = True
+            application.application_fee_amount = payment.amount
+            application.application_reference = payment.external_reference
 
             if passport_photo:
                 # validate_passport_photo(passport_photo)
@@ -109,33 +113,90 @@ def create_applications(request):
 
             # Validate & prepare all child objects
 
-            # === O-Level ===
-            olevel_subjects = {s.id: s for s in OLevelSubject.objects.filter(id__in=[o["subject"] for o in olevel_results])}
+            # === O-LEVEL ===
+            olevel_results = json.loads(request.data.get("olevel_results", "[]"))
             olevel_bulk = []
             seen = set()
+
             for item in olevel_results:
-                sid = item["subject"]
+                try:
+                    sid = int(item["subject"])          # ← Convert to integer
+                except (ValueError, TypeError, KeyError):
+                    return Response({"detail": f"Invalid O-Level subject ID: {item.get('subject')}"}, status=400)
+
                 if sid in seen:
                     return Response({"detail": "Duplicate O-Level subject"}, status=400)
                 seen.add(sid)
-                subject = olevel_subjects.get(sid)
-                if not subject:
-                    return Response({f"Invalid O-Level subject: {sid}"}, status=400)
-                olevel_bulk.append(OLevelResult(application=application, subject=subject, grade=item["grade"].upper()))
 
-            # === A-Level ===
-            alevel_subjects = {s.id: s for s in ALevelSubject.objects.filter(id__in=[a["subject"] for a in alevel_results])}
+                # Get subject by ID
+                try:
+                    subject = OLevelSubject.objects.get(id=sid)
+                except OLevelSubject.DoesNotExist:
+                    return Response({"detail": f"Invalid O-Level subject ID: {sid}"}, status=400)
+
+                olevel_bulk.append(
+                    OLevelResult(
+                        application=application, 
+                        subject=subject, 
+                        grade=item["grade"].upper()
+                    )
+                )
+
+            # === A-LEVEL ===
+            alevel_results = json.loads(request.data.get("alevel_results", "[]"))
             alevel_bulk = []
             seen = set()
+
             for item in alevel_results:
-                sid = item["subject"]
+                try:
+                    sid = int(item["subject"])          # ← Convert to integer
+                except (ValueError, TypeError, KeyError):
+                    return Response({"detail": f"Invalid A-Level subject ID: {item.get('subject')}"}, status=400)
+
                 if sid in seen:
                     return Response({"detail": "Duplicate A-Level subject"}, status=400)
                 seen.add(sid)
-                subject = alevel_subjects.get(sid)
-                if not subject:
-                    return Response({f"Invalid A-Level subject: {sid}"}, status=400)
-                alevel_bulk.append(ALevelResult(application=application, subject=subject, grade=item["grade"].upper()))
+
+                try:
+                    subject = ALevelSubject.objects.get(id=sid)
+                except ALevelSubject.DoesNotExist:
+                    return Response({"detail": f"Invalid A-Level subject ID: {sid}"}, status=400)
+
+                alevel_bulk.append(
+                    ALevelResult(
+                        application=application, 
+                        subject=subject, 
+                        grade=item["grade"].upper()
+                    )
+                )
+
+            # === O-Level ===
+            # olevel_subjects = {s.id: s for s in OLevelSubject.objects.filter(id__in=[o["subject"] for o in olevel_results])}
+            # olevel_bulk = []
+            # seen = set()
+            # for item in olevel_results:
+            #     sid = item["subject"]
+            #     if sid in seen:
+            #         return Response({"detail": "Duplicate O-Level subject"}, status=400)
+            #     seen.add(sid)
+            #     subject = olevel_subjects.get(sid)
+            #     if not subject:
+            #         return Response({"detail":f"Invalid O-Level subject: {sid}"}, status=400)
+            #     olevel_bulk.append(OLevelResult(application=application, subject=subject, grade=item["grade"].upper()))
+
+            # # === A-Level ===
+            # alevel_subjects = {s.id: s for s in ALevelSubject.objects.filter(id__in=[a["subject"] for a in alevel_results])}
+            # alevel_bulk = []
+            # seen = set()
+            # for item in alevel_results:
+            #     sid = item["subject"]
+            #     if sid in seen:
+            #         return Response({"detail": "Duplicate A-Level subject"}, status=400)
+            #     seen.add(sid)
+            #     subject = alevel_subjects.get(sid)
+            #     if not subject:
+            #         return Response({f"Invalid A-Level subject: {sid}"}, status=400)
+            #     alevel_bulk.append(ALevelResult(application=application, subject=subject, grade=item["grade"].upper()))
 
             # === Documents ===
             document_objs = []
@@ -150,8 +211,8 @@ def create_applications(request):
 
             # NOW SAVE EVERYTHING
             application.save() 
-            # payment.application = application
-            # payment.save(update_fields=["application"]) 
+            payment.application = application
+            payment.save(update_fields=["application"]) 
 
             # save M-2-M field
             if programs_data:
@@ -161,24 +222,24 @@ def create_applications(request):
             ALevelResult.objects.bulk_create(alevel_bulk, batch_size=50)
             ApplicationDocument.objects.bulk_create(document_objs, batch_size=50)
 
-            # === Success: Send email & notification ===
-            threading.Thread(
-                target=send_mail,
-                kwargs={
-                    "subject": "Application Submitted Successfully!",
-                    "message": f"Dear {application.first_name} {application.last_name},\n\n"
-                               f"Your application has been successfully submitted to Ndejje University.\n"
-                               f"Application ID: {application.id}\n"
-                               f"Submitted on: {application.created_at.strftime('%d %B %Y')}\n\n"
-                               f"Thank you,\nNdejje University Admissions Team",
-                    "from_email": settings.DEFAULT_FROM_EMAIL,
-                    "recipient_list": [application.email],
-                    "fail_silently": True,
-                },
-                daemon=True
-            ).start()
+            # === NEW: Save Multiple Additional Qualifications ===
+            if additional_qualifications:
+                qual_bulk = []
+                for qual in additional_qualifications:
+                    if qual.get('institution'):  # Only save if institution is provided
+                        qual_bulk.append(AdditionalQualifications(
+                            application=application,
+                            additional_qualification_institution=qual.get('institution', ''),
+                            additional_qualification_type=qual.get('type', ''),
+                            additional_qualification_year=qual.get('year', ''),
+                            class_of_award=qual.get('class_of_award', '')
+                        ))
+                if qual_bulk:
+                    AdditionalQualifications.objects.bulk_create(qual_bulk, batch_size=20)
 
-            create_notification(request.user, "Application Submitted", "Your application has been successfully submitted.")
+            # === Success: Send email & notification ===
+            celery_send_application_email.delay(application.id)
+            celery_application_notification.delay(request.user.id,"Application Submitted","Your application was successfully submitted")
 
             return Response({
                 "message": "Application submitted successfully!",
@@ -407,7 +468,7 @@ class GetActiveApplicationBatch(generics.ListAPIView):
     serializer_class = BatchSerializer
 
     def get(self, request):
-        now = timezone.now()
+        now = timezone.now().date()
 
         # Get current version (fallback to 0 if missing)
         version = cache.get('active_batch_version', 0)
@@ -452,7 +513,57 @@ class GetActiveApplicationBatch(generics.ListAPIView):
                 "is_active": False
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-    
+# active admission batch
+class GetActiveAdmissionBatch(generics.RetrieveAPIView):
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    queryset = Batch.objects.all()
+    serializer_class = BatchSerializer
+
+    def get(self, request):
+        now = timezone.now().date()
+
+        try:
+            # Optimized query
+            batch = (
+                Batch.objects
+                .select_related('created_by')
+                .prefetch_related('programs', 'programs__campuses')
+                .filter(is_active=True)
+                .filter(
+                    Q(application_start_date__lte=now, application_end_date__gte=now) |
+                    Q(admission_start_date__lte=now, admission_end_date__gte=now)
+                ).first() 
+            )
+
+            if not batch:
+                return Response({
+                    "detail": "No active admission batch found",
+                    "is_active": False
+                }, status=status.HTTP_404_NOT_FOUND)
+
+            serializer = self.get_serializer(batch)
+            data = serializer.data
+
+            return Response(data, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            return Response({
+                "detail": str(e),
+                "is_active": False
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+#get intake options
+class IntakeOptions(APIView):
+    def get(self, request):
+        intakes = Batch.objects.values_list('name', 'academic_year').order_by('-created_at')
+
+        data = [
+            f"{name} ({year})"
+            for name, year in intakes
+        ]
+
+        return Response(data)
+  
 # =========================================================Applicant Dashboard===============================
 class ApplicantDashboard(APIView):
     permission_classes = [IsAuthenticated]
@@ -513,12 +624,15 @@ def application_detail(request, application_id):
     alevel_results = ALevelResult.objects.filter(application=application).select_related('subject')
     documents = ApplicationDocument.objects.filter(application=application)
 
+    qualifications = AdditionalQualifications.objects.filter(application=application).select_related('application')
+
     # 3. Serialize everything
     data = {
         'application': ApplicationSerializer(application).data,
         'olevel_results': OlevelResultSerializer(olevel_results, many=True).data,
         'alevel_results': AlevelResultSerializer(alevel_results, many=True).data,
         'documents':  DocumentSerializer(documents, many=True).data,
+        "qualifications":AdditionalQualifficationsSerializer(qualifications, many=True).data
     }
 
     return Response(data, status=status.HTTP_200_OK)
@@ -547,16 +661,17 @@ class ReviewApplication(APIView):
         olevel_results = OLevelResult.objects.filter(application=application).select_related('subject')
         alevel_results = ALevelResult.objects.filter(application=application).select_related('subject')
         documents = ApplicationDocument.objects.filter(application=application).select_related('application')
+        qualifications = AdditionalQualifications.objects.filter(application=application).select_related('application')
 
         data = {
             'application': ApplicationDetailSerializer(application).data,
             'olevel_results': ListOlevelResultSerializer(olevel_results, many=True).data,
             'alevel_results': ListAlevelResultSerializer(alevel_results, many=True).data,
             'documents': DocumentSerializer(documents, many=True).data,
+            "qualifications":AdditionalQualifficationsSerializer(qualifications, many=True).data
         }
 
         return Response(data)
-
 
 # ==================================================Academic Levels==========================================
 
@@ -698,48 +813,9 @@ class AdmitStudent(generics.CreateAPIView):
                 # Update status
                 Application.objects.filter(id=application.id).update(status="accepted")
 
-                # ======================================================================
-                # 🔥 ASYNC EMAIL USING SAME STYLE YOU REQUESTED
-                # ======================================================================
-                threading.Thread(
-                    target=send_mail,
-                    kwargs={
-                        "subject": "Congratulations! You have been admitted to Ndejje University",
-                        "message": (
-                             f"Dear {application.first_name} {application.last_name},\n\n"
-                            f"CONGRATULATIONS!\n\n"
-                            f"We are delighted to inform you that your application has been **successfully reviewed and ACCEPTED**.\n\n"
-                            f"You have been offered admission to study:\n"
-                            f"• Program: {admission.admitted_program.name}\n"
-                            f"• Campus: {admission.admitted_campus.name}\n"
-                            f"• Study Mode: {admission.study_mode}\n"
-                            f"• Batch: {admission.admitted_batch.name} ({admission.admitted_batch.academic_year})\n\n"
-                            f"Your provisional admission letter will be sent shortly.\n\n"
-                            f"We look forward to welcoming you to the Ndejje University family!\n\n"
-                            f"Warm regards,\n"
-                            f"Admissions Office\n"
-                            f"Ndejje University\n"
-                            f"Email: admissions@ndejjeuniversity.ac.ug\n"
-                            f"Website: www.ndejjeuniversity.ac.ug"
-                        ),
-                        "from_email": settings.DEFAULT_FROM_EMAIL,
-                        "recipient_list": [application.email],
-                        "fail_silently": False,
-                    }
-                ).start()
-
-                # ======================================================================
-                # 🔥 ASYNC NOTIFICATION USING SAME STYLE
-                # ======================================================================
-                threading.Thread(
-                    target=create_notification,
-                    kwargs={
-                        "user": application.applicant,
-                        "title": "Admission Successful",
-                        "msg": "Congratulations! You have been admitted to Ndejje University",
-                    }
-                ).start()
-
+                celery_admission_email.delay(application.id, admission.id)
+                celery_application_notification.delay(request.user.id,"Admission Successful","Congratulations! You have been admitted to Ndejje University")
+               
                 # ======================================================================
 
                 return Response(self.serializer_class(admission).data, status=201)
@@ -768,9 +844,11 @@ class UpdateAdmittedStudent(generics.UpdateAPIView):
 
     @transaction.atomic
     def perform_update(self, serializer):
-        data = serializer.save()
-        if data:
-            send_admission_update(data)
+        admission_data = serializer.save()
+        try:
+            celery_admission_update.delay(admission_data.id)
+        except Exception as e:
+            print("Celery error:", e)
 
 # candidate admission
 class CandidateAdmission(generics.RetrieveAPIView):
@@ -840,8 +918,9 @@ class DownloadAdmissionPDF(APIView):
         )
 
         # Fetch related data
-        olevel_results = OLevelResult.objects.filter(application=application).select_related('subject')
-        alevel_results = ALevelResult.objects.filter(application=application).select_related('subject')
+        olevel_results = OLevelResult.objects.filter(application=application).select_related('subject', 'application')
+        alevel_results = ALevelResult.objects.filter(application=application).select_related('subject', 'application')
+        qualifications = AdditionalQualifications.objects.filter(application=application).select_related('application')
 
         # Current date for the letter
         today = date.today()
@@ -853,6 +932,7 @@ class DownloadAdmissionPDF(APIView):
                 'application': application,
                 'olevel_results': olevel_results,
                 'alevel_results': alevel_results,
+                'additional_qualifications': qualifications, 
                 'today': today,
             },
             request=request

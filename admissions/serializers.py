@@ -66,7 +66,7 @@ class ApplicationDetailSerializer(serializers.ModelSerializer):
         model = Application
         fields = ['id', 'first_name', 'last_name', 'date_of_birth', 'gender', 'nationality', 'phone', 'email',
                   'batch',"nin", "passport_number","disabled", 'olevel_school', 'olevel_year', 'alevel_school', 'alevel_year', 'address',
-                  'status', 'application_fee_amount', 'created_at', 'reviewed_at', 'passport_photo','reviewed_by']
+                  'status', 'application_fee_amount','application_fee_paid', 'created_at', 'reviewed_at', 'passport_photo','reviewed_by']
     
 # o level subject
 class OlevelSubjectSerializer(serializers.ModelSerializer):
@@ -191,7 +191,7 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
 class AdmissionDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model = AdmittedStudent
-        fields = ['id', 'student_id', 'reg_no','admission_notes', 'admitted_program', 'admitted_campus', 'application']
+        fields = ['id', 'student_id', 'reg_no','study_mode', 'admission_notes', 'admitted_program', 'admitted_campus', 'application']
 
     def to_representation(self, instance):
         response = super().to_representation(instance)
@@ -203,4 +203,11 @@ class AdmissionDetailSerializer(serializers.ModelSerializer):
 class NotificationSerializer(serializers.ModelSerializer):
     class Meta:
         model = PortalNotification
+        fields = '__all__'
+
+# =========================================Additionsl qualifficaations ===================================
+
+class AdditionalQualifficationsSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AdditionalQualifications
         fields = '__all__'

@@ -8,7 +8,7 @@ from django.conf import settings
 class SchoolPayClient:
     def __init__(self):
         self.school_code = settings.SCHOOL_PAY_CODE  
-        self.password = settings.SCHOOL_PAY_PASSWORD
+        self.password = "1cS\J9V876'i"
 
         print('code', self.school_code, 'password', self.password)
 
@@ -27,7 +27,7 @@ class SchoolPayClient:
         raw_string = f"{self.school_code}{reference}{self.password}"
         return hashlib.md5(raw_string.encode()).hexdigest().upper()  
 
-    def request_payment(self, amount, phone, ext_ref, first_name, last_name, reason):
+    def request_payment(self, amount, phone, ext_ref, first_name, last_name, reason, callBackUrl):
         hash_val = self.generate_hash(ext_ref)
         url = f"{self.base_url}/Request/{self.school_code}/{hash_val}"
         
@@ -37,7 +37,8 @@ class SchoolPayClient:
             "phoneNumber": phone,  
             "firstName": first_name,
             "lastName": last_name,
-            "reason": reason
+            "reason": reason,
+            "callBackUrl":callBackUrl
         }
         
         try:

@@ -33,9 +33,11 @@ urlpatterns = [
     # # Batch Management URLs
     path('batches/', views.ListBatch.as_view()),
     path('active_batch', views.GetActiveApplicationBatch.as_view()),
+    path('active_admission_batch', views.GetActiveAdmissionBatch.as_view()),
     path('create_batch', views.CreateBatch.as_view()),
     path('edit_batch/<int:pk>', views.EditBatch.as_view()),
     path('delete_batch/<int:pk>', views.DeleteBatch.as_view()),
+    path('intake_options', views.IntakeOptions.as_view()),
 
     # academic levels
     path('list_academic_level',  views.ListAcademicLevel.as_view()),

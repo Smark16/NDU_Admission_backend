@@ -3,7 +3,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import *
 from admissions.models import * 
 from django.db.models.functions import Coalesce
-from django.db.models import Count, When, Case,F, FloatField,  Prefetch
+from django.db.models import Count, F, Q
 from collections import defaultdict
 from django.db import connection
 
@@ -25,17 +25,28 @@ class GeneralOverview(APIView):
         results = []
 
         for batch in batches:
-            apps = Application.objects.filter(batch=batch).select_related('batch', 'campus', 'academic_level', 'reviewed_by').prefetch_related('programs')
-            admitted_qs = AdmittedStudent.objects.filter(admitted_batch=batch).select_related('admitted_campus', 'admitted_program', 'admitted_batch', 'admitted_by', 'application__applicant')
+            apps = Application.objects.select_related(
+                'batch', 'campus', 'academic_level', 'reviewed_by'
+                ).prefetch_related('programs').filter(batch=batch).aggregate(
+                   total_applications=Count('id'),
+                   pending = Count('id', filter=Q(status="submitted")),
+                   rejected = Count('id', filter=Q(status="rejected"))
+                )
+            admitted_qs = AdmittedStudent.objects.select_related(
+                'admitted_campus', 'admitted_program', 'admitted_batch', 'admitted_by', 'application__applicant'
+                ).filter(admitted_batch=batch).aggregate(
+                    total_admitted=Count('id'),
+                    accepted=Count('id', filter=Q(is_admitted=True)),
+                )
 
             stats = {
                 "admission_period": batch.name,  
                 "academic_year": batch.academic_year, 
-                "total_applications": apps.count(),
-                "accepted": admitted_qs.filter(is_admitted=True).count(),
-                "pending": apps.filter(status="submitted").count(),
-                "rejected": apps.filter(status="rejected").count(),
-                "total_admitted": admitted_qs.count(),
+                "total_applications": apps['total_applications'],
+                "accepted": admitted_qs['accepted'],
+                "pending": apps['pending'],
+                "rejected": apps['rejected'],
+                "total_admitted": admitted_qs['total_admitted'],
             }
 
             results.append(stats)
@@ -195,7 +206,7 @@ class ViewFacultyAdmissions(APIView):
                 "course_applied_for": course_applied_for,
                 "other_choices": other_choices,
                 "program": adm.admitted_program.name,
-                "study_mode": app.study_mode,
+                "study_mode": adm.study_mode,
                 "campus": adm.admitted_campus.name if adm.admitted_campus else "",
                 "olevel_school": app.olevel_school,
                 "olevel_year": app.olevel_year,
@@ -292,8 +303,8 @@ class ExportFacultyAdmissionsExcel(APIView):
         # --------------------------------------------------------------
         # 5. ONE QUERY – A-Level (for scores + PP/SP)
         # --------------------------------------------------------------
-        alevel_scores = defaultdict(list)   # for the "A-LEVEL SCORES" column
-        alevel_for_pp = defaultdict(list)   # for calculate_pp_sp
+        alevel_scores = defaultdict(list)   
+        alevel_for_pp = defaultdict(list)   
         for res in (
             ALevelResult.objects
             .filter(application_id__in=app_ids)
@@ -353,7 +364,7 @@ class ExportFacultyAdmissionsExcel(APIView):
                 course_applied_for,
                 other_choices,
                 adm.admitted_program.name,
-                app.study_mode,
+                adm.study_mode,
                 adm.admitted_campus.name if adm.admitted_campus else "",
                 app.olevel_school,
                 app.olevel_year,

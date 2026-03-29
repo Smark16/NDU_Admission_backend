@@ -8,10 +8,9 @@ def bump_batch_version():
     try:
         new_version = cache.incr('active_batch_version')
     except ValueError:
-        # Key didn't exist → initialize
         cache.set('active_batch_version', 1, timeout=None)
         new_version = 1
-
+    
     return new_version
 
 @receiver([post_save, post_delete], sender=Batch)

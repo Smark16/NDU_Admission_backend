@@ -7,6 +7,9 @@ urlpatterns = [
     # Authentication URLs
     path("login",  ObtainTokenView.as_view()),
     path("register", RegisterView.as_view()),
+    path('send_email', PasswordResetRequestView.as_view()),
+    path("reset_password/confirm/", PasswordResetConfirmView.as_view()),
+    path("reset_password/<uidb64>/<token>/", password_reset_redirect, name="password_reset_redirect"),
 
     # user Urls
     path('list_users', ListUsers.as_view()),

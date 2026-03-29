@@ -12,8 +12,6 @@ class ProgramSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         response = super().to_representation(instance)
         response['campuses'] = CampusSerializer(instance.campuses.all(), many=True).data
-        # response['academic_level'] = AcademicLevelSerializer(instance.academic_level).data
-        # response['faculty'] = FacultySerializer(instance.faculty).data
         return response
     
 # list programs

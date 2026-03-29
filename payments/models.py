@@ -11,11 +11,12 @@ class ApplicationPayment(models.Model):
     application = models.OneToOneField('admissions.Application', on_delete=models.CASCADE, related_name='payment', null=True, blank=True)
 
     user = models.ForeignKey(User, on_delete=models.CASCADE)
-    external_reference = models.CharField(max_length=50, unique=True)  # YOUR UUID ref
-    payment_reference = models.CharField(max_length=50, blank=True, null=True)  # SchoolPay ref
+    external_reference = models.CharField(max_length=50, unique=True)  
+    payment_reference = models.CharField(max_length=50, blank=True, null=True)  
 
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     phone_number = models.CharField(max_length=20)
+    fee_type = models.CharField(max_length=20, default='Application Fees')
 
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='PENDING')
 
@@ -35,6 +36,9 @@ class ApplicationFee(models.Model):
 
     def __str__(self):
         return f"{self.nationality_type} - {self.academic_level}: {self.amount}"
+
+
+
 
 
 

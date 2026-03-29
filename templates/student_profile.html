@@ -13,7 +13,7 @@
     body {
       font-family: 'Times New Roman', Times, serif;
       font-size: 11pt;
-      line-height: 1.5;
+      line-height: 1.6;
       color: #1a1a1a;
     }
 
@@ -83,28 +83,6 @@
       color: #222;
     }
 
-    .status-pill {
-      display: inline-block;
-      padding: 6px 14px;
-      border-radius: 20px;
-      font-size: 10pt;
-      font-weight: bold;
-      color: white;
-    }
-
-    .status-admitted { background-color: #2e7d32; }
-    .status-pending   { background-color: #f57c00; }
-    .status-rejected  { background-color: #c62828; }
-
-    .fee-status {
-      font-weight: bold;
-      padding: 2px 8px;
-      border-radius: 4px;
-    }
-
-    .fee-paid    { background-color: #4caf50; color: white; }
-    .fee-unpaid  { background-color: #e53935; color: white; }
-
     table.subject-table {
       width: 100%;
       border-collapse: collapse;
@@ -124,6 +102,14 @@
       color: #444;
     }
 
+    .qualification-card {
+      border: 1px solid #e0e0e0;
+      border-radius: 6px;
+      padding: 15px;
+      margin-bottom: 15px;
+      background-color: #fafafa;
+    }
+
     .signature-section {
       margin-top: 60px;
       display: flex;
@@ -137,16 +123,6 @@
       border-top: 2px solid #333;
       padding-top: 50px;
       position: relative;
-    }
-
-    .signature-block::before {
-      content: "___________________________";
-      position: absolute;
-      top: 20px;
-      left: 50%;
-      transform: translateX(-50%);
-      font-size: 16pt;
-      color: #333;
     }
 
     .footer {
@@ -176,7 +152,7 @@
     <div class="ref-info">
       Application Reference: <strong>{{ application.application_reference|default:"N/A" }}</strong>  
         •  
-      Batch: <strong>{{ application.batch.name }}</strong>  
+      Batch: <strong>{{ application.batch.name|default:"N/A" }}</strong>  
         •  
       Date: <strong>{{ today|date:"d F Y" }}</strong>
     </div>
@@ -204,9 +180,9 @@
         <div class="label">Nationality</div>
         <div class="value">{{ application.nationality }}</div>
       </div>
-      <div class="info-item">
-        <div class="label">Email</div>
-        <div class="value">{{ application.email }}</div>
+      <div class="info-item" style="grid-column: 1 / -1;">
+        <div class="label">Address</div>
+        <div class="value">{{ application.address|default:"Not provided" }}</div>
       </div>
       <div class="info-item">
         <div class="label">Phone</div>
@@ -220,17 +196,18 @@
         <div class="label">Disability Status</div>
         <div class="value">{{ application.disabled|default:"None" }}</div>
       </div>
-      <div class="info-item" style="grid-column: 1 / -1;">
-        <div class="label">Address</div>
-        <div class="value">{{ application.address|default:"Not provided" }}</div>
+      <div class="info-item">
+        <div class="label">Email</div>
+        <div class="value">{{ application.email }}</div>
       </div>
     </div>
 
     <!-- Academic Information -->
     <h2 class="section-title">Academic Qualifications</h2>
 
+    <!-- O-Level -->
     <div style="margin-bottom: 24px;">
-      <strong>O-Level ({{ application.olevel_year }}) – {{ application.olevel_school }}</strong>
+      <strong>O-Level ({{ application.olevel_year|default:"N/A" }}) – {{ application.olevel_school|default:"Not specified" }}</strong>
       <table class="subject-table">
         <thead>
           <tr>
@@ -241,8 +218,8 @@
         <tbody>
           {% for result in olevel_results %}
             <tr>
-              <td>{{ result.subject.name }}</td>
-              <td>{{ result.grade }}</td>
+              <td>{{ result.subject.name|default:"Unknown" }}</td>
+              <td>{{ result.grade|default:"N/A" }}</td>
             </tr>
           {% empty %}
             <tr><td colspan="2" style="text-align:center; color:#888;">No O-Level results recorded</td></tr>
@@ -251,8 +228,10 @@
       </table>
     </div>
 
-    <div>
-      <strong>A-Level ({{ application.alevel_year }}) – {{ application.alevel_school }} ({{ application.alevel_combination }})</strong>
+    <!-- A-Level -->
+    <div style="margin-bottom: 30px;">
+      <strong>A-Level ({{ application.alevel_year|default:"N/A" }}) – {{ application.alevel_school|default:"Not specified" }} 
+        {% if application.alevel_combination %} ({{ application.alevel_combination }}) {% endif %}</strong>
       <table class="subject-table">
         <thead>
           <tr>
@@ -263,8 +242,8 @@
         <tbody>
           {% for result in alevel_results %}
             <tr>
-              <td>{{ result.subject.name }}</td>
-              <td>{{ result.grade }}</td>
+              <td>{{ result.subject.name|default:"Unknown" }}</td>
+              <td>{{ result.grade|default:"N/A" }}</td>
             </tr>
           {% empty %}
             <tr><td colspan="2" style="text-align:center; color:#888;">No A-Level results recorded</td></tr>
@@ -273,6 +252,23 @@
       </table>
     </div>
 
+    <!-- Additional Qualifications -->
+    <h2 class="section-title">Additional Qualifications</h2>
+    {% if application.additionals.all %}
+      {% for qual in application.additionals.all %}
+        <div class="qualification-card">
+          <strong>{{ qual.additional_qualification_institution|default:"Unnamed Institution" }}</strong><br>
+          <span style="color:#555;">
+            Type: <strong>{{ qual.additional_qualification_type|default:"N/A" }}</strong> • 
+            Year: <strong>{{ qual.additional_qualification_year|default:"N/A" }}</strong> • 
+            Class: <strong>{{ qual.class_of_award|default:"N/A" }}</strong>
+          </span>
+        </div>
+      {% endfor %}
+    {% else %}
+      <p style="color:#888; font-style:italic;">No additional qualifications provided.</p>
+    {% endif %}
+
     <!-- Admission Decision -->
     <h2 class="section-title">Admission Decision</h2>
     <div style="background:#f8fafc; padding:20px; border:1px solid #d1e8ff; border-radius:6px; margin:20px 0;">
@@ -280,17 +276,14 @@
         {% if application.offer_letter_status == 'accepted' %}
           Congratulations! You have been **successfully admitted** to:
         {% else %}
-          Your application has been **reviewed** 
+          Your application has been **reviewed**
         {% endif %}
       </p>
-      <!-- <p style="font-size:16pt; margin:12px 0; font-weight:bold; color:#2e7d32; text-align:center;">
-        {{ application.offer_letter_status|title }}
-      </p> -->
+     
       <p style="font-size:11pt; color:#444; margin-top:16px;">
         Program: <strong>{{ application.programs.first.name|default:"N/A" }}</strong><br>
         Campus: <strong>{{ application.campus.name|default:"N/A" }}</strong><br>
-        Academic Level: <strong>{{ application.academic_level.name }}</strong><br>
-        Study Mode: <strong>{{ application.study_mode|title }}</strong>
+        Academic Level: <strong>{{ application.academic_level.name|default:"N/A" }}</strong><br>
       </p>
     </div>
 

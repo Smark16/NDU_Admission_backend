@@ -14,6 +14,8 @@ urlpatterns = [
     path('webhook/', schoolpay_webhook, name='schoolpay_webhook'),
     path('check_payment_status/<str:payment_ref>/', CheckPaymentStatus.as_view()),
 
+    # payments
+    path('list_payments', ListPayments.as_view())
 ]
 
 

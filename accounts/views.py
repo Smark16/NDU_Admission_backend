@@ -18,6 +18,10 @@ from audit.utils import log_audit_event
 # caching
 from django.core.cache import cache
 
+from django.utils.http import urlsafe_base64_decode
+from django.shortcuts import redirect
+from .tasks import celery_send_password_reset_Link
+
 # login view
 class ObtainTokenView(TokenObtainPairView):
     serializer_class = ObtainSerializer
@@ -255,6 +259,63 @@ class GetUserProfile(generics.ListAPIView):
         profile = Profile.objects.get(user=user)
         serializer = ProfileSerializer(profile)
         return Response(serializer.data, status=200)
+
+# password reset link
+class PasswordResetRequestView(APIView):
+    def post(self, request):
+        email = request.data.get('email')
+        try:
+            user = User.objects.get(email=email)
+        except User.DoesNotExist:
+            return Response({"detail": "User with this Email not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        celery_send_password_reset_Link.delay(user.id)
+
+        return Response({"detail": "Password reset email sent."}, status=status.HTTP_200_OK)
+
+# reset login password view
+class PasswordResetConfirmView(APIView):
+    def post(self, request):
+        serializer = ResetPasswordSerializer(data=request.data)
+
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        # Step 2: Extract fields from validated data
+        uidb64 = serializer.validated_data['uidb64']
+        token = serializer.validated_data['token']
+        new_password = serializer.validated_data['password']
+
+        # Step 3: Decode uid and get user
+        try:
+            uid = urlsafe_base64_decode(uidb64).decode()
+            user = User.objects.get(pk=uid)
+        except (TypeError, ValueError, OverflowError, User.DoesNotExist):
+            return Response(
+                {"detail": "Invalid user or token."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Step 4: Validate token BEFORE setting password
+        if not default_token_generator.check_token(user, token):
+            return Response(
+                {"token": "Invalid or expired token."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Step 5: Now it's safe — set the new password
+        user.set_password(new_password)
+        user.save()
+
+        return Response(
+            {"message": "Password has been reset successfully."},
+            status=status.HTTP_200_OK
+        )
+
+# Frontend redirect
+def password_reset_redirect(request, uidb64, token):
+    frontend_url = f"{settings.LOGIN_URL.rstrip('/')}/reset-password?uidb64={uidb64}&token={token}"
+    return redirect(frontend_url)
 
 
 

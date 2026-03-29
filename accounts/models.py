@@ -25,7 +25,7 @@ class User(AbstractUser):
     campuses = models.ManyToManyField(Campus, blank=True, related_name='users')
     phone = models.CharField(max_length=20, blank=True, null=True)
     is_staff = models.BooleanField(default=False)
-    is_applicant = models.BooleanField(default=False)
+    is_applicant = models.BooleanField(default=False, db_index=True)
 
     @property
     def full_name(self):
