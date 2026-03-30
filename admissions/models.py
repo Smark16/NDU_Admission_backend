@@ -5,6 +5,7 @@ from accounts.models import User, Campus
 from Programs.models import Program
 from .utils.academic_year import get_current_academic_year
 from .utils.reference import generate_reference
+from rest_framework.exceptions import ValidationError
 
 class Faculty(models.Model):
     name = models.CharField(max_length=200, unique=True)
@@ -20,6 +21,9 @@ class Faculty(models.Model):
 
     def __str__(self):
         return f"{self.name} ({self.code})"
+    
+    def delete(self, *args, **kwargs):
+        raise ValidationError({"detail": "Deletion of Faculty is not allowed."})
 
 class AcademicLevel(models.Model):
     name = models.CharField(max_length=50, unique=True)
@@ -31,6 +35,9 @@ class AcademicLevel(models.Model):
 
     def __str__(self):
         return self.name
+    
+    def delete(self, *args, **kwargs):
+        raise ValidationError({"detail": "Deletion of AcademicLevel is not allowed."})
 
 class Batch(models.Model):
     name = models.CharField(max_length=100)
@@ -124,12 +131,6 @@ class Application(models.Model):
     alevel_school = models.CharField(max_length=200)
     alevel_combination = models.CharField(max_length=5)
     
-    # Additional Qualifications
-    # additional_qualification_institution = models.CharField(max_length=200, blank=True, help_text="Institution Name")
-    # additional_qualification_type = models.CharField(max_length=20, blank=True)
-    # additional_qualification_year = models.PositiveIntegerField(blank=True, null=True, help_text="Award Year")
-    # class_of_award = models.CharField(max_length=200, blank=True, null=True)
-
     # Document uploads
     passport_photo = models.ImageField(upload_to='passport_photos/')
     payment_proof = models.FileField(upload_to='payment_proofs/', blank=True, null=True, help_text="Payment Proof (PDF)")
