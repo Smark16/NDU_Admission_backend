@@ -41,6 +41,7 @@ urlpatterns = [
 
     # academic levels
     path('list_academic_level',  views.ListAcademicLevel.as_view()),
+    path('list_admin_academic_level',  views.ListAdminAcademicLevels.as_view()),    
     path('create_levels', views.CreateAcademicLevels.as_view()),
     path('update_academic_levels/<int:pk>', views.UpdateAcademicLevel.as_view()),
     path('delete_level/<int:pk>', views.DeleteAcademicLevel.as_view()),

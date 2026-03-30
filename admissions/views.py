@@ -681,6 +681,12 @@ class CreateAcademicLevels(generics.CreateAPIView):
     serializer_class = AcademicLevelSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
+# ListAdminAcademiclevels
+class ListAdminAcademicLevels(generics.ListAPIView):
+    queryset = AcademicLevel.objects.all()
+    serializer_class = AcademicLevelSerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    
 # list level
 class ListAcademicLevel(generics.ListAPIView):
     queryset = AcademicLevel.objects.filter(is_active=True)
