@@ -137,7 +137,7 @@ class Application(models.Model):
    
     # Application Status
     status = models.CharField(max_length=20, default='draft')
-    application_reference = models.CharField(max_length=30, unique=True, blank=True, null=True)
+    application_reference = models.CharField(max_length=50, unique=True, blank=True, null=True)
     application_fee_paid = models.BooleanField(default=False)
     application_fee_amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     
