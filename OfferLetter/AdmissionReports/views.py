@@ -228,7 +228,7 @@ class ViewFacultyAdmissions(APIView):
 
                 "course_admitted_for": adm.admitted_program.name if adm.admitted_program else "",
                 "remarks": adm.admission_notes or "",
-                "payments": "NOT IMPLEMENTED",
+                "payments": "PAID" if app.application_fee_paid else "NOT PAID",
                 "admission_date": adm.admission_date.strftime("%Y-%m-%d") if adm.admission_date else "",
                 "origin": "APPLIED ONLINE",
             })

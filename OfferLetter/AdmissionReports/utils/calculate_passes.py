@@ -1,11 +1,8 @@
 # calculate passes
 PP_GRADES = ["A", "B", "C", "D", "E"]
-ICT_SP_GRADES = ["D1", "D2", "C3", "C4", "C5", "C6"]
+ICT_SP_GRADES = ["1", "2", "3", "4", "5", "6", "7", "8", "9"]
 
 def calculate_pp_sp(alevel_results):
-    """
-    alevel_results = list of dicts: [{"subject_name": "Physics", "grade": "A"}, ...]
-    """
     pp = sp = 0
 
     for res in alevel_results:
@@ -25,7 +22,7 @@ def calculate_pp_sp(alevel_results):
         if subject_name == "GP" and grade in ICT_SP_GRADES:
             sp += 1
             continue
-        if subject_name == "SUB MATH" and grade in ICT_SP_GRADES:
+        if subject_name == "SUB" and grade in ICT_SP_GRADES:
             sp += 1
             continue
         if grade == "O":
