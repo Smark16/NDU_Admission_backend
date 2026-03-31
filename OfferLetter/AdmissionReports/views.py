@@ -99,80 +99,64 @@ class Admitted_students_by_Faculty(APIView):
 
     
 # Faculty Admitted Students reports
+
 class ViewFacultyAdmissions(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-
         admitted_students = list(
             AdmittedStudent.objects
-            .select_related(
-                "application",
-                "admitted_program",
-                "admitted_campus",
-                "admitted_batch",
-            )
+            .select_related("application", "admitted_program", "admitted_campus", "admitted_batch")
             .filter(is_admitted=True)
         )
 
-        app_ids = [adm.application_id for adm in admitted_students]
-        if not app_ids:
+        if not admitted_students:
             return Response([])
 
-        # --------------------------------------------------------------
-        # 2. ONE query – program names for every application
-        # --------------------------------------------------------------
+        app_ids = [adm.application_id for adm in admitted_students]
+
+        # 1. Programs
         program_data = defaultdict(list)
-        for prog in (
-            Program.objects
-            .filter(application_programs__id__in=app_ids)
-            .values("application_programs__id", "name")
-            .order_by("application_programs__id")
-        ):
+        for prog in Program.objects.filter(application_programs__id__in=app_ids)\
+                .values("application_programs__id", "name"):
             program_data[prog["application_programs__id"]].append(prog["name"])
 
-        # --------------------------------------------------------------
-        # 3. ONE query – O-Level results (subject code + grade)
-        # --------------------------------------------------------------
+        # 2. O-Level
         olevel_data = defaultdict(list)
-        for res in (
-            OLevelResult.objects
-            .filter(application_id__in=app_ids)
-            .select_related("subject")
-            .values("application_id", "subject__code", "grade")
-        ):
-            olevel_data[res["application_id"]].append(
-                f"{res['subject__code']}:{res['grade']}"
-            )
+        for res in OLevelResult.objects.filter(application_id__in=app_ids)\
+                .select_related("subject")\
+                .values("application_id", "subject__code", "grade"):
+            olevel_data[res["application_id"]].append(f"{res['subject__code']}:{res['grade']}")
 
-        # --------------------------------------------------------------
-        # 4. ONE query – A-Level results (subject name + grade) for PP/SP
-        # --------------------------------------------------------------
+        # 3. A-Level
         alevel_for_pp_sp = defaultdict(list)
-        alevel_scores   = defaultdict(list)
-
-        for res in (
-            ALevelResult.objects
-            .filter(application_id__in=app_ids)
-            .select_related("subject")
-            .values("application_id", "subject__code", "grade")
-        ):
+        alevel_scores = defaultdict(list)
+        for res in ALevelResult.objects.filter(application_id__in=app_ids)\
+                .select_related("subject")\
+                .values("application_id", "subject__code", "grade"):
             app_id = res["application_id"]
-            alevel_for_pp_sp[app_id].append({
-                "subject_name": res["subject__code"],
-                "grade": res["grade"]
-            })
+            alevel_for_pp_sp[app_id].append({"subject_name": res["subject__code"], "grade": res["grade"]})
             alevel_scores[app_id].append(f"{res['subject__code']}:{res['grade']}")
 
-        # --------------------------------------------------------------
-        # 5. Build the response – **no more DB hits**
-        # --------------------------------------------------------------
-        grouped = {}
+        # 4. Additional Qualifications - String Only
+        qualifications_data = defaultdict(list)
+        for qual in AdditionalQualifications.objects.filter(application_id__in=app_ids)\
+                .values(
+                    "application_id",
+                    "additional_qualification_institution",
+                    "additional_qualification_type",
+                    "additional_qualification_year",
+                    "class_of_award"
+                ):
+            qualifications_data[qual["application_id"]].append(qual)
+
+        # 5. Build Response
+        grouped = defaultdict(lambda: {"academic_year": "", "admission_period": "", "students": []})
 
         for adm in admitted_students:
-            app   = adm.application
+            app = adm.application
             batch = adm.admitted_batch
-            key   = f"{batch.academic_year}-{batch.name}"
+            key = f"{batch.academic_year}-{batch.name}"
 
             if key not in grouped:
                 grouped[key] = {
@@ -181,54 +165,217 @@ class ViewFacultyAdmissions(APIView):
                     "students": [],
                 }
 
-            # ---- program choices ------------------------------------------------
             programs = program_data.get(app.id, [])
             course_applied_for = programs[0] if programs else ""
-            other_choices = ", ".join(programs[1:])
+            other_choices = ", ".join(programs[1:]) if len(programs) > 1 else ""
 
-            # ---- O-Level string -------------------------------------------------
             olevel_scores = "; ".join(olevel_data[app.id])
-
-            # ---- A-Level string -------------------------------------------------
             alevel_scores_str = "; ".join(alevel_scores[app.id])
 
-            # ---- PP / SP  (your function – receives a list of dicts) ----------
             pp, sp = calculate_pp_sp(alevel_for_pp_sp[app.id])
             principal_sub = f"{pp}PP, {sp}SP"
 
-            # ---- final row ------------------------------------------------------
+            # === Additional Qualifications as Strings (Safe & Dynamic) ===
+            quals = qualifications_data.get(app.id, [])
+
+            # Create readable combined string
+            other_qual_parts = []
+            institutions = []
+            class_of_awards = []
+
+            for q in quals:
+                if q.get("additional_qualification_institution"):
+                    qual_str = f"{q['additional_qualification_institution']} - {q.get('additional_qualification_type','')} ({q.get('additional_qualification_year','')}) - {q.get('class_of_award','')}"
+                    other_qual_parts.append(qual_str)
+                    institutions.append(q['additional_qualification_institution'])
+                    class_of_awards.append(q.get('class_of_award', ''))
+
+            other_qual_str = " | ".join(other_qual_parts) if other_qual_parts else "None"
+
+            # Join multiple institutions and awards with commas
+            institution_str = ", ".join(institutions) if institutions else ""
+            class_of_award_str = ", ".join([c for c in class_of_awards if c]) if class_of_awards else ""
+
+            # Final Student Dictionary - All Strings
             grouped[key]["students"].append({
                 "id": adm.id,
                 "student_names": f"{app.first_name} {app.last_name}",
                 "gender": app.gender,
                 "nationality": app.nationality,
-                "contact_address": app.address,
+                "contact_address": app.address or "",
                 "course_applied_for": course_applied_for,
                 "other_choices": other_choices,
-                "program": adm.admitted_program.name,
-                "study_mode": adm.study_mode,
+                "program": adm.admitted_program.name if adm.admitted_program else "",
+                "study_mode": getattr(adm, 'study_mode', ""),
                 "campus": adm.admitted_campus.name if adm.admitted_campus else "",
-                "olevel_school": app.olevel_school,
-                "olevel_year": app.olevel_year,
-                "olevel_index_number": app.olevel_index_number,
+
+                "olevel_school": app.olevel_school or "",
+                "olevel_year": app.olevel_year or "",
+                "olevel_index_number": app.olevel_index_number or "",
                 "olevel_scores": olevel_scores,
-                "alevel_school": app.alevel_school,
-                "alevel_year": app.alevel_year,
-                "alevel_index_number": app.alevel_index_number,
-                "alevel_combination": app.alevel_combination,
+
+                "alevel_school": app.alevel_school or "",
+                "alevel_year": app.alevel_year or "",
+                "alevel_index_number": app.alevel_index_number or "",
+                "alevel_combination": app.alevel_combination or "",
                 "alevel_scores": alevel_scores_str,
                 "principal_subsidiaries": principal_sub,
-                "other_qualifications": app.additional_qualification_type or "",
-                "institution": app.additional_qualification_institution or "",
-                "class_of_award": app.class_of_award or "",
-                "course_admitted_for": adm.admitted_program.name,
+
+                # All strings as requested
+                "other_qualifications": other_qual_str,
+                "institution": institution_str,           # All institutions combined
+                "class_of_award": class_of_award_str,     # All class of awards combined
+
+                "course_admitted_for": adm.admitted_program.name if adm.admitted_program else "",
                 "remarks": adm.admission_notes or "",
                 "payments": "NOT IMPLEMENTED",
-                "admission_date": adm.admission_date.strftime("%Y-%m-%d"),
+                "admission_date": adm.admission_date.strftime("%Y-%m-%d") if adm.admission_date else "",
                 "origin": "APPLIED ONLINE",
             })
 
         return Response(list(grouped.values()), status=200)
+
+# class ViewFacultyAdmissions(APIView):
+#     permission_classes = [IsAuthenticated]
+
+#     def get(self, request):
+
+#         admitted_students = list(
+#             AdmittedStudent.objects
+#             .select_related(
+#                 "application",
+#                 "admitted_program",
+#                 "admitted_campus",
+#                 "admitted_batch",
+#             )
+#             .filter(is_admitted=True)
+#         )
+
+#         app_ids = [adm.application_id for adm in admitted_students]
+#         if not app_ids:
+#             return Response([])
+
+#         # --------------------------------------------------------------
+#         # 2. ONE query – program names for every application
+#         # --------------------------------------------------------------
+#         program_data = defaultdict(list)
+#         for prog in (
+#             Program.objects
+#             .filter(application_programs__id__in=app_ids)
+#             .values("application_programs__id", "name")
+#             .order_by("application_programs__id")
+#         ):
+#             program_data[prog["application_programs__id"]].append(prog["name"])
+
+#         # --------------------------------------------------------------
+#         # 3. ONE query – O-Level results (subject code + grade)
+#         # --------------------------------------------------------------
+#         olevel_data = defaultdict(list)
+#         for res in (
+#             OLevelResult.objects
+#             .filter(application_id__in=app_ids)
+#             .select_related("subject")
+#             .values("application_id", "subject__code", "grade")
+#         ):
+#             olevel_data[res["application_id"]].append(
+#                 f"{res['subject__code']}:{res['grade']}"
+#             )
+
+#         # --------------------------------------------------------------
+#         # 4. ONE query – A-Level results (subject name + grade) for PP/SP
+#         # --------------------------------------------------------------
+#         alevel_for_pp_sp = defaultdict(list)
+#         alevel_scores   = defaultdict(list)
+
+#         for res in (
+#             ALevelResult.objects
+#             .filter(application_id__in=app_ids)
+#             .select_related("subject")
+#             .values("application_id", "subject__code", "grade")
+#         ):
+#             app_id = res["application_id"]
+#             alevel_for_pp_sp[app_id].append({
+#                 "subject_name": res["subject__code"],
+#                 "grade": res["grade"]
+#             })
+#             alevel_scores[app_id].append(f"{res['subject__code']}:{res['grade']}")
+        
+#         #OTHER QUALIFICATIONS
+#         qualifications_info   = defaultdict(list)
+
+#         for res in (
+#              AdditionalQualifications.objects
+#             .filter(application_id__in=app_ids)
+#             .select_related("application")
+#         ):
+#             app_id = res["application_id"]
+#             qualifications_info[app_id].append(res)
+
+#         # --------------------------------------------------------------
+#         # 5. Build the response – **no more DB hits**
+#         # --------------------------------------------------------------
+#         grouped = {}
+
+#         for adm, i in admitted_students:
+#             app   = adm.application
+#             batch = adm.admitted_batch
+#             key   = f"{batch.academic_year}-{batch.name}"
+
+#             if key not in grouped:
+#                 grouped[key] = {
+#                     "academic_year": batch.academic_year,
+#                     "admission_period": batch.name,
+#                     "students": [],
+#                 }
+
+#             # ---- program choices ------------------------------------------------
+#             programs = program_data.get(app.id, [])
+#             course_applied_for = programs[0] if programs else ""
+#             other_choices = ", ".join(programs[1:])
+
+#             # ---- O-Level string -------------------------------------------------
+#             olevel_scores = "; ".join(olevel_data[app.id])
+
+#             # ---- A-Level string -------------------------------------------------
+#             alevel_scores_str = "; ".join(alevel_scores[app.id])
+
+#             # ---- PP / SP  (your function – receives a list of dicts) ----------
+#             pp, sp = calculate_pp_sp(alevel_for_pp_sp[app.id])
+#             principal_sub = f"{pp}PP, {sp}SP"
+
+#             # ---- final row ------------------------------------------------------
+#             grouped[key]["students"].append({
+#                 "id": adm.id,
+#                 "student_names": f"{app.first_name} {app.last_name}",
+#                 "gender": app.gender,
+#                 "nationality": app.nationality,
+#                 "contact_address": app.address,
+#                 "course_applied_for": course_applied_for,
+#                 "other_choices": other_choices,
+#                 "program": adm.admitted_program.name,
+#                 "study_mode": adm.study_mode,
+#                 "campus": adm.admitted_campus.name if adm.admitted_campus else "",
+#                 "olevel_school": app.olevel_school,
+#                 "olevel_year": app.olevel_year,
+#                 "olevel_index_number": app.olevel_index_number,
+#                 "olevel_scores": olevel_scores,
+#                 "alevel_school": app.alevel_school,
+#                 "alevel_year": app.alevel_year,
+#                 "alevel_index_number": app.alevel_index_number,
+#                 "alevel_combination": app.alevel_combination,
+#                 "alevel_scores": alevel_scores_str,
+#                 "principal_subsidiaries": principal_sub,
+#                 "other_qualifications": res or "",
+#                 "institution": res['additional_qualification_institution'] or "",
+#                 "class_of_award": app.class_of_award or "",
+#                 "course_admitted_for": adm.admitted_program.name,
+#                 "remarks": adm.admission_notes or "",
+#                 "payments": "NOT IMPLEMENTED",
+#                 "admission_date": adm.admission_date.strftime("%Y-%m-%d"),
+#                 "origin": "APPLIED ONLINE",
+#             })
+
+#         return Response(list(grouped.values()), status=200)
     
 # excel reports
 class ExportFacultyAdmissionsExcel(APIView):

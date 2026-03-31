@@ -170,34 +170,6 @@ def create_applications(request):
                     )
                 )
 
-            # === O-Level ===
-            # olevel_subjects = {s.id: s for s in OLevelSubject.objects.filter(id__in=[o["subject"] for o in olevel_results])}
-            # olevel_bulk = []
-            # seen = set()
-            # for item in olevel_results:
-            #     sid = item["subject"]
-            #     if sid in seen:
-            #         return Response({"detail": "Duplicate O-Level subject"}, status=400)
-            #     seen.add(sid)
-            #     subject = olevel_subjects.get(sid)
-            #     if not subject:
-            #         return Response({"detail":f"Invalid O-Level subject: {sid}"}, status=400)
-            #     olevel_bulk.append(OLevelResult(application=application, subject=subject, grade=item["grade"].upper()))
-
-            # # === A-Level ===
-            # alevel_subjects = {s.id: s for s in ALevelSubject.objects.filter(id__in=[a["subject"] for a in alevel_results])}
-            # alevel_bulk = []
-            # seen = set()
-            # for item in alevel_results:
-            #     sid = item["subject"]
-            #     if sid in seen:
-            #         return Response({"detail": "Duplicate A-Level subject"}, status=400)
-            #     seen.add(sid)
-            #     subject = alevel_subjects.get(sid)
-            #     if not subject:
-            #         return Response({f"Invalid A-Level subject: {sid}"}, status=400)
-            #     alevel_bulk.append(ALevelResult(application=application, subject=subject, grade=item["grade"].upper()))
-
             # === Documents ===
             document_objs = []
             for i, file in enumerate(doc_files):
@@ -249,8 +221,323 @@ def create_applications(request):
         except ValueError as e:
             return Response({"detail": str(e)}, status=400)
         except Exception as e:
+            return Response({"detail": str(e)}, status=500)
+
+# save draft application
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def save_draft_applications(request):        
+    with transaction.atomic():
+        try:
+            data = request.data
+          
+            # additional qualifications
+            additional_qualifications = []
+            try:
+                additional_qual_str = data.get("additional_qualifications", "[]")
+                if additional_qual_str:
+                    additional_qualifications = json.loads(additional_qual_str)
+            except (json.JSONDecodeError, TypeError):
+                additional_qualifications = []
+
+            olevel_results = json.loads(request.data.get("olevel_results", "[]"))
+            alevel_results = json.loads(request.data.get("alevel_results", "[]"))
+
+            # === 2. Clean and filter empty data (Important for efficiency) ===
+#             # Only save if user has filled something meaningful
+            has_data = (
+                data.get("first_name") or 
+                data.get("last_name") or 
+                data.get("programs") or 
+                data.get("campus") or 
+                olevel_results or 
+                alevel_results
+            )
+
+            if not has_data:
+                return Response({
+                    "message": "No meaningful data to save yet.",
+                    "draft_saved": False
+                }, status=status.HTTP_200_OK)
+
+            # Validate main application data
+            serializer = CudApplicationSerializer(data=data, context={"request": request}, partial=True)
+            serializer.is_valid(raise_exception=True)
+
+            # remove M-2-M data
+            programs_data = serializer.validated_data.pop('programs', None)
+
+            application = Application(**serializer.validated_data)
+            application.applicant = request.user
+            application.status = "draft"
+
+            # Validate & prepare all child objects
+
+            # === O-LEVEL ===
+            olevel_results = json.loads(request.data.get("olevel_results", "[]"))
+            olevel_bulk = []
+            seen = set()
+
+            for item in olevel_results:
+                try:
+                    sid = int(item["subject"])          # ← Convert to integer
+                except (ValueError, TypeError, KeyError):
+                    return Response({"detail": f"Invalid O-Level subject ID: {item.get('subject')}"}, status=400)
+
+                if sid in seen:
+                    return Response({"detail": "Duplicate O-Level subject"}, status=400)
+                seen.add(sid)
+
+                # Get subject by ID
+                try:
+                    subject = OLevelSubject.objects.get(id=sid)
+                except OLevelSubject.DoesNotExist:
+                    return Response({"detail": f"Invalid O-Level subject ID: {sid}"}, status=400)
+
+                olevel_bulk.append(
+                    OLevelResult(
+                        application=application, 
+                        subject=subject, 
+                        grade=item["grade"].upper()
+                    )
+                )
+
+            # === A-LEVEL ===
+            alevel_results = json.loads(request.data.get("alevel_results", "[]"))
+            alevel_bulk = []
+            seen = set()
+
+            for item in alevel_results:
+                try:
+                    sid = int(item["subject"])          # ← Convert to integer
+                except (ValueError, TypeError, KeyError):
+                    return Response({"detail": f"Invalid A-Level subject ID: {item.get('subject')}"}, status=400)
+
+                if sid in seen:
+                    return Response({"detail": "Duplicate A-Level subject"}, status=400)
+                seen.add(sid)
+
+                try:
+                    subject = ALevelSubject.objects.get(id=sid)
+                except ALevelSubject.DoesNotExist:
+                    return Response({"detail": f"Invalid A-Level subject ID: {sid}"}, status=400)
+
+                alevel_bulk.append(
+                    ALevelResult(
+                        application=application, 
+                        subject=subject, 
+                        grade=item["grade"].upper()
+                    )
+                )
+
+            # === Documents ===
+            document_objs = []
+            for i, file in enumerate(doc_files):
+                doc_type = doc_types[i] if i < len(doc_types) else "Others"
+                document_objs.append(ApplicationDocument(
+                    application=application,
+                    file=file,
+                    name=file.name.split('.')[0][:50],
+                    document_type=doc_type,
+                ))
+
+            # NOW SAVE EVERYTHING
+            application.save() 
+
+            # save M-2-M field
+            if programs_data:
+               application.programs.set(programs_data) 
+
+            OLevelResult.objects.bulk_create(olevel_bulk, batch_size=50)
+            ALevelResult.objects.bulk_create(alevel_bulk, batch_size=50)
+            ApplicationDocument.objects.bulk_create(document_objs, batch_size=50)
+
+            # === NEW: Save Multiple Additional Qualifications ===
+            if additional_qualifications:
+                qual_bulk = []
+                for qual in additional_qualifications:
+                    if qual.get('institution'):  # Only save if institution is provided
+                        qual_bulk.append(AdditionalQualifications(
+                            application=application,
+                            additional_qualification_institution=qual.get('institution', ''),
+                            additional_qualification_type=qual.get('type', ''),
+                            additional_qualification_year=qual.get('year', ''),
+                            class_of_award=qual.get('class_of_award', '')
+                        ))
+                if qual_bulk:
+                    AdditionalQualifications.objects.bulk_create(qual_bulk, batch_size=20)
+
+            return Response({
+                "message": "Draft Application saved successfully!",
+            }, status=status.HTTP_201_CREATED)
+
+        except ValueError as e:
+            return Response({"detail": str(e)}, status=400)
+        except Exception as e:
             logger.error(f"Application submission failed: {e}", exc_info=True)
             return Response({"detail": str(e)}, status=500)
+
+# SAVE DRAFT APPLICATION
+# @api_view(['POST'])
+# @permission_classes([IsAuthenticated])
+# def save_draft_applications(request):
+#     with transaction.atomic():
+#         try:
+#             data = request.data  # This is now a dict (JSON)
+
+#             # === 1. Extract Basic Data ===
+#             additional_qualifications = data.get("additional_qualifications", [])
+#             if isinstance(additional_qualifications, str):
+#                 try:
+#                     additional_qualifications = json.loads(additional_qualifications)
+#                 except:
+#                     additional_qualifications = []
+
+#             olevel_results = data.get("olevel_results", [])
+#             if isinstance(olevel_results, str):
+#                 olevel_results = json.loads(olevel_results)
+
+#             alevel_results = data.get("alevel_results", [])
+#             if isinstance(alevel_results, str):
+#                 alevel_results = json.loads(alevel_results)
+
+#             # === 2. Clean and filter empty data (Important for efficiency) ===
+#             # Only save if user has filled something meaningful
+#             has_data = (
+#                 data.get("first_name") or 
+#                 data.get("last_name") or 
+#                 data.get("programs") or 
+#                 data.get("campus") or 
+#                 olevel_results or 
+#                 alevel_results
+#             )
+
+#             if not has_data:
+#                 return Response({
+#                     "message": "No meaningful data to save yet.",
+#                     "draft_saved": False
+#                 }, status=status.HTTP_200_OK)
+
+#             # === 3. Serializer (Partial = True allows saving incomplete data) ===
+#             serializer = CudApplicationSerializer(
+#                 data=data, 
+#                 context={"request": request},
+#                 partial=True   # ← Very important for drafts
+#             )
+            
+#             if not serializer.is_valid():
+#                 return Response({
+#                     "detail": "Validation failed",
+#                     "errors": serializer.errors
+#                 }, status=status.HTTP_400_BAD_REQUEST)
+
+#             # === 4. Get or Create Draft ===
+#             # Try to find existing draft for this user + batch
+#             application = Application.objects.filter(
+#                 applicant=request.user,
+#                 batch_id=data.get('batch'),
+#                 status='draft'
+#             ).first()
+
+#             if application:
+#                 # Update existing draft
+#                 for attr, value in serializer.validated_data.items():
+#                     if value is not None:  # Only update if value is provided
+#                         setattr(application, attr, value)
+#                 application.save()
+#                 message = "Draft updated successfully"
+#             else:
+#                 # Create new draft
+#                 application = Application(**serializer.validated_data)
+#                 application.applicant = request.user
+#                 application.status = "draft"
+#                 application.save()
+#                 message = "Draft created successfully"
+
+#             # === 5. Save Many-to-Many (Programs) ===
+#             programs_data = data.get("programs")
+#             if programs_data:
+#                 application.programs.set(programs_data)
+
+#             # === 6. Save O-Level Results ===
+#             if olevel_results:
+#                 OLevelResult.objects.filter(application=application).delete()  # Clear old
+#                 olevel_bulk = []
+#                 seen = set()
+#                 for item in olevel_results:
+#                     if not item.get("subject") or not item.get("grade"):
+#                         continue
+#                     sid = int(item["subject"])
+#                     if sid in seen:
+#                         continue
+#                     seen.add(sid)
+#                     try:
+#                         subject = OLevelSubject.objects.get(id=sid)
+#                         olevel_bulk.append(OLevelResult(
+#                             application=application,
+#                             subject=subject,
+#                             grade=item["grade"].upper()
+#                         ))
+#                     except OLevelSubject.DoesNotExist:
+#                         continue
+#                 if olevel_bulk:
+#                     OLevelResult.objects.bulk_create(olevel_bulk)
+
+#             # === 7. Save A-Level Results ===
+#             if alevel_results:
+#                 ALevelResult.objects.filter(application=application).delete()
+#                 alevel_bulk = []
+#                 seen = set()
+#                 for item in alevel_results:
+#                     if not item.get("subject") or not item.get("grade"):
+#                         continue
+#                     sid = int(item["subject"])
+#                     if sid in seen:
+#                         continue
+#                     seen.add(sid)
+#                     try:
+#                         subject = ALevelSubject.objects.get(id=sid)
+#                         alevel_bulk.append(ALevelResult(
+#                             application=application,
+#                             subject=subject,
+#                             grade=item["grade"].upper()
+#                         ))
+#                     except ALevelSubject.DoesNotExist:
+#                         continue
+#                 if alevel_bulk:
+#                     ALevelResult.objects.bulk_create(alevel_bulk)
+
+#             # === 8. Save Additional Qualifications ===
+#             if additional_qualifications:
+#                 AdditionalQualifications.objects.filter(application=application).delete()
+#                 qual_bulk = []
+#                 for qual in additional_qualifications:
+#                     if qual.get('institution'):
+#                         qual_bulk.append(AdditionalQualifications(
+#                             application=application,
+#                             additional_qualification_institution=qual.get('institution', ''),
+#                             additional_qualification_type=qual.get('type', ''),
+#                             additional_qualification_year=qual.get('year', ''),
+#                             class_of_award=qual.get('class_of_award', '')
+#                         ))
+#                 if qual_bulk:
+#                     AdditionalQualifications.objects.bulk_create(qual_bulk)
+
+#             # Note: Files (passport_photo, documents) are NOT saved in auto-draft
+#             # User will upload them only once at final submission
+
+#             return Response({
+#                 "message": message,
+#                 "draft_saved": True,
+#                 "application_id": application.id,
+#                 "last_updated": application.updated_at
+#             }, status=status.HTTP_200_OK)
+
+#         except Exception as e:
+#             logger.error(f"Draft save failed: {e}", exc_info=True)
+#             return Response({
+#                 "detail": "Failed to save draft. Please try again."
+#             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         
 # list applications
 class ListApplications(generics.ListAPIView):
