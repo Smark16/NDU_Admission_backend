@@ -10,12 +10,10 @@ class SchoolPayClient:
         self.school_code = settings.SCHOOL_PAY_CODE  
         self.password = settings.SCHOOL_PAY_PASSWORD
 
-        self.base_url = "https://schoolpaytest.servicecops.com/uatpaymentapi/AndroidRS/AdhocPayments"
-
-        # if settings.DEBUG:
-        #   self.base_url = "https://schoolpaytest.servicecops.com/uatpaymentapi/AndroidRS/AdhocPayments"
-        # else:
-        #    self.base_url = "https://schoolpay.co.ug/paymentapi/AndroidRS/AdhocPayments"
+        if settings.DEBUG:
+          self.base_url = "https://schoolpaytest.servicecops.com/uatpaymentapi/AndroidRS/AdhocPayments"
+        else:
+           self.base_url = "https://schoolpay.co.ug/paymentapi/AndroidRS/AdhocPayments"
         
         # Session with retries (3 attempts, backoff)
         self.session = requests.Session()

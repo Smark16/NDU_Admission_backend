@@ -9,7 +9,7 @@ from rest_framework.exceptions import ValidationError
 
 class Faculty(models.Model):
     name = models.CharField(max_length=200, unique=True)
-    code = models.CharField(max_length=20, unique=True)
+    code = models.CharField(max_length=30, unique=True)
     campuses = models.ManyToManyField(Campus, related_name='faculties', blank=True)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -41,9 +41,9 @@ class AcademicLevel(models.Model):
 
 class Batch(models.Model):
     name = models.CharField(max_length=100)
-    code = models.CharField(max_length=20)
+    code = models.CharField(max_length=40)
     programs = models.ManyToManyField(Program, related_name='batches')
-    academic_year = models.CharField(max_length=15, blank=True)
+    academic_year = models.CharField(max_length=25, blank=True)
     application_start_date = models.DateField()
     application_end_date = models.DateField()
     admission_start_date = models.DateField()
@@ -106,7 +106,7 @@ class Application(models.Model):
     last_name = models.CharField(max_length=100)
     middle_name = models.CharField(max_length=100, blank=True)
     date_of_birth = models.DateField()
-    gender = models.CharField(max_length=10)
+    gender = models.CharField(max_length=20)
     nationality = models.CharField(max_length=100)
     phone = models.CharField(max_length=20)
     email = models.EmailField()
@@ -137,7 +137,7 @@ class Application(models.Model):
    
     # Application Status
     status = models.CharField(max_length=20, default='draft')
-    application_reference = models.CharField(max_length=20, unique=True, blank=True, null=True)
+    application_reference = models.CharField(max_length=30, unique=True, blank=True, null=True)
     application_fee_paid = models.BooleanField(default=False)
     application_fee_amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     
@@ -173,7 +173,7 @@ class Application(models.Model):
 class OLevelResult(models.Model):
     application = models.ForeignKey(Application, on_delete=models.CASCADE, related_name='olevel_results')
     subject = models.ForeignKey(OLevelSubject, on_delete=models.CASCADE)
-    grade = models.CharField(max_length=2)
+    grade = models.CharField(max_length=10)
 
     class Meta:
         ordering = ['subject__name']
@@ -191,7 +191,7 @@ class OLevelResult(models.Model):
 class ALevelResult(models.Model):
     application = models.ForeignKey(Application, on_delete=models.CASCADE, related_name='alevel_results')
     subject = models.ForeignKey(ALevelSubject, on_delete=models.CASCADE)
-    grade = models.CharField(max_length=1)
+    grade = models.CharField(max_length=10)
 
     class Meta:
         ordering = ['subject__name']
@@ -224,14 +224,14 @@ class ApplicationDocument(models.Model):
 class AdditionalQualifications(models.Model):
     application = models.ForeignKey(Application, on_delete=models.CASCADE, related_name='additionals', null=True, blank=True)
     additional_qualification_institution = models.CharField(max_length=200, blank=True, help_text="Institution Name")
-    additional_qualification_type = models.CharField(max_length=20, blank=True)
+    additional_qualification_type = models.CharField(max_length=30, blank=True)
     additional_qualification_year = models.PositiveIntegerField(blank=True, null=True, help_text="Award Year")
     class_of_award = models.CharField(max_length=200, blank=True, null=True)
 
 class AdmittedStudent(models.Model):
     application = models.OneToOneField(Application, on_delete=models.CASCADE, related_name='admission')
     student_id = models.CharField(max_length=50, unique=True)
-    study_mode = models.CharField(max_length=5)
+    study_mode = models.CharField(max_length=30)
     reg_no = models.CharField(max_length=100, unique=True)
     admitted_program = models.ForeignKey(Program, on_delete=models.CASCADE)
     admitted_batch = models.ForeignKey(Batch, on_delete=models.CASCADE, related_name='admitted_students')

@@ -82,6 +82,7 @@ class InitiatePayment(APIView):
         amount = request.data.get('amount')
         reason = "Application Fee"
         callBackUrl = "https://applications-admin.ndu.ac.ug/api/payments/webhook/"
+        # callBackUrl = request.build_absolute_uri('/api/payments/webhook/')
 
         # EXPIRE OLD PAYMENTS
         ApplicationPayment.objects.filter(
@@ -114,8 +115,6 @@ class InitiatePayment(APIView):
             reason=reason,
             callBackUrl=callBackUrl
         )
-        
-        print('response data', response_data)
 
         if response_data.get('returnCode') != 0:
             return Response(
@@ -222,8 +221,6 @@ class CheckPaymentStatus(APIView):
         client = SchoolPayClient()
         data = client.check_status(payment.payment_reference) 
 
-        print('data', data)
-
         if data.get('returnCode') == 0:
             if data.get('status') == 'PAID':
                 with transaction.atomic():
@@ -238,7 +235,6 @@ class CheckPaymentStatus(APIView):
 
         return Response({
             'status': payment.status,
-            "transactionId":payment.transaction_id,
             })
 # ========================================================end schoolpay====================================================
 

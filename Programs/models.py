@@ -6,7 +6,7 @@ from admissions.models import *
 class Program(models.Model):
     name = models.CharField(max_length=200)
     short_form = models.CharField(max_length=200)
-    code = models.CharField(max_length=20)
+    code = models.CharField(max_length=40)
     faculty = models.ForeignKey('admissions.Faculty', on_delete=models.CASCADE, related_name='programs', null=True, blank=True)
     academic_level = models.ForeignKey('admissions.AcademicLevel', on_delete=models.CASCADE)
     campuses = models.ManyToManyField(Campus, related_name='programs', blank=True)

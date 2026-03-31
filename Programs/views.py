@@ -15,6 +15,7 @@ from accounts.models import Campus
 from .utils.excel import create_workbook
 from django.http import HttpResponse
 from django.utils.timezone import localtime
+from django.db.models import Count, Q
 
 # Create your views here.
 
@@ -444,3 +445,37 @@ class PreviewProgramsFromCSV(APIView):
                 "error": "Failed to process file",
                 "details": str(e)
             }, status=500)
+
+# program stats
+class ProgramStats(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        # Basic program aggregates
+        program_aggregate = Program.objects.select_related('faculty', 'academic_level').prefetch_related('campuses').aggregate(
+            total_programs=Count('id'),
+            active_programs=Count('id', filter=Q(is_active=True)),
+        )
+
+        # Dynamic campus statistics (no hardcoded names)
+        campus_stats = (
+            Campus.objects
+            .annotate(
+                program_count=Count('programs', distinct=True),          
+                active_program_count=Count(
+                    'programs',
+                    filter=Q(programs__is_active=True),
+                    distinct=True
+                )
+            )
+            .values('id', 'name', 'code', 'program_count', 'active_program_count')
+            .order_by('-program_count') 
+        )
+
+        data = {
+            **program_aggregate,
+            "campus_breakdown": list(campus_stats),   
+        }
+
+        return Response(data)
+

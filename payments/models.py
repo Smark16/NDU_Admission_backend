@@ -16,7 +16,7 @@ class ApplicationPayment(models.Model):
 
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     phone_number = models.CharField(max_length=20)
-    fee_type = models.CharField(max_length=20, default='Application Fees')
+    fee_type = models.CharField(max_length=40, default='Application Fees')
 
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='PENDING')
 
@@ -28,9 +28,9 @@ class ApplicationPayment(models.Model):
    
 class ApplicationFee(models.Model):
     fee_type = models.CharField(max_length=100)
-    nationality_type = models.CharField(max_length=20)
+    nationality_type = models.CharField(max_length=40)
     academic_level = models.ManyToManyField(AcademicLevel)
-    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    amount = models.DecimalField(max_digits=50, decimal_places=2)
     admission_period = models.ForeignKey(Batch, on_delete=models.CASCADE)
     is_active = models.BooleanField(default=True)
 
