@@ -39,21 +39,3 @@ def send_configurable_email(
     except Exception as e:
         print(f"SendGrid error: {e}")
         return False
-
-# def send_configurable_email(to_email: str, subject: str, body: str):
-#     try:  
-#         sg = SendGridAPIClient(api_key=settings.SENDGRID_API_KEY)
-
-#         from_email = Email('no-reply@ndu.ac.ug')
-#         to = To(to_email)  
-#         subject=subject
-#         content = Content("text/plain", body)  
-#         message = Mail(from_email, to, subject, content)
-
-#         response = sg.client.mail.send.post(request_body=message.get())
-
-#         return response.status_code in (200, 202)
-
-#     except Exception as e:
-#         print(f"SendGrid error: {e}")
-#         return False
