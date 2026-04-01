@@ -11,7 +11,6 @@ urlpatterns = [
     # # Application URLs
     path('applications', views.ListApplications.as_view()),
     path('create_applications', views.create_applications),
-    path('save_draft/', views.save_draft_applications),
     path('application_detail/<int:application_id>', views.application_detail),
     path('review_application/<int:application_id>', views.ReviewApplication.as_view()),
     path('single_app/<int:application_id>', views.SingleApplication.as_view()),

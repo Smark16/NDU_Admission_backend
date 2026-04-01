@@ -42,6 +42,7 @@ LOCAL_APPS = [
     'audit',
     'payments',
     'Programs',
+    'Drafts',
     'OfferLetter.AdmissionLetter',
     'OfferLetter.AdmissionReports'
 ]

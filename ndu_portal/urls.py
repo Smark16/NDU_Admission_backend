@@ -18,6 +18,7 @@ urlpatterns = [
     path('django_admin/', admin.site.urls),
     path('api/accounts/', include('accounts.urls')),
     path('api/admissions/', include('admissions.urls')),
+    path('api/drafts/', include('Drafts.urls')),
     path('api/payments/', include('payments.urls')),
     path('api/audit/', include('audit.urls')),
     path('api/program/', include('Programs.urls')),
