@@ -196,6 +196,10 @@ CELERY_BEAT_SCHEDULE = {
     "process-delayed-payments-every-fiveminutes": {
         "task": "payments.tasks.auto_process_delayed_payments",
         "schedule": crontab(minute="*/5"),
+    },
+    "process-removing-of-drafts" : {
+        "task": "Drafts.tasks.auto_process_drafts_deletion",
+        "schedule": crontab(minute="*/1"),
     }
 }
 
