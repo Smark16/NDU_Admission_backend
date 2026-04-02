@@ -16,7 +16,7 @@ class SchoolPayClient:
           self.base_url = "https://schoolpaytest.servicecops.com/uatpaymentapi/AndroidRS/AdhocPayments"
         else:
            self.base_url = "https://schoolpay.co.ug/paymentapi/AndroidRS/AdhocPayments"
-        
+
         # Session with retries (3 attempts, backoff)
         self.session = requests.Session()
         retry = Retry(connect=3, backoff_factor=0.5)
@@ -58,3 +58,4 @@ class SchoolPayClient:
             return response.json()
         except requests.RequestException as e:
             raise ValueError(f"Status check failed: {str(e)}")
+            
