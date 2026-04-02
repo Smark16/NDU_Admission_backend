@@ -56,26 +56,26 @@ def create_applications(request):
             data = request.data.copy()
             files = request.FILES
 
-            ext_ref = request.data.get("external_reference")
+            # ext_ref = request.data.get("external_reference")
 
-            if not ext_ref:
-                return Response(
-                    {"detail": "Payment reference is required"},
-                    status=400
-                )
+            # if not ext_ref:
+            #     return Response(
+            #         {"detail": "Payment reference is required"},
+            #         status=400
+            #     )
 
-            try:
-                payment = ApplicationPayment.objects.select_for_update().get(
-                    external_reference=ext_ref,
-                    user=request.user,
-                    status="PAID",
-                    application__isnull=True 
-                )
-            except ApplicationPayment.DoesNotExist:
-                return Response(
-                    {"detail": "Invalid, unpaid, or already used payment reference"},
-                    status=400
-                )
+            # try:
+            #     payment = ApplicationPayment.objects.select_for_update().get(
+            #         external_reference=ext_ref,
+            #         user=request.user,
+            #         status="PAID",
+            #         application__isnull=True 
+            #     )
+            # except ApplicationPayment.DoesNotExist:
+            #     return Response(
+            #         {"detail": "Invalid, unpaid, or already used payment reference"},
+            #         status=400
+            #     )
 
             # additional qualifications
             additional_qualifications = []
@@ -103,9 +103,9 @@ def create_applications(request):
             application = Application(**serializer.validated_data)
             application.applicant = request.user
             application.status = "submitted"
-            application.application_fee_paid = True
-            application.application_fee_amount = payment.amount
-            application.application_reference = payment.external_reference
+            # application.application_fee_paid = True
+            # application.application_fee_amount = payment.amount
+            # application.application_reference = payment.external_reference
 
             if passport_photo:
                 # validate_passport_photo(passport_photo)
@@ -183,8 +183,8 @@ def create_applications(request):
 
             # NOW SAVE EVERYTHING
             application.save() 
-            payment.application = application
-            payment.save(update_fields=["application"]) 
+            # payment.application = application
+            # payment.save(update_fields=["application"]) 
 
             # save M-2-M field
             if programs_data:
