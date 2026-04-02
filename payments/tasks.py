@@ -6,7 +6,7 @@ from payments.models import ApplicationPayment
 
 @shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=10)
 def auto_process_delayed_payments(self):
-    expired_time = timezone.now() - timedelta(minutes=10)
+    expired_time = timezone.now() - timedelta(minutes=5)
 
     updated_count = ApplicationPayment.objects.filter(
         status='PENDING',

@@ -88,7 +88,7 @@ class InitiatePayment(APIView):
         ApplicationPayment.objects.filter(
             user=request.user,
             status='PENDING',
-            created_at__lt=timezone.now() - timedelta(minutes=10)
+            created_at__lt=timezone.now() - timedelta(minutes=5)
         ).update(status='FAILED')
 
         # PREVENT DUPLICATE PENDING PAYMENTS
