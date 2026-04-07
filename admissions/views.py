@@ -18,12 +18,14 @@ from django.db.models import Q
 
 import logging
 import json
+import os
 
 from weasyprint import HTML
 from django.shortcuts import get_object_or_404
 from django.http import HttpResponse
 from django.template.loader import render_to_string
 from datetime import date
+from urllib.parse import quote
 
 # caching
 from django.core.cache import cache
@@ -902,6 +904,13 @@ class DownloadAdmissionPDF(APIView):
         # Current date for the letter
         today = date.today()
 
+        # logo
+        # logo_path = os.path.join(settings.BASE_DIR, "static", "Logo", "Ndejje_University_Logo.jpg")
+        # logo_url = "file:///" + quote(logo_path.replace("\\", "/"))
+        # === IMPROVED LOGO HANDLING ===
+        # print('logo_path', logo_url)
+        logo_relative_path = "Logo/Ndejje_University_Logo.jpg"   # relative to static folder
+
         # Render template
         html_string = render_to_string(
             'student_profile.html',
@@ -911,12 +920,14 @@ class DownloadAdmissionPDF(APIView):
                 'alevel_results': alevel_results,
                 'additional_qualifications': qualifications, 
                 'today': today,
+                'logo_path': f"/static/{logo_relative_path}",
             },
             request=request
         )
 
         # Generate PDF with WeasyPrint
-        pdf_file = HTML(string=html_string, base_url=request.build_absolute_uri()).write_pdf()
+        # pdf_file = HTML(string=html_string, base_url=request.build_absolute_uri()).write_pdf()
+        pdf_file = HTML(string=html_string, base_url=settings.BASE_DIR).write_pdf()
 
         # Response as downloadable PDF
         response = HttpResponse(content_type='application/pdf')
