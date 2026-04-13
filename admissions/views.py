@@ -13,6 +13,7 @@ from django.conf import settings
 from django.db import transaction
 # from .utils.validate_photo import validate_passport_photo
 from .tasks import celery_send_application_email, celery_application_notification, celery_admission_email, celery_admission_update
+from accounts.tasks import celery_send_account_email
 from payments.models import ApplicationPayment
 from django.db.models import Q
 
@@ -214,6 +215,189 @@ def create_applications(request):
             # === Success: Send email & notification ===
             celery_send_application_email.delay(application.id)
             celery_application_notification.delay(request.user.id,"Application Submitted","Your application was successfully submitted")
+
+            return Response({
+                "message": "Application submitted successfully!",
+                "application_id": application.id,
+            }, status=status.HTTP_201_CREATED)
+
+        except ValueError as e:
+            return Response({"detail": str(e)}, status=400)
+        except Exception as e:
+            return Response({"detail": str(e)}, status=500)
+
+# Direct Application Entry
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def create_direct_applications(request):
+    MAX_FILE_SIZE = settings.FILE_UPLOAD_MAX_MEMORY_SIZE
+    
+    for file_obj in request.FILES.getlist('documents', []):
+        if file_obj.size > MAX_FILE_SIZE:
+            return Response(
+                {"detail": f"Each document must be ≤ 10 MB. '{file_obj.name}' is too large ({file_obj.size / (1024*1024):.1f} MB)."},
+                    status=400
+                ) 
+                      
+    if 'passport_photo' in request.FILES:
+            photo = request.FILES['passport_photo']
+            if photo.size > MAX_FILE_SIZE:
+                return Response(
+                    {"detail": f"Passport photo must be ≤ 10 MB. '{photo.name}' is too large ({photo.size / (1024*1024):.1f} MB)."},
+                        status=400
+                )          
+            
+    with transaction.atomic():
+        try:
+            data = request.data.copy()
+            files = request.FILES
+
+            # additional qualifications
+            additional_qualifications = []
+            try:
+                additional_qual_str = request.data.get("additional_qualifications", "[]")
+                if additional_qual_str:
+                    additional_qualifications = json.loads(additional_qual_str)
+            except (json.JSONDecodeError, TypeError):
+                additional_qualifications = []
+
+            # Extract everything
+            doc_files = files.getlist("documents")
+            doc_types = request.data.getlist("document_types", [])
+            passport_photo = files.get("passport_photo")
+            olevel_results = json.loads(request.data.get("olevel_results", "[]"))
+            alevel_results = json.loads(request.data.get("alevel_results", "[]"))
+
+            # Validate main application data
+            serializer = CudApplicationSerializer(data=data, context={"request": request})
+            serializer.is_valid(raise_exception=True)
+
+            # remove M-2-M data
+            programs_data = serializer.validated_data.pop('programs', None)
+
+            # create applicant user
+            try:
+                password = 'applicant@12345'
+                applicant = user = User.objects.create(
+                            email=data.get('email', ''),
+                            first_name=data.get('first_name', ''),
+                            last_name=data.get('last_name', ''),
+                            phone=data.get('phone', ''),
+                            username=data.get('email', ''),
+                            is_applicant=True,
+                            password=password
+                        )
+                
+            except Exception as e:
+                return Response({"detail": f"Failed to create user: {str(e)}"}, status=400)
+
+            application = Application(**serializer.validated_data)
+            application.applicant = applicant
+            application.status = "submitted"
+            application.application_fee_paid = True
+        
+            if passport_photo:
+                # validate_passport_photo(passport_photo)
+                application.passport_photo = passport_photo
+
+            # Validate & prepare all child objects
+
+            # === O-LEVEL ===
+            olevel_results = json.loads(request.data.get("olevel_results", "[]"))
+            olevel_bulk = []
+            seen = set()
+
+            for item in olevel_results:
+                try:
+                    sid = int(item["subject"])          # ← Convert to integer
+                except (ValueError, TypeError, KeyError):
+                    return Response({"detail": f"Invalid O-Level subject ID: {item.get('subject')}"}, status=400)
+
+                if sid in seen:
+                    return Response({"detail": "Duplicate O-Level subject"}, status=400)
+                seen.add(sid)
+
+                # Get subject by ID
+                try:
+                    subject = OLevelSubject.objects.get(id=sid)
+                except OLevelSubject.DoesNotExist:
+                    return Response({"detail": f"Invalid O-Level subject ID: {sid}"}, status=400)
+
+                olevel_bulk.append(
+                    OLevelResult(
+                        application=application, 
+                        subject=subject, 
+                        grade=item["grade"].upper()
+                    )
+                )
+
+            # === A-LEVEL ===
+            alevel_results = json.loads(request.data.get("alevel_results", "[]"))
+            alevel_bulk = []
+            seen = set()
+
+            for item in alevel_results:
+                try:
+                    sid = int(item["subject"])          # ← Convert to integer
+                except (ValueError, TypeError, KeyError):
+                    return Response({"detail": f"Invalid A-Level subject ID: {item.get('subject')}"}, status=400)
+
+                if sid in seen:
+                    return Response({"detail": "Duplicate A-Level subject"}, status=400)
+                seen.add(sid)
+
+                try:
+                    subject = ALevelSubject.objects.get(id=sid)
+                except ALevelSubject.DoesNotExist:
+                    return Response({"detail": f"Invalid A-Level subject ID: {sid}"}, status=400)
+
+                alevel_bulk.append(
+                    ALevelResult(
+                        application=application, 
+                        subject=subject, 
+                        grade=item["grade"].upper()
+                    )
+                )
+
+            # === Documents ===
+            document_objs = []
+            for i, file in enumerate(doc_files):
+                doc_type = doc_types[i] if i < len(doc_types) else "Others"
+                document_objs.append(ApplicationDocument(
+                    application=application,
+                    file=file,
+                    name=file.name.split('.')[0][:50],
+                    document_type=doc_type,
+                ))
+
+            # NOW SAVE EVERYTHING
+            application.save() 
+
+            # save M-2-M field
+            if programs_data:
+               application.programs.set(programs_data) 
+
+            OLevelResult.objects.bulk_create(olevel_bulk, batch_size=50)
+            ALevelResult.objects.bulk_create(alevel_bulk, batch_size=50)
+            ApplicationDocument.objects.bulk_create(document_objs, batch_size=50)
+
+            # === NEW: Save Multiple Additional Qualifications ===
+            if additional_qualifications:
+                qual_bulk = []
+                for qual in additional_qualifications:
+                    if qual.get('institution'):  # Only save if institution is provided
+                        qual_bulk.append(AdditionalQualifications(
+                            application=application,
+                            additional_qualification_institution=qual.get('institution', ''),
+                            additional_qualification_type=qual.get('type', ''),
+                            additional_qualification_year=qual.get('year', ''),
+                            class_of_award=qual.get('class_of_award', '')
+                        ))
+                if qual_bulk:
+                    AdditionalQualifications.objects.bulk_create(qual_bulk, batch_size=20)
+
+            # Send email
+            celery_send_account_email.delay(user.id, password)
 
             return Response({
                 "message": "Application submitted successfully!",
