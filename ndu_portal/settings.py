@@ -95,7 +95,7 @@ WSGI_APPLICATION = 'ndu_portal.wsgi.application'
 CACHES = {
     "default": {
         "BACKEND": "django_redis.cache.RedisCache",
-        "LOCATION": "redis://127.0.0.1:6379/1",
+        "LOCATION": env("LOCATION"),
         "OPTIONS": {
             "CLIENT_CLASS": "django_redis.client.DefaultClient",
         }
@@ -185,8 +185,8 @@ DATA_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024  # 10MB
 FILE_UPLOAD_PERMISSIONS = 0o644
 
 # Celery Configuration
-CELERY_BROKER_URL = "redis://127.0.0.1:6379/0"   
-CELERY_RESULT_BACKEND = "redis://127.0.0.1:6379/0" 
+CELERY_BROKER_URL = env("CELERY_BROKER_URL")   
+CELERY_RESULT_BACKEND = env("CELERY_RESULT_BACKEND") 
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
