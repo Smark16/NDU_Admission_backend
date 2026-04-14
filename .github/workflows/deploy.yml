@@ -24,7 +24,7 @@ jobs:
         port: 22
         script: |
           set -e
-          cd /home/sfmis/NDU_Admission_backend
+          cd /home/admissions/NDU_Admission_backend
           git reset --hard
           git pull origin main
           source venv/bin/activate

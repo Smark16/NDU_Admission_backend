@@ -14,7 +14,7 @@ SECRET_KEY = env('SECRET_KEY')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = env.bool('DEBUG')
 
-ALLOWED_HOSTS = ['*']
+ALLOWED_HOSTS = ["applications.ndu.ac.ug","137.63.139.78","137.63.246.169","127.0.0.1"]
 
 # Application definition
 DJANGO_APPS = [
@@ -220,14 +220,16 @@ CSRF_TRUSTED_ORIGINS = [
     'http://localhost:5173',
     'https://applications.ndu.ac.ug',
     'https://applications-admin.ndu.ac.ug',
-    'http://172.17.31.147'
+    'http://172.17.31.147',
+    'http://137.63.246.169'
 ]
 
 CORS_ALLOWED_ORIGINS = [
    'http://localhost:5173',
    'https://applications.ndu.ac.ug',
    'https://applications-admin.ndu.ac.ug',
-   'http://172.17.31.147'
+   'http://172.17.31.147',
+   'http://137.63.246.169'
 ]
 
 CORS_ALLOW_CREDENTIALS = True
