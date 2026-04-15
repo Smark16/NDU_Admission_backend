@@ -20,6 +20,7 @@ from django.utils import timezone
 from datetime import timedelta
 from .serializers import ApplicationPaymentSerializer
 from admissions.models import Application
+from django.conf import settings
 
 # caching
 from django.core.cache import cache
@@ -81,12 +82,12 @@ class InitiatePayment(APIView):
         last_name = request.data.get('last_name')
         amount = request.data.get('amount')
         reason = "Application Fee"
-        callBackUrl = "https://e577-196-43-131-1.ngrok-free.app/api/payments/webhook/"
+        callBackUrl = "f{settings.BACKEND_URL}/api/payments/webhook/"
         # callBackUrl = request.build_absolute_uri('/api/payments/webhook/')
 
         # EXPIRE OLD PAYMENTS
         ApplicationPayment.objects.filter(
-            user=request.user,
+            user=request.user,+
             status='PENDING',
             created_at__lt=timezone.now() - timedelta(minutes=5)
         ).update(status='FAILED')
@@ -156,9 +157,6 @@ def schoolpay_webhook(request):
 
     # === LOG EVERYTHING SO YOU CAN SEE WHAT ARRIVES ===
     logger.info("SchoolPay webhook received: %s", json.dumps(data, indent=2))
-    print("=== SCHOOLPAY WEBHOOK ===")
-    print(json.dumps(data, indent=2))
-    print("=========================")
 
     # For admission/application fees, SchoolPay usually sends a simple payload
     status = data.get('status')
@@ -250,7 +248,7 @@ class ListPayments(generics.ListAPIView):
             'application',
             'application__batch',
             'user'
-        ).all()
+        ).order_by('-created_at')
 
 
 

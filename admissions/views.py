@@ -123,7 +123,7 @@ def create_applications(request):
 
             for item in olevel_results:
                 try:
-                    sid = int(item["subject"])          # ← Convert to integer
+                    sid = int(item["subject"])         
                 except (ValueError, TypeError, KeyError):
                     return Response({"detail": f"Invalid O-Level subject ID: {item.get('subject')}"}, status=400)
 
@@ -397,7 +397,7 @@ def create_direct_applications(request):
                     AdditionalQualifications.objects.bulk_create(qual_bulk, batch_size=20)
 
             # Send email
-            celery_send_account_email.delay(user.id, password)
+            celery_send_account_email.delay(applicant.id, password)
 
             return Response({
                 "message": "Application submitted successfully!",
@@ -412,6 +412,12 @@ def create_direct_applications(request):
 # list applications
 class ListApplications(generics.ListAPIView):
     queryset = Application.objects.filter(~Q(status__in=['draft','Admitted', 'rejected', 'accepted'])).order_by('created_at')
+    serializer_class = ListApplicationsSerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+# rejected Students
+class ListRejectedStudents(generics.ListAPIView):
+    queryset = Application.objects.filter(status__in=['rejected']).order_by('-created_at')
     serializer_class = ListApplicationsSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
