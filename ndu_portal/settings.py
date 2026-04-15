@@ -14,7 +14,13 @@ SECRET_KEY = env('SECRET_KEY')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = env.bool('DEBUG')
 
-ALLOWED_HOSTS = ["applications.ndu.ac.ug","137.63.139.78","137.63.246.169","127.0.0.1"]
+ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=[
+    '127.0.0.1',
+    'localhost',
+    'applications.ndu.ac.ug',
+    'applications-admin.ndu.ac.ug',
+    '.ndu.ac.ug',           
+])
 
 # Application definition
 DJANGO_APPS = [
