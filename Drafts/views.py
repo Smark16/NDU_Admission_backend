@@ -81,6 +81,7 @@ def save_draft_applications(request):
         }
 
         draft.additional_qualifications = data.get('additionalQualifications', [])
+        draft.application_fee_paid = data.get('application_fee_paid')
 
         # Save programs (ManyToMany)
         if data.get('programs'):
