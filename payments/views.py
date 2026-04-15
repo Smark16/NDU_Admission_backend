@@ -20,6 +20,7 @@ from django.utils import timezone
 from datetime import timedelta
 from .serializers import ApplicationPaymentSerializer
 from admissions.models import Application
+from django.conf import settings
 
 # caching
 from django.core.cache import cache
@@ -81,8 +82,9 @@ class InitiatePayment(APIView):
         last_name = request.data.get('last_name')
         amount = request.data.get('amount')
         reason = "Application Fee"
-        callBackUrl = "https://e577-196-43-131-1.ngrok-free.app/api/payments/webhook/"
+        callBackUrl = f"{settings.BACKEND_URL}/api/payments/webhook/"
         # callBackUrl = request.build_absolute_uri('/api/payments/webhook/')
+        print('callback',callBackUrl)
 
         # EXPIRE OLD PAYMENTS
         ApplicationPayment.objects.filter(
