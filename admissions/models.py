@@ -143,6 +143,7 @@ class Application(models.Model):
     
     # Review Information
     reviewed_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='reviewed_applications')
+    admitted_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='admissions')
     reviewed_at = models.DateTimeField(null=True, blank=True)
     review_notes = models.TextField(blank=True)
 

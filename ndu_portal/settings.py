@@ -21,7 +21,6 @@ ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=[
     'applications-admin.ndu.ac.ug',
     '.ndu.ac.ug',           
 ])
-
 # Application definition
 DJANGO_APPS = [
     'django.contrib.admin',
@@ -101,7 +100,7 @@ WSGI_APPLICATION = 'ndu_portal.wsgi.application'
 CACHES = {
     "default": {
         "BACKEND": "django_redis.cache.RedisCache",
-        "LOCATION": env("LOCATION"),
+        "LOCATION": "redis://127.0.0.1:6379/1",
         "OPTIONS": {
             "CLIENT_CLASS": "django_redis.client.DefaultClient",
         }
@@ -123,7 +122,7 @@ else:
         "NAME": env("DB_NAME"),
         "USER": env("DB_USER"),
         "PASSWORD": env("DB_PASSWORD"),
-        "HOST": env("DB_HOST"), 
+        "HOST": "127.0.0.1", 
         "PORT": 6432,         
         "CONN_MAX_AGE": 0, 
     }
@@ -191,8 +190,8 @@ DATA_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024  # 10MB
 FILE_UPLOAD_PERMISSIONS = 0o644
 
 # Celery Configuration
-CELERY_BROKER_URL = env("CELERY_BROKER_URL")   
-CELERY_RESULT_BACKEND = env("CELERY_RESULT_BACKEND") 
+CELERY_BROKER_URL = "redis://127.0.0.1:6379/0"   
+CELERY_RESULT_BACKEND = "redis://127.0.0.1:6379/0" 
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
@@ -227,7 +226,7 @@ CSRF_TRUSTED_ORIGINS = [
     'https://applications.ndu.ac.ug',
     'https://applications-admin.ndu.ac.ug',
     'http://172.17.31.147',
-    'http://137.63.246.169'
+    "https://admissions.ndu.ac.ug"
 ]
 
 CORS_ALLOWED_ORIGINS = [
@@ -235,7 +234,7 @@ CORS_ALLOWED_ORIGINS = [
    'https://applications.ndu.ac.ug',
    'https://applications-admin.ndu.ac.ug',
    'http://172.17.31.147',
-   'http://137.63.246.169'
+   'https://admissions.ndu.ac.ug'
 ]
 
 CORS_ALLOW_CREDENTIALS = True
@@ -253,8 +252,9 @@ REST_FRAMEWORK = {
 
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(minutes=5),
-    "REFRESH_TOKEN_LIFETIME": timedelta(days=30),
+    "REFRESH_TOKEN_LIFETIME": timedelta(hours=4),
     "ROTATE_REFRESH_TOKENS": True,
+    "BLACKLIST_AFTER_ROTATION": True,
 
     "ALGORITHM": "HS256",  # Google uses RS256, not HS256
     "SIGNING_KEY": SECRET_KEY,
