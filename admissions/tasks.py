@@ -1,7 +1,7 @@
 from celery import shared_task
 from django.apps import apps
 
-from .utils.email import send_application_email, send_admission_email, send_admission_update
+from .utils.email import send_application_email, send_admission_email, send_admission_update, send_rejection_email
 from .utils.notification import create_notification
 
 
@@ -36,3 +36,10 @@ def celery_admission_update(admission_id):
     Admission = apps.get_model('admissions', 'AdmittedStudent')
     admission = Admission.objects.get(id=admission_id)
     send_admission_update(admission, subject="Admission updated Successfully")
+
+@shared_task
+def celery_rejection_email(application_id, rejection_reason):
+    Application = apps.get_model('admissions', 'Application')
+    application = Application.objects.get(id=application_id)
+
+    send_rejection_email(application, rejection_reason=rejection_reason)

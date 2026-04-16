@@ -12,7 +12,7 @@ from rest_framework.decorators import api_view, permission_classes
 from django.conf import settings
 from django.db import transaction
 # from .utils.validate_photo import validate_passport_photo
-from .tasks import celery_send_application_email, celery_application_notification, celery_admission_email, celery_admission_update
+from .tasks import celery_rejection_email, celery_send_application_email, celery_application_notification, celery_admission_email, celery_admission_update
 from accounts.tasks import celery_send_account_email
 from payments.models import ApplicationPayment
 from django.db.models import Q
@@ -426,7 +426,7 @@ class DeleteApplication(generics.RetrieveDestroyAPIView):
     queryset = Application.objects.all()
     serializer_class = CudApplicationSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
-
+    
     def delete(self, request,*args, **kwargs):
         instance = self.get_object()
         instance.delete()
@@ -980,7 +980,7 @@ class AdmitStudent(generics.CreateAPIView):
                     return Response({"detail": "Student application doesn't exist"}, status=400)
 
                 # Update status
-                Application.objects.filter(id=application.id).update(status="accepted")
+                Application.objects.filter(id=application.id).update(status="accepted", admitted_by=request.user)
 
                 celery_admission_email.delay(application.id, admission.id)
                 celery_application_notification.delay(request.user.id,"Admission Successful","Congratulations! You have been admitted to Ndejje University")
@@ -989,6 +989,29 @@ class AdmitStudent(generics.CreateAPIView):
 
                 return Response(self.serializer_class(admission).data, status=201)
 
+        except Exception as e:
+            return Response({"detail": str(e)}, status=400)
+
+class RejectStudent(APIView):
+    queryset = Application.objects.all()
+    serializer_class = ApplicationSerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+    def update(self, request, application_id):
+        rejection_reason = request.data.get('rejection_reason', 'No reason provided')
+        try:
+            with transaction.atomic():
+                application = Application.objects.select_related('applicant').get(pk=application_id)
+                application.status = 'rejected'
+                application.save()
+
+                celery_rejection_email.delay(application.id, rejection_reason)
+                celery_application_notification.delay(request.user.id,"Application Rejected","We regret to inform you that your application has been rejected")
+
+                return Response({"detail": "Application rejected successfully"}, status=200)
+
+        except Application.DoesNotExist:
+            return Response({"detail": "Application not found"}, status=404)
         except Exception as e:
             return Response({"detail": str(e)}, status=400)
  
