@@ -42,7 +42,7 @@ def create_applications(request):
     for file_obj in request.FILES.getlist('documents', []):
         if file_obj.size > MAX_FILE_SIZE:
             return Response(
-                {"detail": f"Each document must be ≤ 10 MB. '{file_obj.name}' is too large ({file_obj.size / (1024*1024):.1f} MB)."},
+                {"detail": f"Each document must be ≤ 50 MB. '{file_obj.name}' is too large ({file_obj.size / (1024*1024):.1f} MB)."},
                     status=400
                 ) 
                       
@@ -235,7 +235,7 @@ def create_direct_applications(request):
     for file_obj in request.FILES.getlist('documents', []):
         if file_obj.size > MAX_FILE_SIZE:
             return Response(
-                {"detail": f"Each document must be ≤ 10 MB. '{file_obj.name}' is too large ({file_obj.size / (1024*1024):.1f} MB)."},
+                {"detail": f"Each document must be ≤ 50 MB. '{file_obj.name}' is too large ({file_obj.size / (1024*1024):.1f} MB)."},
                     status=400
                 ) 
                       

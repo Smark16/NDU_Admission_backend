@@ -38,6 +38,8 @@ class DraftApplication(models.Model):
     olevel_data = models.JSONField(default=dict)   
     alevel_data = models.JSONField(default=dict)
     additional_qualifications = models.JSONField(default=list)
+    application_fee_paid = models.BooleanField(default=False)
+    application_reference = models.CharField(max_length=50, unique=True, blank=True, null=True)
 
     # Status
     status = models.CharField(max_length=20, default='draft')
