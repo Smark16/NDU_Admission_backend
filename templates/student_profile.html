@@ -279,6 +279,22 @@
       <p style="color:#888; font-style:italic;">No additional qualifications provided.</p>
     {% endif %}
 
+     <!-- Programs -->
+    <h2 class="section-title">Programs of Interest</h2>
+    <div class="programs-list">
+      {% for program in application.programs.all %}
+        <div class="program-item">
+          <strong>{{ program.name|default:"Unnamed Program" }}</strong>
+        </div>
+      {% endfor %}
+    </div>
+
+    <!-- Campus -->
+    <h2 class="section-title">Campus</h2>
+    <div class="campus-info">
+      <p>{{ application.campus|default:"Not specified" }}</p>
+    </div>
+
     <!-- Signature Section -->
     <div class="signature-section">
       <div class="signature-block">
