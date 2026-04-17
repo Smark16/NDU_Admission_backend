@@ -129,7 +129,7 @@ class Application(models.Model):
     alevel_year = models.PositiveIntegerField()
     alevel_index_number = models.CharField(max_length=50)
     alevel_school = models.CharField(max_length=200)
-    alevel_combination = models.CharField(max_length=5)
+    alevel_combination = models.CharField(max_length=10)
     
     # Document uploads
     passport_photo = models.ImageField(upload_to='passport_photos/')

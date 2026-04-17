@@ -1120,8 +1120,8 @@ class DownloadAdmissionPDF(APIView):
         # Resolve relative to this file so it works regardless of CWD
         _here = _os.path.dirname(_os.path.abspath(__file__))           
         logo_b64 = ""
-        for _ext in ('Ndejje_University_Logo.jpg', 'Ndejje_University_Logo.png'):
-            _logo_path = _os.path.join(settings.BASE_DIR, "static", "Ndejje_University_Logo.jpg")
+        for _ext in ('ndejje_logo.jpg', 'ndejje_logo.png'):
+            _logo_path = _os.path.join(settings.BASE_DIR, "static", "ndejje_logo.jpg")
             if _os.path.exists(_logo_path):
                 with open(_logo_path, 'rb') as _f:
                     _mime = 'jpeg' if _ext.endswith('.jpg') else 'png'
