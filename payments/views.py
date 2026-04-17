@@ -87,7 +87,7 @@ class InitiatePayment(APIView):
 
         # EXPIRE OLD PAYMENTS
         ApplicationPayment.objects.filter(
-            user=request.user,+
+            user=request.user,
             status='PENDING',
             created_at__lt=timezone.now() - timedelta(minutes=5)
         ).update(status='FAILED')
