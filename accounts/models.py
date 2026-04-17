@@ -49,22 +49,23 @@ class Profile(models.Model):
     first_name = models.CharField(max_length=50)
     last_name = models.CharField(max_length=50)
     email = models.EmailField(max_length=100)
-    phone = models.PositiveBigIntegerField()
-    profile_photo = models.ImageField(upload_to='passport_photos/')
+    phone = models.CharField(max_length=20, blank=True, null=True)
+    profile_photo = models.ImageField(upload_to='passport_photos/', blank=True, null=True)
     is_staff = models.BooleanField(default=False)
     is_applicant = models.BooleanField(default=False)
-    date_joined = models.DateTimeField()
+    date_joined = models.DateTimeField(null=True, blank=True)
 
 def create_profile(sender, instance, created, **kwargs):
     if created:
-        Profile.objects.create(user=instance, 
-        first_name=instance.first_name, 
-        last_name=instance.last_name, 
-        date_joined=instance.date_joined,
-        is_staff=instance.is_staff,
-        is_applicant=instance.is_applicant,
-        email=instance.email,
-        phone=instance.phone
+        Profile.objects.create(
+            user=instance,
+            first_name=instance.first_name or '',
+            last_name=instance.last_name or '',
+            date_joined=instance.date_joined,
+            is_staff=instance.is_staff,
+            is_applicant=instance.is_applicant,
+            email=instance.email or '',
+            phone=instance.phone or '',
         )
 
 def save_profile(sender, instance, **kwargs):

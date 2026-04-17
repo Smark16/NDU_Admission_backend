@@ -116,8 +116,8 @@ else:
         "NAME": env("DB_NAME"),
         "USER": env("DB_USER"),
         "PASSWORD": env("DB_PASSWORD"),
-        "HOST": "127.0.0.1", 
-        "PORT": 6432,         
+        "HOST": env("DB_HOST", default="127.0.0.1"),
+        "PORT": env("DB_PORT", default="5433"),
         "CONN_MAX_AGE": 0, 
     }
 }
@@ -224,6 +224,7 @@ CSRF_TRUSTED_ORIGINS = [
 
 CORS_ALLOWED_ORIGINS = [
    'http://localhost:5173',
+   'http://localhost:5174',
    'https://applications.ndu.ac.ug',
    'https://applications-admin.ndu.ac.ug',
    'http://172.17.31.147'

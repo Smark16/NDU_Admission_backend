@@ -21,7 +21,10 @@ import logging
 import json
 import os
 
-from weasyprint import HTML
+try:
+    from weasyprint import HTML
+except OSError:
+    HTML = None
 from django.shortcuts import get_object_or_404
 from django.http import HttpResponse
 from django.template.loader import render_to_string
@@ -272,8 +275,18 @@ def create_direct_applications(request):
             serializer = CudApplicationSerializer(data=data, context={"request": request})
             serializer.is_valid(raise_exception=True)
 
-            # remove M-2-M data
+            # Validate school_pay_reference rule
+            fee_paid = serializer.validated_data.get('application_fee_paid', False)
+            school_pay_ref = (serializer.validated_data.get('school_pay_reference') or '').strip()
+            if fee_paid and not school_pay_ref:
+                return Response(
+                    {"detail": "school_pay_reference is required when application_fee_paid is true."},
+                    status=400
+                )
+
+            # remove M-2-M data and prevent client from injecting entered_by
             programs_data = serializer.validated_data.pop('programs', None)
+            serializer.validated_data.pop('entered_by', None)
 
             # create applicant user
             try:
@@ -287,14 +300,14 @@ def create_direct_applications(request):
                             is_applicant=True,
                             password=password
                         )
-                
+
             except Exception as e:
                 return Response({"detail": f"Failed to create user: {str(e)}"}, status=400)
 
             application = Application(**serializer.validated_data)
             application.applicant = applicant
             application.status = "submitted"
-            application.application_fee_paid = True
+            application.entered_by = request.user
         
             if passport_photo:
                 # validate_passport_photo(passport_photo)

@@ -36,7 +36,8 @@ class SingleApplicationSerializer(serializers.ModelSerializer):
     campus = CampusSerializer(read_only=True)
     class Meta:
         model = Application
-        fields = ['id', 'first_name', 'last_name', 'email', 'phone', 'date_of_birth', 'nationality', 'gender', 'programs', 'campus']
+        fields = ['id', 'first_name', 'last_name', 'email', 'phone', 'date_of_birth', 'nationality', 'gender',
+                  'programs', 'campus', 'application_fee_paid', 'school_pay_reference']
 
 class ApplicationSerializer(serializers.ModelSerializer):
     class Meta:
@@ -65,8 +66,9 @@ class ApplicationDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model = Application
         fields = ['id', 'first_name', 'last_name', 'date_of_birth', 'gender', 'nationality', 'phone', 'email',
-                  'batch',"nin", "passport_number","disabled", 'olevel_school', 'olevel_year', 'alevel_school', 'alevel_year', 'address',
-                  'status', 'application_fee_amount','application_fee_paid', 'created_at', 'reviewed_at', 'passport_photo','reviewed_by']
+                  'batch', 'nin', 'passport_number', 'disabled', 'olevel_school', 'olevel_year', 'alevel_school', 'alevel_year', 'address',
+                  'status', 'application_fee_amount', 'application_fee_paid', 'school_pay_reference',
+                  'application_reference', 'created_at', 'reviewed_at', 'passport_photo', 'reviewed_by']
     
 # o level subject
 class OlevelSubjectSerializer(serializers.ModelSerializer):
