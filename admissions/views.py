@@ -1097,11 +1097,13 @@ class ListNotifications(generics.ListAPIView):
         return Response(serializer.data, status=200)
 
 #========================================pdf download=================================================
-
 class DownloadAdmissionPDF(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, application_id):
+        import base64 as b64_mod
+        import os as _os
+
         # Get the application – make sure it belongs to the logged-in user or admin
         application = get_object_or_404(
             Application,
@@ -1114,15 +1116,33 @@ class DownloadAdmissionPDF(APIView):
         alevel_results = ALevelResult.objects.filter(application=application).select_related('subject', 'application')
         qualifications = AdditionalQualifications.objects.filter(application=application).select_related('application')
 
+        # ── Base64-encode the university logo ─────────────────────────────────
+        # Resolve relative to this file so it works regardless of CWD
+        _here = _os.path.dirname(_os.path.abspath(__file__))           
+        logo_b64 = ""
+        for _ext in ('Ndejje_University_Logo.jpg', 'Ndejje_University_Logo.png'):
+            _logo_path = _os.path.join(settings.BASE_DIR, "static", "Ndejje_University_Logo.jpg")
+            if _os.path.exists(_logo_path):
+                with open(_logo_path, 'rb') as _f:
+                    _mime = 'jpeg' if _ext.endswith('.jpg') else 'png'
+                    logo_b64 = f"data:image/{_mime};base64,{b64_mod.b64encode(_f.read()).decode()}"
+                break
+
+        # ── Base64-encode the applicant's passport photo ──────────────────────
+        photo_b64 = ""
+        if application.passport_photo:
+            try:
+                _photo_path = application.passport_photo.path
+                if _os.path.exists(_photo_path):
+                    with open(_photo_path, 'rb') as _f:
+                        _raw = _f.read()
+                    _photo_ext = _os.path.splitext(_photo_path)[1].lower().lstrip('.')
+                    _photo_mime = {'jpg': 'jpeg', 'jpeg': 'jpeg', 'png': 'png'}.get(_photo_ext, 'jpeg')
+                    photo_b64 = f"data:image/{_photo_mime};base64,{b64_mod.b64encode(_raw).decode()}"
+            except Exception:
+                pass 
         # Current date for the letter
         today = date.today()
-
-        # logo
-        # logo_path = os.path.join(settings.BASE_DIR, "static", "Logo", "Ndejje_University_Logo.jpg")
-        # logo_url = "file:///" + quote(logo_path.replace("\\", "/"))
-        # === IMPROVED LOGO HANDLING ===
-        # print('logo_path', logo_url)
-        logo_relative_path = "Logo/Ndejje_University_Logo.jpg"   # relative to static folder
 
         # Render template
         html_string = render_to_string(
@@ -1131,23 +1151,37 @@ class DownloadAdmissionPDF(APIView):
                 'application': application,
                 'olevel_results': olevel_results,
                 'alevel_results': alevel_results,
-                'additional_qualifications': qualifications, 
+                'additional_qualifications': qualifications,
                 'today': today,
-                'logo_path': f"/static/{logo_relative_path}",
+                'logo_b64': logo_b64,
+                'photo_b64': photo_b64,
             },
             request=request
         )
 
-        # Generate PDF with WeasyPrint
-        # pdf_file = HTML(string=html_string, base_url=request.build_absolute_uri()).write_pdf()
-        pdf_file = HTML(string=html_string, base_url=settings.BASE_DIR).write_pdf()
+        # Generate PDF with xhtml2pdf (pure Python, works on Windows)
+        import io
+        from xhtml2pdf import pisa
+
+        pdf_buffer = io.BytesIO()
+        result = pisa.CreatePDF(html_string, dest=pdf_buffer)
+
+        if result.err:
+            return Response(
+                {"detail": "PDF generation failed. Please try again."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        pdf_buffer.seek(0)
+        safe_name = application.full_name.replace(" ", "_")
+        ref = application.application_reference or "N-A"
 
         # Response as downloadable PDF
         response = HttpResponse(content_type='application/pdf')
         response['Content-Disposition'] = (
-            f'attachment; filename="Admission_Letter_{application.full_name.replace(" ", "_")}_{application.application_reference or "N-A"}.pdf"'
+            f'attachment; filename="Applicant_Profile_{safe_name}_{ref}.pdf"'
         )
-        response.write(pdf_file)
+        response.write(pdf_buffer.read())
 
         return response
 
