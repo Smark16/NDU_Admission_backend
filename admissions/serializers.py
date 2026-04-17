@@ -37,7 +37,7 @@ class SingleApplicationSerializer(serializers.ModelSerializer):
     class Meta:
         model = Application
         fields = ['id', 'first_name', 'last_name', 'email', 'phone', 'date_of_birth', 'nationality', 'gender',
-                  'programs', 'campus', 'application_fee_paid', 'school_pay_reference']
+                  'programs', 'campus', 'application_fee_paid', 'school_pay_reference', 'entered_by']
 
 class ApplicationSerializer(serializers.ModelSerializer):
     class Meta:
@@ -62,13 +62,14 @@ class ListApplicationsSerializer(serializers.ModelSerializer):
 # detail serializer
 class ApplicationDetailSerializer(serializers.ModelSerializer):
     reviewed_by = serializers.CharField(source='reviewed_by.full_name', read_only=True, allow_null=True)
+    entered_by = serializers.CharField(source='entered_by.full_name', read_only=True, allow_null=True)
     batch = serializers.CharField(source='batch.name', read_only=True)
     class Meta:
         model = Application
         fields = ['id', 'first_name', 'last_name', 'date_of_birth', 'gender', 'nationality', 'phone', 'email',
                   'batch', 'nin', 'passport_number', 'disabled', 'olevel_school', 'olevel_year', 'alevel_school', 'alevel_year', 'address',
                   'status', 'application_fee_amount', 'application_fee_paid', 'school_pay_reference',
-                  'application_reference', 'created_at', 'reviewed_at', 'passport_photo', 'reviewed_by']
+                  'application_reference', 'created_at', 'reviewed_at', 'passport_photo', 'reviewed_by', 'entered_by']
     
 # o level subject
 class OlevelSubjectSerializer(serializers.ModelSerializer):
