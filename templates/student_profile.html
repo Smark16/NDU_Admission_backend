@@ -355,42 +355,41 @@
   <!-- ═══════════════════════════════════════════════════════════════════ -->
   <!-- SECTION 3: PROGRAM APPLIED FOR                                      -->
   <!-- ═══════════════════════════════════════════════════════════════════ -->
-  <h2 class="sec">3. Programme Applied For</h2>
-  <div class="no-break">
-    {% if application.programs.all %}
-      {% for prog in application.programs.all %}
-        <div class="program-box">
-          <p class="prog-name">{{ prog.name }}</p>
-          <p class="prog-detail">
-            Campus: <strong>{{ application.campus.name|default:"N/A" }}</strong>
-            &nbsp;&nbsp;|&nbsp;&nbsp;
-            Academic Level: <strong>{{ application.academic_level.name|default:"N/A" }}</strong>
-            &nbsp;&nbsp;|&nbsp;&nbsp;
-            Batch: <strong>{{ application.batch.name|default:"N/A" }}</strong>
-          </p>
-        </div>
-      {% endfor %}
-    {% else %}
-      <p class="text-muted">No programme specified.</p>
-    {% endif %}
-  </div>
+  <h2 class="sec">3. Programmes Applied For</h2>
+  
+  <p><strong>Campus:</strong> {{ application.campus.name|default:"N/A" }}</p>
 
-  <!-- Application status -->
-  <p style="margin:4px 0 0 0; font-size:9.5pt;">
-    Application Status:&nbsp;
+  {% if application.programs.all %}
+    <ul class="programs-list">
+      {% for prog in application.programs.all %}
+        <li>
+          <span class="program-name">{{ prog.name }}</span>
+          <br>
+          <small style="color:#555;">
+            Academic Level: <strong>{{ application.academic_level.name|default:"N/A" }}</strong>
+            {% if application.batch %}
+              &nbsp;&nbsp;|&nbsp;&nbsp; Batch: <strong>{{ application.batch.name }}</strong>
+            {% endif %}
+          </small>
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="text-muted">No programme specified.</p>
+  {% endif %}
+
+  <!-- Application Status -->
+  <p style="margin:8px 0 0 0; font-size:9.5pt;">
+    Application Status: 
     {% with s=application.status %}
-      {% if s == 'admitted' or s == 'accepted' %}
-        <span class="status-badge status-admitted">{{ s|title }}</span>
-      {% elif s == 'submitted' %}
-        <span class="status-badge status-submitted">{{ s|title }}</span>
-      {% elif s == 'pending' or s == 'draft' %}
-        <span class="status-badge status-pending">{{ s|title }}</span>
-      {% elif s == 'rejected' %}
-        <span class="status-badge status-rejected">{{ s|title }}</span>
-      {% else %}
-        <span class="status-badge status-other">{{ s|title }}</span>
-      {% endif %}
+      {% if s == 'admitted' or s == 'accepted' %}<span class="status-badge status-admitted">{{ s|title }}</span>
+      {% elif s == 'submitted' %}<span class="status-badge status-submitted">{{ s|title }}</span>
+      {% elif s == 'pending' or s == 'draft' %}<span class="status-badge status-pending">{{ s|title }}</span>
+      {% elif s == 'rejected' %}<span class="status-badge status-rejected">{{ s|title }}</span>
+      {% else %}<span class="status-badge status-other">{{ s|title }}</span>{% endif %}
     {% endwith %}
+  </p>
+
     &nbsp;&nbsp;Offer Letter:&nbsp;
     {% with o=application.offer_letter_status %}
       {% if o == 'accepted' %}
