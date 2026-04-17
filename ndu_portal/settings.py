@@ -174,7 +174,7 @@ SITE_ID=1
 # Custom User Model
 AUTH_USER_MODEL = 'accounts.User'
 
-# Crispy Forms
+# Crispy Forms g
 CRISPY_ALLOWED_TEMPLATE_PACKS = "bootstrap5"
 CRISPY_TEMPLATE_PACK = "bootstrap5"
 
