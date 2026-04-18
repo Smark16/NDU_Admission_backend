@@ -54,9 +54,10 @@ class ApplicationSerializer(serializers.ModelSerializer):
 
 # list serializer
 class ListApplicationsSerializer(serializers.ModelSerializer):
+    academic_level = serializers.CharField(source='academic_level.name', read_only=True)
     class Meta:
         model = Application
-        fields = ['id', 'first_name', 'last_name', 'gender', 'status', 'created_at', 'email']
+        fields = ['id', 'first_name', 'last_name', 'gender', 'status','academic_level', 'created_at', 'email']
 
 # detail serializer
 class ApplicationDetailSerializer(serializers.ModelSerializer):
