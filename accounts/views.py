@@ -322,6 +322,94 @@ def password_reset_redirect(request, uidb64, token):
     return redirect(frontend_url)
 
 
+# ─── System Settings ────────────────────────────────────────────────────────
+
+class GetSystemSettings(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        settings_obj = SystemSettings.get_settings()
+        serializer = SystemSettingsSerializer(settings_obj)
+        return Response(serializer.data)
+
+
+class UpdateSystemSettings(APIView):
+    permission_classes = [IsAdminUser]
+
+    def patch(self, request):
+        settings_obj = SystemSettings.get_settings()
+        serializer = SystemSettingsSerializer(settings_obj, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save(updated_by=request.user)
+            return Response({'detail': 'Settings updated successfully.', **serializer.data})
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+# ─── System Usage Report ─────────────────────────────────────────────────────
+
+class SystemUsageReport(APIView):
+    permission_classes = [IsAdminUser]
+
+    def get(self, request):
+        from audit.models import AuditLog
+        from django.db.models import Count, Max
+        from django.db.models.functions import TruncDate
+        from datetime import timedelta
+
+        thirty_days_ago = timezone.now() - timedelta(days=30)
+
+        # Per-user login stats
+        user_stats = (
+            AuditLog.objects.filter(action='login')
+            .values('user__id', 'user__first_name', 'user__last_name', 'user__email',
+                    'user__is_staff', 'user__is_applicant')
+            .annotate(login_count=Count('id'), last_seen=Max('timestamp'))
+            .order_by('-login_count')
+        )
+
+        # Daily login counts for the last 30 days
+        daily_logins = (
+            AuditLog.objects.filter(action='login', timestamp__gte=thirty_days_ago)
+            .annotate(day=TruncDate('timestamp'))
+            .values('day')
+            .annotate(count=Count('id'))
+            .order_by('day')
+        )
+
+        # Recent 50 login events
+        recent = AuditLog.objects.filter(action='login').select_related('user')[:50]
+        recent_data = [
+            {
+                'user': f"{r.user.first_name} {r.user.last_name}".strip() if r.user else 'Unknown',
+                'email': r.user.email if r.user else '',
+                'is_staff': r.user.is_staff if r.user else False,
+                'ip_address': r.ip_address,
+                'timestamp': r.timestamp,
+            }
+            for r in recent
+        ]
+
+        # Summary counts
+        total_logins = AuditLog.objects.filter(action='login').count()
+        logins_today = AuditLog.objects.filter(
+            action='login', timestamp__date=timezone.now().date()
+        ).count()
+        unique_users_today = AuditLog.objects.filter(
+            action='login', timestamp__date=timezone.now().date()
+        ).values('user').distinct().count()
+
+        return Response({
+            'summary': {
+                'total_logins': total_logins,
+                'logins_today': logins_today,
+                'unique_users_today': unique_users_today,
+            },
+            'user_stats': list(user_stats),
+            'daily_logins': list(daily_logins),
+            'recent_logins': recent_data,
+        })
+
+
 
 
 

@@ -73,7 +73,32 @@ def save_profile(sender, instance, **kwargs):
         instance.profile.save()
 
 post_save.connect(create_profile, sender=User)
-post_save.connect(save_profile, sender=User) 
+post_save.connect(save_profile, sender=User)
+
+
+class SystemSettings(models.Model):
+    student_session_timeout = models.PositiveIntegerField(
+        default=30, help_text="Minutes before a student session expires due to inactivity"
+    )
+    admin_session_timeout = models.PositiveIntegerField(
+        default=60, help_text="Minutes before an admin session expires due to inactivity"
+    )
+    updated_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name='settings_updates'
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "System Settings"
+
+    def save(self, *args, **kwargs):
+        self.pk = 1  # Singleton — only one row ever exists
+        super().save(*args, **kwargs)
+
+    @classmethod
+    def get_settings(cls):
+        obj, _ = cls.objects.get_or_create(pk=1)
+        return obj
 
 
 

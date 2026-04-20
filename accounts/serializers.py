@@ -2,7 +2,7 @@ from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from django.contrib.auth.models import Group, Permission
 from django.contrib.auth.password_validation import validate_password
-from .models import User, Campus, Profile
+from .models import User, Campus, Profile, SystemSettings
 from .tasks import celery_send_account_email
 from django.conf import settings
 from django.utils.http import urlsafe_base64_decode
@@ -177,3 +177,11 @@ class ProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model = Profile
         fields = '__all__'
+
+# system settings
+class SystemSettingsSerializer(serializers.ModelSerializer):
+    updated_by_name = serializers.CharField(source='updated_by.full_name', read_only=True, allow_null=True)
+
+    class Meta:
+        model = SystemSettings
+        fields = ['student_session_timeout', 'admin_session_timeout', 'updated_by_name', 'updated_at']
