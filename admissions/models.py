@@ -140,6 +140,7 @@ class Application(models.Model):
     application_reference = models.CharField(max_length=50, unique=True, blank=True, null=True)
     application_fee_paid = models.BooleanField(default=False)
     application_fee_amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    is_direct_entry = models.BooleanField(default=False)
     
     # Review Information
     reviewed_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='reviewed_applications')

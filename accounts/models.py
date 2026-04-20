@@ -8,8 +8,8 @@ from rest_framework.exceptions import ValidationError
 class Campus(models.Model):
     name = models.CharField(max_length=100, unique=True)
     code = models.CharField(max_length=50, unique=True)
-    address = models.TextField(max_length=100)
-    email = models.EmailField(max_length=100)
+    address = models.TextField(max_length=100, blank=True, default='')
+    email = models.EmailField(max_length=100, blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

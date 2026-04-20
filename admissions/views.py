@@ -21,7 +21,10 @@ import logging
 import json
 import os
 
-from weasyprint import HTML
+try:
+    from weasyprint import HTML
+except OSError:
+    HTML = None
 from django.shortcuts import get_object_or_404
 from django.http import HttpResponse
 from django.template.loader import render_to_string
@@ -60,25 +63,21 @@ def create_applications(request):
             files = request.FILES
 
             ext_ref = request.data.get("external_reference")
+            payment = None
 
-            if not ext_ref:
-                return Response(
-                    {"detail": "Payment reference is required"},
-                    status=400
-                )
-
-            try:
-                payment = ApplicationPayment.objects.select_for_update().get(
-                    external_reference=ext_ref,
-                    user=request.user,
-                    status="PAID",
-                    application__isnull=True 
-                )
-            except ApplicationPayment.DoesNotExist:
-                return Response(
-                    {"detail": "Invalid, unpaid, or already used payment reference"},
-                    status=400
-                )
+            if ext_ref:
+                try:
+                    payment = ApplicationPayment.objects.select_for_update().get(
+                        external_reference=ext_ref,
+                        user=request.user,
+                        status="PAID",
+                        application__isnull=True
+                    )
+                except ApplicationPayment.DoesNotExist:
+                    return Response(
+                        {"detail": "Invalid, unpaid, or already used payment reference"},
+                        status=400
+                    )
 
             # additional qualifications
             additional_qualifications = []
@@ -106,9 +105,10 @@ def create_applications(request):
             application = Application(**serializer.validated_data)
             application.applicant = request.user
             application.status = "submitted"
-            application.application_fee_paid = True
-            application.application_fee_amount = payment.amount
-            application.application_reference = payment.external_reference
+            if payment:
+                application.application_fee_paid = True
+                application.application_fee_amount = payment.amount
+                application.application_reference = payment.external_reference
 
             if passport_photo:
                 # validate_passport_photo(passport_photo)
@@ -185,9 +185,10 @@ def create_applications(request):
                 ))
 
             # NOW SAVE EVERYTHING
-            application.save() 
-            payment.application = application
-            payment.save(update_fields=["application"]) 
+            application.save()
+            if payment:
+                payment.application = application
+                payment.save(update_fields=["application"])
 
             # save M-2-M field
             if programs_data:
@@ -295,6 +296,7 @@ def create_direct_applications(request):
             application.applicant = applicant
             application.status = "submitted"
             application.application_fee_paid = True
+            application.is_direct_entry = True
         
             if passport_photo:
                 # validate_passport_photo(passport_photo)
@@ -412,6 +414,22 @@ def create_direct_applications(request):
 # list applications
 class ListApplications(generics.ListAPIView):
     queryset = Application.objects.filter(~Q(status__in=['draft','Admitted', 'rejected', 'accepted'])).order_by('created_at')
+    serializer_class = ListApplicationsSerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+# All applications report (no status filter — returns everything)
+class AllApplicationsReport(generics.ListAPIView):
+    serializer_class = AllApplicationsReportSerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+    def get_queryset(self):
+        return Application.objects.select_related(
+            'academic_level', 'batch', 'campus'
+        ).prefetch_related('programs').order_by('-created_at')
+
+# Direct entry applicants
+class ListDirectEntryApplications(generics.ListAPIView):
+    queryset = Application.objects.filter(is_direct_entry=True).order_by('-created_at')
     serializer_class = ListApplicationsSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
 

@@ -184,6 +184,10 @@ class CreateCampus(generics.CreateAPIView):
     serializer_class = CampusSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
+    def perform_create(self, serializer):
+        serializer.save()
+        cache.delete('all_campuses_list')
+
 # list campus
 
 class ListCampus(generics.ListAPIView):
@@ -220,7 +224,7 @@ class EditCampus(generics.UpdateAPIView):
         serializer = self.serializer_class(instance, data=request.data)
         serializer.is_valid(raise_exception=True)
         serializer.save()
-
+        cache.delete('all_campuses_list')
         return Response(serializer.data, status=200)
     
 # delete campus
@@ -232,7 +236,7 @@ class DeleteCampus(generics.RetrieveDestroyAPIView):
     def put(self, request, *args, **kwargs):
         instance = self.get_object()
         instance.delete()
-
+        cache.delete('all_campuses_list')
         return Response({"detail":"campus deleted successfully"})
     
 # ======================================================Profile===================================================
