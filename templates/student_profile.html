@@ -3,308 +3,557 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Applicant Profile - {{ application.full_name }}</title>
+  <title>Applicant Profile – {{ application.full_name }}</title>
   <style>
+    /* ── Page setup ─────────────────────────────────────────────────────── */
     @page {
       size: A4;
-      margin: 2.5cm 2cm;
+      margin: 1.8cm 1.8cm 2.2cm 1.8cm;
     }
-
+/* ── Base ────────────────────────────────────────────────────────────── */
+    * { box-sizing: border-box; }
     body {
       font-family: 'Times New Roman', Times, serif;
-      font-size: 11pt;
-      line-height: 1.6;
-      color: #1a1a1a;
+      font-size: 10.5pt;
+      line-height: 1.55;
+      color: #111;
+      margin: 0;
+      padding: 0;
     }
 
-    .header {
-      text-align: center;
-      margin-bottom: 30px;
+    /* ── Header ─────────────────────────────────────────────────────────── */
+    .doc-header {
+      width: 100%;
       border-bottom: 3px solid #1a3c0f;
-      padding-bottom: 15px;
+      padding-bottom: 10px;
+      margin-bottom: 10px;
     }
-
-    .logo-title {
-      font-size: 22pt;
+    .doc-header-left {
+      width: 70px;
+      vertical-align: middle;
+      padding-right: 12px;
+    }
+    .doc-header-center {
+      vertical-align: middle;
+      text-align: center;
+    }
+    .doc-header-right {
+      width: 90px;
+      vertical-align: middle;
+      text-align: right;
+    }
+    .uni-logo {
+      width: 65px;
+      height: 65px;
+      object-fit: contain;
+    }
+    .uni-name {
+      font-size: 17pt;
       font-weight: bold;
       color: #1a3c0f;
       margin: 0;
-    }
-
-    .sub-title {
-      font-size: 14pt;
-      color: #444;
-      margin: 8px 0 4px 0;
-    }
-
-    .ref-info {
-      font-size: 10pt;
-      color: #555;
-      margin-top: 8px;
-    }
-
-    .content {
-      margin: 30px 0;
-    }
-
-    h2.section-title {
-      color: #1a3c0f;
-      font-size: 14pt;
-      border-bottom: 2px solid #e0e0e0;
-      padding-bottom: 6px;
-      margin: 30px 0 15px 0;
+      letter-spacing: 1px;
       text-transform: uppercase;
-      letter-spacing: 0.8px;
     }
-
-    .info-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 16px 24px;
+    .uni-tagline {
+      font-size: 8.5pt;
+      color: #555;
+      margin: 2px 0;
     }
-
-    .info-item {
-      display: flex;
-      flex-direction: column;
-    }
-
-    .label {
-      font-size: 9pt;
-      color: #666;
+    .doc-title {
+      font-size: 13pt;
       font-weight: bold;
-      margin-bottom: 4px;
+      color: #1a3c0f;
+      margin: 6px 0 0 0;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      border-top: 1px solid #c8dfc8;
+      padding-top: 4px;
+    }
+
+    /* ── Passport photo box ─────────────────────────────────────────────── */
+    .photo-box {
+      width: 85px;
+      height: 100px;
+      border: 2px solid #1a3c0f;
+      overflow: hidden;
+      display: inline-block;
+    }
+    .photo-box img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      object-position: center top;
+    }
+    .photo-placeholder {
+      width: 100%;
+      height: 100%;
+      background: #f0f0f0;
+      font-size: 8pt;
+      color: #999;
+      text-align: center;
+      padding-top: 36px;
+    }
+
+    /* reference bar handled inline via table */
+
+    /* ── Section titles ─────────────────────────────────────────────────── */
+    h2.sec {
+      font-size: 10pt;
+      font-weight: bold;
+      color: white;
+      background: #1a3c0f;
+      margin: 16px 0 8px 0;
+      padding: 4px 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.9px;
+      page-break-after: avoid;
+    }
+
+    /* ── Two-column info grid ───────────────────────────────────────────── */
+    .info-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 10.5pt;
+    }
+    .info-table td {
+      padding: 4px 8px;
+      vertical-align: top;
+    }
+    .info-table tr:nth-child(even) td { background: #f9fbf7; }
+    .lbl-cell {
+      width: 32%;
+      font-weight: bold;
+      color: #333;
+      font-size: 9.5pt;
+      white-space: nowrap;
+    }
+    .val-cell {
+      color: #111;
+    }
+    .lbl-cell-r {
+      width: 18%;
+      font-weight: bold;
+      color: #333;
+      font-size: 9.5pt;
+      white-space: nowrap;
+      padding-left: 18px;
+      border-left: 1px solid #e0e0e0;
+    }
+
+    /* ── Subject tables ─────────────────────────────────────────────────── */
+    table.subj {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 6px 0 14px 0;
+      font-size: 10pt;
+    }
+    table.subj th {
+      background: #e8f0e8;
+      color: #1a3c0f;
+      font-weight: bold;
+      padding: 5px 10px;
+      border: 1px solid #c8dfc8;
+      text-align: left;
+    }
+    table.subj td {
+      padding: 4px 10px;
+      border: 1px solid #dde8dd;
+    }
+    table.subj tr:nth-child(even) td { background: #f6fbf6; }
+    .subj-meta {
+      font-size: 9.5pt;
+      color: #444;
+      margin: 2px 0 6px 0;
+    }
+    .grade-chip {
+      display: inline-block;
+      background: #1a3c0f;
+      color: white;
+      font-size: 8.5pt;
+      font-weight: bold;
+      padding: 1px 7px;
+      border-radius: 3px;
+    }
+
+    /* ── Qual card ──────────────────────────────────────────────────────── */
+    .qual-card {
+      border: 1px solid #d0e0d0;
+      border-left: 4px solid #1a3c0f;
+      border-radius: 3px;
+      padding: 8px 12px;
+      margin-bottom: 8px;
+      background: #fafcfa;
+      font-size: 10pt;
+    }
+    .qual-card strong { color: #1a3c0f; }
+
+    /* ── Program box ────────────────────────────────────────────────────── */
+    .program-box {
+      border: 1.5px solid #1a3c0f;
+      border-radius: 4px;
+      padding: 12px 16px;
+      background: #f4f8f0;
+      margin: 4px 0 8px 0;
+    }
+    .program-box .prog-name {
+      font-size: 12pt;
+      font-weight: bold;
+      color: #1a3c0f;
+      margin: 0 0 4px 0;
+    }
+    .program-box .prog-detail {
+      font-size: 10pt;
+      color: #333;
+    }
+
+    /* ── Status badge ───────────────────────────────────────────────────── */
+    .status-badge {
+      display: inline-block;
+      padding: 3px 12px;
+      border-radius: 3px;
+      font-weight: bold;
+      font-size: 9.5pt;
       text-transform: uppercase;
       letter-spacing: 0.5px;
     }
+    .status-admitted  { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+    .status-pending   { background: #fff3cd; color: #856404; border: 1px solid #ffeeba; }
+    .status-submitted { background: #cce5ff; color: #004085; border: 1px solid #b8daff; }
+    .status-rejected  { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+    .status-other     { background: #e2e3e5; color: #383d41; border: 1px solid #d6d8db; }
 
-    .value {
-      font-size: 11pt;
-      font-weight: 500;
-      color: #222;
-    }
+    /* signature + stamp handled inline via table */
 
-    table.subject-table {
-      width: 100%;
-      border-collapse: collapse;
-      margin-top: 12px;
-    }
-
-    table.subject-table th,
-    table.subject-table td {
-      padding: 8px 10px;
-      border: 1px solid #ddd;
-      text-align: left;
-    }
-
-    table.subject-table th {
-      background-color: #f5f5f5;
-      font-weight: bold;
-      color: #444;
-    }
-
-    .qualification-card {
-      border: 1px solid #e0e0e0;
-      border-radius: 6px;
-      padding: 15px;
-      margin-bottom: 15px;
-      background-color: #fafafa;
-    }
-
-    .signature-section {
-      margin-top: 60px;
-      display: flex;
-      justify-content: space-between;
-      gap: 40px;
-    }
-
-    .signature-block {
-      flex: 1;
-      text-align: center;
-      border-top: 2px solid #333;
-      padding-top: 50px;
-      position: relative;
-    }
-
-    .footer {
-      margin-top: 60px;
-      text-align: center;
-      font-size: 9pt;
-      color: #777;
-      border-top: 1px solid #ddd;
-      padding-top: 15px;
-    }
-
-    .page-number {
+    /* ── Footer ─────────────────────────────────────────────────────────── */
+    .doc-footer {
       position: fixed;
-      bottom: 20px;
-      right: 30px;
-      font-size: 9pt;
-      color: #999;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      border-top: 2px solid #1a3c0f;
+      padding: 5px 18px;
+      font-size: 8pt;
+      color: #555;
+      text-align: center;
+      background: white;
     }
+
+    /* ── Utilities ──────────────────────────────────────────────────────── */
+    .page-break { page-break-before: always; }
+    .no-break   { page-break-inside: avoid; }
+    .text-muted { color: #888; font-style: italic; }
+    .divider    { border: none; border-top: 1px solid #d0d0d0; margin: 6px 0; }
   </style>
 </head>
 <body>
 
-  <!-- Header -->
-  <div class="header">
-  <div style="display: flex; align-items: center; justify-content: center; gap: 20px; margin-bottom: 10px;">
-    <!-- University Logo -->
-    <!-- <img src="{{ logo_path }}" 
-         alt="Ndejje University Logo" 
-         style="height: 85px; width: auto; max-width: 85px; object-fit: contain;"> -->
-    
-    <div style="text-align: center;">
-      <h1 class="logo-title" style="margin: 0; font-size: 24pt;">NDEJJE UNIVERSITY</h1>
-      <p class="sub-title" style="margin: 5px 0 0 0;">APPLICANT'S PROFILE</p>
-    </div>
-  </div>
-
-  <div class="ref-info" style="margin-top: 15px;">
-    Application Reference: <strong>{{ application.application_reference|default:"N/A" }}</strong>  
-      •  
-    Batch: <strong>{{ application.batch.name|default:"N/A" }}</strong>  
-      •  
-    Date: <strong>{{ today|date:"d F Y" }}</strong>
-  </div>
-</div>
-
-  <!-- Content -->
-  <div class="content">
-
-    <!-- Personal Information -->
-    <h2 class="section-title">Personal Details</h2>
-    <div class="info-grid">
-      <div class="info-item">
-        <div class="label">Full Name</div>
-        <div class="value">{{ application.full_name }}</div>
-      </div>
-      <div class="info-item">
-        <div class="label">Date of Birth</div>
-        <div class="value">{{ application.date_of_birth|date:"d/m/Y" }}</div>
-      </div>
-      <div class="info-item">
-        <div class="label">Gender</div>
-        <div class="value">{{ application.gender|title }}</div>
-      </div>
-      <div class="info-item">
-        <div class="label">Nationality</div>
-        <div class="value">{{ application.nationality }}</div>
-      </div>
-      <div class="info-item" style="grid-column: 1 / -1;">
-        <div class="label">Address</div>
-        <div class="value">{{ application.address|default:"Not provided" }}</div>
-      </div>
-      <div class="info-item">
-        <div class="label">Phone</div>
-        <div class="value">{{ application.phone }}</div>
-      </div>
-      <div class="info-item">
-        <div class="label">NIN / Passport No.</div>
-        <div class="value">{{ application.nin|default:application.passport_number|default:"N/A" }}</div>
-      </div>
-      <div class="info-item">
-        <div class="label">Disability Status</div>
-        <div class="value">{{ application.disabled|default:"None" }}</div>
-      </div>
-      <div class="info-item">
-        <div class="label">Email</div>
-        <div class="value">{{ application.email }}</div>
-      </div>
-    </div>
-
-    <!-- Academic Information -->
-    <h2 class="section-title">Academic Qualifications</h2>
-
-    <!-- O-Level -->
-    <div style="margin-bottom: 24px;">
-      <strong>O-Level ({{ application.olevel_year|default:"N/A" }}) – {{ application.olevel_school|default:"Not specified" }}</strong>
-      <table class="subject-table">
-        <thead>
-          <tr>
-            <th>Subject</th>
-            <th>Grade</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for result in olevel_results %}
-            <tr>
-              <td>{{ result.subject.name|default:"Unknown" }}</td>
-              <td>{{ result.grade|default:"N/A" }}</td>
-            </tr>
-          {% empty %}
-            <tr><td colspan="2" style="text-align:center; color:#888;">No O-Level results recorded</td></tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-
-    <!-- A-Level -->
-    <div style="margin-bottom: 30px;">
-      <strong>A-Level ({{ application.alevel_year|default:"N/A" }}) – {{ application.alevel_school|default:"Not specified" }} 
-        {% if application.alevel_combination %} ({{ application.alevel_combination }}) {% endif %}</strong>
-      <table class="subject-table">
-        <thead>
-          <tr>
-            <th>Subject</th>
-            <th>Grade</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for result in alevel_results %}
-            <tr>
-              <td>{{ result.subject.name|default:"Unknown" }}</td>
-              <td>{{ result.grade|default:"N/A" }}</td>
-            </tr>
-          {% empty %}
-            <tr><td colspan="2" style="text-align:center; color:#888;">No A-Level results recorded</td></tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-
-    <!-- Additional Qualifications -->
-    <h2 class="section-title">Additional Qualifications</h2>
-    {% if application.additionals.all %}
-      {% for qual in application.additionals.all %}
-        <div class="qualification-card">
-          <strong>{{ qual.additional_qualification_institution|default:"Unnamed Institution" }}</strong><br>
-          <span style="color:#555;">
-            Type: <strong>{{ qual.additional_qualification_type|default:"N/A" }}</strong> • 
-            Year: <strong>{{ qual.additional_qualification_year|default:"N/A" }}</strong> • 
-            Class: <strong>{{ qual.class_of_award|default:"N/A" }}</strong>
-          </span>
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- HEADER                                                              -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <table class="doc-header" style="width:100%; border-bottom:3px solid #1a3c0f; padding-bottom:10px; margin-bottom:10px;">
+    <tr>
+      <td class="doc-header-left" style="width:75px; vertical-align:middle; padding-right:10px;">
+        {% if logo_b64 %}
+          <img class="uni-logo" src="{{ logo_b64 }}" alt="NDU Logo" style="width:65px; height:65px;" />
+        {% else %}
+          <div style="width:65px;height:65px;border:1px solid #ccc;font-size:7pt;color:#999;text-align:center;">NDU Logo</div>
+        {% endif %}
+      </td>
+      <td class="doc-header-center" style="vertical-align:middle; text-align:center;">
+        <p class="uni-name" style="font-size:17pt;font-weight:bold;color:#1a3c0f;margin:0;letter-spacing:1px;text-transform:uppercase;">Ndejje University</p>
+        <p class="uni-tagline" style="font-size:8.5pt;color:#555;margin:2px 0;">P.O Box 7088, Kampala, Uganda &nbsp;|&nbsp; Tel: +256 312 297 000</p>
+        <p class="uni-tagline" style="font-size:8.5pt;color:#555;margin:2px 0;">E-mail: info@ndejjeuniversity.ac.ug &nbsp;|&nbsp; www.ndejjeuniversity.ac.ug</p>
+        <p class="doc-title" style="font-size:13pt;font-weight:bold;color:#1a3c0f;margin:6px 0 0 0;letter-spacing:1.5px;text-transform:uppercase;border-top:1px solid #c8dfc8;padding-top:4px;">Applicant Profile</p>
+      </td>
+      <td class="doc-header-right" style="width:95px; vertical-align:middle; text-align:right;">
+        <div class="photo-box" style="width:85px;height:100px;border:2px solid #1a3c0f;overflow:hidden;display:inline-block;">
+          {% if photo_b64 %}
+            <img src="{{ photo_b64 }}" alt="Passport Photo" style="width:85px;height:100px;object-fit:cover;" />
+          {% else %}
+            <div style="width:85px;height:100px;background:#f0f0f0;font-size:8pt;color:#999;text-align:center;padding-top:38px;">No Photo</div>
+          {% endif %}
         </div>
+      </td>
+    </tr>
+  </table>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- REFERENCE BAR                                                       -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <table style="width:100%;background:#f4f8f0;border:1px solid #c8dfc8;border-radius:4px;padding:7px 14px;margin:8px 0 14px 0;font-size:9.5pt;">
+    <tr>
+      <!-- <td style="padding:4px 10px;"><span style="color:#555;">Application Ref: </span><strong style="color:#1a3c0f;">{{ application.application_reference|default:"N/A" }}</strong></td> -->
+      <td style="padding:4px 10px;border-left:1px solid #c8dfc8;"><span style="color:#555;">Batch: </span><strong style="color:#1a3c0f;">{{ application.batch.name|default:"N/A" }}</strong></td>
+      <td style="padding:4px 10px;border-left:1px solid #c8dfc8;"><span style="color:#555;">Campus: </span><strong style="color:#1a3c0f;">{{ application.campus.name|default:"N/A" }}</strong></td>
+      <td style="padding:4px 10px;border-left:1px solid #c8dfc8;"><span style="color:#555;">Date Printed: </span><strong style="color:#1a3c0f;">{{ today|date:"d F Y" }}</strong></td>
+    </tr>
+  </table>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- SECTION 1: PERSONAL INFORMATION                                     -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <h2 class="sec">1. Personal Information</h2>
+  <table class="info-table no-break">
+    <tr>
+      <td class="lbl-cell">Full Name</td>
+      <td class="val-cell"><strong>{{ application.full_name }}</strong></td>
+      <td class="lbl-cell-r">Date of Birth</td>
+      <td class="val-cell">{{ application.date_of_birth|date:"d/m/Y"|default:"N/A" }}</td>
+    </tr>
+    <tr>
+      <td class="lbl-cell">Gender</td>
+      <td class="val-cell">{{ application.gender|title|default:"N/A" }}</td>
+      <td class="lbl-cell-r">Nationality</td>
+      <td class="val-cell">{{ application.nationality|default:"N/A" }}</td>
+    </tr>
+    <tr>
+      <td class="lbl-cell">Phone</td>
+      <td class="val-cell">{{ application.phone|default:"N/A" }}</td>
+      <td class="lbl-cell-r">Email</td>
+      <td class="val-cell">{{ application.email|default:"N/A" }}</td>
+    </tr>
+    <tr>
+      <td class="lbl-cell">NIN</td>
+      <td class="val-cell">{{ application.nin|default:"N/A" }}</td>
+      <td class="lbl-cell-r">Passport No.</td>
+      <td class="val-cell">{{ application.passport_number|default:"N/A" }}</td>
+    </tr>
+    <tr>
+      <td class="lbl-cell">Address / District</td>
+      <td class="val-cell" colspan="3">{{ application.address|default:"Not provided" }}</td>
+    </tr>
+    <tr>
+      <td class="lbl-cell">Disability / Special Needs</td>
+      <td class="val-cell" colspan="3">
+        {% if application.disabled and application.disabled != "None" %}
+          {{ application.disabled }}
+        {% else %}
+          <span class="text-muted">None declared</span>
+        {% endif %}
+      </td>
+    </tr>
+  </table>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- SECTION 2: NEXT OF KIN                                              -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <h2 class="sec">2. Next of Kin / Emergency Contact</h2>
+  <table class="info-table no-break">
+    <tr>
+      <td class="lbl-cell">Full Name</td>
+      <td class="val-cell">{{ application.next_of_kin_name|default:"N/A" }}</td>
+      <td class="lbl-cell-r">Relationship</td>
+      <td class="val-cell">{{ application.next_of_kin_relationship|title|default:"N/A" }}</td>
+    </tr>
+    <tr>
+      <td class="lbl-cell">Contact / Phone</td>
+      <td class="val-cell" colspan="3">{{ application.next_of_kin_contact|default:"N/A" }}</td>
+    </tr>
+  </table>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- SECTION 3: PROGRAM APPLIED FOR                                      -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <h2 class="sec">3. Programmes Applied For</h2>
+  
+  <p><strong>Campus:</strong> {{ application.campus.name|default:"N/A" }}</p>
+
+  {% if application.programs.all %}
+    <ul class="programs-list">
+      {% for prog in application.programs.all %}
+        <li>
+          <span class="program-name">{{ prog.name }}</span>
+          <br>
+          <small style="color:#555;">
+            Academic Level: <strong>{{ application.academic_level.name|default:"N/A" }}</strong>
+            {% if application.batch %}
+              &nbsp;&nbsp;|&nbsp;&nbsp; Batch: <strong>{{ application.batch.name }}</strong>
+            {% endif %}
+          </small>
+        </li>
       {% endfor %}
-    {% else %}
-      <p style="color:#888; font-style:italic;">No additional qualifications provided.</p>
+    </ul>
+  {% else %}
+    <p class="text-muted">No programme specified.</p>
+  {% endif %}
+
+  <!-- Application Status -->
+  <p style="margin:8px 0 0 0; font-size:9.5pt;">
+    Application Status: 
+    {% with s=application.status %}
+      {% if s == 'admitted' or s == 'accepted' %}<span class="status-badge status-admitted">{{ s|title }}</span>
+      {% elif s == 'submitted' %}<span class="status-badge status-submitted">{{ s|title }}</span>
+      {% elif s == 'pending' or s == 'draft' %}<span class="status-badge status-pending">{{ s|title }}</span>
+      {% elif s == 'rejected' %}<span class="status-badge status-rejected">{{ s|title }}</span>
+      {% else %}<span class="status-badge status-other">{{ s|title }}</span>{% endif %}
+    {% endwith %}
+  </p>
+
+    &nbsp;&nbsp;Offer Letter:&nbsp;
+    {% with o=application.offer_letter_status %}
+      {% if o == 'accepted' %}
+        <span class="status-badge status-admitted">{{ o|title }}</span>
+      {% elif o == 'pending' %}
+        <span class="status-badge status-pending">{{ o|title }}</span>
+      {% else %}
+        <span class="status-badge status-other">{{ o|title }}</span>
+      {% endif %}
+    {% endwith %}
+  </p>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- SECTION 4a: O-LEVEL RESULTS                                         -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <h2 class="sec">4. Academic Qualifications &mdash; O-Level</h2>
+  <p class="subj-meta">
+    School: <strong>{{ application.olevel_school|default:"Not specified" }}</strong>
+    &nbsp;|&nbsp; Year: <strong>{{ application.olevel_year|default:"N/A" }}</strong>
+    &nbsp;|&nbsp; Index No.: <strong>{{ application.olevel_index_number|default:"N/A" }}</strong>
+  </p>
+  <table class="subj no-break">
+    <thead>
+      <tr>
+        <th style="width:5%;">#</th>
+        <th>Subject</th>
+        <th style="width:15%; text-align:center;">Grade</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for result in olevel_results %}
+        <tr>
+          <td style="color:#888;">{{ forloop.counter }}</td>
+          <td>{{ result.subject.name|default:"Unknown Subject" }}</td>
+          <td style="text-align:center;">
+            <span class="grade-chip">{{ result.grade|default:"—" }}</span>
+          </td>
+        </tr>
+      {% empty %}
+        <tr>
+          <td colspan="3" style="text-align:center;" class="text-muted">No O-Level results recorded</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- SECTION 4b: A-LEVEL RESULTS                                         -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <h2 class="sec">5. Academic Qualifications &mdash; A-Level</h2>
+  <p class="subj-meta">
+    School: <strong>{{ application.alevel_school|default:"Not specified" }}</strong>
+    &nbsp;|&nbsp; Year: <strong>{{ application.alevel_year|default:"N/A" }}</strong>
+    &nbsp;|&nbsp; Index No.: <strong>{{ application.alevel_index_number|default:"N/A" }}</strong>
+    {% if application.alevel_combination %}
+      &nbsp;|&nbsp; Combination: <strong>{{ application.alevel_combination }}</strong>
     {% endif %}
+  </p>
+  <table class="subj no-break">
+    <thead>
+      <tr>
+        <th style="width:5%;">#</th>
+        <th>Subject</th>
+        <th style="width:15%; text-align:center;">Grade</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for result in alevel_results %}
+        <tr>
+          <td style="color:#888;">{{ forloop.counter }}</td>
+          <td>{{ result.subject.name|default:"Unknown Subject" }}</td>
+          <td style="text-align:center;">
+            <span class="grade-chip">{{ result.grade|default:"—" }}</span>
+          </td>
+        </tr>
+      {% empty %}
+        <tr>
+          <td colspan="3" style="text-align:center;" class="text-muted">No A-Level results recorded</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
 
-    <!-- Signature Section -->
-    <div class="signature-section">
-      <div class="signature-block">
-        <div class="label" style="margin-bottom:8px;">Academic Registrar / Authorized Officer</div>
-        <p style="font-size:10pt; color:#555; margin:0 0 40px 0;">
-          On behalf of the Admissions Board, I confirm that the above-named applicant has been fully admitted / registered.
-        </p>
-        <div style="margin-top:60px;">
-          <div style="border-top:2px solid #333; width:70%; margin:0 auto;"></div>
-          <p style="margin:8px 0 0 0; font-size:10pt;">Academic Registrar<br>
-            <span style="color:#777; font-size:9pt;">Date: {{ today|date:"d F Y" }}</span>
-          </p>
-        </div>
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- SECTION 5: ADDITIONAL QUALIFICATIONS                                -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <h2 class="sec">6. Additional Qualifications</h2>
+  <div class="no-break">
+    {% for qual in additional_qualifications %}
+      <div class="qual-card">
+        <strong>{{ qual.additional_qualification_institution|default:"Unnamed Institution" }}</strong><br>
+        <span style="color:#444;">
+          Type: <strong>{{ qual.additional_qualification_type|default:"N/A" }}</strong>
+          &nbsp;&nbsp;|&nbsp;&nbsp;
+          Year: <strong>{{ qual.additional_qualification_year|default:"N/A" }}</strong>
+          &nbsp;&nbsp;|&nbsp;&nbsp;
+          Class / Award: <strong>{{ qual.class_of_award|default:"N/A" }}</strong>
+        </span>
       </div>
-    </div>
-
+    {% empty %}
+      <p class="text-muted">No additional qualifications provided.</p>
+    {% endfor %}
   </div>
 
-  <!-- Footer -->
-  <div class="footer">
-    <p>Official Document – Confidential – For Admission Purposes Only</p>
-    <p>Generated on {{ today|date:"d F Y" }} • Application Ref: {{ application.application_reference|default:"N/A" }}</p>
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- SECTION 6: OFFICIAL USE / SIGNATURE                                 -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <h2 class="sec">7. For Official Use</h2>
+  <div class="no-break">
+    <table class="info-table" style="margin-bottom:8px;">
+      <tr>
+        <td class="lbl-cell">Verified By (Name)</td>
+        <td class="val-cell" style="border-bottom:1px solid #999; min-width:160px;">&nbsp;</td>
+        <td class="lbl-cell-r">Date Verified</td>
+        <td class="val-cell" style="border-bottom:1px solid #999; min-width:120px;">&nbsp;</td>
+      </tr>
+      <tr>
+        <td class="lbl-cell">Admission Decision</td>
+        <td class="val-cell" style="border-bottom:1px solid #999;">&nbsp;</td>
+        <td class="lbl-cell-r">Student No.</td>
+        <td class="val-cell" style="border-bottom:1px solid #999;">
+          {% if application.admission %}{{ application.admission.student_id }}{% endif %}
+        </td>
+      </tr>
+      <tr>
+        <td class="lbl-cell">Reg. No.</td>
+        <td class="val-cell" style="border-bottom:1px solid #999;">
+          {% if application.admission %}{{ application.admission.reg_no }}{% endif %}
+        </td>
+        <td class="lbl-cell-r">Study Mode</td>
+        <td class="val-cell" style="border-bottom:1px solid #999;">
+          {% if application.admission %}{{ application.admission.study_mode|title }}{% endif %}
+        </td>
+      </tr>
+    </table>
+
+    <table style="width:100%;margin-top:30px;">
+      <tr>
+        <td style="width:33%;text-align:center;padding:0 10px;vertical-align:bottom;">
+          <div style="margin-top:50px;border-top:1.5px solid #333;padding-top:6px;font-size:9.5pt;font-weight:bold;">Applicant Signature</div>
+          <div style="font-size:8.5pt;color:#666;margin-top:2px;">Name: {{ application.full_name }}</div>
+          <div style="font-size:8.5pt;color:#666;">Date: ________________________</div>
+        </td>
+        <td style="width:33%;text-align:center;padding:0 10px;vertical-align:bottom;">
+          <div style="width:110px;height:110px;border:2px dashed #aaa;border-radius:55px;margin:10px auto 0 auto;font-size:8pt;color:#bbb;text-align:center;padding-top:42px;">OFFICIAL<br>STAMP</div>
+        </td>
+        <td style="width:33%;text-align:center;padding:0 10px;vertical-align:bottom;">
+          <div style="margin-top:50px;border-top:1.5px solid #333;padding-top:6px;font-size:9.5pt;font-weight:bold;">Academic Registrar</div>
+          <div style="font-size:8.5pt;color:#666;margin-top:2px;">On behalf of the Admissions Board</div>
+          <div style="font-size:8.5pt;color:#666;">Date: {{ today|date:"d F Y" }}</div>
+        </td>
+      </tr>
+    </table>
   </div>
 
-  <!-- Page number -->
-  <div class="page-number">Page <span class="pageNumber"></span> of <span class="totalPages"></span></div>
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- FOOTER                                                              -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <div class="doc-footer">
+    <strong>NDEJJE UNIVERSITY</strong> &nbsp;|&nbsp;
+    Official Document – Confidential – For Admission Records Only &nbsp;|&nbsp;
+    Ref: {{ application.application_reference|default:"N/A" }} &nbsp;|&nbsp;
+    Printed: {{ today|date:"d F Y" }}
+  </div>
 
 </body>
 </html>

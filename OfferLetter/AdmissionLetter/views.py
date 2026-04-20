@@ -191,15 +191,35 @@ def send_offer_letter(request, applicant_id):
         return Response({"detail": "No template for this program is uploaded yet"}, status=400)
 
     # 2. Build placeholders
+    import random as _random
+    from datetime import datetime as _dt
+
+    # Start date from template
+    if template.start_date:
+        start_date_formatted = template.start_date.strftime("%B %d, %Y")
+    else:
+        start_date_formatted = "To Be Announced"
+
+    # Hall of residence from template
+    halls = ["AKIIBUA", "NJUKI", "MUTEESA", "KAKUNGULU", "YOKANA"]
+    if template.hall_of_residence == "RANDOM":
+        hall = _random.choice(halls)
+    elif template.hall_of_residence:
+        hall = template.hall_of_residence
+    else:
+        hall = "To Be Assigned"
+
     context = {
         "full_name": f"{applicant.first_name} {applicant.last_name}",
         "student_no": admission.student_id or "TBD",
         "reg_no": admission.reg_no or "TBD",
         "program_name": admission.admitted_program.name,
         "min_years": admission.admitted_program.max_years,
-        "max_years":admission.admitted_program.min_years,
+        "max_years": admission.admitted_program.min_years,
         "campus": admission.admitted_campus,
-        "study_mode":admission.study_mode
+        "study_mode": admission.study_mode,
+        "start_date": start_date_formatted,
+        "hall_of_residence": hall,
     }
 
     # 3. Render DOCX bytes (Synchronous and fast)

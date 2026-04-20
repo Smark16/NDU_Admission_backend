@@ -2,6 +2,7 @@ from celery import shared_task
 from django.utils import timezone
 from datetime import timedelta
 import logging
+from .models import DraftApplication
 
 logger = logging.getLogger(__name__)
 

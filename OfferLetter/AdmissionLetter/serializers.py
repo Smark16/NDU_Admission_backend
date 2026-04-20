@@ -48,6 +48,8 @@ class TemplateSerializer(serializers.ModelSerializer):
         # Update fields
         instance.name = validated_data.get('name', new_file.name if new_file else instance.name)
         instance.status = validated_data.get('status', instance.status)
+        instance.start_date = validated_data.get('start_date', instance.start_date)
+        instance.hall_of_residence = validated_data.get('hall_of_residence', instance.hall_of_residence)
 
         if new_file:
             instance.file = new_file

@@ -129,7 +129,7 @@ class Application(models.Model):
     alevel_year = models.PositiveIntegerField()
     alevel_index_number = models.CharField(max_length=50)
     alevel_school = models.CharField(max_length=200)
-    alevel_combination = models.CharField(max_length=5)
+    alevel_combination = models.CharField(max_length=10)
     
     # Document uploads
     passport_photo = models.ImageField(upload_to='passport_photos/')
@@ -142,9 +142,11 @@ class Application(models.Model):
     application_fee_amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     school_pay_reference = models.CharField(max_length=100, blank=True, null=True)
     entered_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='entered_applications')
+    is_direct_entry = models.BooleanField(default=False)
 
     # Review Information
     reviewed_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='reviewed_applications')
+    admitted_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='admissions')
     reviewed_at = models.DateTimeField(null=True, blank=True)
     review_notes = models.TextField(blank=True)
 

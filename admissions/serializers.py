@@ -55,20 +55,46 @@ class ApplicationSerializer(serializers.ModelSerializer):
 
 # list serializer
 class ListApplicationsSerializer(serializers.ModelSerializer):
-    academic_level = serializers.CharField(source="academic_level.name", read_only=True)
+    programs = serializers.SerializerMethodField()
+    academic_level = serializers.CharField(source='academic_level.name', read_only=True)
+
+    def get_programs(self, obj):
+        return [{'id': p.id, 'name': p.name} for p in obj.programs.all()]
+
     class Meta:
         model = Application
-        fields = ['id', 'first_name', 'last_name', 'gender', 'status','academic_level', 'created_at', 'email']
+        fields = ['id', 'first_name', 'last_name', 'gender', 'status', 'created_at', 'email', 'programs', 'academic_level']
+
+
+class AllApplicationsReportSerializer(serializers.ModelSerializer):
+    academic_level = serializers.CharField(source='academic_level.name', read_only=True)
+    batch = serializers.CharField(source='batch.name', read_only=True)
+    campus = serializers.CharField(source='campus.name', read_only=True)
+    programs = serializers.SerializerMethodField()
+
+    def get_programs(self, obj):
+        return ', '.join([p.name for p in obj.programs.all()])
+
+    class Meta:
+        model = Application
+        fields = ['id', 'first_name', 'last_name', 'email', 'gender',
+                  'academic_level', 'batch', 'campus', 'programs',
+                  'status', 'created_at', 'is_direct_entry']
 
 # detail serializer
 class ApplicationDetailSerializer(serializers.ModelSerializer):
     reviewed_by = serializers.CharField(source='reviewed_by.full_name', read_only=True, allow_null=True)
     entered_by = serializers.CharField(source='entered_by.full_name', read_only=True, allow_null=True)
     batch = serializers.CharField(source='batch.name', read_only=True)
+    programs = serializers.SerializerMethodField()
+
+    def get_programs(self, obj):
+        return [{"id": p.id, "name": p.name, "code": p.code} for p in obj.programs.all()]
+
     class Meta:
         model = Application
         fields = ['id', 'first_name', 'last_name', 'date_of_birth', 'gender', 'nationality', 'phone', 'email',
-                  'batch', 'nin', 'passport_number', 'disabled', 'olevel_school', 'olevel_year', 'alevel_school', 'alevel_year', 'address',
+                  'batch', 'programs', 'nin', 'passport_number', 'disabled', 'olevel_school', 'olevel_year', 'alevel_school', 'alevel_year', 'address',
                   'status', 'application_fee_amount', 'application_fee_paid', 'school_pay_reference',
                   'application_reference', 'created_at', 'reviewed_at', 'passport_photo', 'reviewed_by', 'entered_by']
     
