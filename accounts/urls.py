@@ -34,6 +34,10 @@ urlpatterns = [
     path('user_profile', GetUserProfile.as_view()),
     path('get_user/<int:pk>', getUser.as_view()),
 
+    # Prospective Students
+    path('prospective_students', ProspectiveStudentsView.as_view()),
+    path('send_reminder/<int:pk>', SendReminderEmail.as_view()),
+
     # System Settings
     path('system_settings', GetSystemSettings.as_view()),
     path('update_system_settings', UpdateSystemSettings.as_view()),

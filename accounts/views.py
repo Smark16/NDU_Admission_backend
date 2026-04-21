@@ -322,6 +322,72 @@ def password_reset_redirect(request, uidb64, token):
     return redirect(frontend_url)
 
 
+# ─── Prospective Students ───────────────────────────────────────────────────
+
+class ProspectiveStudentsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from admissions.models import Application
+        from django.db.models import Max, OuterRef, Subquery, Value
+        from django.db.models.functions import Coalesce
+
+        submitted_statuses = ['submitted', 'under_review', 'accepted', 'Admitted', 'rejected']
+
+        # Applicants with no submitted application
+        has_submitted = Application.objects.filter(
+            applicant=OuterRef('pk'),
+            status__in=submitted_statuses
+        )
+        # Draft status for those who started but didn't submit
+        latest_draft = Application.objects.filter(
+            applicant=OuterRef('pk'),
+            status='draft'
+        ).order_by('-created_at')
+
+        prospective = (
+            User.objects.filter(is_applicant=True)
+            .exclude(pk__in=Application.objects.filter(status__in=submitted_statuses).values('applicant'))
+            .annotate(
+                has_draft=Coalesce(
+                    Subquery(latest_draft.values('status')[:1]),
+                    Value('no_application')
+                ),
+                draft_started_at=Subquery(latest_draft.values('created_at')[:1]),
+            )
+            .order_by('-date_joined')
+        )
+
+        data = [
+            {
+                'id': u.id,
+                'name': u.get_full_name() or u.email,
+                'email': u.email,
+                'phone': u.phone,
+                'date_joined': u.date_joined,
+                'last_login': u.last_login,
+                'status': 'Draft Started' if u.has_draft == 'draft' else 'Never Started',
+                'draft_started_at': u.draft_started_at,
+                'days_since_joined': (timezone.now() - u.date_joined).days if u.date_joined else None,
+            }
+            for u in prospective
+        ]
+        return Response({'count': len(data), 'results': data})
+
+
+class SendReminderEmail(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        from .tasks import celery_send_reminder_email
+        try:
+            user = User.objects.get(pk=pk, is_applicant=True)
+            celery_send_reminder_email.delay(user.id)
+            return Response({'detail': f'Reminder sent to {user.email}.'})
+        except User.DoesNotExist:
+            return Response({'detail': 'Applicant not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+
 # ─── System Settings ────────────────────────────────────────────────────────
 
 class GetSystemSettings(APIView):
@@ -334,21 +400,45 @@ class GetSystemSettings(APIView):
 
 
 class UpdateSystemSettings(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsAuthenticated]
 
-    def patch(self, request):
+    def _format_validation_error(self, errors):
+        # Return a single readable message while preserving full field errors.
+        if isinstance(errors, dict):
+            for field, value in errors.items():
+                if isinstance(value, list) and value:
+                    return f"{field}: {value[0]}"
+                if isinstance(value, dict):
+                    nested = self._format_validation_error(value)
+                    if nested:
+                        return nested
+        return "Invalid settings data."
+
+    def _update(self, request):
         settings_obj = SystemSettings.get_settings()
         serializer = SystemSettingsSerializer(settings_obj, data=request.data, partial=True)
         if serializer.is_valid():
             serializer.save(updated_by=request.user)
             return Response({'detail': 'Settings updated successfully.', **serializer.data})
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        return Response(
+            {
+                "detail": self._format_validation_error(serializer.errors),
+                "errors": serializer.errors,
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    def patch(self, request):
+        return self._update(request)
+
+    def put(self, request):
+        return self._update(request)
 
 
 # ─── System Usage Report ─────────────────────────────────────────────────────
 
 class SystemUsageReport(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsAuthenticated]
 
     def get(self, request):
         from audit.models import AuditLog
