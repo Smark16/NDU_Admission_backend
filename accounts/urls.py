@@ -32,7 +32,18 @@ urlpatterns = [
     # # Profile URLs
     path('edit_profile/<int:pk>', EditProfile.as_view()),
     path('user_profile', GetUserProfile.as_view()),
-    path('get_user/<int:pk>',  getUser.as_view()),
+    path('get_user/<int:pk>', getUser.as_view()),
+
+    # Prospective Students
+    path('prospective_students', ProspectiveStudentsView.as_view()),
+    path('send_reminder/<int:pk>', SendReminderEmail.as_view()),
+
+    # System Settings
+    path('system_settings', GetSystemSettings.as_view()),
+    path('update_system_settings', UpdateSystemSettings.as_view()),
+
+    # System Usage Report
+    path('system_usage_report', SystemUsageReport.as_view()),
 ]
 
 

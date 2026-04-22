@@ -18,6 +18,20 @@ def send_account_email(user, password, subject="Account Created Successfully"):
 
     return send_configurable_email(user.email, subject, body)
 
+def send_application_reminder(user, subject="Complete Your Application — NDU Admissions"):
+    login_link = settings.LOGIN_URL
+    body = (
+        f"Dear {user.first_name or user.email},\n\n"
+        f"We noticed that you created an account on the Ndejje University Admissions Portal "
+        f"but have not yet submitted your application.\n\n"
+        f"The admission window is still open. Log in now to complete and submit your application:\n"
+        f"{login_link}\n\n"
+        f"If you need any assistance, please contact the admissions office.\n\n"
+        f"Best regards,\n"
+        f"NDU Admissions Team"
+    )
+    return send_configurable_email(user.email, subject, body)
+
 def send_reset_password_link(user, subject="Password Reset Request"):
     uidb64 = urlsafe_base64_encode(force_bytes(user.pk))
     token = default_token_generator.make_token(user)

@@ -25,7 +25,7 @@ class DraftApplication(models.Model):
     disabled = models.CharField(max_length=5, blank=True, null=True)
 
     # Next of Kin
-    nextOfKinName = models.CharField(max_length=200, blank=True, null=True)
+    next_of_kin_name = models.CharField(max_length=200, blank=True, null=True)
     next_of_kin_contact = models.CharField(max_length=20, blank=True, null=True)
     next_of_kin_relationship = models.CharField(max_length=20, blank=True, null=True)
 

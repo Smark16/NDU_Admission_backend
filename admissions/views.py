@@ -12,7 +12,7 @@ from rest_framework.decorators import api_view, permission_classes
 from django.conf import settings
 from django.db import transaction
 # from .utils.validate_photo import validate_passport_photo
-from .tasks import celery_rejection_email, celery_send_application_email, celery_application_notification, celery_admission_email, celery_admission_update
+from .tasks import celery_rejection_email, celery_send_application_email, celery_application_notification, celery_admission_email, celery_admission_update, celery_bulk_announcement
 from accounts.tasks import celery_send_account_email
 from payments.models import ApplicationPayment
 from Drafts.models import DraftApplication
@@ -22,7 +22,10 @@ import logging
 import json
 import os
 
-from weasyprint import HTML
+try:
+    from weasyprint import HTML
+except OSError:
+    HTML = None
 from django.shortcuts import get_object_or_404
 from django.http import HttpResponse
 from django.template.loader import render_to_string
@@ -61,25 +64,21 @@ def create_applications(request):
             files = request.FILES
 
             ext_ref = request.data.get("external_reference")
+            payment = None
 
-            if not ext_ref:
-                return Response(
-                    {"detail": "Payment reference is required"},
-                    status=400
-                )
-
-            try:
-                payment = ApplicationPayment.objects.select_for_update().get(
-                    external_reference=ext_ref,
-                    user=request.user,
-                    status="PAID",
-                    application__isnull=True 
-                )
-            except ApplicationPayment.DoesNotExist:
-                return Response(
-                    {"detail": "Invalid, unpaid, or already used payment reference"},
-                    status=400
-                )
+            if ext_ref:
+                try:
+                    payment = ApplicationPayment.objects.select_for_update().get(
+                        external_reference=ext_ref,
+                        user=request.user,
+                        status="PAID",
+                        application__isnull=True
+                    )
+                except ApplicationPayment.DoesNotExist:
+                    return Response(
+                        {"detail": "Invalid, unpaid, or already used payment reference"},
+                        status=400
+                    )
 
             # additional qualifications
             additional_qualifications = []
@@ -107,9 +106,10 @@ def create_applications(request):
             application = Application(**serializer.validated_data)
             application.applicant = request.user
             application.status = "submitted"
-            application.application_fee_paid = True
-            application.application_fee_amount = payment.amount
-            application.application_reference = payment.external_reference
+            if payment:
+                application.application_fee_paid = True
+                application.application_fee_amount = payment.amount
+                application.application_reference = payment.external_reference
 
             if passport_photo:
                 # validate_passport_photo(passport_photo)
@@ -186,15 +186,16 @@ def create_applications(request):
                 ))
 
             # NOW SAVE EVERYTHING
-            application.save() 
-            payment.application = application
-            payment.save(update_fields=["application"]) 
+            application.save()
+            if payment:
+                payment.application = application
+                payment.save(update_fields=["application"])
 
             # delete draft Application
             draft = DraftApplication.objects.filter(
-            applicant=request.user,
-            batch_id=application.batch
-            )
+                applicant=request.user,
+                batch_id=application.batch
+                )
 
             if draft:
                 draft.delete()
@@ -282,29 +283,51 @@ def create_direct_applications(request):
             serializer = CudApplicationSerializer(data=data, context={"request": request})
             serializer.is_valid(raise_exception=True)
 
-            # remove M-2-M data
-            programs_data = serializer.validated_data.pop('programs', None)
+            # Validate school_pay_reference rule
+            fee_paid = serializer.validated_data.get('application_fee_paid', False)
+            school_pay_ref = (serializer.validated_data.get('school_pay_reference') or '').strip()
+            if fee_paid and not school_pay_ref:
+                return Response(
+                    {"detail": "school_pay_reference is required when application_fee_paid is true."},
+                    status=400
+                )
 
-            # create applicant user
+            # remove M-2-M data and prevent client from injecting entered_by
+            programs_data = serializer.validated_data.pop('programs', None)
+            serializer.validated_data.pop('entered_by', None)
+
+            # create applicant user (reuse existing account if email already registered)
             try:
-                password = 'applicant@12345'
-                applicant = user = User.objects.create(
-                            email=data.get('email', ''),
-                            first_name=data.get('first_name', ''),
-                            last_name=data.get('last_name', ''),
-                            phone=data.get('phone', ''),
-                            username=data.get('email', ''),
-                            is_applicant=True,
-                            password=password
-                        )
-                
+                email = data.get('email', '').strip()
+                existing = User.objects.filter(email=email).first()
+                if existing:
+                    applicant = user = existing
+                else:
+                    # ensure unique username if email is already taken as username
+                    base_username = email
+                    username = base_username
+                    counter = 1
+                    while User.objects.filter(username=username).exists():
+                        username = f"{base_username}_{counter}"
+                        counter += 1
+                    applicant = user = User.objects.create(
+                        email=email,
+                        first_name=data.get('first_name', ''),
+                        last_name=data.get('last_name', ''),
+                        phone=data.get('phone', ''),
+                        username=username,
+                        is_applicant=True,
+                        password='applicant@12345',
+                    )
             except Exception as e:
                 return Response({"detail": f"Failed to create user: {str(e)}"}, status=400)
 
             application = Application(**serializer.validated_data)
             application.applicant = applicant
             application.status = "submitted"
+            application.entered_by = request.user
             application.application_fee_paid = True
+            application.is_direct_entry = True
         
             if passport_photo:
                 # validate_passport_photo(passport_photo)
@@ -422,6 +445,22 @@ def create_direct_applications(request):
 # list applications
 class ListApplications(generics.ListAPIView):
     queryset = Application.objects.filter(~Q(status__in=['draft','Admitted', 'rejected', 'accepted'])).order_by('created_at')
+    serializer_class = ListApplicationsSerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+# All applications report (no status filter — returns everything)
+class AllApplicationsReport(generics.ListAPIView):
+    serializer_class = AllApplicationsReportSerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+    def get_queryset(self):
+        return Application.objects.select_related(
+            'academic_level', 'batch', 'campus', 'entered_by'
+        ).prefetch_related('programs', 'programs__faculty').order_by('-created_at')
+
+# Direct entry applicants
+class ListDirectEntryApplications(generics.ListAPIView):
+    queryset = Application.objects.filter(is_direct_entry=True).order_by('-created_at')
     serializer_class = ListApplicationsSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
@@ -1196,5 +1235,36 @@ class DownloadAdmissionPDF(APIView):
         return response
 
 
+# ── Bulk Announcement ──────────────────────────────────────────────────────────
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def send_bulk_announcement(request):
+    subject = (request.data.get('subject') or '').strip()
+    body = (request.data.get('body') or '').strip()
+    status_filter = request.data.get('status', 'all')
+    batch_filter = request.data.get('batch', 'all')
+    level_filter = request.data.get('academic_level', 'all')
 
+    if not subject or not body:
+        return Response({"detail": "Subject and body are required."}, status=400)
+
+    # If caller passes explicit IDs, use those instead of filters
+    explicit_ids = request.data.get('application_ids', None)
+    if explicit_ids:
+        ids = [int(i) for i in explicit_ids if str(i).isdigit()]
+    else:
+        qs = Application.objects.all()
+        if status_filter != 'all':
+            qs = qs.filter(status=status_filter)
+        if batch_filter != 'all':
+            qs = qs.filter(batch__name=batch_filter)
+        if level_filter != 'all':
+            qs = qs.filter(academic_level__name=level_filter)
+        ids = list(qs.values_list('id', flat=True))
+
+    if not ids:
+        return Response({"detail": "No applicants match the selected filters."}, status=400)
+
+    celery_bulk_announcement.delay(ids, subject, body)
+    return Response({"detail": f"Announcement queued for {len(ids)} applicant(s).", "count": len(ids)})
 

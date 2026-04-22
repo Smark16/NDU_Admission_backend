@@ -36,7 +36,8 @@ class SingleApplicationSerializer(serializers.ModelSerializer):
     campus = CampusSerializer(read_only=True)
     class Meta:
         model = Application
-        fields = ['id', 'first_name', 'last_name', 'email', 'phone', 'date_of_birth', 'nationality', 'gender', 'programs', 'campus']
+        fields = ['id', 'first_name', 'last_name', 'email', 'phone', 'date_of_birth', 'nationality', 'gender',
+                  'programs', 'campus', 'application_fee_paid', 'school_pay_reference', 'entered_by']
 
 class ApplicationSerializer(serializers.ModelSerializer):
     class Meta:
@@ -54,20 +55,66 @@ class ApplicationSerializer(serializers.ModelSerializer):
 
 # list serializer
 class ListApplicationsSerializer(serializers.ModelSerializer):
+# <<<<<<< HEAD
+#     academic_level = serializers.CharField(source='academic_level.name', read_only=True)
+#     class Meta:
+#         model = Application
+#         fields = ['id', 'first_name', 'last_name', 'gender', 'status', 'academic_level', 'created_at', 'email']
+# =======
+    programs = serializers.SerializerMethodField()
     academic_level = serializers.CharField(source='academic_level.name', read_only=True)
+
+    def get_programs(self, obj):
+        return [{'id': p.id, 'name': p.name} for p in obj.programs.all()]
+
     class Meta:
         model = Application
-        fields = ['id', 'first_name', 'last_name', 'gender', 'status', 'academic_level', 'created_at', 'email']
+        fields = ['id', 'first_name', 'last_name', 'gender', 'status', 'created_at', 'email', 'programs', 'academic_level']
+
+
+class AllApplicationsReportSerializer(serializers.ModelSerializer):
+    academic_level = serializers.CharField(source='academic_level.name', read_only=True)
+    batch = serializers.CharField(source='batch.name', read_only=True)
+    campus = serializers.CharField(source='campus.name', read_only=True)
+    programs = serializers.SerializerMethodField()
+    faculty = serializers.SerializerMethodField()
+
+    def get_programs(self, obj):
+        return ', '.join([p.name for p in obj.programs.all()])
+
+    def get_faculty(self, obj):
+        names = [p.faculty.name for p in obj.programs.all() if p.faculty]
+        return ', '.join(dict.fromkeys(names))  # distinct, preserve order
+
+    def get_entered_by(self, obj):
+        if obj.is_direct_entry and obj.entered_by:
+            return f"{obj.entered_by.first_name} {obj.entered_by.last_name}".strip() or obj.entered_by.username
+        return "Online"
+
+    entered_by = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Application
+        fields = ['id', 'first_name', 'last_name', 'email', 'gender',
+                  'academic_level', 'batch', 'campus', 'programs', 'faculty',
+                  'status', 'created_at', 'is_direct_entry', 'entered_by']
 
 # detail serializer
 class ApplicationDetailSerializer(serializers.ModelSerializer):
     reviewed_by = serializers.CharField(source='reviewed_by.full_name', read_only=True, allow_null=True)
+    entered_by = serializers.CharField(source='entered_by.full_name', read_only=True, allow_null=True)
     batch = serializers.CharField(source='batch.name', read_only=True)
+    programs = serializers.SerializerMethodField()
+
+    def get_programs(self, obj):
+        return [{"id": p.id, "name": p.name, "code": p.code} for p in obj.programs.all()]
+
     class Meta:
         model = Application
         fields = ['id', 'first_name', 'last_name', 'date_of_birth', 'gender', 'nationality', 'phone', 'email',
-                  'batch',"nin", "passport_number","disabled", 'olevel_school', 'olevel_year', 'alevel_school', 'alevel_year', 'address',
-                  'status', 'application_fee_amount','application_fee_paid', 'created_at', 'reviewed_at', 'passport_photo','reviewed_by']
+                  'batch', 'programs', 'nin', 'passport_number', 'disabled', 'olevel_school', 'olevel_year', 'alevel_school', 'alevel_year', 'address',
+                  'status', 'application_fee_amount', 'application_fee_paid', 'school_pay_reference',
+                  'application_reference', 'created_at', 'reviewed_at', 'passport_photo', 'reviewed_by', 'entered_by']
     
 # o level subject
 class OlevelSubjectSerializer(serializers.ModelSerializer):

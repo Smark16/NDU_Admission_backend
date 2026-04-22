@@ -8,8 +8,8 @@ from rest_framework.exceptions import ValidationError
 class Campus(models.Model):
     name = models.CharField(max_length=100, unique=True)
     code = models.CharField(max_length=50, unique=True)
-    address = models.TextField(max_length=100)
-    email = models.EmailField(max_length=100)
+    address = models.TextField(max_length=100, blank=True, default='')
+    email = models.EmailField(max_length=100, blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -49,22 +49,23 @@ class Profile(models.Model):
     first_name = models.CharField(max_length=50)
     last_name = models.CharField(max_length=50)
     email = models.EmailField(max_length=100)
-    phone = models.PositiveBigIntegerField()
-    profile_photo = models.ImageField(upload_to='passport_photos/')
+    phone = models.CharField(max_length=20, blank=True, null=True)
+    profile_photo = models.ImageField(upload_to='passport_photos/', blank=True, null=True)
     is_staff = models.BooleanField(default=False)
     is_applicant = models.BooleanField(default=False)
-    date_joined = models.DateTimeField()
+    date_joined = models.DateTimeField(null=True, blank=True)
 
 def create_profile(sender, instance, created, **kwargs):
     if created:
-        Profile.objects.create(user=instance, 
-        first_name=instance.first_name, 
-        last_name=instance.last_name, 
-        date_joined=instance.date_joined,
-        is_staff=instance.is_staff,
-        is_applicant=instance.is_applicant,
-        email=instance.email,
-        phone=instance.phone
+        Profile.objects.create(
+            user=instance,
+            first_name=instance.first_name or '',
+            last_name=instance.last_name or '',
+            date_joined=instance.date_joined,
+            is_staff=instance.is_staff,
+            is_applicant=instance.is_applicant,
+            email=instance.email or '',
+            phone=instance.phone or '',
         )
 
 def save_profile(sender, instance, **kwargs):
@@ -72,7 +73,32 @@ def save_profile(sender, instance, **kwargs):
         instance.profile.save()
 
 post_save.connect(create_profile, sender=User)
-post_save.connect(save_profile, sender=User) 
+post_save.connect(save_profile, sender=User)
+
+
+class SystemSettings(models.Model):
+    student_session_timeout = models.PositiveIntegerField(
+        default=30, help_text="Minutes before a student session expires due to inactivity"
+    )
+    admin_session_timeout = models.PositiveIntegerField(
+        default=60, help_text="Minutes before an admin session expires due to inactivity"
+    )
+    updated_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name='settings_updates'
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "System Settings"
+
+    def save(self, *args, **kwargs):
+        self.pk = 1  # Singleton — only one row ever exists
+        super().save(*args, **kwargs)
+
+    @classmethod
+    def get_settings(cls):
+        obj, _ = cls.objects.get_or_create(pk=1)
+        return obj
 
 
 

@@ -7,5 +7,7 @@ urlpatterns = [
     path('edit_template/<int:pk>', EditTemplate.as_view()),
     path('delete_template/<int:pk>', DeleteTemplate.as_view()),
     path('send_letter/<int:applicant_id>', send_offer_letter),
-    path('status/<int:applicant_id>', offer_letter_status)
+    path('status/<int:applicant_id>', offer_letter_status),
+    path('pdf_preview/<int:pk>', pdf_template_preview),
+    path('save_field_positions/<int:pk>', save_pdf_field_positions),
 ]
