@@ -13,3 +13,10 @@ def celery_send_password_reset_Link(user_id):
    User = apps.get_model('accounts', 'User')
    user = User.objects.get(id=user_id)
    send_reset_password_link(user)
+
+@shared_task
+def celery_send_reminder_email(user_id):
+   from .utils.emails import send_application_reminder
+   User = apps.get_model('accounts', 'User')
+   user = User.objects.get(id=user_id)
+   send_application_reminder(user)

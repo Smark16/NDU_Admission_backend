@@ -19,19 +19,21 @@ class TemplateSerializer(serializers.ModelSerializer):
         file_obj = validated_data.pop('file')  # ← Remove file
         programs_data = validated_data.pop('programs', [])  # ← Extract programs
 
-        # Create template
+        # Auto-detect file type
+        ext = file_obj.name.rsplit('.', 1)[-1].lower() if '.' in file_obj.name else 'docx'
+        file_type = 'pdf' if ext == 'pdf' else 'docx'
+
         doc = OfferLetterTemplate(
             file=file_obj,
             name=file_obj.name,
-            **validated_data  # status, etc.
+            file_type=file_type,
+            **validated_data
         )
         doc.save()
 
-        # Set programs
         if programs_data:
             doc.programs.set(programs_data)
 
-        # Save full URL
         doc.file_url = request.build_absolute_uri(doc.file.url)
         doc.save(update_fields=['file_url'])
 
@@ -43,22 +45,25 @@ class TemplateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Request context is missing.")
 
         new_file = validated_data.get('file')
-        programs_data = validated_data.pop('programs', None)  # ← Extract
+        programs_data = validated_data.pop('programs', None)
 
-        # Update fields
         instance.name = validated_data.get('name', new_file.name if new_file else instance.name)
         instance.status = validated_data.get('status', instance.status)
+        instance.start_date = validated_data.get('start_date', instance.start_date)
+        instance.hall_of_residence = validated_data.get('hall_of_residence', instance.hall_of_residence)
 
         if new_file:
             instance.file = new_file
+            ext = new_file.name.rsplit('.', 1)[-1].lower() if '.' in new_file.name else 'docx'
+            instance.file_type = 'pdf' if ext == 'pdf' else 'docx'
+            # Reset field positions when template file is replaced
+            instance.field_positions = {}
 
         instance.save()
 
-        # Handle programs
         if programs_data is not None:
             instance.programs.set(programs_data)
 
-        # Update file_url if file changed
         if new_file:
             instance.file_url = request.build_absolute_uri(instance.file.url)
             instance.save(update_fields=['file_url'])

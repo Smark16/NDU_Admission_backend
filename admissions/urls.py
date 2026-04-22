@@ -14,6 +14,8 @@ urlpatterns = [
     path('rejected_applications', views.ListRejectedStudents.as_view()),
     path('create_applications', views.create_applications),
     path('create_direct_applications', views.create_direct_applications),
+    path('direct_entry_applications', views.ListDirectEntryApplications.as_view()),
+    path('all_applications_report', views.AllApplicationsReport.as_view()),
     path('application_detail/<int:application_id>', views.application_detail),
     path('review_application/<int:application_id>', views.ReviewApplication.as_view()),
     path('single_app/<int:application_id>', views.SingleApplication.as_view()),
@@ -65,7 +67,10 @@ urlpatterns = [
     path('student-profile/pdf/<int:application_id>/', views.DownloadAdmissionPDF.as_view(), name='download_admission_pdf'),
 
     # notifications
-    path('list_user_notification', views.ListNotifications.as_view())
+    path('list_user_notification', views.ListNotifications.as_view()),
+
+    # bulk announcement
+    path('send_announcement', views.send_bulk_announcement),
 ]
 
 

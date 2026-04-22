@@ -15,7 +15,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
 from admissions.models import Application, AdmittedStudent
-from .utils.letters import render_docx_from_template, save_docx_to_field, convert_docx_to_pdf_bytes, save_docx_to_field
+from .utils.letters import render_docx_from_template, save_docx_to_field, convert_docx_to_pdf_bytes, save_docx_to_field, fill_pdf_template
 from admissions.utils.notification import create_notification
 from django.core.mail import send_mail
 from django.conf import settings
@@ -190,43 +190,79 @@ def send_offer_letter(request, applicant_id):
     if not template:
         return Response({"detail": "No template for this program is uploaded yet"}, status=400)
 
-    # 2. Build placeholders
+    # 2. Build context
+    import random as _random
+
+    if template.start_date:
+        start_date_formatted = template.start_date.strftime("%B %d, %Y")
+    else:
+        start_date_formatted = "To Be Announced"
+
+    halls = ["AKIIBUA", "NJUKI", "MUTEESA", "KAKUNGULU", "YOKANA"]
+    if template.hall_of_residence == "RANDOM":
+        hall = _random.choice(halls)
+    elif template.hall_of_residence:
+        hall = template.hall_of_residence
+    else:
+        hall = "To Be Assigned"
+
     context = {
         "full_name": f"{applicant.first_name} {applicant.last_name}",
         "student_no": admission.student_id or "TBD",
         "reg_no": admission.reg_no or "TBD",
         "program_name": admission.admitted_program.name,
         "min_years": admission.admitted_program.max_years,
-        "max_years":admission.admitted_program.min_years,
+        "max_years": admission.admitted_program.min_years,
         "campus": admission.admitted_campus,
-        "study_mode":admission.study_mode
+        "study_mode": admission.study_mode,
+        "start_date": start_date_formatted,
+        "hall_of_residence": hall,
     }
 
-    # 3. Render DOCX bytes (Synchronous and fast)
+    # 3. PDF template path: overlay text directly → no DOCX/LibreOffice needed
+    if template.file_type == 'pdf':
+        if not template.field_positions:
+            return Response({"detail": "PDF template has no field positions configured. Use 'Map Fields' first."}, status=400)
+        try:
+            pdf_bytes = fill_pdf_template(template.file.path, context, template.field_positions)
+        except Exception as e:
+            logger.error(f"PDF fill failed for applicant {applicant_id}: {e}")
+            return Response({"detail": "PDF template filling failed."}, status=500)
+
+        pdf_filename = f"OfferLetter_{applicant.id}.pdf"
+        applicant.admission_letter_pdf.save(pdf_filename, ContentFile(pdf_bytes))
+        applicant.status = "Admitted"
+        applicant.offer_letter_status = "email_sent"
+        applicant.offer_letter_progress = 100
+        applicant.save()
+        send_offerletter_email.delay(applicant.id)
+        return Response({
+            "detail": "Offer letter generated from PDF template.",
+            "status": "complete",
+            "pdf_url": applicant.admission_letter_pdf.url,
+        })
+
+    # 4. DOCX template: render then convert in background
     try:
         docx_bytes = render_docx_from_template(template.file.path, context)
     except Exception as e:
         logger.error(f"DOCX rendering failed for applicant {applicant_id}: {e}")
         return Response({"detail": "DOCX template rendering failed"}, status=500)
 
-    # 4. Save DOCX immediately (fast storage operation)
     docx_filename = f"OfferLetter_{applicant.id}.docx"
     applicant.admission_letter_docx.save(docx_filename, ContentFile(docx_bytes))
     applicant.save()
 
-    # 5. Start heavy task (PDF conversion, status update, email) in background thread
     threading.Thread(
         target=convert_and_save_pdf_task,
         args=(docx_bytes, applicant.id),
         daemon=True
     ).start()
 
-    # 6. Instant response to the client
-    # This prevents the client request from timing out while Word is converting the PDF
     return Response({
         "detail": "Offer letter DOCX saved. PDF generation, status update, and email are starting in the background.",
         "status": "processing",
-        "docx_url": applicant.admission_letter_docx.url 
+        "docx_url": applicant.admission_letter_docx.url,
     })
 
 # offer letter status
@@ -240,4 +276,46 @@ def offer_letter_status(request, applicant_id):
         "docx_url": app.admission_letter_docx.url if app.admission_letter_docx else None,
         "pdf_url": app.admission_letter_pdf.url if app.admission_letter_pdf else None,
     })
+
+
+# ── PDF template: preview first page as base64 PNG ──────────────────────────
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def pdf_template_preview(request, pk):
+    template = get_object_or_404(OfferLetterTemplate, pk=pk)
+    if template.file_type != 'pdf':
+        return Response({'detail': 'Not a PDF template.'}, status=400)
+
+    import fitz
+    import base64
+
+    doc = fitz.open(template.file.path)
+    page = doc[0]
+    pdf_width = page.rect.width
+    pdf_height = page.rect.height
+    mat = fitz.Matrix(2, 2)  # 2× zoom for sharp preview
+    pix = page.get_pixmap(matrix=mat)
+    img_b64 = base64.b64encode(pix.tobytes('png')).decode()
+    doc.close()
+
+    return Response({
+        'image': img_b64,
+        'pdf_width': pdf_width,
+        'pdf_height': pdf_height,
+        'field_positions': template.field_positions,
+    })
+
+
+# ── PDF template: save field positions ──────────────────────────────────────
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def save_pdf_field_positions(request, pk):
+    template = get_object_or_404(OfferLetterTemplate, pk=pk)
+    if template.file_type != 'pdf':
+        return Response({'detail': 'Not a PDF template.'}, status=400)
+
+    positions = request.data.get('field_positions', {})
+    template.field_positions = positions
+    template.save(update_fields=['field_positions'])
+    return Response({'detail': 'Field positions saved successfully.'})
     

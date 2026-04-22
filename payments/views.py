@@ -82,8 +82,8 @@ class InitiatePayment(APIView):
         last_name = request.data.get('last_name')
         amount = request.data.get('amount')
         reason = "Application Fee"
-        callBackUrl = "f{settings.BACKEND_URL}/api/payments/webhook/"
-        # callBackUrl = request.build_absolute_uri('/api/payments/webhook/')
+        callBackUrl = f"{settings.BACKEND_URL}/api/payments/webhook/"
+        # callBackUrl = "https://97be-196-43-131-1.ngrok-free.app/api/payments/webhook/" 
 
         # EXPIRE OLD PAYMENTS
         ApplicationPayment.objects.filter(

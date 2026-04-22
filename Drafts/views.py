@@ -46,6 +46,8 @@ def save_draft_applications(request):
         draft.email = data.get('email', '')
         draft.address = data.get('address', '')
         draft.disabled = data.get('disabled', '')
+        draft.application_fee_paid = data.get('application_fee_paid')
+        draft.application_reference = data.get('application_reference')
 
         # Safe date conversion for date_of_birth
         dob_str = data.get('dateOfBirth')
@@ -81,6 +83,7 @@ def save_draft_applications(request):
         }
 
         draft.additional_qualifications = data.get('additionalQualifications', [])
+        draft.application_fee_paid = data.get('application_fee_paid')
 
         # Save programs (ManyToMany)
         if data.get('programs'):
@@ -185,8 +188,8 @@ def get_draft_application(request):
             "aLevelDocuments": None,
             "otherInstitutionDocuments": None,
 
-            "application_fee_paid": False,
-            "externalReference": "",
+            "application_fee_paid": draft.application_fee_paid,
+            "externalReference": draft.application_reference,
             "status": "draft",
         }
 

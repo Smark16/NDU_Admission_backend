@@ -14,7 +14,13 @@ SECRET_KEY = env('SECRET_KEY')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = env.bool('DEBUG')
 
-ALLOWED_HOSTS = ['*']
+ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=[
+    '127.0.0.1',
+    'localhost',
+    'applications.ndu.ac.ug',
+    'applications-admin.ndu.ac.ug',
+    '.ndu.ac.ug',           
+])
 # Application definition
 DJANGO_APPS = [
     'django.contrib.admin',
@@ -68,6 +74,10 @@ if DEBUG:
         "127.0.0.1",
     ]
 
+    # Run Celery tasks synchronously in development — no worker/broker needed
+    CELERY_TASK_ALWAYS_EAGER = True
+    CELERY_TASK_EAGER_PROPAGATES = True
+
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
 
 ROOT_URLCONF = 'ndu_portal.urls'
@@ -93,11 +103,7 @@ WSGI_APPLICATION = 'ndu_portal.wsgi.application'
 # caching
 CACHES = {
     "default": {
-        "BACKEND": "django_redis.cache.RedisCache",
-        "LOCATION": "redis://127.0.0.1:6379/1",
-        "OPTIONS": {
-            "CLIENT_CLASS": "django_redis.client.DefaultClient",
-        }
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
     }
 }
 
@@ -107,6 +113,9 @@ if DEBUG:
         'default': {
             'ENGINE': 'django.db.backends.sqlite3',
             'NAME': BASE_DIR / 'db.sqlite3',
+            'OPTIONS': {
+                'timeout': 20,
+            }
         }
     }
 else:
@@ -116,8 +125,8 @@ else:
         "NAME": env("DB_NAME"),
         "USER": env("DB_USER"),
         "PASSWORD": env("DB_PASSWORD"),
-        "HOST": "127.0.0.1", 
-        "PORT": 6432,         
+        "HOST": env("DB_HOST", default="127.0.0.1"),
+        "PORT": env("DB_PORT", default="5433"),
         "CONN_MAX_AGE": 0, 
     }
 }
@@ -174,13 +183,13 @@ SITE_ID=1
 # Custom User Model
 AUTH_USER_MODEL = 'accounts.User'
 
-# Crispy Forms
+# Crispy Forms g
 CRISPY_ALLOWED_TEMPLATE_PACKS = "bootstrap5"
 CRISPY_TEMPLATE_PACK = "bootstrap5"
 
 # File Upload Settings
-FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024  # 10MB
-DATA_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024  # 10MB
+FILE_UPLOAD_MAX_MEMORY_SIZE = 100 * 1024 * 1024  # 100MB
+DATA_UPLOAD_MAX_MEMORY_SIZE = 100 * 1024 * 1024  # 100MB
 FILE_UPLOAD_PERMISSIONS = 0o644
 
 # Celery Configuration
@@ -219,14 +228,17 @@ CSRF_TRUSTED_ORIGINS = [
     'http://localhost:5173',
     'https://applications.ndu.ac.ug',
     'https://applications-admin.ndu.ac.ug',
-    'http://172.17.31.147'
+    'http://172.17.31.147',
+    "https://admissions.ndu.ac.ug"
 ]
 
 CORS_ALLOWED_ORIGINS = [
    'http://localhost:5173',
+   'http://localhost:5174',
    'https://applications.ndu.ac.ug',
    'https://applications-admin.ndu.ac.ug',
-   'http://172.17.31.147'
+   'http://172.17.31.147',
+   'https://admissions.ndu.ac.ug'
 ]
 
 CORS_ALLOW_CREDENTIALS = True
@@ -243,8 +255,8 @@ REST_FRAMEWORK = {
 }
 
 SIMPLE_JWT = {
-    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=5),
-    "REFRESH_TOKEN_LIFETIME": timedelta(hours=4),
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=20),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=4),
     "ROTATE_REFRESH_TOKENS": True,
     "BLACKLIST_AFTER_ROTATION": True,
 
@@ -260,19 +272,34 @@ SIMPLE_JWT = {
 }
 
 # production logs
+LOGS_DIR = BASE_DIR / 'logs'
+LOGS_DIR.mkdir(parents=True, exist_ok=True)
+
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '{asctime} {levelname} {module} {message}',
+            'style': '{',
+        },
+    },
     'handlers': {
         'file': {
             'level': 'ERROR',
             'class': 'logging.FileHandler',
-            'filename': os.path.join(BASE_DIR, 'logs/django_errors.log'),
+            'filename': str(LOGS_DIR / 'django_errors.log'),
+            'formatter': 'verbose',
+        },
+        'console': {
+            'level': 'ERROR',
+            'class': 'logging.StreamHandler',
+            'formatter': 'verbose',
         },
     },
     'loggers': {
         'django': {
-            'handlers': ['file'],
+            'handlers': ['file', 'console'],
             'level': 'ERROR',
             'propagate': True,
         },
