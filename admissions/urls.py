@@ -67,7 +67,10 @@ urlpatterns = [
     path('student-profile/pdf/<int:application_id>/', views.DownloadAdmissionPDF.as_view(), name='download_admission_pdf'),
 
     # notifications
-    path('list_user_notification', views.ListNotifications.as_view())
+    path('list_user_notification', views.ListNotifications.as_view()),
+
+    # bulk announcement
+    path('send_announcement', views.send_bulk_announcement),
 ]
 
 

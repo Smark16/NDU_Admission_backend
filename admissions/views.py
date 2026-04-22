@@ -12,7 +12,7 @@ from rest_framework.decorators import api_view, permission_classes
 from django.conf import settings
 from django.db import transaction
 # from .utils.validate_photo import validate_passport_photo
-from .tasks import celery_rejection_email, celery_send_application_email, celery_application_notification, celery_admission_email, celery_admission_update
+from .tasks import celery_rejection_email, celery_send_application_email, celery_application_notification, celery_admission_email, celery_admission_update, celery_bulk_announcement
 from accounts.tasks import celery_send_account_email
 from payments.models import ApplicationPayment
 from django.db.models import Q
@@ -1225,5 +1225,36 @@ class DownloadAdmissionPDF(APIView):
         return response
 
 
+# ── Bulk Announcement ──────────────────────────────────────────────────────────
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def send_bulk_announcement(request):
+    subject = (request.data.get('subject') or '').strip()
+    body = (request.data.get('body') or '').strip()
+    status_filter = request.data.get('status', 'all')
+    batch_filter = request.data.get('batch', 'all')
+    level_filter = request.data.get('academic_level', 'all')
 
+    if not subject or not body:
+        return Response({"detail": "Subject and body are required."}, status=400)
+
+    # If caller passes explicit IDs, use those instead of filters
+    explicit_ids = request.data.get('application_ids', None)
+    if explicit_ids:
+        ids = [int(i) for i in explicit_ids if str(i).isdigit()]
+    else:
+        qs = Application.objects.all()
+        if status_filter != 'all':
+            qs = qs.filter(status=status_filter)
+        if batch_filter != 'all':
+            qs = qs.filter(batch__name=batch_filter)
+        if level_filter != 'all':
+            qs = qs.filter(academic_level__name=level_filter)
+        ids = list(qs.values_list('id', flat=True))
+
+    if not ids:
+        return Response({"detail": "No applicants match the selected filters."}, status=400)
+
+    celery_bulk_announcement.delay(ids, subject, body)
+    return Response({"detail": f"Announcement queued for {len(ids)} applicant(s).", "count": len(ids)})
 
