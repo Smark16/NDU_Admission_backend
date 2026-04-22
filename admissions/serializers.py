@@ -71,14 +71,19 @@ class AllApplicationsReportSerializer(serializers.ModelSerializer):
     batch = serializers.CharField(source='batch.name', read_only=True)
     campus = serializers.CharField(source='campus.name', read_only=True)
     programs = serializers.SerializerMethodField()
+    faculty = serializers.SerializerMethodField()
 
     def get_programs(self, obj):
         return ', '.join([p.name for p in obj.programs.all()])
 
+    def get_faculty(self, obj):
+        names = [p.faculty.name for p in obj.programs.all() if p.faculty]
+        return ', '.join(dict.fromkeys(names))  # distinct, preserve order
+
     class Meta:
         model = Application
         fields = ['id', 'first_name', 'last_name', 'email', 'gender',
-                  'academic_level', 'batch', 'campus', 'programs',
+                  'academic_level', 'batch', 'campus', 'programs', 'faculty',
                   'status', 'created_at', 'is_direct_entry']
 
 # detail serializer

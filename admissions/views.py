@@ -286,19 +286,29 @@ def create_direct_applications(request):
             programs_data = serializer.validated_data.pop('programs', None)
             serializer.validated_data.pop('entered_by', None)
 
-            # create applicant user
+            # create applicant user (reuse existing account if email already registered)
             try:
-                password = 'applicant@12345'
-                applicant = user = User.objects.create(
-                            email=data.get('email', ''),
-                            first_name=data.get('first_name', ''),
-                            last_name=data.get('last_name', ''),
-                            phone=data.get('phone', ''),
-                            username=data.get('email', ''),
-                            is_applicant=True,
-                            password=password
-                        )
-
+                email = data.get('email', '').strip()
+                existing = User.objects.filter(email=email).first()
+                if existing:
+                    applicant = user = existing
+                else:
+                    # ensure unique username if email is already taken as username
+                    base_username = email
+                    username = base_username
+                    counter = 1
+                    while User.objects.filter(username=username).exists():
+                        username = f"{base_username}_{counter}"
+                        counter += 1
+                    applicant = user = User.objects.create(
+                        email=email,
+                        first_name=data.get('first_name', ''),
+                        last_name=data.get('last_name', ''),
+                        phone=data.get('phone', ''),
+                        username=username,
+                        is_applicant=True,
+                        password='applicant@12345',
+                    )
             except Exception as e:
                 return Response({"detail": f"Failed to create user: {str(e)}"}, status=400)
 
@@ -436,7 +446,7 @@ class AllApplicationsReport(generics.ListAPIView):
     def get_queryset(self):
         return Application.objects.select_related(
             'academic_level', 'batch', 'campus'
-        ).prefetch_related('programs').order_by('-created_at')
+        ).prefetch_related('programs', 'programs__faculty').order_by('-created_at')
 
 # Direct entry applicants
 class ListDirectEntryApplications(generics.ListAPIView):
