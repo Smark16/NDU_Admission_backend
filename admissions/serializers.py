@@ -80,11 +80,18 @@ class AllApplicationsReportSerializer(serializers.ModelSerializer):
         names = [p.faculty.name for p in obj.programs.all() if p.faculty]
         return ', '.join(dict.fromkeys(names))  # distinct, preserve order
 
+    def get_entered_by(self, obj):
+        if obj.is_direct_entry and obj.entered_by:
+            return f"{obj.entered_by.first_name} {obj.entered_by.last_name}".strip() or obj.entered_by.username
+        return "Online"
+
+    entered_by = serializers.SerializerMethodField()
+
     class Meta:
         model = Application
         fields = ['id', 'first_name', 'last_name', 'email', 'gender',
                   'academic_level', 'batch', 'campus', 'programs', 'faculty',
-                  'status', 'created_at', 'is_direct_entry']
+                  'status', 'created_at', 'is_direct_entry', 'entered_by']
 
 # detail serializer
 class ApplicationDetailSerializer(serializers.ModelSerializer):

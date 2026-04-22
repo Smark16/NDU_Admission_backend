@@ -445,7 +445,7 @@ class AllApplicationsReport(generics.ListAPIView):
 
     def get_queryset(self):
         return Application.objects.select_related(
-            'academic_level', 'batch', 'campus'
+            'academic_level', 'batch', 'campus', 'entered_by'
         ).prefetch_related('programs', 'programs__faculty').order_by('-created_at')
 
 # Direct entry applicants
