@@ -15,6 +15,7 @@ from django.db import transaction
 from .tasks import celery_rejection_email, celery_send_application_email, celery_application_notification, celery_admission_email, celery_admission_update
 from accounts.tasks import celery_send_account_email
 from payments.models import ApplicationPayment
+from Drafts.models import DraftApplication
 from django.db.models import Q
 
 import logging
@@ -188,6 +189,15 @@ def create_applications(request):
             application.save() 
             payment.application = application
             payment.save(update_fields=["application"]) 
+
+            # delete draft Application
+            draft = DraftApplication.objects.filter(
+            applicant=request.user,
+            batch_id=application.batch
+            )
+
+            if draft:
+                draft.delete()
 
             # save M-2-M field
             if programs_data:
