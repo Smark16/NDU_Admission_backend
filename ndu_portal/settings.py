@@ -20,6 +20,7 @@ ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=[
     'applications.ndu.ac.ug',
     'applications-admin.ndu.ac.ug',
     '.ndu.ac.ug',           
+    'c979-41-75-190-152.ngrok-free.app'
 ])
 # Application definition
 DJANGO_APPS = [

@@ -192,13 +192,13 @@ def create_applications(request):
                 payment.save(update_fields=["application"])
 
             # delete draft Application
-            draft = DraftApplication.objects.filter(
-                applicant=request.user,
-                batch_id=application.batch
-                )
+            # draft = DraftApplication.objects.filter(
+            #     applicant=request.user,
+            #     batch_id=application.batch
+            #     )
 
-            if draft:
-                draft.delete()
+            # if draft:
+            #     draft.delete()
 
             # save M-2-M field
             if programs_data:
