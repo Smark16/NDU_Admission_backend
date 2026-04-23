@@ -227,9 +227,8 @@ class CheckPaymentStatus(APIView):
                     payment.transaction_id = data.get('transactionId')
                     payment.save()
 
-            elif data.get('status') in ['FAILED', 'CANCELLED']:
-                payment.status = 'FAILED'
-                payment.save()
+            # Do NOT mark FAILED from a poll — SchoolPay may return FAILED before
+            # mobile money confirms. Only the webhook should set terminal failure.
 
         return Response({
             'status': payment.status,
