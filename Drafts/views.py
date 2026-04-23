@@ -56,12 +56,16 @@ def save_draft_applications(request):
         draft.academic_level_id = data.get('academic_level') or None
 
         # ====================== JSON FIELDS (Most Important) ======================
+        draft.has_olevel = data.get('hasOlevel', False)
+
         draft.olevel_data = {
             "year": data.get('oLevelYear'),
             "index": data.get('oLevelIndexNumber'),
             "school": data.get('oLevelSchool'),
             "subjects": data.get('oLevelSubjects', [])
         }
+        
+        draft.has_alevel = data.get('hasAlevel', False)
 
         draft.alevel_data = {
             "year": data.get('aLevelYear'),
@@ -154,12 +158,14 @@ def get_draft_application(request):
             "programs": list(draft.programs.values_list('id', flat=True)) if draft.programs.exists() else [],
 
             # O-Level
+            "hasOlevel": draft.has_olevel or False,
             "oLevelYear": draft.olevel_data.get("year", "") if isinstance(draft.olevel_data, dict) else "",
             "oLevelIndexNumber": draft.olevel_data.get("index", "") if isinstance(draft.olevel_data, dict) else "",
             "oLevelSchool": draft.olevel_data.get("school", "") if isinstance(draft.olevel_data, dict) else "",
             "oLevelSubjects": draft.olevel_data.get("subjects", []) if isinstance(draft.olevel_data, dict) else [],
 
             # A-Level
+            "hasAlevel": draft.has_alevel or False,
             "aLevelYear": draft.alevel_data.get("year", "") if isinstance(draft.alevel_data, dict) else "",
             "aLevelIndexNumber": draft.alevel_data.get("index", "") if isinstance(draft.alevel_data, dict) else "",
             "aLevelSchool": draft.alevel_data.get("school", "") if isinstance(draft.alevel_data, dict) else "",

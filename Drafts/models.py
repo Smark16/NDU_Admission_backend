@@ -35,6 +35,8 @@ class DraftApplication(models.Model):
     academic_level = models.ForeignKey(AcademicLevel, on_delete=models.SET_NULL, null=True, blank=True)
 
     # Academic Results (stored as JSON for flexibility)
+    has_olevel = models.BooleanField(default=False)
+    has_alevel = models.BooleanField(default=False)
     olevel_data = models.JSONField(default=dict)   
     alevel_data = models.JSONField(default=dict)
     additional_qualifications = models.JSONField(default=list, null=True, blank=True)

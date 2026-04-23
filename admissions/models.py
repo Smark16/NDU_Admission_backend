@@ -110,7 +110,7 @@ class Application(models.Model):
     nationality = models.CharField(max_length=100)
     phone = models.CharField(max_length=20)
     email = models.EmailField()
-    address = models.TextField(max_length=40, blank=True, null=True)
+    address = models.TextField(max_length=255, blank=True, null=True)
     nin = models.CharField(max_length=20, blank=True, null=True)
     passport_number = models.CharField(max_length=20, blank=True, null=True)
     disabled = models.CharField(max_length=5, null=True, blank=True)
@@ -121,15 +121,17 @@ class Application(models.Model):
     next_of_kin_relationship = models.CharField(max_length=20)
     
     # O-Level Information
-    olevel_year = models.PositiveIntegerField()
-    olevel_index_number = models.CharField(max_length=50)
-    olevel_school = models.CharField(max_length=200)
+    has_olevel = models.BooleanField(default=False)
+    olevel_year = models.PositiveIntegerField(null=True, blank=True)
+    olevel_index_number = models.CharField(max_length=50, null=True, blank=True)
+    olevel_school = models.CharField(max_length=200, null=True, blank=True)
     
     # A-Level Information
-    alevel_year = models.PositiveIntegerField()
-    alevel_index_number = models.CharField(max_length=50)
-    alevel_school = models.CharField(max_length=200)
-    alevel_combination = models.CharField(max_length=10)
+    has_alevel = models.BooleanField(default=False)
+    alevel_year = models.PositiveIntegerField(null=True, blank=True)
+    alevel_index_number = models.CharField(max_length=50, null=True, blank=True)
+    alevel_school = models.CharField(max_length=200, null=True, blank=True)
+    alevel_combination = models.CharField(max_length=10, null=True, blank=True)
     
     # Document uploads
     passport_photo = models.ImageField(upload_to='passport_photos/')
@@ -175,9 +177,9 @@ class Application(models.Model):
         return f"{self.first_name} {self.middle_name} {self.last_name}".strip()
 
 class OLevelResult(models.Model):
-    application = models.ForeignKey(Application, on_delete=models.CASCADE, related_name='olevel_results')
-    subject = models.ForeignKey(OLevelSubject, on_delete=models.CASCADE)
-    grade = models.CharField(max_length=10)
+    application = models.ForeignKey(Application, on_delete=models.CASCADE, null=True, blank=True, related_name='olevel_results')
+    subject = models.ForeignKey(OLevelSubject, on_delete=models.CASCADE, null=True, blank=True)
+    grade = models.CharField(max_length=10, null=True, blank=True)
 
     class Meta:
         ordering = ['subject__name']
@@ -193,9 +195,9 @@ class OLevelResult(models.Model):
         return f"{self.application.full_name} - {self.subject.name}: {self.grade}"
 
 class ALevelResult(models.Model):
-    application = models.ForeignKey(Application, on_delete=models.CASCADE, related_name='alevel_results')
-    subject = models.ForeignKey(ALevelSubject, on_delete=models.CASCADE)
-    grade = models.CharField(max_length=10)
+    application = models.ForeignKey(Application, on_delete=models.CASCADE, null=True, blank=True, related_name='alevel_results')
+    subject = models.ForeignKey(ALevelSubject, on_delete=models.CASCADE, null=True, blank=True)
+    grade = models.CharField(max_length=10, null=True, blank=True)
 
     class Meta:
         ordering = ['subject__name']
