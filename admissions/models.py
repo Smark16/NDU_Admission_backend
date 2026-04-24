@@ -131,7 +131,7 @@ class Application(models.Model):
     alevel_year = models.PositiveIntegerField(null=True, blank=True)
     alevel_index_number = models.CharField(max_length=50, null=True, blank=True)
     alevel_school = models.CharField(max_length=200, null=True, blank=True)
-    alevel_combination = models.CharField(max_length=10, null=True, blank=True)
+    alevel_combination = models.CharField(max_length=30, null=True, blank=True)
     
     # Document uploads
     passport_photo = models.ImageField(upload_to='passport_photos/')
@@ -214,7 +214,7 @@ class ALevelResult(models.Model):
 
 class ApplicationDocument(models.Model): 
     application = models.ForeignKey(Application, on_delete=models.CASCADE, related_name='documents')
-    name = models.CharField(max_length=25, null=True, blank=True)
+    name = models.CharField(max_length=100, null=True, blank=True)
     document_type = models.CharField(max_length=30)
     file_url = models.URLField(max_length=100, null=True, blank=True)
     file = models.FileField(upload_to='application_documents/')

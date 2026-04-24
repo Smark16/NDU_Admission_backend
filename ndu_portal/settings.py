@@ -20,7 +20,7 @@ ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=[
     'applications.ndu.ac.ug',
     'applications-admin.ndu.ac.ug',
     '.ndu.ac.ug',           
-    'a915-41-75-172-5.ngrok-free.app'
+    'c356-196-43-131-1.ngrok-free.app'
 ])
 # Application definition
 DJANGO_APPS = [
@@ -239,7 +239,8 @@ CORS_ALLOWED_ORIGINS = [
    'https://applications.ndu.ac.ug',
    'https://applications-admin.ndu.ac.ug',
    'http://172.17.31.147',
-   'https://admissions.ndu.ac.ug'
+   'https://admissions.ndu.ac.ug',
+   'http://137.63.139.78',
 ]
 
 CORS_ALLOW_CREDENTIALS = True

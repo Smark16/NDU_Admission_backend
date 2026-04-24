@@ -16,7 +16,7 @@ from .tasks import celery_rejection_email, celery_send_application_email, celery
 from accounts.tasks import celery_send_account_email
 from payments.models import ApplicationPayment
 from Drafts.models import DraftApplication
-from django.db.models import Q
+from django.db.models import Q, Sum
 
 import logging
 import json
@@ -58,9 +58,45 @@ def create_applications(request):
                         status=400
                 )          
             
+    data = request.data.copy()
+    serializer = CudApplicationSerializer(data=data, context={"request": request})
+    serializer.is_valid(raise_exception=True)
+    programs_data = serializer.validated_data.pop('programs', None)
+
+    olevel_validated = []
+    _seen = set()
+    for item in json.loads(request.data.get("olevel_results", "[]")):
+        try:
+            sid = int(item["subject"])
+        except (ValueError, TypeError, KeyError):
+            return Response({"detail": f"Invalid O-Level subject ID: {item.get('subject')}"}, status=400)
+        if sid in _seen:
+            return Response({"detail": "Duplicate O-Level subject"}, status=400)
+        _seen.add(sid)
+        try:
+            subject = OLevelSubject.objects.get(id=sid)
+        except OLevelSubject.DoesNotExist:
+            return Response({"detail": f"Invalid O-Level subject ID: {sid}"}, status=400)
+        olevel_validated.append({"subject": subject, "grade": item["grade"].upper()})
+
+    alevel_validated = []
+    _seen = set()
+    for item in json.loads(request.data.get("alevel_results", "[]")):
+        try:
+            sid = int(item["subject"])
+        except (ValueError, TypeError, KeyError):
+            return Response({"detail": f"Invalid A-Level subject ID: {item.get('subject')}"}, status=400)
+        if sid in _seen:
+            return Response({"detail": "Duplicate A-Level subject"}, status=400)
+        _seen.add(sid)
+        try:
+            subject = ALevelSubject.objects.get(id=sid)
+        except ALevelSubject.DoesNotExist:
+            return Response({"detail": f"Invalid A-Level subject ID: {sid}"}, status=400)
+        alevel_validated.append({"subject": subject, "grade": item["grade"].upper()})
+
     with transaction.atomic():
         try:
-            data = request.data.copy()
             files = request.FILES
 
             ext_ref = request.data.get("external_reference")
@@ -72,12 +108,27 @@ def create_applications(request):
                         external_reference=ext_ref,
                         user=request.user,
                         status="PAID",
-                        application__isnull=True
                     )
                 except ApplicationPayment.DoesNotExist:
                     return Response(
-                        {"detail": "Invalid, unpaid, or already used payment reference"},
+                        {"detail": "Invalid or unpaid payment reference"},
                         status=400
+                    )
+
+                if payment.application_id is not None:
+                    logger.info(
+                        "Idempotent submit replay accepted for user=%s ext_ref=%s app_id=%s",
+                        request.user.id,
+                        ext_ref,
+                        payment.application_id
+                    )
+                    return Response(
+                        {
+                            "message": "Application already submitted successfully.",
+                            "application_id": payment.application_id,
+                            "idempotent_replay": True
+                        },
+                        status=status.HTTP_200_OK
                     )
 
             # additional qualifications
@@ -100,12 +151,7 @@ def create_applications(request):
             if request.data.get('has_alevel'):
                alevel_results = json.loads(request.data.get("alevel_results", "[]"))
 
-            # Validate main application data
-            serializer = CudApplicationSerializer(data=data, context={"request": request})
-            serializer.is_valid(raise_exception=True)
-
-            # remove M-2-M data
-            programs_data = serializer.validated_data.pop('programs', None)
+            # serializer already validated above; validated_data is ready
 
             application = Application(**serializer.validated_data)
             application.applicant = request.user
@@ -118,7 +164,6 @@ def create_applications(request):
             if passport_photo:
                 # validate_passport_photo(passport_photo)
                 application.passport_photo = passport_photo
-
             # Validate & prepare all child objects
 
             # === O-LEVEL ===
@@ -208,8 +253,18 @@ def create_applications(request):
 
             # save M-2-M field
             if programs_data:
-               application.programs.set(programs_data) 
+               application.programs.set(programs_data)
 
+            # O-Level and A-Level subjects were validated before the atomic block;
+            # bind the new application PK and insert.
+            olevel_bulk = [
+                OLevelResult(application=application, subject=d["subject"], grade=d["grade"])
+                for d in olevel_validated
+            ]
+            alevel_bulk = [
+                ALevelResult(application=application, subject=d["subject"], grade=d["grade"])
+                for d in alevel_validated
+            ]
             OLevelResult.objects.bulk_create(olevel_bulk, batch_size=50)
             ALevelResult.objects.bulk_create(alevel_bulk, batch_size=50)
             ApplicationDocument.objects.bulk_create(document_objs, batch_size=50)
@@ -229,9 +284,24 @@ def create_applications(request):
                 if qual_bulk:
                     AdditionalQualifications.objects.bulk_create(qual_bulk, batch_size=20)
 
-            # === Success: Send email & notification ===
-            celery_send_application_email.delay(application.id)
-            celery_application_notification.delay(request.user.id,"Application Submitted","Your application was successfully submitted")
+            # Queue side effects only after commit so submission is not lost
+            # when async broker dispatch is temporarily unavailable.
+            def _queue_submission_tasks():
+                try:
+                    celery_send_application_email.delay(application.id)
+                    celery_application_notification.delay(
+                        request.user.id,
+                        "Application Submitted",
+                        "Your application was successfully submitted"
+                    )
+                except Exception as task_error:
+                    logger.exception(
+                        "Application %s saved but post-submit tasks failed: %s",
+                        application.id,
+                        task_error
+                    )
+
+            transaction.on_commit(_queue_submission_tasks)
 
             return Response({
                 "message": "Application submitted successfully!",
@@ -303,6 +373,8 @@ def create_direct_applications(request):
             serializer.validated_data.pop('entered_by', None)
 
             # create applicant user (reuse existing account if email already registered)
+            account_password = 'applicant@12345'
+            is_new_account = False
             try:
                 email = data.get('email', '').strip()
                 existing = User.objects.filter(email=email).first()
@@ -323,8 +395,9 @@ def create_direct_applications(request):
                         phone=data.get('phone', ''),
                         username=username,
                         is_applicant=True,
-                        password='applicant@12345',
+                        password=account_password,
                     )
+                    is_new_account = True
             except Exception as e:
                 return Response({"detail": f"Failed to create user: {str(e)}"}, status=400)
 
@@ -435,8 +508,9 @@ def create_direct_applications(request):
                 if qual_bulk:
                     AdditionalQualifications.objects.bulk_create(qual_bulk, batch_size=20)
 
-            # Send email
-            celery_send_account_email.delay(applicant.id, password)
+            # Send welcome email only for newly created accounts
+            if is_new_account:
+                celery_send_account_email.delay(applicant.id, account_password)
 
             return Response({
                 "message": "Application submitted successfully!",
@@ -1120,22 +1194,34 @@ class DeleteAdmittedStudent(generics.DestroyAPIView):
 # Admin dashboard stats
 class AdminDashboardStats(APIView):
     permission_classes = [IsAuthenticated]
-    
+
     def get(self, request):
-        total_applications = Application.objects.all().count()
+        total_applications = Application.objects.count()
+        online_applications = Application.objects.filter(is_direct_entry=False).count()
+        direct_applications = Application.objects.filter(is_direct_entry=True).count()
         pending_applications = Application.objects.filter(status='submitted').count()
         admitted_students = AdmittedStudent.objects.filter(is_registered=True).count()
         rejected_students = Application.objects.filter(status='rejected').count()
-        total_batches = Batch.objects.all().count()
+        total_batches = Batch.objects.count()
         active_batches = Batch.objects.filter(is_active=True).count()
 
+        # Income from online SchoolPay payments only — direct entry excluded
+        online_fee_income = ApplicationPayment.objects.filter(
+            status="PAID",
+            application__isnull=False,
+            application__is_direct_entry=False,
+        ).aggregate(total=Sum("amount"))["total"] or 0
+
         return Response({
-            "totalApplication":total_applications,
-            "pendingApplications":pending_applications,
-            "admittedStudents":admitted_students,
-            "rejectedStudents":rejected_students,
-            "total_batches":total_batches,
-            "activeBatches":active_batches
+            "totalApplication": total_applications,
+            "onlineApplications": online_applications,
+            "directApplications": direct_applications,
+            "pendingApplications": pending_applications,
+            "admittedStudents": admitted_students,
+            "rejectedStudents": rejected_students,
+            "total_batches": total_batches,
+            "activeBatches": active_batches,
+            "onlineFeeIncome": float(online_fee_income),
         }, status=200)
 
 # ===================================================notifications======================================

@@ -37,6 +37,7 @@ urlpatterns = [
     # Prospective Students
     path('prospective_students', ProspectiveStudentsView.as_view()),
     path('send_reminder/<int:pk>', SendReminderEmail.as_view()),
+    path('delete_prospective/<int:pk>', DeleteProspectiveStudent.as_view()),
 
     # System Settings
     path('system_settings', GetSystemSettings.as_view()),
