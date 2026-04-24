@@ -55,6 +55,12 @@ class ApplicationSerializer(serializers.ModelSerializer):
 
 # list serializer
 class ListApplicationsSerializer(serializers.ModelSerializer):
+# <<<<<<< HEAD
+#     academic_level = serializers.CharField(source='academic_level.name', read_only=True)
+#     class Meta:
+#         model = Application
+#         fields = ['id', 'first_name', 'last_name', 'gender', 'status', 'academic_level', 'created_at', 'email']
+# =======
     programs = serializers.SerializerMethodField()
     academic_level = serializers.CharField(source='academic_level.name', read_only=True)
 

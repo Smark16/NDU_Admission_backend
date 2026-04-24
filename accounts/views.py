@@ -388,6 +388,27 @@ class SendReminderEmail(APIView):
             return Response({'detail': 'Applicant not found.'}, status=status.HTTP_404_NOT_FOUND)
 
 
+class DeleteProspectiveStudent(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, pk):
+        from admissions.models import Application
+        submitted_statuses = ['submitted', 'under_review', 'accepted', 'Admitted', 'rejected']
+        try:
+            user = User.objects.get(pk=pk, is_applicant=True)
+        except User.DoesNotExist:
+            return Response({'detail': 'Prospective student not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        if Application.objects.filter(applicant=user, status__in=submitted_statuses).exists():
+            return Response(
+                {'detail': 'Cannot delete — this user has a submitted application.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        user.delete()
+        return Response({'detail': 'Prospective student deleted successfully.'}, status=status.HTTP_200_OK)
+
+
 # ─── System Settings ────────────────────────────────────────────────────────
 
 class GetSystemSettings(APIView):

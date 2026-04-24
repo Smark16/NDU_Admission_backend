@@ -25,7 +25,7 @@ class DraftApplication(models.Model):
     disabled = models.CharField(max_length=5, blank=True, null=True)
 
     # Next of Kin
-    next_of_kin_name = models.CharField(max_length=200, blank=True, null=True)
+    nextOfKinName = models.CharField(max_length=200, blank=True, null=True)
     next_of_kin_contact = models.CharField(max_length=20, blank=True, null=True)
     next_of_kin_relationship = models.CharField(max_length=20, blank=True, null=True)
 
@@ -39,7 +39,7 @@ class DraftApplication(models.Model):
     alevel_data = models.JSONField(default=dict)
     additional_qualifications = models.JSONField(default=list, null=True, blank=True)
     application_fee_paid = models.BooleanField(default=False)
-    application_reference = models.CharField(max_length=50, unique=True, blank=True, null=True)
+    application_reference = models.CharField(max_length=50, blank=True, null=True)
     
     # Status
     status = models.CharField(max_length=20, default='draft')
@@ -48,6 +48,12 @@ class DraftApplication(models.Model):
         ordering = ['-updated_at']
         verbose_name = "Draft Application"
         verbose_name_plural = "Draft Applications"
+        constraints = [
+            models.UniqueConstraint(
+                fields=['applicant', 'batch'],
+                name='unique_draft_per_user_batch'
+            )
+        ]
 
     def __str__(self):
         return f"Draft by {self.applicant.get_full_name() or self.applicant.email} - {self.updated_at}"

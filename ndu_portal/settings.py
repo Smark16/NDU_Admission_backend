@@ -20,6 +20,7 @@ ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=[
     'applications.ndu.ac.ug',
     'applications-admin.ndu.ac.ug',
     '.ndu.ac.ug',           
+    'c979-41-75-190-152.ngrok-free.app'
 ])
 # Application definition
 DJANGO_APPS = [
@@ -125,8 +126,8 @@ else:
         "NAME": env("DB_NAME"),
         "USER": env("DB_USER"),
         "PASSWORD": env("DB_PASSWORD"),
-        "HOST": env("DB_HOST", default="127.0.0.1"),
-        "PORT": env("DB_PORT", default="5433"),
+        "HOST": env("DB_HOST"),
+        "PORT": 6432,
         "CONN_MAX_AGE": 0, 
     }
 }
@@ -238,7 +239,8 @@ CORS_ALLOWED_ORIGINS = [
    'https://applications.ndu.ac.ug',
    'https://applications-admin.ndu.ac.ug',
    'http://172.17.31.147',
-   'https://admissions.ndu.ac.ug'
+   'https://admissions.ndu.ac.ug',
+   'http://137.63.139.78',
 ]
 
 CORS_ALLOW_CREDENTIALS = True
