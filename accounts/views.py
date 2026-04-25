@@ -409,6 +409,60 @@ class DeleteProspectiveStudent(APIView):
         return Response({'detail': 'Prospective student deleted successfully.'}, status=status.HTTP_200_OK)
 
 
+# ─── Prospective Student Announcement ──────────────────────────────────────
+
+class ProspectiveAnnouncement(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        from admissions.models import Application
+        from ndu_portal.send_grid import send_configurable_email
+
+        subject = (request.data.get('subject') or '').strip()
+        body = (request.data.get('body') or '').strip()
+        status_filter = request.data.get('status', 'all')  # all | Draft Started | Never Started
+
+        if not subject or not body:
+            return Response({'detail': 'Subject and body are required.'}, status=400)
+
+        submitted_statuses = ['submitted', 'under_review', 'accepted', 'Admitted', 'rejected']
+
+        qs = User.objects.filter(
+            is_applicant=True,
+            is_active=True,
+        ).exclude(
+            pk__in=Application.objects.filter(
+                status__in=submitted_statuses
+            ).values('applicant')
+        )
+
+        if status_filter == 'Draft Started':
+            qs = qs.filter(
+                pk__in=Application.objects.filter(status='draft').values('applicant')
+            )
+        elif status_filter == 'Never Started':
+            qs = qs.exclude(
+                pk__in=Application.objects.values('applicant')
+            )
+
+        recipients = list(qs.values('id', 'first_name', 'last_name', 'email'))
+        if not recipients:
+            return Response({'detail': 'No prospective students match the selected filter.'}, status=400)
+
+        sent, failed = 0, 0
+        for r in recipients:
+            personalised = body.replace('{first_name}', r['first_name'] or '').replace('{last_name}', r['last_name'] or '')
+            if send_configurable_email(r['email'], subject, personalised):
+                sent += 1
+            else:
+                failed += 1
+
+        return Response({
+            'detail': f'Sent to {sent} prospective student(s).{" " + str(failed) + " failed." if failed else ""}',
+            'sent': sent, 'failed': failed,
+        })
+
+
 # ─── System Settings ────────────────────────────────────────────────────────
 
 class GetSystemSettings(APIView):
