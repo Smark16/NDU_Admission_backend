@@ -18,6 +18,8 @@ urlpatterns = [
     path('all_applications_report', views.AllApplicationsReport.as_view()),
     path('application_detail/<int:application_id>', views.application_detail),
     path('review_application/<int:application_id>', views.ReviewApplication.as_view()),
+    path('change_programme/<int:application_id>', views.ChangeProgramme.as_view()),
+    path('edit_application_profile/<int:application_id>', views.EditApplicationProfile.as_view()),
     path('single_app/<int:application_id>', views.SingleApplication.as_view()),
     path('change_applicatio_status/<int:pk>', views.ChangeApplicationStatus.as_view()),
 
@@ -71,6 +73,7 @@ urlpatterns = [
 
     # bulk announcement
     path('send_announcement', views.send_bulk_announcement),
+    path('test_announcement', views.test_announcement),
 ]
 
 

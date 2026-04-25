@@ -105,14 +105,38 @@ class ApplicationDetailSerializer(serializers.ModelSerializer):
     entered_by = serializers.CharField(source='entered_by.full_name', read_only=True, allow_null=True)
     batch = serializers.CharField(source='batch.name', read_only=True)
     programs = serializers.SerializerMethodField()
+    batch_programs = serializers.SerializerMethodField()
 
     def get_programs(self, obj):
         return [{"id": p.id, "name": p.name, "code": p.code} for p in obj.programs.all()]
 
+    campus_id = serializers.IntegerField(source='campus.id', read_only=True)
+    campus_name = serializers.CharField(source='campus.name', read_only=True)
+    batch_campuses = serializers.SerializerMethodField()
+
+    def get_batch_programs(self, obj):
+        return [
+            {
+                "id": p.id,
+                "name": p.name,
+                "code": p.code,
+                "campus_ids": list(p.campuses.values_list('id', flat=True)),
+            }
+            for p in obj.batch.programs.prefetch_related('campuses').all()
+        ]
+
+    def get_batch_campuses(self, obj):
+        campus_map = {}
+        for p in obj.batch.programs.prefetch_related('campuses').all():
+            for c in p.campuses.all():
+                campus_map[c.id] = c.name
+        return [{"id": k, "name": v} for k, v in campus_map.items()]
+
     class Meta:
         model = Application
         fields = ['id', 'first_name', 'last_name', 'date_of_birth', 'gender', 'nationality', 'phone', 'email',
-                  'batch', 'programs', 'nin', 'passport_number', 'disabled', 'olevel_school', 'olevel_year', 'alevel_school', 'alevel_year', 'address',
+                  'batch', 'programs', 'batch_programs', 'batch_campuses', 'campus_id', 'campus_name',
+                  'nin', 'passport_number', 'disabled', 'olevel_school', 'olevel_year', 'alevel_school', 'alevel_year', 'address',
                   'status', 'application_fee_amount', 'application_fee_paid', 'school_pay_reference',
                   'application_reference', 'created_at', 'reviewed_at', 'passport_photo', 'reviewed_by', 'entered_by']
     

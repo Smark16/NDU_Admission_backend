@@ -913,6 +913,64 @@ class ReviewApplication(APIView):
 
         return Response(data)
 
+# change programme
+class ChangeProgramme(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, application_id):
+        from accounts.models import Campus as CampusModel
+        application = get_object_or_404(Application, pk=application_id)
+        program_ids = request.data.get('program_ids', [])
+        campus_id = request.data.get('campus_id')
+        note = request.data.get('note', '').strip()
+
+        if not program_ids:
+            return Response({'detail': 'At least one programme is required.'}, status=400)
+
+        programs = Program.objects.filter(id__in=program_ids)
+        if programs.count() != len(program_ids):
+            return Response({'detail': 'One or more programme IDs are invalid.'}, status=400)
+
+        if campus_id:
+            campus = get_object_or_404(CampusModel, pk=campus_id)
+            application.campus = campus
+
+        application.programs.set(programs)
+        application.save()
+
+        return Response({
+            'detail': f'Programme and campus updated successfully.{" Note: " + note if note else ""}',
+            'programs': [{'id': p.id, 'name': p.name} for p in programs],
+            'campus': application.campus.name,
+        })
+
+# edit application personal details
+class EditApplicationProfile(APIView):
+    permission_classes = [IsAuthenticated]
+
+    EDITABLE_FIELDS = [
+        'first_name', 'last_name', 'middle_name', 'date_of_birth', 'gender',
+        'nationality', 'phone', 'email', 'address', 'disabled',
+        'next_of_kin_name', 'next_of_kin_contact', 'next_of_kin_relationship',
+        'nin', 'passport_number',
+    ]
+
+    def patch(self, request, application_id):
+        application = get_object_or_404(Application, pk=application_id)
+
+        if application.status == 'Admitted':
+            return Response({'detail': 'Cannot edit profile of an already admitted student.'}, status=400)
+
+        updates = {k: v for k, v in request.data.items() if k in self.EDITABLE_FIELDS}
+        if not updates:
+            return Response({'detail': 'No valid fields provided.'}, status=400)
+
+        for field, value in updates.items():
+            setattr(application, field, value)
+        application.save(update_fields=list(updates.keys()))
+
+        return Response({'detail': 'Profile updated successfully.'})
+
 # ==================================================Academic Levels==========================================
 
 # create level
@@ -1281,6 +1339,7 @@ class DownloadAdmissionPDF(APIView):
 def send_bulk_announcement(request):
     subject = (request.data.get('subject') or '').strip()
     body = (request.data.get('body') or '').strip()
+    message_type = request.data.get('message_type', 'email')  # email | sms | both
     status_filter = request.data.get('status', 'all')
     batch_filter = request.data.get('batch', 'all')
     level_filter = request.data.get('academic_level', 'all')
@@ -1288,7 +1347,9 @@ def send_bulk_announcement(request):
     if not subject or not body:
         return Response({"detail": "Subject and body are required."}, status=400)
 
-    # If caller passes explicit IDs, use those instead of filters
+    if message_type in ('sms', 'both'):
+        return Response({"detail": "SMS is not yet configured. Please use Email only for now."}, status=400)
+
     explicit_ids = request.data.get('application_ids', None)
     if explicit_ids:
         ids = [int(i) for i in explicit_ids if str(i).isdigit()]
@@ -1307,4 +1368,25 @@ def send_bulk_announcement(request):
 
     celery_bulk_announcement.delay(ids, subject, body)
     return Response({"detail": f"Announcement queued for {len(ids)} applicant(s).", "count": len(ids)})
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def test_announcement(request):
+    subject = (request.data.get('subject') or '').strip()
+    body = (request.data.get('body') or '').strip()
+    test_email = (request.data.get('test_email') or '').strip()
+
+    if not subject or not body:
+        return Response({"detail": "Subject and body are required."}, status=400)
+    if not test_email or '@' not in test_email:
+        return Response({"detail": "A valid test email address is required."}, status=400)
+
+    from ndu_portal.send_grid import send_configurable_email
+    personalised = body.replace("{first_name}", "Test").replace("{last_name}", "User")
+    sent = send_configurable_email(test_email, f"[TEST] {subject}", personalised)
+
+    if sent:
+        return Response({"detail": f"Test email sent to {test_email}."})
+    return Response({"detail": "Failed to send test email. Check your SendGrid configuration."}, status=500)
 
