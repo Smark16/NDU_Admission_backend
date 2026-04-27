@@ -84,7 +84,7 @@ class InitiatePayment(APIView):
         reason = "Application Fee"
 
         if settings.DEBUG:
-          callBackUrl = "https://c8dd-196-43-131-1.ngrok-free.app/api/payments/webhook/" 
+          callBackUrl = "https://7c7f-196-43-131-1.ngrok-free.app/api/payments/webhook/" 
         else:
           callBackUrl = f"{settings.BACKEND_URL}/api/payments/webhook/"
 

@@ -239,291 +239,6 @@ def create_applications(request):
             logger.error("Application creation failed: %s", str(e), exc_info=True)
             return Response({"detail": "An error occurred while processing your application."}, status=500)
 
-# @api_view(['POST'])
-# @permission_classes([IsAuthenticated])
-# def create_applications(request):
-#     MAX_FILE_SIZE = settings.FILE_UPLOAD_MAX_MEMORY_SIZE
-    
-#     for file_obj in request.FILES.getlist('documents', []):
-#         if file_obj.size > MAX_FILE_SIZE:
-#             return Response(
-#                 {"detail": f"Each document must be ≤ 50 MB. '{file_obj.name}' is too large ({file_obj.size / (1024*1024):.1f} MB)."},
-#                     status=400
-#                 ) 
-                      
-#     if 'passport_photo' in request.FILES:
-#             photo = request.FILES['passport_photo']
-#             if photo.size > MAX_FILE_SIZE:
-#                 return Response(
-#                     {"detail": f"Passport photo must be ≤ 10 MB. '{photo.name}' is too large ({photo.size / (1024*1024):.1f} MB)."},
-#                         status=400
-#                 )          
-            
-#     data = request.data.copy()
-#     serializer = CudApplicationSerializer(data=data, context={"request": request})
-#     serializer.is_valid(raise_exception=True)
-#     programs_data = serializer.validated_data.pop('programs', None)
-
-#     olevel_validated = []
-#     _seen = set()
-#     for item in json.loads(request.data.get("olevel_results", "[]")):
-#         try:
-#             sid = int(item["subject"])
-#         except (ValueError, TypeError, KeyError):
-#             return Response({"detail": f"Invalid O-Level subject ID: {item.get('subject')}"}, status=400)
-#         if sid in _seen:
-#             return Response({"detail": "Duplicate O-Level subject"}, status=400)
-#         _seen.add(sid)
-#         try:
-#             subject = OLevelSubject.objects.get(id=sid)
-#         except OLevelSubject.DoesNotExist:
-#             return Response({"detail": f"Invalid O-Level subject ID: {sid}"}, status=400)
-#         olevel_validated.append({"subject": subject, "grade": item["grade"].upper()})
-
-#     alevel_validated = []
-#     _seen = set()
-#     for item in json.loads(request.data.get("alevel_results", "[]")):
-#         try:
-#             sid = int(item["subject"])
-#         except (ValueError, TypeError, KeyError):
-#             return Response({"detail": f"Invalid A-Level subject ID: {item.get('subject')}"}, status=400)
-#         if sid in _seen:
-#             return Response({"detail": "Duplicate A-Level subject"}, status=400)
-#         _seen.add(sid)
-#         try:
-#             subject = ALevelSubject.objects.get(id=sid)
-#         except ALevelSubject.DoesNotExist:
-#             return Response({"detail": f"Invalid A-Level subject ID: {sid}"}, status=400)
-#         alevel_validated.append({"subject": subject, "grade": item["grade"].upper()})
-
-#     with transaction.atomic():
-#         try:
-#             files = request.FILES
-
-#             ext_ref = request.data.get("external_reference")
-#             payment = None
-
-#             if ext_ref:
-#                 try:
-#                     payment = ApplicationPayment.objects.select_for_update().get(
-#                         external_reference=ext_ref,
-#                         user=request.user,
-#                         status="PAID",
-#                     )
-#                 except ApplicationPayment.DoesNotExist:
-#                     return Response(
-#                         {"detail": "Invalid or unpaid payment reference"},
-#                         status=400
-#                     )
-
-#                 if payment.application_id is not None:
-#                     logger.info(
-#                         "Idempotent submit replay accepted for user=%s ext_ref=%s app_id=%s",
-#                         request.user.id,
-#                         ext_ref,
-#                         payment.application_id
-#                     )
-#                     return Response(
-#                         {
-#                             "message": "Application already submitted successfully.",
-#                             "application_id": payment.application_id,
-#                             "idempotent_replay": True
-#                         },
-#                         status=status.HTTP_200_OK
-#                     )
-
-#             # additional qualifications
-#             additional_qualifications = []
-#             try:
-#                 additional_qual_str = request.data.get("additional_qualifications", "[]")
-#                 if additional_qual_str:
-#                     additional_qualifications = json.loads(additional_qual_str)
-#             except (json.JSONDecodeError, TypeError):
-#                 additional_qualifications = []
-
-#             # Extract everything
-#             doc_files = files.getlist("documents")
-#             doc_types = request.data.getlist("document_types", [])
-#             passport_photo = files.get("passport_photo")
-
-#             if request.data.get('has_olevel'):
-#                olevel_results = json.loads(request.data.get("olevel_results", "[]"))
-
-#             if request.data.get('has_alevel'):
-#                alevel_results = json.loads(request.data.get("alevel_results", "[]"))
-
-#             # serializer already validated above; validated_data is ready
-
-#             application = Application(**serializer.validated_data)
-#             application.applicant = request.user
-#             application.status = "submitted"
-#             if payment:
-#                 application.application_fee_paid = True
-#                 application.application_fee_amount = payment.amount
-#                 application.application_reference = payment.external_reference
-
-#             if passport_photo:
-#                 # validate_passport_photo(passport_photo)
-#                 application.passport_photo = passport_photo
-#             # Validate & prepare all child objects
-
-#             # === O-LEVEL ===
-#             if request.data.get('has_olevel'):
-#                 OLevelResult.objects.bulk_create([
-#                     OLevelResult(application=application, subject=d["subject"], grade=d["grade"])
-#                     for d in olevel_validated
-#                 ], batch_size=50)
-
-#             #     olevel_results = json.loads(request.data.get("olevel_results", "[]"))
-#             #     olevel_bulk = []
-#             #     seen = set()
-
-#             #     for item in olevel_results:
-#             #         try:
-#             #             sid = int(item["subject"])         
-#             #         except (ValueError, TypeError, KeyError):
-#             #             return Response({"detail": f"Invalid O-Level subject ID: {item.get('subject')}"}, status=400)
-
-#             #         if sid in seen:
-#             #             return Response({"detail": "Duplicate O-Level subject"}, status=400)
-#             #         seen.add(sid)
-
-#             #         # Get subject by ID
-#             #         try:
-#             #             subject = OLevelSubject.objects.get(id=sid)
-#             #         except OLevelSubject.DoesNotExist:
-#             #             return Response({"detail": f"Invalid O-Level subject ID: {sid}"}, status=400)
-
-#             #         olevel_bulk.append(
-#             #             OLevelResult(
-#             #                 application=application, 
-#             #                 subject=subject, 
-#             #                 grade=item["grade"].upper()
-#             #             )
-#             #         )
-
-#             # === A-LEVEL ===
-#             if request.data.get('has_alevel'):
-#                 ALevelResult.objects.bulk_create([
-#                 ALevelResult(application=application, subject=d["subject"], grade=d["grade"])
-#                 for d in alevel_validated
-#             ], batch_size=50)
-
-#                 # alevel_results = json.loads(request.data.get("alevel_results", "[]"))
-#                 # alevel_bulk = []
-#                 # seen = set()
-
-#                 # for item in alevel_results:
-#                 #     try:
-#                 #         sid = int(item["subject"])          # ← Convert to integer
-#                 #     except (ValueError, TypeError, KeyError):
-#                 #         return Response({"detail": f"Invalid A-Level subject ID: {item.get('subject')}"}, status=400)
-
-#                 #     if sid in seen:
-#                 #         return Response({"detail": "Duplicate A-Level subject"}, status=400)
-#                 #     seen.add(sid)
-
-#                 #     try:
-#                 #         subject = ALevelSubject.objects.get(id=sid)
-#                 #     except ALevelSubject.DoesNotExist:
-#                 #         return Response({"detail": f"Invalid A-Level subject ID: {sid}"}, status=400)
-
-#                 #     alevel_bulk.append(
-#                 #         ALevelResult(
-#                 #             application=application, 
-#                 #             subject=subject, 
-#                 #             grade=item["grade"].upper()
-#                 #         )
-#                 #     )
-
-#             # === Documents ===
-#             document_objs = []
-#             for i, file in enumerate(doc_files):
-#                 doc_type = doc_types[i] if i < len(doc_types) else "Others"
-#                 document_objs.append(ApplicationDocument(
-#                     application=application,
-#                     file=file,
-#                     name=file.name.split('.')[0][:50],
-#                     document_type=doc_type,
-#                 ))
-
-#             # NOW SAVE EVERYTHING
-#             application.save()
-#             if payment:
-#                 payment.application = application
-#                 payment.save(update_fields=["application"])
-
-#             # delete draft Application
-#             # draft = DraftApplication.objects.filter(
-#             #     applicant=request.user,
-#             #     batch_id=application.batch
-#             #     )
-
-#             # if draft:
-#             #     draft.delete()
-
-#             # save M-2-M field
-#             if programs_data:
-#                application.programs.set(programs_data)
-
-#             # O-Level and A-Level subjects were validated before the atomic block;
-#             # bind the new application PK and insert.
-#             olevel_bulk = [
-#                 OLevelResult(application=application, subject=d["subject"], grade=d["grade"])
-#                 for d in olevel_validated
-#             ]
-#             alevel_bulk = [
-#                 ALevelResult(application=application, subject=d["subject"], grade=d["grade"])
-#                 for d in alevel_validated
-#             ]
-#             OLevelResult.objects.bulk_create(olevel_bulk, batch_size=50)
-#             ALevelResult.objects.bulk_create(alevel_bulk, batch_size=50)
-#             ApplicationDocument.objects.bulk_create(document_objs, batch_size=50)
-
-#             # === NEW: Save Multiple Additional Qualifications ===
-#             if additional_qualifications:
-#                 qual_bulk = []
-#                 for qual in additional_qualifications:
-#                     if qual.get('institution'):  # Only save if institution is provided
-#                         qual_bulk.append(AdditionalQualifications(
-#                             application=application,
-#                             additional_qualification_institution=qual.get('institution', ''),
-#                             additional_qualification_type=qual.get('type', ''),
-#                             additional_qualification_year=qual.get('year', ''),
-#                             class_of_award=qual.get('class_of_award', '')
-#                         ))
-#                 if qual_bulk:
-#                     AdditionalQualifications.objects.bulk_create(qual_bulk, batch_size=20)
-
-#             # Queue side effects only after commit so submission is not lost
-#             # when async broker dispatch is temporarily unavailable.
-#             def _queue_submission_tasks():
-#                 try:
-#                     celery_send_application_email.delay(application.id)
-#                     celery_application_notification.delay(
-#                         request.user.id,
-#                         "Application Submitted",
-#                         "Your application was successfully submitted"
-#                     )
-#                 except Exception as task_error:
-#                     logger.exception(
-#                         "Application %s saved but post-submit tasks failed: %s",
-#                         application.id,
-#                         task_error
-#                     )
-
-#             transaction.on_commit(_queue_submission_tasks)
-
-#             return Response({
-#                 "message": "Application submitted successfully!",
-#                 "application_id": application.id,
-#             }, status=status.HTTP_201_CREATED)
-
-#         except ValueError as e:
-#             return Response({"detail": str(e)}, status=400)
-#         except Exception as e:
-#             return Response({"detail": str(e)}, status=500)
-
 # Direct Application Entry
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
@@ -626,61 +341,63 @@ def create_direct_applications(request):
             # Validate & prepare all child objects
 
             # === O-LEVEL ===
-            olevel_results = json.loads(request.data.get("olevel_results", "[]"))
-            olevel_bulk = []
-            seen = set()
+            if request.data.get('has_olevel'):
+                olevel_results = json.loads(request.data.get("olevel_results", "[]"))
+                olevel_bulk = []
+                seen = set()
 
-            for item in olevel_results:
-                try:
-                    sid = int(item["subject"])          # ← Convert to integer
-                except (ValueError, TypeError, KeyError):
-                    return Response({"detail": f"Invalid O-Level subject ID: {item.get('subject')}"}, status=400)
+                for item in olevel_results:
+                    try:
+                        sid = int(item["subject"])          # ← Convert to integer
+                    except (ValueError, TypeError, KeyError):
+                        return Response({"detail": f"Invalid O-Level subject ID: {item.get('subject')}"}, status=400)
 
-                if sid in seen:
-                    return Response({"detail": "Duplicate O-Level subject"}, status=400)
-                seen.add(sid)
+                    if sid in seen:
+                        return Response({"detail": "Duplicate O-Level subject"}, status=400)
+                    seen.add(sid)
 
-                # Get subject by ID
-                try:
-                    subject = OLevelSubject.objects.get(id=sid)
-                except OLevelSubject.DoesNotExist:
-                    return Response({"detail": f"Invalid O-Level subject ID: {sid}"}, status=400)
+                    # Get subject by ID
+                    try:
+                        subject = OLevelSubject.objects.get(id=sid)
+                    except OLevelSubject.DoesNotExist:
+                        return Response({"detail": f"Invalid O-Level subject ID: {sid}"}, status=400)
 
-                olevel_bulk.append(
-                    OLevelResult(
-                        application=application, 
-                        subject=subject, 
-                        grade=item["grade"].upper()
+                    olevel_bulk.append(
+                        OLevelResult(
+                            application=application, 
+                            subject=subject, 
+                            grade=item["grade"].upper()
+                        )
                     )
-                )
 
             # === A-LEVEL ===
-            alevel_results = json.loads(request.data.get("alevel_results", "[]"))
-            alevel_bulk = []
-            seen = set()
+            if request.data.get('has_alevel'):
+                alevel_results = json.loads(request.data.get("alevel_results", "[]"))
+                alevel_bulk = []
+                seen = set()
 
-            for item in alevel_results:
-                try:
-                    sid = int(item["subject"])          # ← Convert to integer
-                except (ValueError, TypeError, KeyError):
-                    return Response({"detail": f"Invalid A-Level subject ID: {item.get('subject')}"}, status=400)
+                for item in alevel_results:
+                    try:
+                        sid = int(item["subject"])          # ← Convert to integer
+                    except (ValueError, TypeError, KeyError):
+                        return Response({"detail": f"Invalid A-Level subject ID: {item.get('subject')}"}, status=400)
 
-                if sid in seen:
-                    return Response({"detail": "Duplicate A-Level subject"}, status=400)
-                seen.add(sid)
+                    if sid in seen:
+                        return Response({"detail": "Duplicate A-Level subject"}, status=400)
+                    seen.add(sid)
 
-                try:
-                    subject = ALevelSubject.objects.get(id=sid)
-                except ALevelSubject.DoesNotExist:
-                    return Response({"detail": f"Invalid A-Level subject ID: {sid}"}, status=400)
+                    try:
+                        subject = ALevelSubject.objects.get(id=sid)
+                    except ALevelSubject.DoesNotExist:
+                        return Response({"detail": f"Invalid A-Level subject ID: {sid}"}, status=400)
 
-                alevel_bulk.append(
-                    ALevelResult(
-                        application=application, 
-                        subject=subject, 
-                        grade=item["grade"].upper()
+                    alevel_bulk.append(
+                        ALevelResult(
+                            application=application, 
+                            subject=subject, 
+                            grade=item["grade"].upper()
+                        )
                     )
-                )
 
             # === Documents ===
             document_objs = []
