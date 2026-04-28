@@ -36,7 +36,7 @@ class SingleApplicationSerializer(serializers.ModelSerializer):
     campus = CampusSerializer(read_only=True)
     class Meta:
         model = Application
-        fields = ['id', 'first_name', 'last_name', 'email', 'phone', 'date_of_birth', 'nationality', 'gender',
+        fields = ['id', 'first_name', 'last_name', 'email','middle_name', 'phone', 'date_of_birth', 'nationality', 'gender',
                   'programs', 'campus', 'application_fee_paid', 'school_pay_reference', 'entered_by']
 
 class ApplicationSerializer(serializers.ModelSerializer):
@@ -134,11 +134,11 @@ class ApplicationDetailSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Application
-        fields = ['id', 'first_name', 'last_name', 'date_of_birth', 'gender', 'nationality', 'phone', 'email',
+        fields = ['id', 'first_name', 'last_name','middle_name', 'date_of_birth', 'gender', 'nationality', 'phone', 'email',
                   'batch', 'programs', 'batch_programs', 'batch_campuses', 'campus_id', 'campus_name',
                   'nin', 'passport_number', 'disabled', 'olevel_school', 'olevel_year', 'alevel_school', 'alevel_year', 'address',
-                  'status', 'application_fee_amount', 'application_fee_paid', 'school_pay_reference',
-                  'application_reference', 'created_at', 'reviewed_at', 'passport_photo', 'reviewed_by', 'entered_by']
+                  'status', 'application_fee_amount', 'application_fee_paid', 'school_pay_reference', "next_of_kin_name",
+                  "next_of_kin_contact", "next_of_kin_relationship", 'application_reference', 'created_at', 'reviewed_at', 'passport_photo', 'reviewed_by', 'entered_by']
     
 # o level subject
 class OlevelSubjectSerializer(serializers.ModelSerializer):
