@@ -84,7 +84,7 @@ class InitiatePayment(APIView):
         reason = "Application Fee"
 
         if settings.DEBUG:
-          callBackUrl = "https://7c7f-196-43-131-1.ngrok-free.app/api/payments/webhook/" 
+          callBackUrl = "https://7e39-41-75-175-21.ngrok-free.app/api/payments/webhook/" 
         else:
           callBackUrl = f"{settings.BACKEND_URL}/api/payments/webhook/"
 
@@ -140,6 +140,32 @@ class InitiatePayment(APIView):
             'payment_reference': payment.payment_reference,
             'external_reference': ext_ref,
             'status': payment.status
+        })
+
+# cancel payment
+class CancelPendingPayment(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        # Find the user's latest pending payment
+        pending_payment = ApplicationPayment.objects.filter(
+            user=request.user,
+            status='PENDING'
+        ).order_by('-created_at').first()
+
+        if not pending_payment:
+            return Response({"detail": "No pending payment found."}, status=404)
+
+        # Only allow cancellation if it's still pending and not too old
+        if pending_payment.created_at < timezone.now() - timedelta(minutes=15):
+            return Response({"detail": "Payment is too old to cancel."}, status=400)
+
+        pending_payment.status = 'FAILED'
+        pending_payment.save(update_fields=['status'])
+
+        return Response({
+            "detail": "Payment cancelled successfully. You can now try again with a different number.",
+            "external_reference": pending_payment.external_reference
         })
 
 # Webhook
