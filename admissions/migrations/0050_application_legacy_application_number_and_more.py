@@ -1,3 +1,4 @@
+from django.core.exceptions import FieldDoesNotExist
 from django.db import migrations, models
 
 
@@ -16,8 +17,17 @@ def add_missing_application_columns(apps, schema_editor):
         ("legacy_application_number", "legacy_application_number"),
         ("source", "source"),
     ]:
-        if not _column_exists(conn, table_name, column_name):
-            schema_editor.add_field(Application, Application._meta.get_field(field_name))
+        if _column_exists(conn, table_name, column_name):
+            continue
+
+        # Skip columns that are not present on this historical migration state.
+        # This keeps the migration idempotent across divergent branch histories.
+        try:
+            field = Application._meta.get_field(field_name)
+        except FieldDoesNotExist:
+            continue
+
+        schema_editor.add_field(Application, field)
 
 
 class Migration(migrations.Migration):
