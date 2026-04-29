@@ -20,7 +20,7 @@ ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=[
     'applications.ndu.ac.ug',
     'applications-admin.ndu.ac.ug',
     '.ndu.ac.ug',           
-    'c8dd-196-43-131-1.ngrok-free.app'
+    '7e39-41-75-175-21.ngrok-free.app'
 ])
 # Application definition
 DJANGO_APPS = [
@@ -238,7 +238,6 @@ CORS_ALLOWED_ORIGINS = [
    'http://localhost:5174',
    'https://applications.ndu.ac.ug',
    'https://applications-admin.ndu.ac.ug',
-   'http://172.17.31.147',
    'https://admissions.ndu.ac.ug',
    'http://137.63.139.78',
 ]
@@ -257,7 +256,7 @@ REST_FRAMEWORK = {
 }
 
 SIMPLE_JWT = {
-    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=20),
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=5),
     "REFRESH_TOKEN_LIFETIME": timedelta(days=4),
     "ROTATE_REFRESH_TOKENS": True,
     "BLACKLIST_AFTER_ROTATION": True,
