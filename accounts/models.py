@@ -29,6 +29,10 @@ class User(AbstractUser):
     phone = models.CharField(max_length=20, blank=True, null=True)
     is_staff = models.BooleanField(default=False)
     is_applicant = models.BooleanField(default=False, db_index=True)
+    is_lecturer = models.BooleanField(default=False)
+    is_student = models.BooleanField(default=False)
+    must_change_password = models.BooleanField(default=False)
+    staff_id = models.CharField(max_length=50, blank=True, null=True)
 
     @property
     def full_name(self):

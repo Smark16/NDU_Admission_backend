@@ -37,7 +37,8 @@ class SingleApplicationSerializer(serializers.ModelSerializer):
     class Meta:
         model = Application
         fields = ['id', 'first_name', 'last_name', 'email','middle_name', 'phone', 'date_of_birth', 'nationality', 'gender',
-                  'programs', 'campus', 'application_fee_paid', 'school_pay_reference', 'entered_by']
+                  'programs', 'campus', 'application_fee_paid', 'school_pay_reference', 'entered_by',
+                  'status']
 
 class ApplicationSerializer(serializers.ModelSerializer):
     class Meta:
@@ -55,21 +56,17 @@ class ApplicationSerializer(serializers.ModelSerializer):
 
 # list serializer
 class ListApplicationsSerializer(serializers.ModelSerializer):
-# <<<<<<< HEAD
-#     academic_level = serializers.CharField(source='academic_level.name', read_only=True)
-#     class Meta:
-#         model = Application
-#         fields = ['id', 'first_name', 'last_name', 'gender', 'status', 'academic_level', 'created_at', 'email']
-# =======
     programs = serializers.SerializerMethodField()
     academic_level = serializers.CharField(source='academic_level.name', read_only=True)
+    batch = serializers.CharField(source='batch.name', read_only=True)
+    campus = serializers.CharField(source='campus.name', read_only=True)
 
     def get_programs(self, obj):
         return [{'id': p.id, 'name': p.name} for p in obj.programs.all()]
 
     class Meta:
         model = Application
-        fields = ['id', 'first_name', 'last_name', 'gender', 'status', 'created_at', 'email', 'programs', 'academic_level']
+        fields = ['id', 'first_name', 'last_name', 'gender', 'status', 'created_at', 'email', 'programs', 'academic_level', 'batch', 'campus']
 
 
 class AllApplicationsReportSerializer(serializers.ModelSerializer):

@@ -675,9 +675,16 @@ def create_direct_applications(request):
         
 # list applications
 class ListApplications(generics.ListAPIView):
-    queryset = Application.objects.filter(~Q(status__in=['draft','Admitted', 'rejected', 'accepted']), is_direct_entry=False).order_by('created_at')
     serializer_class = ListApplicationsSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+    def get_queryset(self):
+        qs = Application.objects.filter(
+            ~Q(status__in=['draft']),
+            is_direct_entry=False
+        ).order_by('-id')
+        print(f"[ListApplications] returning {qs.count()} applications: {list(qs.values_list('id','first_name','status'))}")
+        return qs
 
 # All applications report (no status filter — returns everything)
 class AllApplicationsReport(generics.ListAPIView):
@@ -691,8 +698,14 @@ class AllApplicationsReport(generics.ListAPIView):
 
 # Direct entry applicants
 class ListDirectEntryApplications(generics.ListAPIView):
-    queryset = Application.objects.filter(is_direct_entry=True).order_by('-created_at')
-    serializer_class = ListApplicationsSerializer
+    queryset = (
+        Application.objects
+        .filter(is_direct_entry=True)
+        .select_related('academic_level', 'batch', 'campus', 'entered_by')
+        .prefetch_related('programs', 'programs__faculty')
+        .order_by('-created_at')
+    )
+    serializer_class = AllApplicationsReportSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
 # rejected Students
@@ -741,17 +754,24 @@ class ChangeApplicationStatus(APIView):
                 app_id = self.kwargs['pk']
                 newStatus = request.data.get('status')
 
+                print(f"[ChangeApplicationStatus] app_id={app_id} newStatus={newStatus!r}")
+
                 try:
                     application = Application.objects.prefetch_related('programs').select_related(
                       'applicant', 'batch', 'campus', 'academic_level', 'reviewed_by').get(pk=app_id)
+                    print(f"[ChangeApplicationStatus] Before save: id={application.id} name={application.first_name} {application.last_name} status={application.status!r}")
                     application.status = newStatus
                     application.save()
+                    after = Application.objects.get(pk=app_id)
+                    print(f"[ChangeApplicationStatus] After save:  id={after.id} status={after.status!r}")
 
                     return Response({"detail":"status changed successfully"})
                 except Application.DoesNotExist:
+                    print(f"[ChangeApplicationStatus] Application {app_id} does not exist")
                     return Response({"detail":"student Application does not exist"})
-                    
+
         except Exception as e:
+            print(f"[ChangeApplicationStatus] Exception: {e}")
             return Response({"detail":str(e)})
 
     
@@ -1090,7 +1110,6 @@ class ReviewApplication(APIView):
             pk=application_id,
             status__in=['pending', 'submitted', 'in_progress']  
         ).update(
-            status='under_review',
             reviewed_by=request.user,
             reviewed_at=timezone.now()
         )
@@ -1330,6 +1349,19 @@ class AdmitStudent(generics.CreateAPIView):
         try:
             with transaction.atomic():
 
+                # Guard: application must be approved before admission
+                application_id = request.data.get('application')
+                try:
+                    pre_check = Application.objects.get(pk=application_id)
+                except Application.DoesNotExist:
+                    return Response({"detail": "Application not found."}, status=404)
+
+                if pre_check.status.lower() != 'accepted':
+                    return Response(
+                        {"detail": "This application has not been approved yet. Please approve it before proceeding with admission."},
+                        status=400
+                    )
+
                 # Validate and save admission
                 serializer = self.get_serializer(data=request.data)
                 serializer.is_valid(raise_exception=True)
@@ -1344,7 +1376,7 @@ class AdmitStudent(generics.CreateAPIView):
                     return Response({"detail": "Student application doesn't exist"}, status=400)
 
                 # Update status
-                Application.objects.filter(id=application.id).update(status="accepted", admitted_by=request.user)
+                Application.objects.filter(id=application.id).update(status="Admitted", admitted_by=request.user)
 
                 celery_admission_email.delay(application.id, admission.id)
                 celery_application_notification.delay(request.user.id,"Admission Successful","Congratulations! You have been admitted to Ndejje University")
@@ -1435,7 +1467,7 @@ class AdminDashboardStats(APIView):
         online_applications = Application.objects.filter(is_direct_entry=False).count()
         direct_applications = Application.objects.filter(is_direct_entry=True).count()
         pending_applications = Application.objects.filter(status='submitted').count()
-        admitted_students = AdmittedStudent.objects.filter(is_registered=True).count()
+        admitted_students = AdmittedStudent.objects.count()
         rejected_students = Application.objects.filter(status='rejected').count()
         total_batches = Batch.objects.count()
         active_batches = Batch.objects.filter(is_active=True).count()

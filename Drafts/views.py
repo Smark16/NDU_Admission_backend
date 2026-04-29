@@ -5,6 +5,7 @@ from rest_framework import generics, status
 from rest_framework.permissions import *
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework.decorators import parser_classes
 from rest_framework.decorators import api_view, permission_classes
 from django.db import transaction
 from datetime import datetime
@@ -107,6 +108,52 @@ def save_draft_applications(request):
         logger.error(f"Draft save failed: {str(e)}", exc_info=True)
         return Response({"detail": "Failed to save draft"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+# UPLOAD DRAFT DOCUMENT
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+@parser_classes([MultiPartParser, FormParser])
+def upload_draft_document(request):
+    FIELD_MAP = {
+        'passportPhoto': 'passport_photo',
+        'oLevelDocuments': 'olevel_document',
+        'aLevelDocuments': 'alevel_document',
+        'otherInstitutionDocuments': 'other_documents',
+    }
+
+    doc_type = request.data.get('document_type')
+    file = request.FILES.get('file')
+    batch_id = request.data.get('batch') or None
+
+    if not file:
+        return Response({'detail': 'No file provided.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    field_name = FIELD_MAP.get(doc_type)
+    if not field_name:
+        return Response({'detail': 'Invalid document_type.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        draft, _ = DraftApplication.objects.get_or_create(
+            applicant=request.user,
+            batch_id=batch_id,
+            defaults={'status': 'draft'}
+        )
+
+        # Remove old file before saving new one
+        old_file = getattr(draft, field_name)
+        if old_file:
+            old_file.delete(save=False)
+
+        setattr(draft, field_name, file)
+        draft.save(update_fields=[field_name])
+
+        file_url = request.build_absolute_uri(getattr(draft, field_name).url)
+        return Response({'url': file_url, 'filename': file.name}, status=status.HTTP_200_OK)
+
+    except Exception as e:
+        logger.error(f"Draft document upload failed: {e}", exc_info=True)
+        return Response({'detail': 'Upload failed.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 # GET DRAFT DATA
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
@@ -178,6 +225,12 @@ def get_draft_application(request):
             "application_fee_paid": draft.application_fee_paid,
             "externalReference": draft.application_reference or "",
             "status": draft.status,
+
+            # Saved document URLs
+            "passportPhotoUrl": request.build_absolute_uri(draft.passport_photo.url) if draft.passport_photo else None,
+            "oLevelDocumentsUrl": request.build_absolute_uri(draft.olevel_document.url) if draft.olevel_document else None,
+            "aLevelDocumentsUrl": request.build_absolute_uri(draft.alevel_document.url) if draft.alevel_document else None,
+            "otherInstitutionDocumentsUrl": request.build_absolute_uri(draft.other_documents.url) if draft.other_documents else None,
         }
 
         return Response({

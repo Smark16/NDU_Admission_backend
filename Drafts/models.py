@@ -43,6 +43,12 @@ class DraftApplication(models.Model):
     application_fee_paid = models.BooleanField(default=False)
     application_reference = models.CharField(max_length=50, blank=True, null=True)
     
+    # Draft Documents
+    passport_photo = models.FileField(upload_to='draft_documents/passport/', null=True, blank=True)
+    olevel_document = models.FileField(upload_to='draft_documents/olevel/', null=True, blank=True)
+    alevel_document = models.FileField(upload_to='draft_documents/alevel/', null=True, blank=True)
+    other_documents = models.FileField(upload_to='draft_documents/other/', null=True, blank=True)
+
     # Status
     status = models.CharField(max_length=20, default='draft')
 
