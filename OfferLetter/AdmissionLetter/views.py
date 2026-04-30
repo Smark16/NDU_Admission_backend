@@ -208,6 +208,8 @@ def send_offer_letter(request, applicant_id):
 
     context = {
         "full_name": f"{applicant.first_name} {applicant.last_name}",
+        "phone_number": applicant.phone or "",
+        "phone": applicant.phone or "",
         "student_no": admission.student_id or "TBD",
         "reg_no": admission.reg_no or "TBD",
         "program_name": admission.admitted_program.name,
@@ -284,6 +286,74 @@ def resend_offer_letter(request, applicant_id):
         status=200,
     )
 
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def bulk_send_offer_letters(request):
+    """Generate (if needed) and queue offer letter emails for multiple applicants."""
+    raw_ids = request.data.get("application_ids", [])
+    if not isinstance(raw_ids, list) or not raw_ids:
+        return Response({"detail": "application_ids must be a non-empty list."}, status=400)
+
+    cleaned_ids = []
+    for raw_id in raw_ids:
+        try:
+            cleaned_ids.append(int(raw_id))
+        except (TypeError, ValueError):
+            continue
+
+    if not cleaned_ids:
+        return Response({"detail": "No valid applicant IDs provided."}, status=400)
+
+    generated = 0
+    reused_pdf = 0
+    failed = 0
+    errors = []
+
+    for applicant_id in cleaned_ids:
+        try:
+            applicant = Application.objects.filter(pk=applicant_id).first()
+            if not applicant:
+                failed += 1
+                errors.append({"id": applicant_id, "detail": "Applicant not found."})
+                continue
+
+            # If a PDF already exists, simply queue resend.
+            if applicant.admission_letter_pdf:
+                send_offerletter_email.delay(applicant.id)
+                reused_pdf += 1
+                continue
+
+            # Reuse existing single-app generation/send flow.
+            single_response = send_offer_letter(request, applicant.id)
+            if 200 <= single_response.status_code < 300:
+                generated += 1
+            else:
+                failed += 1
+                error_detail = "Failed to generate/send offer letter."
+                if isinstance(single_response.data, dict):
+                    error_detail = single_response.data.get("detail", error_detail)
+                errors.append({"id": applicant_id, "detail": error_detail})
+        except Exception as e:
+            logger.error(f"Bulk offer letter processing failed for applicant {applicant_id}: {e}", exc_info=True)
+            failed += 1
+            errors.append({"id": applicant_id, "detail": "Unexpected server error."})
+
+    total = len(cleaned_ids)
+    return Response(
+        {
+            "detail": f"Processed {total} applicants. Generated+queued: {generated}, Reused existing PDF+queued: {reused_pdf}, Failed: {failed}.",
+            "summary": {
+                "total": total,
+                "generated_and_queued": generated,
+                "reused_existing_pdf_and_queued": reused_pdf,
+                "failed": failed,
+            },
+            "errors": errors[:50],
+        },
+        status=200 if failed == 0 else 207,
+    )
+
 # offer letter status
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
@@ -302,20 +372,26 @@ def offer_letter_status(request, applicant_id):
 @permission_classes([IsAuthenticated])
 def pdf_template_preview(request, pk):
     template = get_object_or_404(OfferLetterTemplate, pk=pk)
-    if template.file_type != 'pdf':
-        return Response({'detail': 'Not a PDF template.'}, status=400)
+    file_ext = os.path.splitext(template.file.name or "")[1].lower()
+    is_pdf = (template.file_type == 'pdf') or (file_ext == '.pdf')
+    if not is_pdf:
+        return Response({'detail': 'Selected template is not a PDF file.'}, status=400)
 
     import fitz
     import base64
 
-    doc = fitz.open(template.file.path)
-    page = doc[0]
-    pdf_width = page.rect.width
-    pdf_height = page.rect.height
-    mat = fitz.Matrix(2, 2)  # 2× zoom for sharp preview
-    pix = page.get_pixmap(matrix=mat)
-    img_b64 = base64.b64encode(pix.tobytes('png')).decode()
-    doc.close()
+    try:
+        doc = fitz.open(template.file.path)
+        page = doc[0]
+        pdf_width = page.rect.width
+        pdf_height = page.rect.height
+        mat = fitz.Matrix(2, 2)  # 2× zoom for sharp preview
+        pix = page.get_pixmap(matrix=mat)
+        img_b64 = base64.b64encode(pix.tobytes('png')).decode()
+        doc.close()
+    except Exception as e:
+        logger.error(f"Failed to generate PDF preview for template {template.id}: {e}", exc_info=True)
+        return Response({'detail': 'Failed to render PDF preview. Ensure the uploaded template is a valid PDF.'}, status=500)
 
     return Response({
         'image': img_b64,
@@ -330,8 +406,10 @@ def pdf_template_preview(request, pk):
 @permission_classes([IsAuthenticated])
 def save_pdf_field_positions(request, pk):
     template = get_object_or_404(OfferLetterTemplate, pk=pk)
-    if template.file_type != 'pdf':
-        return Response({'detail': 'Not a PDF template.'}, status=400)
+    file_ext = os.path.splitext(template.file.name or "")[1].lower()
+    is_pdf = (template.file_type == 'pdf') or (file_ext == '.pdf')
+    if not is_pdf:
+        return Response({'detail': 'Selected template is not a PDF file.'}, status=400)
 
     positions = request.data.get('field_positions', {})
     template.field_positions = positions
