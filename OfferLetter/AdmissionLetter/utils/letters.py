@@ -28,8 +28,50 @@ def save_docx_to_field(instance, field_name: str, filename: str, docx_bytes: byt
 def fill_pdf_template(template_path: str, context: dict, field_positions: dict) -> bytes:
     """Overlay text onto a PDF at admin-specified coordinates using PyMuPDF."""
     import fitz
+    from pathlib import Path
 
     doc = fitz.open(template_path)
+
+    def _resolve_font(pos: dict):
+        """Resolve mapped font settings to fitz insert_text options."""
+        bold = bool(pos.get('bold', False))
+        font_family = str(pos.get('font_family', 'helvetica')).strip().lower()
+
+        # Built-in PDF fonts for broad compatibility.
+        if font_family in ('helvetica', 'arial', ''):
+            return {'fontname': 'hebo' if bold else 'helv'}
+        if font_family in ('times', 'times new roman'):
+            return {'fontname': 'tibo' if bold else 'tiro'}
+        if font_family in ('courier', 'courier new'):
+            return {'fontname': 'cobo' if bold else 'cour'}
+
+        # Century fallback via system font files where available.
+        if font_family == 'century':
+            candidates = []
+            if platform.system() == "Windows":
+                win_fonts = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
+                candidates = [
+                    win_fonts / "CENTURY.TTF",
+                    win_fonts / "CENTURYB.TTF",
+                    win_fonts / "GOTHIC.TTF",   # Century Gothic Regular
+                    win_fonts / "GOTHICB.TTF",  # Century Gothic Bold
+                ]
+            else:
+                candidates = [
+                    Path("/usr/share/fonts/truetype/msttcorefonts/Times_New_Roman.ttf"),
+                    Path("/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf"),
+                ]
+
+            for font_path in candidates:
+                if font_path.exists():
+                    return {'fontname': f'font_{font_family}', 'fontfile': str(font_path)}
+
+            # Final fallback if Century files are unavailable.
+            return {'fontname': 'tibo' if bold else 'tiro'}
+
+        # Unknown family -> safe default.
+        return {'fontname': 'hebo' if bold else 'helv'}
+
     for field_name, pos in field_positions.items():
         value = str(context.get(field_name, ''))
         if not value:
@@ -38,11 +80,16 @@ def fill_pdf_template(template_path: str, context: dict, field_positions: dict) 
         x = float(pos.get('x', 0))
         y = float(pos.get('y', 0))
         font_size = float(pos.get('font_size', 11))
-        bold = bool(pos.get('bold', False))
-        font = 'helv' if not bold else 'hebo'
+        font_kwargs = _resolve_font(pos)
         if page_num < len(doc):
             page = doc[page_num]
-            page.insert_text(fitz.Point(x, y), value, fontname=font, fontsize=font_size, color=(0, 0, 0))
+            page.insert_text(
+                fitz.Point(x, y),
+                value,
+                fontsize=font_size,
+                color=(0, 0, 0),
+                **font_kwargs,
+            )
 
     pdf_bytes = doc.write()
     doc.close()
