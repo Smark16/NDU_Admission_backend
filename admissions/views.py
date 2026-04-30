@@ -493,7 +493,7 @@ def create_direct_applications(request):
 
             # Direct-entry flow resolves applicant from email/user below; do not
             # let a malformed/undefined applicant in request payload break validation.
-            data.pop("applicant", None)
+            # data.pop("applicant", None)
 
             # === VALIDATE MAIN APPLICATION DATA ===
             serializer = CudApplicationSerializer(data=data, context={"request": request})
