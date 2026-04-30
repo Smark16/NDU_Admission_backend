@@ -5,6 +5,7 @@ from django.shortcuts import get_object_or_404
 from rest_framework import generics, status
 from rest_framework.permissions import *
 from rest_framework.response import Response
+from rest_framework.exceptions import ValidationError as DRFValidationError
 from .serializers import *
 from rest_framework.parsers import MultiPartParser, FormParser
 from django.utils import timezone
@@ -490,6 +491,10 @@ def create_direct_applications(request):
             olevel_results = json.loads(request.data.get("olevel_results", "[]"))
             alevel_results = json.loads(request.data.get("alevel_results", "[]"))
 
+            # Direct-entry flow resolves applicant from email/user below; do not
+            # let a malformed/undefined applicant in request payload break validation.
+            data.pop("applicant", None)
+
             # === VALIDATE MAIN APPLICATION DATA ===
             serializer = CudApplicationSerializer(data=data, context={"request": request})
             serializer.is_valid(raise_exception=True)
@@ -570,7 +575,8 @@ def create_direct_applications(request):
 
             # === BUILD AND SAVE O-LEVEL RESULTS ===
             olevel_bulk = []
-            if request.data.get('has_olevel'):
+            has_olevel = str(request.data.get('has_olevel', '')).lower() in ('true', '1', 'yes')
+            if has_olevel:
                 seen = set()
                 for item in olevel_results:
                     try:
@@ -597,7 +603,8 @@ def create_direct_applications(request):
 
             # === BUILD AND SAVE A-LEVEL RESULTS ===
             alevel_bulk = []
-            if request.data.get('has_alevel'):
+            has_alevel = str(request.data.get('has_alevel', '')).lower() in ('true', '1', 'yes')
+            if has_alevel:
                 seen = set()
                 for item in alevel_results:
                     try:
@@ -667,6 +674,8 @@ def create_direct_applications(request):
                 "application_id": application.id,
             }, status=status.HTTP_201_CREATED)
 
+        except DRFValidationError as e:
+            return Response({"detail": e.detail}, status=400)
         except ValueError as e:
             return Response({"detail": str(e)}, status=400)
         except Exception as e:

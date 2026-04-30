@@ -265,6 +265,25 @@ def send_offer_letter(request, applicant_id):
         "docx_url": applicant.admission_letter_docx.url,
     })
 
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def resend_offer_letter(request, applicant_id):
+    """Re-send an already generated offer letter email without regenerating files."""
+    applicant = get_object_or_404(Application, pk=applicant_id)
+
+    if not applicant.admission_letter_pdf:
+        return Response(
+            {"detail": "No generated offer letter PDF found for this applicant. Generate first."},
+            status=400,
+        )
+
+    send_offerletter_email.delay(applicant.id)
+    return Response(
+        {"detail": "Offer letter email queued successfully.", "status": "queued"},
+        status=200,
+    )
+
 # offer letter status
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
