@@ -548,7 +548,7 @@ def create_direct_applications(request):
                     first_name=data.get('first_name', ''),
                     last_name=data.get('last_name', ''),
                     phone=data.get('phone', ''),
-                    username=username,
+                    username=email,
                     is_applicant=True,
                 )
 
