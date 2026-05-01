@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 # save draft application
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
+@parser_classes([MultiPartParser, FormParser])
 def save_draft_applications(request):
     try:
         data = request.data
@@ -57,29 +58,38 @@ def save_draft_applications(request):
         draft.academic_level_id = data.get('academic_level') or None
 
         # ====================== JSON FIELDS (Most Important) ======================
-        draft.has_olevel = data.get('hasOlevel', False)
+        draft.has_olevel = str(data.get('hasOlevel', 'false')).lower() == 'true'
 
-        draft.olevel_data = {
-            "year": data.get('oLevelYear'),
-            "index": data.get('oLevelIndexNumber'),
-            "school": data.get('oLevelSchool'),
-            "subjects": data.get('oLevelSubjects', [])
-        }
-        
-        draft.has_alevel = data.get('hasAlevel', False)
+        try:
+            draft.olevel_data = {
+                "year": data.get('oLevelYear'),
+                "index": data.get('oLevelIndexNumber'),
+                "school": data.get('oLevelSchool'),
+                "subjects": json.loads(data.get('oLevelSubjects', '[]')) if data.get('oLevelSubjects') else []
+            }
+        except:
+            draft.olevel_data = {"year": "", "index": "", "school": "", "subjects": []}
 
-        draft.alevel_data = {
-            "year": data.get('aLevelYear'),
-            "index": data.get('aLevelIndexNumber'),
-            "school": data.get('aLevelSchool'),
-            "combination": data.get('alevel_combination'),
-            "subjects": data.get('aLevelSubjects', [])
-        }
+        draft.has_alevel = str(data.get('hasAlevel', 'false')).lower() == 'true'
+
+        try:
+            draft.alevel_data = {
+                "year": data.get('aLevelYear'),
+                "index": data.get('aLevelIndexNumber'),
+                "school": data.get('aLevelSchool'),
+                "combination": data.get('alevel_combination'),
+                "subjects": json.loads(data.get('aLevelSubjects', '[]')) if data.get('aLevelSubjects') else []
+            }
+        except:
+            draft.alevel_data = {"year": "", "index": "", "school": "", "combination": "", "subjects": []}
         
-        draft.additional_qualifications = data.get('additionalQualifications', [])
+        try:
+            draft.additional_qualifications = json.loads(data.get('additionalQualifications', '[]')) if data.get('additionalQualifications') else []
+        except:
+            draft.additional_qualifications = []
 
         # ====================== BOOLEAN & OTHER ======================
-        draft.application_fee_paid = data.get('application_fee_paid', False)
+        draft.application_fee_paid = str(data.get('application_fee_paid', 'false')).lower() == 'true'
         draft.application_reference = data.get('externalReference', '')
         draft.status = data.get('status', 'draft')
 
@@ -96,6 +106,23 @@ def save_draft_applications(request):
             except ValueError:
                 draft.date_of_birth = None
 
+        # ====================== HANDLE FILES ======================
+        FIELD_MAP = {
+            'passportPhoto': 'passport_photo',
+            'oLevelDocuments': 'olevel_document',
+            'aLevelDocuments': 'alevel_document',
+            'otherInstitutionDocuments': 'other_documents',
+        }
+
+        for frontend_key, model_field in FIELD_MAP.items():
+            if frontend_key in request.FILES:
+                file = request.FILES[frontend_key]
+                # Remove old file if exists
+                old_file = getattr(draft, model_field)
+                if old_file:
+                    old_file.delete(save=False)
+                setattr(draft, model_field, file)
+
         draft.save()
 
         return Response({
@@ -109,50 +136,49 @@ def save_draft_applications(request):
         return Response({"detail": "Failed to save draft"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 # UPLOAD DRAFT DOCUMENT
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-@parser_classes([MultiPartParser, FormParser])
-def upload_draft_document(request):
-    FIELD_MAP = {
-        'passportPhoto': 'passport_photo',
-        'oLevelDocuments': 'olevel_document',
-        'aLevelDocuments': 'alevel_document',
-        'otherInstitutionDocuments': 'other_documents',
-    }
+# @api_view(['POST'])
+# @permission_classes([IsAuthenticated])
+# @parser_classes([MultiPartParser, FormParser])
+# def upload_draft_document(request):
+#     FIELD_MAP = {
+#         'passportPhoto': 'passport_photo',
+#         'oLevelDocuments': 'olevel_document',
+#         'aLevelDocuments': 'alevel_document',
+#         'otherInstitutionDocuments': 'other_documents',
+#     }
 
-    doc_type = request.data.get('document_type')
-    file = request.FILES.get('file')
-    batch_id = request.data.get('batch') or None
+#     doc_type = request.data.get('document_type')
+#     file = request.FILES.get('file')
+#     batch_id = request.data.get('batch') or None
 
-    if not file:
-        return Response({'detail': 'No file provided.'}, status=status.HTTP_400_BAD_REQUEST)
+#     if not file:
+#         return Response({'detail': 'No file provided.'}, status=status.HTTP_400_BAD_REQUEST)
 
-    field_name = FIELD_MAP.get(doc_type)
-    if not field_name:
-        return Response({'detail': 'Invalid document_type.'}, status=status.HTTP_400_BAD_REQUEST)
+#     field_name = FIELD_MAP.get(doc_type)
+#     if not field_name:
+#         return Response({'detail': 'Invalid document_type.'}, status=status.HTTP_400_BAD_REQUEST)
 
-    try:
-        draft, _ = DraftApplication.objects.get_or_create(
-            applicant=request.user,
-            batch_id=batch_id,
-            defaults={'status': 'draft'}
-        )
+#     try:
+#         draft, _ = DraftApplication.objects.get_or_create(
+#             applicant=request.user,
+#             batch_id=batch_id,
+#             defaults={'status': 'draft'}
+#         )
 
-        # Remove old file before saving new one
-        old_file = getattr(draft, field_name)
-        if old_file:
-            old_file.delete(save=False)
+#         # Remove old file before saving new one
+#         old_file = getattr(draft, field_name)
+#         if old_file:
+#             old_file.delete(save=False)
 
-        setattr(draft, field_name, file)
-        draft.save(update_fields=[field_name])
+#         setattr(draft, field_name, file)
+#         draft.save(update_fields=[field_name])
 
-        file_url = request.build_absolute_uri(getattr(draft, field_name).url)
-        return Response({'url': file_url, 'filename': file.name}, status=status.HTTP_200_OK)
+#         file_url = request.build_absolute_uri(getattr(draft, field_name).url)
+#         return Response({'url': file_url, 'filename': file.name}, status=status.HTTP_200_OK)
 
-    except Exception as e:
-        logger.error(f"Draft document upload failed: {e}", exc_info=True)
-        return Response({'detail': 'Upload failed.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
+#     except Exception as e:
+#         logger.error(f"Draft document upload failed: {e}", exc_info=True)
+#         return Response({'detail': 'Upload failed.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 # GET DRAFT DATA
 @api_view(['GET'])
@@ -226,7 +252,7 @@ def get_draft_application(request):
             "externalReference": draft.application_reference or "",
             "status": draft.status,
 
-            # Saved document URLs
+            # Document URLs
             "passportPhotoUrl": request.build_absolute_uri(draft.passport_photo.url) if draft.passport_photo else None,
             "oLevelDocumentsUrl": request.build_absolute_uri(draft.olevel_document.url) if draft.olevel_document else None,
             "aLevelDocumentsUrl": request.build_absolute_uri(draft.alevel_document.url) if draft.alevel_document else None,

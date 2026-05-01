@@ -149,7 +149,28 @@ def create_applications(request):
                 application.application_reference = payment.external_reference
 
             if passport_photo := files.get("passport_photo"):
-                application.passport_photo = passport_photo
+                 application.passport_photo = passport_photo
+
+            # if 'passport_photo' in request.FILES:
+            #     application.passport_photo = request.FILES['passport_photo']
+            
+            elif request.data.get('passport_photo_url'):
+                # Copy file from DraftApplication to final Application
+                try:
+                    draft = DraftApplication.objects.get(
+                        applicant=request.user,
+                        batch_id=request.data.get('batch')
+                    )
+                    if draft.passport_photo:
+                        application.passport_photo.save(
+                            draft.passport_photo.name.split('/')[-1],  # keep original filename
+                            draft.passport_photo.file,
+                            save=False
+                        )
+                except DraftApplication.DoesNotExist:
+                    pass  # fallback, will be caught by validation if needed
+            else:
+                return Response({"detail": "Passport photo is required"}, status=400)
 
             # Save the main application first (so it gets an ID)
             application.save()
