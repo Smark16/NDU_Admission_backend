@@ -62,7 +62,7 @@ def create_applications(request):
             )
 
     # === Validate serializer ===
-    serializer = CudApplicationSerializer(data=request.data, context={"request": request})
+    serializer = CudApplicationSerializer(data=request.data, context={"request": request}, partial=True)
     serializer.is_valid(raise_exception=True)
     programs_data = serializer.validated_data.pop('programs', None)
 
@@ -148,27 +148,37 @@ def create_applications(request):
                 application.application_fee_amount = payment.amount
                 application.application_reference = payment.external_reference
 
-            if passport_photo := files.get("passport_photo"):
-                 application.passport_photo = passport_photo
+            # if passport_photo := files.get("passport_photo"):
+            #      application.passport_photo = passport_photo
 
             # if 'passport_photo' in request.FILES:
             #     application.passport_photo = request.FILES['passport_photo']
             
-            elif request.data.get('passport_photo_url'):
-                # Copy file from DraftApplication to final Application
+            draft = None
+            try:
+                draft = DraftApplication.objects.get(
+                    applicant=request.user,
+                    batch_id=request.data.get('batch')
+                )
+            except DraftApplication.DoesNotExist:
+                draft = None
+
+            
+            if draft and draft.passport_photo:
                 try:
-                    draft = DraftApplication.objects.get(
-                        applicant=request.user,
-                        batch_id=request.data.get('batch')
+                    original_name = draft.passport_photo.name.split('/')[-1]
+                    application.passport_photo.save(
+                        original_name,
+                        draft.passport_photo.file,
+                        save=False
                     )
-                    if draft.passport_photo:
-                        application.passport_photo.save(
-                            draft.passport_photo.name.split('/')[-1],  # keep original filename
-                            draft.passport_photo.file,
-                            save=False
-                        )
-                except DraftApplication.DoesNotExist:
-                    pass  # fallback, will be caught by validation if needed
+                except Exception as e:
+                    logger.error(f"Failed to copy passport photo from draft: {e}")
+                    return Response({"detail": "Failed to process passport photo"}, status=400)
+
+            elif 'passport_photo' in request.FILES:
+                application.passport_photo = request.FILES['passport_photo']
+
             else:
                 return Response({"detail": "Passport photo is required"}, status=400)
 
@@ -183,6 +193,37 @@ def create_applications(request):
             # === Programs (Many-to-Many) ===
             if programs_data:
                 application.programs.set(programs_data)
+            
+            # manage draft documents
+            if not request.FILES.getlist('documents') and draft:
+                try:
+                    if draft.olevel_document:
+                        ApplicationDocument.objects.create(
+                            application=application,
+                            file=draft.olevel_document,
+                            name=draft.olevel_document.name.split('/')[-1],
+                            document_type="OLevel"
+                        )
+
+                    if draft.alevel_document:
+                        ApplicationDocument.objects.create(
+                            application=application,
+                            file=draft.alevel_document,
+                            name=draft.alevel_document.name.split('/')[-1],
+                            document_type="ALevel"
+                        )
+
+                    if draft.other_documents:
+                        ApplicationDocument.objects.create(
+                            application=application,
+                            file=draft.other_documents,
+                            name=draft.other_documents.name.split('/')[-1],
+                            document_type="Others"
+                        )
+
+                except Exception as copy_error:
+                    logger.warning(f"Failed to copy some documents from draft: {copy_error}")
+                    # Do not fail the whole submission, just log
 
             # === Bulk create O-Level results ===
             if olevel_validated:
