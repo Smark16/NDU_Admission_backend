@@ -1,3 +1,5 @@
+import ipaddress
+
 from django.contrib.contenttypes.models import ContentType
 from audit.models import AuditLog
 
@@ -32,13 +34,21 @@ def log_audit_event(user, action, obj=None, description="", request=None):
         print('Audit log error', e)
 
 def get_client_ip(request):
-    """Get client IP address from request"""
-    x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+    """Return a value safe for GenericIPAddressField (AuditLog.ip_address is non-null)."""
+    x_forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR")
     if x_forwarded_for:
-        ip = x_forwarded_for.split(',')[0]
+        ip = x_forwarded_for.split(",")[0].strip()
     else:
-        ip = request.META.get('REMOTE_ADDR')
-    return ip
+        ip = (request.META.get("REMOTE_ADDR") or "").strip()
+    if not ip:
+        return "127.0.0.1"
+    # Strip IPv6 zone id; reject hostnames / garbage from proxies (e.g. Vite dev).
+    candidate = ip.split("%")[0].strip()
+    try:
+        ipaddress.ip_address(candidate)
+        return candidate
+    except ValueError:
+        return "127.0.0.1"
 
 
 

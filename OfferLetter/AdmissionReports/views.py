@@ -231,7 +231,6 @@ class ViewFacultyAdmissions(APIView):
                 "payments": "PAID" if app.application_fee_paid else "NOT PAID",
                 "admission_date": adm.admission_date.strftime("%Y-%m-%d") if adm.admission_date else "",
                 "origin": "APPLIED ONLINE",
-                "admitted_by": f"{adm.admitted_by.first_name } {adm.admitted_by.last_name}" if adm.admitted_by else "No Available"
             })
 
         return Response(list(grouped.values()), status=200)
@@ -331,7 +330,7 @@ class ExportFacultyAdmissionsExcel(APIView):
             "O-LEVEL SCORES", "A-LEVEL SCHOOL", "A-LEVEL YEAR", "A-LEVEL INDEX NO",
             "A-LEVEL COMBINATION", "A-LEVEL SCORES", "PRINCIPALS/SUBSIDIARIES",
             "OTHER QUALIFICATIONS", "INSTITUTION", "CLASS OF AWARD",
-            "COURSE ADMITTED FOR", "REMARKS", "PAYMENTS", "DATE OF ENTRY", "ORIGIN", "ADMITTED BY"
+            "COURSE ADMITTED FOR", "REMARKS", "PAYMENTS", "DATE OF ENTRY", "ORIGIN"
         ]
 
         rows = []
@@ -409,7 +408,6 @@ class ExportFacultyAdmissionsExcel(APIView):
                 "PAID" if app.application_fee_paid else "NOT PAID",
                 adm.admission_date.strftime("%Y-%m-%d") if adm.admission_date else "",
                 "APPLIED ONLINE",
-                f"{adm.admitted_by.first_name} {adm.admitted_by.last_name}" if adm.admitted_by else "Not Available"
             ])
 
         # --------------------------------------------------------------
@@ -425,3 +423,173 @@ class ExportFacultyAdmissionsExcel(APIView):
         wb.save(response)
 
         return response
+
+# class ExportFacultyAdmissionsExcel(APIView):
+#     permission_classes = [IsAuthenticated]
+
+#     def get(self, request):
+#         # --------------------------------------------------------------
+#         # 1. FILTERS
+#         # --------------------------------------------------------------
+#         academic_year   = request.query_params.get("academic_year") or get_current_academic_year()
+#         admission_period = request.query_params.get("admission_period")
+#         campus_id       = request.query_params.get("campus")          
+
+#         # --------------------------------------------------------------
+#         # 2. ONE BIG QUERY + three prefetches (exactly like the JSON view)
+#         # --------------------------------------------------------------
+#         qs = (
+#             AdmittedStudent.objects
+#             .select_related(
+#                 "application",
+#                 "admitted_program",
+#                 "admitted_campus",
+#                 "admitted_batch",
+#             )
+#             .filter(is_admitted=True)
+#         )
+
+#         if academic_year:
+#             qs = qs.filter(admitted_batch__academic_year=academic_year)
+#         if admission_period:
+#             qs = qs.filter(admitted_batch__name__icontains=admission_period)
+#         if campus_id:
+#             qs = qs.filter(admitted_campus_id=campus_id)   # <-- use ID
+
+#         admitted_students = list(qs)                         # materialise
+#         app_ids = [adm.application_id for adm in admitted_students]
+
+#         if not app_ids:
+#             # empty file
+#             wb = create_workbook([], [], sheet_name="Faculty Admissions")
+#             resp = HttpResponse(
+#                 content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+#             )
+#             resp["Content-Disposition"] = 'attachment; filename="faculty_admissions.xlsx"'
+#             wb.save(resp)
+#             return resp
+
+#         # --------------------------------------------------------------
+#         # 3. ONE QUERY – program names
+#         # --------------------------------------------------------------
+#         program_data = defaultdict(list)
+#         for prog in (
+#             Program.objects
+#             .filter(application_programs__id__in=app_ids)
+#             .values("application_programs__id", "name")
+#             .order_by("application_programs__id")
+#         ):
+#             program_data[prog["application_programs__id"]].append(prog["name"])
+
+#         # --------------------------------------------------------------
+#         # 4. ONE QUERY – O-Level (code:grade)
+#         # --------------------------------------------------------------
+#         olevel_data = defaultdict(list)
+#         for res in (
+#             OLevelResult.objects
+#             .filter(application_id__in=app_ids)
+#             .select_related("subject")
+#             .values("application_id", "subject__code", "grade")
+#         ):
+#             olevel_data[res["application_id"]].append(f"{res['subject__code']}:{res['grade']}")
+
+#         # --------------------------------------------------------------
+#         # 5. ONE QUERY – A-Level (for scores + PP/SP)
+#         # --------------------------------------------------------------
+#         alevel_scores = defaultdict(list)   
+#         alevel_for_pp = defaultdict(list)   
+#         for res in (
+#             ALevelResult.objects
+#             .filter(application_id__in=app_ids)
+#             .select_related("subject")
+#             .values("application_id", "subject__name", "grade")
+#         ):
+#             app_id = res["application_id"]
+#             alevel_scores[app_id].append(f"{res['subject__name']}:{res['grade']}")
+#             alevel_for_pp[app_id].append({
+#                 "subject_name": res["subject__name"],
+#                 "grade": res["grade"],
+#             })
+
+#         # --------------------------------------------------------------
+#         # 6. BUILD EXCEL ROWS
+#         # --------------------------------------------------------------
+#         headers = [
+#             "ID","ACADEMIC YEAR","INTAKE","STUDENT NAMES","GENDER","NATIONALITY",
+#             "CONTACT/ADDRESS","COURSE APPLIED FOR","OTHER COURSE CHOICES","PROGRAM",
+#             "STUDY MODE","CAMPUS","O-LEVEL SCHOOL","O-LEVEL YEAR","O-LEVEL INDEX NO",
+#             "O-LEVEL SCORES","A-LEVEL SCHOOL","A-LEVEL YEAR","A-LEVEL INDEX NO",
+#             "A-LEVEL COMBINATION","A-LEVEL SCORES","PRINCIPALS/SUBSIDIARIES",
+#             "OTHER QUALIFICATIONS","INSTITUTION","CLASS OF AWARD",
+#             "COURSE ADMITTED FOR","REMARKS","PAYMENTS","DATE OF ENTRY","ORIGIN"
+#         ]
+
+#         rows = []
+#         # for adm in admitted_students:
+#         for adm in qs.iterator(chunk_size=1000):
+#             app   = adm.application
+#             batch = adm.admitted_batch
+
+#             # ---- programs -------------------------------------------------
+#             programs = program_data.get(app.id, [])
+#             course_applied_for = programs[0] if programs else ""
+#             other_choices = ", ".join(programs[1:])
+
+#             # ---- O-Level --------------------------------------------------
+#             olevel_scores = "; ".join(olevel_data[app.id])
+
+#             # ---- A-Level --------------------------------------------------
+#             alevel_scores_str = "; ".join(alevel_scores[app.id])
+
+#             # ---- PP / SP --------------------------------------------------
+#             pp, sp = calculate_pp_sp(alevel_for_pp[app.id])
+#             principal_sub = f"{pp}PP, {sp}SP"
+
+#             # ---- other fields ---------------------------------------------
+#             rows.append([
+#                 adm.id,
+#                 batch.academic_year if batch else "",
+#                 batch.name if batch else "",
+#                 app.full_name,
+#                 app.gender,
+#                 app.nationality,
+#                 app.address,
+#                 course_applied_for,
+#                 other_choices,
+#                 adm.admitted_program.name,
+#                 adm.study_mode,
+#                 adm.admitted_campus.name if adm.admitted_campus else "",
+#                 app.olevel_school,
+#                 app.olevel_year,
+#                 app.olevel_index_number,
+#                 olevel_scores,
+#                 app.alevel_school,
+#                 app.alevel_year,
+#                 app.alevel_index_number,
+#                 app.alevel_combination,
+#                 alevel_scores_str,
+#                 principal_sub,                     # ← FIXED
+#                 app.additional_qualification_type or "",
+#                 app.additional_qualification_institution or "",
+#                 app.class_of_award or "",
+#                 adm.admitted_program.name,
+#                 adm.admission_notes or "",
+#                 "NOT IMPLEMENTED",
+#                 adm.admission_date.strftime("%Y-%m-%d"),
+#                 "APPLIED ONLINE",
+#             ])
+
+#         # --------------------------------------------------------------
+#         # 7. CREATE EXCEL FILE
+#         # --------------------------------------------------------------
+#         wb = create_workbook(headers, rows, sheet_name="Faculty Admissions")
+
+#         response = HttpResponse(
+#             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+#         )
+#         response["Content-Disposition"] = (
+#             f'attachment; filename="faculty_admissions_{academic_year}_{admission_period or "all"}.xlsx"'
+#         )
+#         wb.save(response)
+#         return response
+        

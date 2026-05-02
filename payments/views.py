@@ -9,7 +9,7 @@ from django.db import transaction
 import json
 import uuid
 
-from .models import ApplicationFee, ApplicationPayment
+from .models import ApplicationFee, ApplicationPayment, StudentTuitionPayment
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
@@ -20,7 +20,6 @@ from django.utils import timezone
 from datetime import timedelta
 from .serializers import ApplicationPaymentSerializer
 from admissions.models import Application
-from django.conf import settings
 
 # caching
 from django.core.cache import cache
@@ -82,11 +81,7 @@ class InitiatePayment(APIView):
         last_name = request.data.get('last_name')
         amount = request.data.get('amount')
         reason = "Application Fee"
-
-        if settings.DEBUG:
-          callBackUrl = "https://7e39-41-75-175-21.ngrok-free.app/api/payments/webhook/" 
-        else:
-          callBackUrl = f"{settings.BACKEND_URL}/api/payments/webhook/"
+        callBackUrl = request.build_absolute_uri('/api/payments/webhook/')
 
         # EXPIRE OLD PAYMENTS
         ApplicationPayment.objects.filter(
@@ -142,32 +137,6 @@ class InitiatePayment(APIView):
             'status': payment.status
         })
 
-# cancel payment
-class CancelPendingPayment(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request):
-        # Find the user's latest pending payment
-        pending_payment = ApplicationPayment.objects.filter(
-            user=request.user,
-            status='PENDING'
-        ).order_by('-created_at').first()
-
-        if not pending_payment:
-            return Response({"detail": "No pending payment found."}, status=404)
-
-        # Only allow cancellation if it's still pending and not too old
-        if pending_payment.created_at < timezone.now() - timedelta(minutes=15):
-            return Response({"detail": "Payment is too old to cancel."}, status=400)
-
-        pending_payment.status = 'FAILED'
-        pending_payment.save(update_fields=['status'])
-
-        return Response({
-            "detail": "Payment cancelled successfully. You can now try again with a different number.",
-            "external_reference": pending_payment.external_reference
-        })
-
 # Webhook
 import logging
 logger = logging.getLogger(__name__)
@@ -186,6 +155,9 @@ def schoolpay_webhook(request):
 
     # === LOG EVERYTHING SO YOU CAN SEE WHAT ARRIVES ===
     logger.info("SchoolPay webhook received: %s", json.dumps(data, indent=2))
+    print("=== SCHOOLPAY WEBHOOK ===")
+    print(json.dumps(data, indent=2))
+    print("=========================")
 
     # For admission/application fees, SchoolPay usually sends a simple payload
     status = data.get('status')
@@ -199,35 +171,80 @@ def schoolpay_webhook(request):
         logger.info("Payment not yet PAID. Status: %s", status)
         return JsonResponse({'status': 'ignored'}, status=200)
 
-    # Process the successful payment
+    # ── Try ApplicationPayment first (application fees) ──────────────────────
     try:
         with transaction.atomic():
-            payment = ApplicationPayment.objects.select_for_update().filter(
+            app_payment = ApplicationPayment.objects.select_for_update().filter(
                 payment_reference=payment_ref
             ).first()
 
-            if not payment:
-                logger.warning("No matching ApplicationPayment found for reference: %s", payment_ref)
-                return JsonResponse({'status': 'unknown'}, status=200)
+            if app_payment:
+                if app_payment.status == 'PAID':
+                    logger.info("ApplicationPayment %s already PAID", payment_ref)
+                    return JsonResponse({'status': 'duplicate'}, status=200)
+                app_payment.status = 'PAID'
+                app_payment.receipt_number = data.get('receiptNumber')
+                app_payment.transaction_id = data.get('transactionId')
+                app_payment.save()
+                logger.info("✅ ApplicationPayment %s marked PAID", payment_ref)
 
-            # Idempotency - already paid
-            if payment.status == 'PAID':
-                logger.info("Payment %s already marked as PAID", payment_ref)
-                return JsonResponse({'status': 'duplicate'}, status=200)
+                # ── Link payment back to the application ──────────────────
+                # Find the applicant's most recent submitted application and
+                # stamp it as fee-paid so admins can see it is confirmed.
+                from admissions.models import Application as App
+                linked_app = (
+                    App.objects.filter(applicant=app_payment.user)
+                    .exclude(status='draft')
+                    .order_by('-created_at')
+                    .first()
+                )
+                if linked_app and not linked_app.application_fee_paid:
+                    linked_app.application_fee_paid = True
+                    linked_app.application_fee_amount = app_payment.amount
+                    if not linked_app.application_reference:
+                        linked_app.application_reference = app_payment.external_reference
+                    linked_app.save(update_fields=[
+                        'application_fee_paid',
+                        'application_fee_amount',
+                        'application_reference',
+                    ])
+                    logger.info("✅ Application %s marked fee_paid", linked_app.id)
+                # ─────────────────────────────────────────────────────────
 
-            # Update payment record
-            payment.status = 'PAID'
-            payment.receipt_number = data.get('receiptNumber')
-            payment.transaction_id = data.get('transactionId')
-            payment.save()
-
-            logger.info("✅ Payment %s successfully marked as PAID", payment_ref)
-
-        return JsonResponse({'status': 'ok'}, status=200)
+                return JsonResponse({'status': 'ok'}, status=200)
 
     except Exception as e:
-        logger.exception("Error processing SchoolPay webhook for ref %s", payment_ref)
+        logger.exception("Error processing ApplicationPayment for ref %s", payment_ref)
         return JsonResponse({'error': 'Internal server error'}, status=500)
+
+    # ── Try StudentTuitionPayment (tuition / portal-initiated) ───────────────
+    try:
+        with transaction.atomic():
+            tuition_payment = StudentTuitionPayment.objects.select_for_update().filter(
+                payment_reference=payment_ref
+            ).first()
+
+            if tuition_payment:
+                if tuition_payment.status == 'completed':
+                    logger.info("StudentTuitionPayment %s already completed", payment_ref)
+                    return JsonResponse({'status': 'duplicate'}, status=200)
+                from django.utils import timezone as tz
+                tuition_payment.status = 'completed'
+                tuition_payment.receipt_number = data.get('receiptNumber', '')
+                tuition_payment.paid_at = tz.now()
+                tuition_payment.notes = (
+                    tuition_payment.notes + f"\nSchoolPay transactionId: {data.get('transactionId', '')}"
+                ).strip()
+                tuition_payment.save()
+                logger.info("✅ StudentTuitionPayment %s marked completed", payment_ref)
+                return JsonResponse({'status': 'ok'}, status=200)
+
+    except Exception as e:
+        logger.exception("Error processing StudentTuitionPayment for ref %s", payment_ref)
+        return JsonResponse({'error': 'Internal server error'}, status=500)
+
+    logger.warning("No matching payment found for reference: %s", payment_ref)
+    return JsonResponse({'status': 'unknown'}, status=200)
 
 # Status Check (for frontend polling or Celery task)
 class CheckPaymentStatus(APIView):
@@ -256,12 +273,12 @@ class CheckPaymentStatus(APIView):
                     payment.transaction_id = data.get('transactionId')
                     payment.save()
 
-            # Do NOT mark FAILED from a poll — SchoolPay may return FAILED before
-            # mobile money confirms. Only the webhook should set terminal failure.
+            elif data.get('status') in ['FAILED', 'CANCELLED']:
+                payment.status = 'FAILED'
+                payment.save()
 
         return Response({
             'status': payment.status,
-            "transactionId":payment.transaction_id,
             })
 # ========================================================end schoolpay====================================================
 
@@ -276,7 +293,7 @@ class ListPayments(generics.ListAPIView):
             'application',
             'application__batch',
             'user'
-        ).order_by('-created_at')
+        ).all()
 
 
 

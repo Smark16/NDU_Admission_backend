@@ -8,18 +8,20 @@ from django.shortcuts import get_object_or_404
 from django.conf import settings
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework.permissions import *
+from django.contrib.auth.models import Group
 from django.contrib.auth.models import Group, Permission
 from django.contrib.auth import authenticate
 from .serializers import *
 from .models import *
 
 from audit.utils import log_audit_event
-
-# caching
-from django.core.cache import cache
+from django.db import transaction
+from django.db.models.deletion import ProtectedError
 
 from django.utils.http import urlsafe_base64_decode
 from django.shortcuts import redirect
+from django.contrib.auth.tokens import default_token_generator
+from django.core.cache import cache
 from .tasks import celery_send_password_reset_Link
 
 # login view
@@ -71,9 +73,34 @@ class UpdateUser(generics.UpdateAPIView):
 
     def put(self, request, *args, **kwargs):
         instance = self.get_object()
-        serializer = self.serializer_class(instance, data=request.data, partial=True)
+        # Never accept raw password writes through ModelSerializer; hash it properly.
+        data = request.data.copy()
+        new_password = (data.get("password") or "").strip()
+        data.pop("password", None)
+        data.pop("confirm_password", None)
+
+        serializer = self.serializer_class(instance, data=data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
+
+        if new_password:
+            instance.set_password(new_password)
+            instance.must_change_password = True
+            instance.save(update_fields=["password", "must_change_password"])
+
+        # ── Lecturer role sync ────────────────────────────────────────────────
+        # If the saved role is "Lecturer", ensure is_lecturer=True and Lecturer
+        # group membership — matching what AssignLecturerRole does.
+        # We only auto-GRANT here; removal remains a deliberate separate action
+        # (via the assign_lecturer endpoint) so we never accidentally lock out a
+        # lecturer who already has course unit responsibilities.
+        new_role = (data.get("role") or "").strip()
+        if new_role == "Lecturer" and not instance.is_lecturer:
+            instance.is_lecturer = True
+            instance.save(update_fields=["is_lecturer"])
+            lecturer_group, _ = Group.objects.get_or_create(name="Lecturer")
+            instance.groups.add(lecturer_group)
+        # ─────────────────────────────────────────────────────────────────────
 
         return Response(serializer.data, status=200)
     
@@ -93,6 +120,14 @@ class ListUsers(generics.ListAPIView):
     queryset = User.objects.filter(is_applicant=False).prefetch_related('groups', 'user_permissions', 'campuses')
     serializer_class = UserSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+
+class ListStaff(generics.ListAPIView):
+    """Staff users for assigning as course-unit lecturers."""
+    queryset = User.objects.filter(is_staff=True, is_active=True).order_by('first_name', 'last_name')
+    serializer_class = UserSerializer
+    permission_classes = [IsAuthenticated]
+
 
 # user status
 class ChangeUserStatus(APIView):
@@ -124,6 +159,43 @@ class DeleteUser(generics.RetrieveDestroyAPIView):
         instance = self.get_object()
         instance.delete()
         return Response({"detail": "User deleted successfully"})
+
+
+# ── Lecturer role assignment ──────────────────────────────────────────────────
+class AssignLecturerRole(APIView):
+    """
+    PATCH { is_lecturer: true|false, staff_id?: string, password?: string }
+    Grants or revokes lecturer portal access for a staff user.
+    """
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+    def patch(self, request, *args, **kwargs):
+        user_id = self.kwargs["pk"]
+        flag = bool(request.data.get("is_lecturer"))
+        try:
+            user = User.objects.get(pk=user_id)
+            user.is_lecturer = flag
+            if "staff_id" in request.data:
+                user.staff_id = (request.data.get("staff_id") or "").strip() or None
+            if flag and request.data.get("password"):
+                user.set_password(str(request.data.get("password")))
+                user.must_change_password = True
+            fields = ["is_lecturer"]
+            if "staff_id" in request.data:
+                fields.append("staff_id")
+            if flag and request.data.get("password"):
+                fields.extend(["password", "must_change_password"])
+            user.save(update_fields=fields)
+
+            group, _ = Group.objects.get_or_create(name="Lecturer")
+            if flag:
+                user.groups.add(group)
+            else:
+                user.groups.remove(group)
+
+            return Response(UserSerializer(user).data, status=200)
+        except Exception as e:
+            return Response({"detail": str(e)}, status=400)
 
 #=======================================================================roles================================================    
 # List roles
@@ -184,34 +256,12 @@ class CreateCampus(generics.CreateAPIView):
     serializer_class = CampusSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
-    def perform_create(self, serializer):
-        serializer.save()
-        cache.delete('all_campuses_list')
-
 # list campus
 
 class ListCampus(generics.ListAPIView):
     queryset = Campus.objects.all()
     serializer_class = CampusSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
-
-    def get(self, request, *args, **kwargs):
-        cache_key = 'all_campuses_list'
-
-        # Try cache first
-        cached_data = cache.get(cache_key)
-        if cached_data is not None:
-            return Response(cached_data)
-
-        # Get fresh data
-        queryset = self.get_queryset()
-        serializer = self.get_serializer(queryset, many=True)
-        data = serializer.data
-
-        # Cache for 24 hours (86,400 seconds)
-        cache.set(cache_key, data, timeout=60 * 60 * 24)
-
-        return Response(data)
 
 # edit campus
 class EditCampus(generics.UpdateAPIView):
@@ -224,7 +274,8 @@ class EditCampus(generics.UpdateAPIView):
         serializer = self.serializer_class(instance, data=request.data)
         serializer.is_valid(raise_exception=True)
         serializer.save()
-        cache.delete('all_campuses_list')
+        cache.delete("all_campuses_list")
+
         return Response(serializer.data, status=200)
     
 # delete campus
@@ -233,11 +284,24 @@ class DeleteCampus(generics.RetrieveDestroyAPIView):
     serializer_class = CampusSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
-    def put(self, request, *args, **kwargs):
+    def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
-        instance.delete()
-        cache.delete('all_campuses_list')
-        return Response({"detail":"campus deleted successfully"})
+        try:
+            with transaction.atomic():
+                instance.delete()
+        except ProtectedError:
+            return Response(
+                {
+                    "detail": (
+                        "Cannot delete this campus because other records still depend on it "
+                        "(for example applications, admissions, or fee rules). Remove or "
+                        "reassign those links first."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        cache.delete("all_campuses_list")
+        return Response(status=status.HTTP_204_NO_CONTENT)
     
 # ======================================================Profile===================================================
 
@@ -273,7 +337,10 @@ class PasswordResetRequestView(APIView):
         except User.DoesNotExist:
             return Response({"detail": "User with this Email not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        celery_send_password_reset_Link.delay(user.id)
+        try:
+            celery_send_password_reset_Link.delay(user.id)
+        except Exception:
+            pass
 
         return Response({"detail": "Password reset email sent."}, status=status.HTTP_200_OK)
 
@@ -322,24 +389,82 @@ def password_reset_redirect(request, uidb64, token):
     return redirect(frontend_url)
 
 
-# ─── Prospective Students ───────────────────────────────────────────────────
+# ── Student first-login forced password change ────────────────────────────────
+class StudentFirstLoginChangePassword(APIView):
+    """
+    POST { new_password, confirm_password }
+    Clears must_change_password flag after a successful change.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        from django.contrib.auth.password_validation import validate_password
+        from django.core.exceptions import ValidationError as DjangoValidationError
+
+        user = request.user
+        new_password     = request.data.get('new_password', '').strip()
+        confirm_password = request.data.get('confirm_password', '').strip()
+
+        if not new_password or not confirm_password:
+            return Response(
+                {'detail': 'Both new_password and confirm_password are required.'},
+                status=400
+            )
+
+        if new_password != confirm_password:
+            return Response({'detail': 'Passwords do not match.'}, status=400)
+
+        if new_password == 'NDU@1234':
+            return Response(
+                {'detail': 'Please choose a password different from the default.'},
+                status=400
+            )
+
+        try:
+            validate_password(new_password, user)
+        except DjangoValidationError as e:
+            return Response({'detail': list(e.messages)}, status=400)
+
+        user.set_password(new_password)
+        user.must_change_password = False
+        user.save(update_fields=['password', 'must_change_password'])
+
+        # Issue fresh tokens so frontend can go straight to the portal
+        from rest_framework_simplejwt.tokens import RefreshToken
+        refresh = RefreshToken.for_user(user)
+        # Stamp custom claims (mirrors ObtainSerializer.get_token)
+        for token in (refresh, refresh.access_token):
+            token['first_name']          = user.first_name
+            token['last_name']           = user.last_name
+            token['is_staff']            = user.is_staff
+            token['is_applicant']        = user.is_applicant
+            token['is_student']          = user.is_student
+            token['must_change_password'] = False          # explicitly cleared
+            token['role']                = user.groups.first().name if user.groups.exists() else None
+            token['phone']               = user.phone
+            token['email']               = user.email
+            token['username']            = user.username
+            token['permissions']         = list(user.get_all_permissions())
+
+        return Response({
+            'detail': 'Password changed successfully.',
+            'access':  str(refresh.access_token),
+            'refresh': str(refresh),
+        })
+
+
+# ─── Prospective Students (NDU Portal) ───────────────────────────────────────
 
 class ProspectiveStudentsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         from admissions.models import Application
-        from django.db.models import Max, OuterRef, Subquery, Value
+        from django.db.models import OuterRef, Subquery, Value
         from django.db.models.functions import Coalesce
 
         submitted_statuses = ['submitted', 'under_review', 'accepted', 'Admitted', 'rejected']
 
-        # Applicants with no submitted application
-        has_submitted = Application.objects.filter(
-            applicant=OuterRef('pk'),
-            status__in=submitted_statuses
-        )
-        # Draft status for those who started but didn't submit
         latest_draft = Application.objects.filter(
             applicant=OuterRef('pk'),
             status='draft'
@@ -409,8 +534,6 @@ class DeleteProspectiveStudent(APIView):
         return Response({'detail': 'Prospective student deleted successfully.'}, status=status.HTTP_200_OK)
 
 
-# ─── Prospective Student Announcement ──────────────────────────────────────
-
 class ProspectiveAnnouncement(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -420,7 +543,7 @@ class ProspectiveAnnouncement(APIView):
 
         subject = (request.data.get('subject') or '').strip()
         body = (request.data.get('body') or '').strip()
-        status_filter = request.data.get('status', 'all')  # all | Draft Started | Never Started
+        status_filter = request.data.get('status', 'all')
 
         if not subject or not body:
             return Response({'detail': 'Subject and body are required.'}, status=400)
@@ -463,7 +586,7 @@ class ProspectiveAnnouncement(APIView):
         })
 
 
-# ─── System Settings ────────────────────────────────────────────────────────
+# ─── System Settings (NDU Portal) ────────────────────────────────────────────
 
 class GetSystemSettings(APIView):
     permission_classes = [IsAuthenticated]
@@ -478,7 +601,6 @@ class UpdateSystemSettings(APIView):
     permission_classes = [IsAuthenticated]
 
     def _format_validation_error(self, errors):
-        # Return a single readable message while preserving full field errors.
         if isinstance(errors, dict):
             for field, value in errors.items():
                 if isinstance(value, list) and value:
@@ -510,8 +632,7 @@ class UpdateSystemSettings(APIView):
         return self._update(request)
 
 
-# ─── System Usage Report ─────────────────────────────────────────────────────
-
+# ─── System Usage Report (admin Reports → System Usage) ─────────────────────
 class SystemUsageReport(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -523,7 +644,6 @@ class SystemUsageReport(APIView):
 
         thirty_days_ago = timezone.now() - timedelta(days=30)
 
-        # Per-user login stats
         user_stats = (
             AuditLog.objects.filter(action='login')
             .values('user__id', 'user__first_name', 'user__last_name', 'user__email',
@@ -532,7 +652,6 @@ class SystemUsageReport(APIView):
             .order_by('-login_count')
         )
 
-        # Daily login counts for the last 30 days
         daily_logins = (
             AuditLog.objects.filter(action='login', timestamp__gte=thirty_days_ago)
             .annotate(day=TruncDate('timestamp'))
@@ -541,7 +660,6 @@ class SystemUsageReport(APIView):
             .order_by('day')
         )
 
-        # Recent 50 login events
         recent = AuditLog.objects.filter(action='login').select_related('user')[:50]
         recent_data = [
             {
@@ -554,7 +672,6 @@ class SystemUsageReport(APIView):
             for r in recent
         ]
 
-        # Summary counts
         total_logins = AuditLog.objects.filter(action='login').count()
         logins_today = AuditLog.objects.filter(
             action='login', timestamp__date=timezone.now().date()
