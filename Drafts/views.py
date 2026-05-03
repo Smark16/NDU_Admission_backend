@@ -160,7 +160,7 @@ def upload_draft_document(request):
 
     except Exception as e:
         logger.error(f"Draft document upload failed: {e}", exc_info=True)
-        return Response({'detail': 'Upload failed.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return Response({'detail': f"Draft document upload failed: {e}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 # GET DRAFT DATA
 @api_view(['GET'])
