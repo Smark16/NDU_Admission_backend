@@ -103,6 +103,7 @@ class Application(models.Model):
     academic_level = models.ForeignKey(AcademicLevel, on_delete=models.CASCADE)
     # Personal Information
     first_name = models.CharField(max_length=100)
+    title = models.CharField(max_length=100, null=True, blank=True)
     last_name = models.CharField(max_length=100)
     middle_name = models.CharField(max_length=100, blank=True)
     date_of_birth = models.DateField()

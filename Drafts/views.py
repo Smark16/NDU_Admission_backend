@@ -43,6 +43,7 @@ def save_draft_applications(request):
         draft.gender = data.get('gender', '')
         draft.nationality = data.get('nationality', '')
         draft.nin = data.get('nin', '')
+        draft.title = data.get('title', '')
         draft.passport_number = data.get('passportNumber', '')
         draft.phone = data.get('phone', '')
         draft.email = data.get('email', '')
@@ -193,6 +194,7 @@ def get_draft_application(request):
             "lastName": draft.last_name or "",
             "middleName": draft.middle_name or "",
             "dateOfBirth": date_of_birth_str,
+            "title": draft.title or "",
             "gender": draft.gender or "",
             "nationality": draft.nationality or "",
             "nin": draft.nin or "",

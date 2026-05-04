@@ -207,7 +207,7 @@ def send_offer_letter(request, applicant_id):
         hall = "To Be Assigned"
 
     context = {
-        "full_name": f"{applicant.first_name} {applicant.last_name}",
+        "full_name": f"{(applicant.title or '').strip()} {(applicant.first_name or '').strip()} {(applicant.last_name or '').strip()}".upper(),
         "phone_number": applicant.phone or "",
         "phone": applicant.phone or "",
         "student_no": admission.student_id or "TBD",

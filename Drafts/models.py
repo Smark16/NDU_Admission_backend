@@ -16,6 +16,7 @@ class DraftApplication(models.Model):
     middle_name = models.CharField(max_length=100, blank=True, null=True)
     date_of_birth = models.DateField(null=True, blank=True)
     gender = models.CharField(max_length=20, blank=True, null=True)
+    title = models.CharField(max_length=10, null=True, blank=True)
     nationality = models.CharField(max_length=100, blank=True, null=True)
     nin = models.CharField(max_length=20, blank=True, null=True)
     passport_number = models.CharField(max_length=20, blank=True, null=True)
