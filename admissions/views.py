@@ -542,10 +542,9 @@ class ListApplications(generics.ListAPIView):
 
     def get_queryset(self):
         qs = Application.objects.filter(
-            ~Q(status__in=['draft']),
+            ~Q(status__in=['draft', 'Admitted', 'rejected']),
             is_direct_entry=False
-        ).order_by('-id')
-        print(f"[ListApplications] returning {qs.count()} applications: {list(qs.values_list('id','first_name','status'))}")
+        ).order_by('created_at')
         return qs
 
 # All applications report (no status filter — returns everything)
