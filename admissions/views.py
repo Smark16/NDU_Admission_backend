@@ -33,6 +33,7 @@ from django.http import HttpResponse
 from django.template.loader import render_to_string
 from datetime import date
 from urllib.parse import quote
+from .utils.reg_no import generate_reg_no
 
 # caching
 from django.core.cache import cache
@@ -303,217 +304,7 @@ def create_applications(request):
             logger.error("Application creation failed: %s", str(e), exc_info=True)
             return Response({"detail": "An error occurred while processing your application."}, status=500)
 
-# Direct Application Entry
-# @api_view(['POST'])
-# @permission_classes([IsAuthenticated])
-# def create_direct_applications(request):
-#     MAX_FILE_SIZE = settings.FILE_UPLOAD_MAX_MEMORY_SIZE
-    
-#     for file_obj in request.FILES.getlist('documents', []):
-#         if file_obj.size > MAX_FILE_SIZE:
-#             return Response(
-#                 {"detail": f"Each document must be ≤ 50 MB. '{file_obj.name}' is too large ({file_obj.size / (1024*1024):.1f} MB)."},
-#                     status=400
-#                 ) 
-                      
-#     if 'passport_photo' in request.FILES:
-#             photo = request.FILES['passport_photo']
-#             if photo.size > MAX_FILE_SIZE:
-#                 return Response(
-#                     {"detail": f"Passport photo must be ≤ 10 MB. '{photo.name}' is too large ({photo.size / (1024*1024):.1f} MB)."},
-#                         status=400
-#                 )          
-            
-#     with transaction.atomic():
-#         try:
-#             data = request.data.copy()
-#             files = request.FILES
-
-#             # additional qualifications
-#             additional_qualifications = []
-#             try:
-#                 additional_qual_str = request.data.get("additional_qualifications", "[]")
-#                 if additional_qual_str:
-#                     additional_qualifications = json.loads(additional_qual_str)
-#             except (json.JSONDecodeError, TypeError):
-#                 additional_qualifications = []
-
-#             # Extract everything
-#             doc_files = files.getlist("documents")
-#             doc_types = request.data.getlist("document_types", [])
-#             passport_photo = files.get("passport_photo")
-#             olevel_results = json.loads(request.data.get("olevel_results", "[]"))
-#             alevel_results = json.loads(request.data.get("alevel_results", "[]"))
-
-#             # Validate main application data
-#             serializer = CudApplicationSerializer(data=data, context={"request": request})
-#             serializer.is_valid(raise_exception=True)
-
-#             # Validate school_pay_reference rule
-#             fee_paid = serializer.validated_data.get('application_fee_paid', False)
-#             school_pay_ref = (serializer.validated_data.get('school_pay_reference') or '').strip()
-#             if fee_paid and not school_pay_ref:
-#                 return Response(
-#                     {"detail": "school_pay_reference is required when application_fee_paid is true."},
-#                     status=400
-#                 )
-
-#             # remove M-2-M data and prevent client from injecting entered_by
-#             programs_data = serializer.validated_data.pop('programs', None)
-#             serializer.validated_data.pop('entered_by', None)
-
-#             # create applicant user (reuse existing account if email already registered)
-#             account_password = 'applicant@12345'
-#             is_new_account = False
-#             try:
-#                 email = data.get('email', '').strip()
-#                 existing = User.objects.filter(email=email).first()
-#                 if existing:
-#                     applicant = user = existing
-#                 else:
-#                     # ensure unique username if email is already taken as username
-#                     base_username = email
-#                     username = base_username
-#                     counter = 1
-#                     while User.objects.filter(username=username).exists():
-#                         username = f"{base_username}_{counter}"
-#                         counter += 1
-#                     applicant = user = User.objects.create(
-#                         email=email,
-#                         first_name=data.get('first_name', ''),
-#                         last_name=data.get('last_name', ''),
-#                         phone=data.get('phone', ''),
-#                         username=username,
-#                         is_applicant=True,
-#                         password=account_password,
-#                     )
-#                     is_new_account = True
-#             except Exception as e:
-#                 return Response({"detail": f"Failed to create user: {str(e)}"}, status=400)
-
-#             application = Application(**serializer.validated_data)
-#             application.applicant = applicant
-#             application.status = "submitted"
-#             application.entered_by = request.user
-#             application.application_fee_paid = True
-#             application.is_direct_entry = True
-        
-#             if passport_photo:
-#                 # validate_passport_photo(passport_photo)
-#                 application.passport_photo = passport_photo
-
-#             # Validate & prepare all child objects
-
-#             # === O-LEVEL ===
-#             if request.data.get('has_olevel'):
-#                 olevel_results = json.loads(request.data.get("olevel_results", "[]"))
-#                 olevel_bulk = []
-#                 seen = set()
-
-#                 for item in olevel_results:
-#                     try:
-#                         sid = int(item["subject"])          # ← Convert to integer
-#                     except (ValueError, TypeError, KeyError):
-#                         return Response({"detail": f"Invalid O-Level subject ID: {item.get('subject')}"}, status=400)
-
-#                     if sid in seen:
-#                         return Response({"detail": "Duplicate O-Level subject"}, status=400)
-#                     seen.add(sid)
-
-#                     # Get subject by ID
-#                     try:
-#                         subject = OLevelSubject.objects.get(id=sid)
-#                     except OLevelSubject.DoesNotExist:
-#                         return Response({"detail": f"Invalid O-Level subject ID: {sid}"}, status=400)
-
-#                     olevel_bulk.append(
-#                         OLevelResult(
-#                             application=application, 
-#                             subject=subject, 
-#                             grade=item["grade"].upper()
-#                         )
-#                     )
-
-#             # === A-LEVEL ===
-#             if request.data.get('has_alevel'):
-#                 alevel_results = json.loads(request.data.get("alevel_results", "[]"))
-#                 alevel_bulk = []
-#                 seen = set()
-
-#                 for item in alevel_results:
-#                     try:
-#                         sid = int(item["subject"])          # ← Convert to integer
-#                     except (ValueError, TypeError, KeyError):
-#                         return Response({"detail": f"Invalid A-Level subject ID: {item.get('subject')}"}, status=400)
-
-#                     if sid in seen:
-#                         return Response({"detail": "Duplicate A-Level subject"}, status=400)
-#                     seen.add(sid)
-
-#                     try:
-#                         subject = ALevelSubject.objects.get(id=sid)
-#                     except ALevelSubject.DoesNotExist:
-#                         return Response({"detail": f"Invalid A-Level subject ID: {sid}"}, status=400)
-
-#                     alevel_bulk.append(
-#                         ALevelResult(
-#                             application=application, 
-#                             subject=subject, 
-#                             grade=item["grade"].upper()
-#                         )
-#                     )
-
-#             # === Documents ===
-#             document_objs = []
-#             for i, file in enumerate(doc_files):
-#                 doc_type = doc_types[i] if i < len(doc_types) else "Others"
-#                 document_objs.append(ApplicationDocument(
-#                     application=application,
-#                     file=file,
-#                     name=file.name.split('.')[0][:50],
-#                     document_type=doc_type,
-#                 ))
-
-#             # NOW SAVE EVERYTHING
-#             application.save() 
-
-#             # save M-2-M field
-#             if programs_data:
-#                application.programs.set(programs_data) 
-
-#             OLevelResult.objects.bulk_create(olevel_bulk, batch_size=50)
-#             ALevelResult.objects.bulk_create(alevel_bulk, batch_size=50)
-#             ApplicationDocument.objects.bulk_create(document_objs, batch_size=50)
-
-#             # === NEW: Save Multiple Additional Qualifications ===
-#             if additional_qualifications:
-#                 qual_bulk = []
-#                 for qual in additional_qualifications:
-#                     if qual.get('institution'):  # Only save if institution is provided
-#                         qual_bulk.append(AdditionalQualifications(
-#                             application=application,
-#                             additional_qualification_institution=qual.get('institution', ''),
-#                             additional_qualification_type=qual.get('type', ''),
-#                             additional_qualification_year=qual.get('year', ''),
-#                             class_of_award=qual.get('class_of_award', '')
-#                         ))
-#                 if qual_bulk:
-#                     AdditionalQualifications.objects.bulk_create(qual_bulk, batch_size=20)
-
-#             # Send welcome email only for newly created accounts
-#             if is_new_account:
-#                 celery_send_account_email.delay(applicant.id, account_password)
-
-#             return Response({
-#                 "message": "Application submitted successfully!",
-#                 "application_id": application.id,
-#             }, status=status.HTTP_201_CREATED)
-
-#         except ValueError as e:
-#             return Response({"detail": str(e)}, status=400)
-#         except Exception as e:
-#             return Response({"detail": str(e)}, status=500)
-
+# ===============================Direct entry applications===========================================
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def create_direct_applications(request):
@@ -1722,3 +1513,39 @@ def test_announcement(request):
         return Response({"detail": f"Test email sent to {test_email}."})
     return Response({"detail": "Failed to send test email. Check your SendGrid configuration."}, status=500)
 
+# Generate reg no
+@api_view(['POST'])
+def generate_reg_no_view(request):
+    try:
+        campus_id = request.data.get("campus")
+        program_id = request.data.get("program")
+        study_mode = request.data.get("study_mode")
+
+        if not campus_id or not program_id or not study_mode:
+            return Response(
+                {"error": "campus, program and study_mode are required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        campus = Campus.objects.get(id=campus_id)
+        program = Program.objects.get(id=program_id)
+
+        reg_no = generate_reg_no(
+            campus=campus,
+            program=program,
+            study_mode=study_mode
+        )
+
+        return Response({"reg_no": reg_no}, status=status.HTTP_200_OK)
+
+    except Campus.DoesNotExist:
+        return Response({"error": "Invalid campus"}, status=404)
+
+    except Program.DoesNotExist:
+        return Response({"error": "Invalid program"}, status=404)
+
+    except Exception as e:
+        return Response(
+            {"error": str(e)},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )

@@ -22,6 +22,7 @@ urlpatterns = [
     path('edit_application_profile/<int:application_id>', views.EditApplicationProfile.as_view()),
     path('single_app/<int:application_id>', views.SingleApplication.as_view()),
     path('change_applicatio_status/<int:pk>', views.ChangeApplicationStatus.as_view()),
+    path('generate-reg-no/', views.generate_reg_no_view, name='generate_reg_no'),
 
     # Subject Urls
 
