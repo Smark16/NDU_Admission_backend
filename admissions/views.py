@@ -968,15 +968,6 @@ class ReviewApplication(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, application_id):
-
-        Application.objects.filter(
-            pk=application_id,
-            status__in=['pending', 'submitted', 'in_progress']  
-        ).update(
-            reviewed_by=request.user,
-            reviewed_at=timezone.now()
-        )
-
         # Fetch optimized object AFTER update
         application = Application.objects.select_related(
             'applicant', 'batch', 'campus', 'academic_level', 'reviewed_by'
@@ -1379,7 +1370,6 @@ class DownloadAdmissionPDF(APIView):
         application = get_object_or_404(
             Application,
             id=application_id,
-            # applicant=request.user  # ← uncomment if only applicant can download own letter
         )
 
         # Fetch related data
@@ -1453,6 +1443,15 @@ class DownloadAdmissionPDF(APIView):
             f'attachment; filename="Applicant_Profile_{safe_name}_{ref}.pdf"'
         )
         response.write(pdf_buffer.read())
+
+        Application.objects.filter(
+            pk=application_id,
+            status__in=['pending', 'submitted', 'in_progress', 'draft']  
+        ).update(
+            reviewed_by=request.user,
+            reviewed_at=timezone.now(),
+            status='under_review'
+        )
 
         return response
 
