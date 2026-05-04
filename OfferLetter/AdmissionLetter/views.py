@@ -415,4 +415,3 @@ def save_pdf_field_positions(request, pk):
     template.field_positions = positions
     template.save(update_fields=['field_positions'])
     return Response({'detail': 'Field positions saved successfully.'})
-    
