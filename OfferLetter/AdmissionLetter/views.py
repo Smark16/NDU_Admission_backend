@@ -206,8 +206,16 @@ def send_offer_letter(request, applicant_id):
     else:
         hall = "To Be Assigned"
 
+    # check title
+    title = (applicant.title or "").strip()
+    if not applicant.title:
+       if applicant.gender and applicant.gender.lower() == "male":
+           title = "MR."
+       elif applicant.gender and applicant.gender.lower() == "female":
+           title = "MS."    
+           
     context = {
-        "full_name": f"{(applicant.title or '').strip()} {(applicant.first_name or '').strip()} {(applicant.last_name or '').strip()}".upper(),
+        "full_name": f"{title} {(applicant.first_name or '').strip()} {(applicant.last_name or '').strip()}".upper(),
         "phone_number": applicant.phone or "",
         "phone": applicant.phone or "",
         "student_no": admission.student_id or "TBD",
