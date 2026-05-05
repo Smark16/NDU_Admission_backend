@@ -94,9 +94,20 @@ def save_draft_applications(request):
         draft.status = data.get('status', 'draft')
 
         # Programs (ManyToMany)
-        programs = data.get('programs')
-        if programs is not None:
-            draft.programs.set(programs)
+        programs_input = request.data.getlist('programs')
+
+        if programs_input:
+            valid_program_ids = []
+            for p in programs_input:
+                try:
+                    pid = int(p)
+                    if pid > 0:
+                        valid_program_ids.append(pid)
+                except (ValueError, TypeError):
+                    continue
+            draft.programs.set(valid_program_ids)
+        else:
+            draft.programs.clear()
 
         # Date of birth
         dob_str = data.get('dateOfBirth')
