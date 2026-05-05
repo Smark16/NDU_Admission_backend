@@ -16,8 +16,7 @@ def generate_reg_no(campus, program, study_mode):
     last_student = (
         AdmittedStudent.objects
         .select_for_update()
-        .filter(admitted_campus=campus, admitted_program=program)
-        .order_by('-id')
+        .order_by('-created_at')
         .first()
     )
 
