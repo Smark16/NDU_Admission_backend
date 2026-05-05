@@ -21,6 +21,8 @@ def send_admission_email(application, admission,
         f"• Program: {admission.admitted_program.name}\n"
         f"• Campus: {admission.admitted_campus.name}\n"
         f"• Study Mode: {admission.study_mode}\n"
+        f"• student number/paycode: {admission.student_id}\n"
+        f"• Registration Number: {admission.reg_no}\n"
         f"• Batch: {admission.admitted_batch.name} ({admission.admitted_batch.academic_year})\n\n"
         f"Your provisional admission letter will be sent shortly.\n\n"
         f"We look forward to welcoming you!\n\n"
