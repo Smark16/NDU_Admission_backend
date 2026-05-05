@@ -208,7 +208,11 @@ CELERY_BEAT_SCHEDULE = {
     },
     "process-removing-of-drafts" : {
         "task": "Drafts.tasks.auto_process_drafts_deletion",
-        "schedule": crontab(minute="*/1"),
+        "schedule": crontab(minute="*/5"),
+    },
+    "process_failed_payments" : {
+       "task": "payments.tasks.auto_delete_failed_payments",
+       "schedule": crontab(minute="*/5"),
     }
 }
 

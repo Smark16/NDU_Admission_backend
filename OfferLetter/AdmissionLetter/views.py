@@ -17,8 +17,6 @@ from django.shortcuts import get_object_or_404
 from admissions.models import Application, AdmittedStudent
 from .utils.letters import render_docx_from_template, save_docx_to_field, convert_docx_to_pdf_bytes, save_docx_to_field, fill_pdf_template
 from admissions.utils.notification import create_notification
-from django.core.mail import send_mail
-from django.conf import settings
 import threading
 from django.db import close_old_connections
 import logging
@@ -274,7 +272,6 @@ def send_offer_letter(request, applicant_id):
         "status": "processing",
         "docx_url": applicant.admission_letter_docx.url,
     })
-
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
