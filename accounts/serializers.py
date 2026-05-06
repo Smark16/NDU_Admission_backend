@@ -83,6 +83,15 @@ class RegisterSerializer(serializers.ModelSerializer):
         return str(value).strip().replace(' ', '')[:20]
 
     def validate(self, data):
+        role_name = (data.get("role") or "").strip().lower()
+        if role_name == "student":
+            raise serializers.ValidationError(
+                {"role": "Student accounts are created from Admissions/Direct Admission, not User Management."}
+            )
+        if bool(data.get("is_student")):
+            raise serializers.ValidationError(
+                {"is_student": "Student flag cannot be set from User Management."}
+            )
         if data['password'] != data['confirm_password']:
             raise serializers.ValidationError({"password": "Password fields didn't match."})
 

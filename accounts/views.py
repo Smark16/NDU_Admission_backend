@@ -75,6 +75,17 @@ class UpdateUser(generics.UpdateAPIView):
         instance = self.get_object()
         # Never accept raw password writes through ModelSerializer; hash it properly.
         data = request.data.copy()
+        new_role = (data.get("role") or "").strip()
+        if new_role.lower() == "student":
+            return Response(
+                {"detail": "Student accounts are created from Admissions/Direct Admission, not User Management."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if str(data.get("is_student", "")).strip().lower() in {"true", "1", "yes"}:
+            return Response(
+                {"detail": "Student flag cannot be set from User Management."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         new_password = (data.get("password") or "").strip()
         data.pop("password", None)
         data.pop("confirm_password", None)
@@ -94,7 +105,6 @@ class UpdateUser(generics.UpdateAPIView):
         # We only auto-GRANT here; removal remains a deliberate separate action
         # (via the assign_lecturer endpoint) so we never accidentally lock out a
         # lecturer who already has course unit responsibilities.
-        new_role = (data.get("role") or "").strip()
         if new_role == "Lecturer" and not instance.is_lecturer:
             instance.is_lecturer = True
             instance.save(update_fields=["is_lecturer"])
@@ -642,10 +652,21 @@ class SystemUsageReport(APIView):
         from django.db.models.functions import TruncDate
         from datetime import timedelta
 
-        thirty_days_ago = timezone.now() - timedelta(days=30)
+        try:
+            days = int(request.query_params.get("days", 30))
+        except (TypeError, ValueError):
+            days = 30
+        if days not in (7, 30, 90):
+            days = 30
+        staff_only = str(request.query_params.get("staff_only", "true")).lower() in ("1", "true", "yes")
+
+        since = timezone.now() - timedelta(days=days)
+        login_qs = AuditLog.objects.filter(action='login')
+        if staff_only:
+            login_qs = login_qs.filter(user__is_staff=True)
 
         user_stats = (
-            AuditLog.objects.filter(action='login')
+            login_qs
             .values('user__id', 'user__first_name', 'user__last_name', 'user__email',
                     'user__is_staff', 'user__is_applicant')
             .annotate(login_count=Count('id'), last_seen=Max('timestamp'))
@@ -653,14 +674,14 @@ class SystemUsageReport(APIView):
         )
 
         daily_logins = (
-            AuditLog.objects.filter(action='login', timestamp__gte=thirty_days_ago)
+            login_qs.filter(timestamp__gte=since)
             .annotate(day=TruncDate('timestamp'))
             .values('day')
             .annotate(count=Count('id'))
             .order_by('day')
         )
 
-        recent = AuditLog.objects.filter(action='login').select_related('user')[:50]
+        recent = login_qs.select_related('user')[:50]
         recent_data = [
             {
                 'user': f"{r.user.first_name} {r.user.last_name}".strip() if r.user else 'Unknown',
@@ -672,13 +693,91 @@ class SystemUsageReport(APIView):
             for r in recent
         ]
 
-        total_logins = AuditLog.objects.filter(action='login').count()
-        logins_today = AuditLog.objects.filter(
-            action='login', timestamp__date=timezone.now().date()
-        ).count()
-        unique_users_today = AuditLog.objects.filter(
-            action='login', timestamp__date=timezone.now().date()
-        ).values('user').distinct().count()
+        total_logins = login_qs.count()
+        logins_today = login_qs.filter(timestamp__date=timezone.now().date()).count()
+        unique_users_today = login_qs.filter(timestamp__date=timezone.now().date()).values('user').distinct().count()
+
+        module_counts_qs = (
+            AuditLog.objects.filter(
+                content_type__isnull=False,
+                timestamp__gte=since,
+                **({"user__is_staff": True} if staff_only else {})
+            )
+            .values('content_type__app_label')
+            .annotate(usage_count=Count('id'))
+            .order_by('-usage_count')[:12]
+        )
+        module_alias = {
+            "admissions": "Admissions",
+            "programs": "Academic Setup",
+            "payments": "Finance/Payments",
+            "accounts": "User Management",
+            "audit": "Audit Logs",
+            "admissionreports": "Admission Reports",
+        }
+        module_usage = []
+        for row in module_counts_qs:
+            key = (row.get('content_type__app_label') or '').strip().lower()
+            module_usage.append(
+                {
+                    "module": module_alias.get(key, key.replace('_', ' ').title() or "Other"),
+                    "app_label": key,
+                    "count": row.get("usage_count", 0),
+                }
+            )
+
+        # Human-readable key activities and feed for non-technical users.
+        action_alias = {
+            "login": "Signed in",
+            "register": "Created account",
+            "phys_verify": "Verified physical documents",
+            "phys_clear": "Cleared physical document verification",
+        }
+        key_activities = (
+            AuditLog.objects.filter(
+                timestamp__gte=since,
+                **({"user__is_staff": True} if staff_only else {}),
+            )
+            .values("action")
+            .annotate(count=Count("id"))
+            .order_by("-count")[:8]
+        )
+        key_activity_rows = [
+            {
+                "action": row.get("action", ""),
+                "label": action_alias.get(row.get("action", ""), (row.get("action", "") or "").replace("_", " ").title()),
+                "count": row.get("count", 0),
+            }
+            for row in key_activities
+        ]
+
+        def _friendly_event(row):
+            action = row.action or ""
+            label = action_alias.get(action, action.replace("_", " ").title())
+            actor = "Unknown user"
+            if row.user:
+                full = f"{row.user.first_name or ''} {row.user.last_name or ''}".strip()
+                actor = full or row.user.email or row.user.username or "Unknown user"
+            module_label = "General"
+            if row.content_type_id:
+                app = (row.content_type.app_label or "").strip().lower()
+                module_label = module_alias.get(app, app.replace("_", " ").title() or "General")
+            desc = (row.description or "").strip()
+            detail = desc if desc else f"{actor} performed: {label}."
+            return {
+                "timestamp": row.timestamp,
+                "module": module_label,
+                "actor": actor,
+                "activity": label,
+                "detail": detail,
+                "ip_address": row.ip_address,
+            }
+
+        feed_qs = AuditLog.objects.select_related("user", "content_type").filter(
+            timestamp__gte=since,
+            **({"user__is_staff": True} if staff_only else {}),
+        )[:80]
+        activity_feed = [_friendly_event(x) for x in feed_qs]
 
         return Response({
             'summary': {
@@ -686,8 +785,15 @@ class SystemUsageReport(APIView):
                 'logins_today': logins_today,
                 'unique_users_today': unique_users_today,
             },
+            'scope': {
+                'days': days,
+                'staff_only': staff_only,
+            },
             'user_stats': list(user_stats),
             'daily_logins': list(daily_logins),
+            'module_usage': module_usage,
+            'key_activities': key_activity_rows,
+            'activity_feed': activity_feed,
             'recent_logins': recent_data,
         })
 

@@ -205,6 +205,16 @@ class FeePlanRule(models.Model):
 
     installment_number = models.PositiveIntegerField(null=True, blank=True)
     due_date_days = models.IntegerField(null=True, blank=True)
+    payable_year_of_study = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        help_text="Optional: year-of-study when this fee becomes due (for scheduled other fees).",
+    )
+    payable_term_number = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        help_text="Optional: term number when this fee becomes due (used with payable_year_of_study).",
+    )
 
     is_active = models.BooleanField(default=True)
     order = models.PositiveIntegerField(default=1)

@@ -2,6 +2,7 @@
 from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
+from decimal import Decimal
 
 from django.db.models import Q
 
@@ -531,6 +532,8 @@ class GetStudentEnrolledCourses(APIView):
             StudentCurriculumOverride,
         )
         from admissions.models import AdmittedStudent
+        from payments.models import StudentTuitionPayment
+        from payments.student_portal_finance import COMMITMENT_FEE_THRESHOLD
 
         user = request.user
 
@@ -668,6 +671,29 @@ class GetStudentEnrolledCourses(APIView):
         except Exception:
             pass
 
+        # Offer-letter eligibility gate:
+        # students become eligible when cumulative completed UGX commitment payments
+        # reach the configured threshold (currently 150,000).
+        commitment_paid_ugx = sum(
+            (p.amount or Decimal("0"))
+            for p in StudentTuitionPayment.objects.filter(
+                student=admitted_student,
+                status="completed",
+                is_waived=False,
+                fee_plan_rule__isnull=False,
+            )
+            if (p.currency or "UGX").upper() == "UGX"
+        )
+        offer_letter_eligible = commitment_paid_ugx >= COMMITMENT_FEE_THRESHOLD
+
+        offer_letter_pdf_url = None
+        try:
+            app = admitted_student.application
+            if app and app.admission_letter_pdf:
+                offer_letter_pdf_url = request.build_absolute_uri(app.admission_letter_pdf.url)
+        except Exception:
+            offer_letter_pdf_url = None
+
         return Response({
             'student_id': admitted_student.student_id,
             'reg_no': admitted_student.reg_no,
@@ -684,6 +710,10 @@ class GetStudentEnrolledCourses(APIView):
             'total_deferred': len(deferred_courses),
             'total_registered': len(registered_courses),
             'total_courses': len(active_courses) + len(deferred_courses),
+            'commitment_threshold': float(COMMITMENT_FEE_THRESHOLD),
+            'commitment_paid_ugx': float(commitment_paid_ugx),
+            'offer_letter_eligible': bool(offer_letter_eligible),
+            'offer_letter_pdf_url': offer_letter_pdf_url,
         }, status=status.HTTP_200_OK)
 
 class CheckLecturerStatus(APIView):

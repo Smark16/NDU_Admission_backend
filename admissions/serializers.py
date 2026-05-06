@@ -307,6 +307,7 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
             'id',
             'student_id',
             'reg_no',
+            'schoolpay_code',
             'name',
             'program',
             'faculty',
@@ -371,6 +372,7 @@ class AdmissionDetailSerializer(serializers.ModelSerializer):
             'id',
             'student_id',
             'reg_no',
+            'schoolpay_code',
             'study_mode',
             'admission_notes',
             'admitted_program',
@@ -473,3 +475,33 @@ class AdditionalQualifficationsSerializer(serializers.ModelSerializer):
     class Meta:
         model = AdditionalQualifications
         fields = '__all__'
+
+
+class EmailTemplateSerializer(serializers.ModelSerializer):
+    placeholders = serializers.SerializerMethodField()
+
+    class Meta:
+        model = EmailTemplate
+        fields = [
+            "id",
+            "key",
+            "name",
+            "description",
+            "subject_template",
+            "body_template_html",
+            "is_active",
+            "placeholders",
+            "updated_at",
+        ]
+
+    def get_placeholders(self, obj):
+        from admissions.email_templates import get_template_definition
+
+        definition = get_template_definition(obj.key)
+        return definition.get("placeholders", [])
+
+
+class EmailTemplateUpdateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = EmailTemplate
+        fields = ["subject_template", "body_template_html", "is_active"]

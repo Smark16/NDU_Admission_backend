@@ -41,15 +41,133 @@ def _rules_for_student(student: AdmittedStudent):
 
     ensure_feeplanrule_table()
     program = student.admitted_program
+    if not program:
+        return []
     fee_plan = get_or_create_tuition_fee_plan(program)
-    return list(
-        FeePlanRule.objects.filter(
+    enrollment = getattr(student, "programme_enrollment", None)
+    current_program_batch_id = getattr(enrollment, "program_batch_id", None)
+
+    qs = FeePlanRule.objects.filter(
             fee_plan=fee_plan,
+            is_active=True,
+            semester__isnull=False,
             program_batch__program_id=program.id,
+            payable_year_of_study__isnull=True,
+            payable_term_number__isnull=True,
         )
+    if current_program_batch_id:
+        qs = qs.filter(program_batch_id=current_program_batch_id)
+    return list(
+        qs
         .select_related("fee_head", "program_batch", "semester")
         .order_by("program_batch_id", "semester_id", "order")
     )
+
+
+def _scheduled_other_fee_rules_for_student(student: AdmittedStudent):
+    """Rules for non-semester milestone fees due at a specific year/term."""
+    from django.db.models import Q
+
+    program = student.admitted_program
+    if not program:
+        return []
+
+    enrollment = getattr(student, "programme_enrollment", None)
+    current_program_batch_id = getattr(enrollment, "program_batch_id", None)
+
+    rules_qs = (
+        FeePlanRule.objects.filter(
+            is_active=True,
+            payable_year_of_study__isnull=False,
+            payable_term_number__isnull=False,
+        )
+        .filter(
+            Q(fee_plan__program=program)
+            | Q(fee_plan__programs=program)
+            | Q(program=program)
+        )
+        .exclude(
+            Q(fee_head__code__iexact="TUITION_FEE")
+            | Q(fee_head__code__iexact="FUNCTIONAL_FEE")
+        )
+        .select_related("fee_head", "fee_plan", "program_batch", "semester")
+        .distinct()
+        .order_by("payable_year_of_study", "payable_term_number", "order", "id")
+    )
+    if current_program_batch_id:
+        rules_qs = rules_qs.filter(
+            Q(program_batch_id=current_program_batch_id) | Q(program_batch__isnull=True)
+        )
+    else:
+        rules_qs = rules_qs.filter(program_batch__isnull=True)
+
+    ordered_rules = sorted(
+        list(rules_qs),
+        key=lambda r: (
+            int(r.payable_year_of_study or 0),
+            int(r.payable_term_number or 0),
+            0 if (current_program_batch_id and r.program_batch_id == current_program_batch_id) else 1,
+            int(r.order or 0),
+            int(r.id or 0),
+        ),
+    )
+    deduped_rules = []
+    seen = set()
+    for r in ordered_rules:
+        key = (r.fee_head_id, int(r.payable_year_of_study or 0), int(r.payable_term_number or 0))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped_rules.append(r)
+
+    current_year = int(getattr(enrollment, "current_year_of_study", 1) or 1)
+    current_term = int(getattr(enrollment, "current_term_number", 1) or 1)
+    intl = is_international_student(student)
+
+    out = []
+    for r in deduped_rules:
+        required_amt, required_ccy = effective_amount_currency(r, intl)
+        if required_amt <= 0:
+            continue
+
+        paid_amt = Decimal("0")
+        paid_qs = StudentTuitionPayment.objects.filter(
+            student=student,
+            fee_plan_rule=r,
+            status="completed",
+            is_waived=False,
+        )
+        for p in paid_qs:
+            if (p.currency or "UGX").strip().upper() == required_ccy:
+                paid_amt += (p.amount or Decimal("0"))
+
+        due_pos = (int(r.payable_year_of_study), int(r.payable_term_number))
+        cur_pos = (current_year, current_term)
+        reached_due = cur_pos >= due_pos
+        settled = paid_amt >= required_amt
+
+        if settled:
+            state = "paid"
+        elif reached_due:
+            state = "due"
+        else:
+            state = "not_due"
+
+        out.append(
+            {
+                "rule_id": r.id,
+                "fee_plan_name": r.fee_plan.name if r.fee_plan_id else "",
+                "fee_head": r.fee_head.name if r.fee_head_id else "Other fee",
+                "amount": float(required_amt),
+                "currency": required_ccy,
+                "payable_year_of_study": int(r.payable_year_of_study),
+                "payable_term_number": int(r.payable_term_number),
+                "status": state,
+                "paid_amount": float(paid_amt),
+                "balance": float(max(required_amt - paid_amt, Decimal("0"))),
+            }
+        )
+    return out
 
 
 def tuition_structure_dict(student: AdmittedStudent) -> dict:
@@ -119,7 +237,13 @@ def payment_status_dict(student: AdmittedStudent) -> dict:
         c.amount for c in adhoc_charges
         if c.status in ('pending', 'completed') and (c.currency or "UGX").upper() == primary_ccy
     )
-    total_required_with_adhoc = total_required + adhoc_required
+    scheduled_other_fees = _scheduled_other_fee_rules_for_student(student)
+    scheduled_due_required = sum(
+        Decimal(str(x["amount"]))
+        for x in scheduled_other_fees
+        if x["currency"] == primary_ccy and x["status"] in ("due", "paid")
+    )
+    total_required_with_adhoc = total_required + adhoc_required + scheduled_due_required
 
     paid_primary = paid_by.get(primary_ccy, Decimal("0"))
     total_paid = float(paid_primary)
@@ -177,7 +301,10 @@ def payment_status_dict(student: AdmittedStudent) -> dict:
     completed_ugx = sum(
         p.amount
         for p in StudentTuitionPayment.objects.filter(
-            student=student, status="completed"
+            student=student,
+            status="completed",
+            is_waived=False,
+            fee_plan_rule__isnull=False,
         )
         if (p.currency or "UGX").upper() == "UGX"
     )
@@ -195,8 +322,11 @@ def payment_status_dict(student: AdmittedStudent) -> dict:
         "payment_history": history,
         "ad_hoc_charges": adhoc_list,
         "ad_hoc_total": float(adhoc_required),
+        "scheduled_other_fees": scheduled_other_fees,
+        "scheduled_other_fees_total_due": float(scheduled_due_required),
         # --- tuition payment / SchoolPay fields ---
-        "payment_code": student.reg_no,          # student's stable SchoolPay reference
+        "payment_code": student.schoolpay_code or student.reg_no,  # stable SchoolPay reference
+        "schoolpay_code": student.schoolpay_code or student.reg_no,
         "commitment_threshold": float(COMMITMENT_FEE_THRESHOLD),
         "commitment_met": commitment_met,
         "commitment_paid_ugx": float(completed_ugx),

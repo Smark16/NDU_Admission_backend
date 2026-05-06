@@ -64,7 +64,10 @@ def build_registration_eligibility_payload(student: AdmittedStudent) -> dict:
     international = is_international_student(student)
     rules = _rules_for_student(student)
     req_by = required_by_currency(rules, international)
-    paid_by = paid_by_currency(student)
+    paid_by = paid_by_currency(
+        student,
+        allowed_rule_ids={int(r.id) for r in rules if getattr(r, "id", None)},
+    )
     min_pct = Decimal(str(settings.min_tuition_payment_percentage)) / Decimal("100")
 
     if not req_by:

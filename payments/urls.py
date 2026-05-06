@@ -9,9 +9,15 @@ from .adhoc_views import (
     StudentAdHocChargeListCreate,
     StudentAdHocChargeWaiveView,
 )
+from .scheduled_fee_views import (
+    ScheduledOtherFeeRuleClone,
+    ScheduledOtherFeeRuleDetail,
+    ScheduledOtherFeeRuleListCreate,
+)
 from .tuition_payment_views import (
     InitiateTuitionPayment,
     CheckTuitionPaymentStatus,
+    GenerateTuitionPaymentReference,
 )
 from .semester_registration_views import (
     CheckRegistrationEligibility,
@@ -49,6 +55,7 @@ urlpatterns = [
         name='get_semesters_for_program_batch',
     ),
     path('student/initiate_tuition_payment', InitiateTuitionPayment.as_view(), name='initiate_tuition_payment'),
+    path('student/generate_tuition_reference', GenerateTuitionPaymentReference.as_view(), name='generate_tuition_reference'),
     path('student/tuition_payment_status/<str:payment_ref>', CheckTuitionPaymentStatus.as_view(), name='check_tuition_payment_status'),
     path('student/tuition_structure', GetStudentTuitionStructure.as_view(), name='get_student_tuition_structure'),
     path('student/payment_status', GetStudentPaymentStatus.as_view(), name='get_student_payment_status'),
@@ -79,11 +86,27 @@ urlpatterns = [
         StudentAdHocChargeWaiveView.as_view(),
         name='adhoc_charge_waive',
     ),
+    path(
+        'other_fee_schedule',
+        ScheduledOtherFeeRuleListCreate.as_view(),
+        name='scheduled_other_fee_list_create',
+    ),
+    path(
+        'other_fee_schedule/<int:pk>',
+        ScheduledOtherFeeRuleDetail.as_view(),
+        name='scheduled_other_fee_detail',
+    ),
+    path(
+        'other_fee_schedule/clone',
+        ScheduledOtherFeeRuleClone.as_view(),
+        name='scheduled_other_fee_clone',
+    ),
 
     # school payment
     path('initiate_payment/', InitiatePayment.as_view()),
     path('webhook/', schoolpay_webhook, name='schoolpay_webhook'),
     path('check_payment_status/<str:payment_ref>/', CheckPaymentStatus.as_view()),
+    path('sync_schoolpay_transactions', SyncSchoolPayTransactions.as_view(), name='sync_schoolpay_transactions'),
 
     # payments
     path('list_payments', ListPayments.as_view()),

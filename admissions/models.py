@@ -259,6 +259,7 @@ class AdmittedStudent(models.Model):
     student_id = models.CharField(max_length=50, unique=True)
     study_mode = models.CharField(max_length=30)
     reg_no = models.CharField(max_length=100, unique=True)
+    schoolpay_code = models.CharField(max_length=100, unique=True, null=True, blank=True, db_index=True)
     admitted_program = models.ForeignKey(Program, on_delete=models.CASCADE)
     admitted_batch = models.ForeignKey(Batch, on_delete=models.CASCADE, related_name='admitted_students')
     admitted_campus = models.ForeignKey(Campus, on_delete=models.CASCADE, related_name='admitted_students')
@@ -414,6 +415,44 @@ class PortalNotification(models.Model):
 
     def __str__(self):
         return f"{self.recipient.email} - {self.title}"
+
+
+class EmailTemplate(models.Model):
+    KEY_APPLICATION_SUBMITTED = "application_submitted"
+    KEY_ADMISSION_ACCEPTED = "admission_accepted"
+    KEY_ADMISSION_UPDATED = "admission_updated"
+    KEY_OFFER_LETTER_SENT = "offer_letter_sent"
+
+    TEMPLATE_KEY_CHOICES = [
+        (KEY_APPLICATION_SUBMITTED, "Application Submitted"),
+        (KEY_ADMISSION_ACCEPTED, "Admission Accepted"),
+        (KEY_ADMISSION_UPDATED, "Admission Updated"),
+        (KEY_OFFER_LETTER_SENT, "Offer Letter Sent"),
+    ]
+
+    key = models.CharField(max_length=80, unique=True, choices=TEMPLATE_KEY_CHOICES)
+    name = models.CharField(max_length=160)
+    description = models.TextField(blank=True)
+    subject_template = models.CharField(max_length=255)
+    body_template_html = models.TextField()
+    is_active = models.BooleanField(default=True)
+    updated_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="updated_email_templates",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name"]
+        verbose_name = "Email Template"
+        verbose_name_plural = "Email Templates"
+
+    def __str__(self):
+        return f"{self.name} ({self.key})"
 
 
 

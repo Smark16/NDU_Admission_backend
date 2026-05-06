@@ -69,6 +69,19 @@ class UpdateSemesterView(APIView):
         except (TypeError, ValueError):
             return Response({"detail": "Order must be a positive integer"}, status=status.HTTP_400_BAD_REQUEST)
 
+        max_allowed = int(batch.program.min_years or 0) * int(batch.program.max_terms_per_year or 0)
+        if max_allowed > 0 and order > max_allowed:
+            return Response(
+                {
+                    "detail": (
+                        f"Cannot set term order to {order}. This programme allows at most "
+                        f"{max_allowed} semesters/terms ({batch.program.min_years} year(s) x "
+                        f"{batch.program.max_terms_per_year} term(s) per year)."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         if Semester.objects.filter(program_batch=batch, order=order).exclude(id=semester.id).exists():
             return Response(
                 {"detail": f"Another semester already uses order {order} in this batch"},

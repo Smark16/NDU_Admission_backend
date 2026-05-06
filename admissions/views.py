@@ -25,6 +25,7 @@ import time
 
 import logging
 import json
+import uuid
 
 # WeasyPrint is imported lazily inside DownloadAdmissionPDF.get — a top-level import
 # fails on Windows without GTK/Pango (libgobject), which breaks the whole URLconf.
@@ -906,7 +907,10 @@ class CheckStudentStatus(APIView):
                     "application",
                 )
                 .filter(
-                    Q(application__applicant=user) | Q(student_user=user) | Q(reg_no=user.username),
+                    Q(application__applicant=user)
+                    | Q(student_user=user)
+                    | Q(reg_no=user.username)
+                    | Q(reg_no=str(user.username).replace("_", "/")),
                     is_admitted=True,
                 )
                 .first()
@@ -917,6 +921,7 @@ class CheckStudentStatus(APIView):
                         "is_admitted_student": True,
                         "student_id": admitted_student.student_id,
                         "reg_no": admitted_student.reg_no,
+                        "schoolpay_code": admitted_student.schoolpay_code or admitted_student.reg_no,
                         "program": admitted_student.admitted_program.name
                         if admitted_student.admitted_program
                         else None,
@@ -1239,11 +1244,15 @@ class AdmitStudent(generics.CreateAPIView):
                 try:
                     from accounts.models import User as UserModel
                     applicant = application.applicant
-                    student_username = str(admission.reg_no).strip().replace("/", "_")
+                    student_reg_no = str(admission.reg_no).strip()
+                    student_username = student_reg_no
+                    legacy_username = student_reg_no.replace("/", "_")
 
                     # Avoid duplicates if re-admitting
                     if not admission.student_user_id:
-                        existing = UserModel.objects.filter(username=student_username).first()
+                        existing = UserModel.objects.filter(
+                            Q(username=student_username) | Q(username=legacy_username)
+                        ).first()
                         if existing:
                             student_user = existing
                         else:
@@ -1252,7 +1261,7 @@ class AdmitStudent(generics.CreateAPIView):
                                 first_name=applicant.first_name,
                                 last_name=applicant.last_name,
                                 email=applicant.email,
-                                password='NDU@1234',
+                                password=student_reg_no,
                                 is_staff=False,
                                 is_applicant=False,
                                 is_student=True,
@@ -1644,7 +1653,10 @@ class StudentChangeRequestListCreate(APIView):
             return AdmittedStudent.objects.select_related(
                 'admitted_program', 'admitted_campus'
             ).filter(
-                Q(application__applicant=user) | Q(student_user=user) | Q(reg_no=user.username),
+                Q(application__applicant=user)
+                | Q(student_user=user)
+                | Q(reg_no=user.username)
+                | Q(reg_no=str(user.username).replace("_", "/")),
                 is_admitted=True,
             ).first()
         except Exception:
@@ -1789,9 +1801,13 @@ def _run_post_admission_setup(request, admission, application):
     try:
         from accounts.models import User as UserModel
         applicant = application.applicant
-        student_username = str(admission.reg_no).strip().replace('/', '_')
+        student_reg_no = str(admission.reg_no).strip()
+        student_username = student_reg_no
+        legacy_username = student_reg_no.replace('/', '_')
         if not admission.student_user_id:
-            existing = UserModel.objects.filter(username=student_username).first()
+            existing = UserModel.objects.filter(
+                Q(username=student_username) | Q(username=legacy_username)
+            ).first()
             if existing:
                 student_user = existing
             else:
@@ -1800,7 +1816,7 @@ def _run_post_admission_setup(request, admission, application):
                     first_name=applicant.first_name,
                     last_name=applicant.last_name,
                     email=applicant.email,
-                    password='NDU@1234',
+                    password=student_reg_no,
                     is_staff=False,
                     is_applicant=False,
                     is_student=True,
@@ -1990,26 +2006,92 @@ class DirectAdmissionEntryView(APIView):
 
         d = request.data
 
-        # ── Validate required fields ──────────────────────────────────────────
-        required_fields = [
-            'first_name', 'last_name', 'date_of_birth', 'gender', 'nationality',
-            'phone', 'email', 'next_of_kin_name', 'next_of_kin_contact',
-            'next_of_kin_relationship', 'batch', 'campus', 'program',
-            'academic_level', 'study_mode',
-        ]
+        full_name = (d.get('full_name') or '').strip()
+        first_name = (d.get('first_name') or '').strip()
+        last_name = (d.get('last_name') or '').strip()
+        if full_name and (not first_name or not last_name):
+            parts = [p for p in full_name.split() if p]
+            if len(parts) == 1:
+                first_name = parts[0]
+                last_name = 'N/A'
+            elif len(parts) > 1:
+                first_name = parts[0]
+                last_name = " ".join(parts[1:])
+
+        # ── Validate required fields (simple direct-entry flow) ──────────────
+        required_fields = ['campus', 'program']
         errors = {f: 'This field is required.' for f in required_fields if not d.get(f)}
+        if not first_name:
+            errors['full_name'] = 'Student name is required.'
+        direct_reason = (d.get('direct_admission_reason') or '').strip()
+        if not direct_reason:
+            errors['direct_admission_reason'] = 'Reason for direct admission is required.'
         if errors:
             return Response(errors, status=400)
 
         try:
             with transaction.atomic():
-                email = d['email'].strip().lower()
-                batch = Batch.objects.get(id=d['batch'])
                 campus = Campus.objects.get(id=d['campus'])
                 from Programs.models import Program as ProgramModel
                 program = ProgramModel.objects.get(id=d['program'])
-                academic_level = AcademicLevel.objects.get(id=d['academic_level'])
-                study_mode = d['study_mode'].strip().upper()
+                academic_level = program.academic_level
+                study_mode = (d.get('study_mode') or 'DAY').strip().upper()
+
+                batch_id = d.get('batch')
+                if batch_id:
+                    batch = Batch.objects.get(id=batch_id)
+                else:
+                    batch = (
+                        Batch.objects.filter(is_active=True, programs=program).order_by('-created_at').first()
+                        or Batch.objects.filter(programs=program).order_by('-created_at').first()
+                    )
+                    if not batch:
+                        return Response(
+                            {
+                                'detail': (
+                                    'No intake found for this programme. '
+                                    'Create or activate an intake, then try again.'
+                                )
+                            },
+                            status=400,
+                        )
+
+                supplied_email = (d.get('email') or '').strip().lower()
+                provided_schoolpay_code = (d.get('schoolpay_code') or '').strip()
+                fallback_email = (
+                    f"direct.{first_name}.{last_name}.{uuid.uuid4().hex[:8]}@ndu.local"
+                    .replace(" ", "")
+                    .replace("..", ".")
+                    .lower()
+                )
+                email = supplied_email or fallback_email
+                phone = (d.get('phone') or '').strip() or 'N/A'
+                gender = (d.get('gender') or '').strip() or 'NOT SPECIFIED'
+                nationality = (d.get('nationality') or '').strip() or 'Ugandan'
+                today = timezone.now().date()
+                date_of_birth_raw = d.get('date_of_birth')
+                if date_of_birth_raw:
+                    if isinstance(date_of_birth_raw, date):
+                        date_of_birth = date_of_birth_raw
+                    else:
+                        try:
+                            date_of_birth = date.fromisoformat(str(date_of_birth_raw))
+                        except ValueError:
+                            return Response(
+                                {'detail': 'Invalid date_of_birth format. Use YYYY-MM-DD.'},
+                                status=400,
+                            )
+                else:
+                    date_of_birth = date(2000, 1, 1)
+                next_of_kin_name = (d.get('next_of_kin_name') or '').strip() or f"{first_name} {last_name}".strip()
+                next_of_kin_contact = (d.get('next_of_kin_contact') or '').strip() or phone
+                next_of_kin_relationship = (d.get('next_of_kin_relationship') or '').strip() or 'Self'
+                admission_notes = (d.get('admission_notes') or '').strip()
+                reason_note = f"Direct admission reason: {direct_reason}"
+                if admission_notes:
+                    admission_notes = f"{reason_note}\n{admission_notes}"
+                else:
+                    admission_notes = reason_note
 
                 # ── Applicant user ────────────────────────────────────────────
                 from accounts.models import User as UserModel
@@ -2022,8 +2104,8 @@ class DirectAdmissionEntryView(APIView):
                         username = f'{base_username}_{suffix}'
                     applicant_user = UserModel.objects.create_user(
                         username=username,
-                        first_name=d['first_name'],
-                        last_name=d['last_name'],
+                        first_name=first_name,
+                        last_name=last_name,
                         email=email,
                         password='NDU@1234',
                         is_applicant=True,
@@ -2037,25 +2119,27 @@ class DirectAdmissionEntryView(APIView):
                     campus=campus,
                     academic_level=academic_level,
                     source=Application.SOURCE_DIRECT,
+                    is_direct_entry=True,
+                    entered_by=request.user,
                     legacy_application_number=d.get('legacy_application_number') or '',
-                    first_name=d['first_name'],
-                    last_name=d['last_name'],
+                    first_name=first_name,
+                    last_name=last_name,
                     middle_name=d.get('middle_name', ''),
-                    date_of_birth=d['date_of_birth'],
-                    gender=d['gender'],
-                    nationality=d['nationality'],
-                    phone=d['phone'],
+                    date_of_birth=date_of_birth,
+                    gender=gender,
+                    nationality=nationality,
+                    phone=phone,
                     email=email,
                     address=d.get('address', ''),
                     nin=d.get('nin', ''),
                     passport_number=d.get('passport_number', ''),
-                    next_of_kin_name=d['next_of_kin_name'],
-                    next_of_kin_contact=d['next_of_kin_contact'],
-                    next_of_kin_relationship=d['next_of_kin_relationship'],
-                    olevel_year=int(d.get('olevel_year') or 0),
+                    next_of_kin_name=next_of_kin_name,
+                    next_of_kin_contact=next_of_kin_contact,
+                    next_of_kin_relationship=next_of_kin_relationship,
+                    olevel_year=int(d.get('olevel_year') or today.year),
                     olevel_index_number=d.get('olevel_index_number') or 'N/A',
                     olevel_school=d.get('olevel_school') or 'N/A',
-                    alevel_year=int(d.get('alevel_year') or 0),
+                    alevel_year=int(d.get('alevel_year') or today.year),
                     alevel_index_number=d.get('alevel_index_number') or 'N/A',
                     alevel_school=d.get('alevel_school') or 'N/A',
                     alevel_combination=d.get('alevel_combination') or 'N/A',
@@ -2082,12 +2166,19 @@ class DirectAdmissionEntryView(APIView):
                     student_id = provided_student_id
                 else:
                     student_id = _generate_student_id()
+                if provided_schoolpay_code:
+                    if AdmittedStudent.objects.filter(schoolpay_code=provided_schoolpay_code).exists():
+                        raise ValueError(f'schoolpay_code "{provided_schoolpay_code}" is already in use.')
+                    schoolpay_code = provided_schoolpay_code
+                else:
+                    schoolpay_code = reg_no
 
                 # ── AdmittedStudent ───────────────────────────────────────────
                 admission = AdmittedStudent.objects.create(
                     application=app,
                     student_id=student_id,
                     reg_no=reg_no,
+                    schoolpay_code=schoolpay_code,
                     admitted_program=program,
                     admitted_batch=batch,
                     admitted_campus=campus,
@@ -2095,7 +2186,7 @@ class DirectAdmissionEntryView(APIView):
                     admission_date=timezone.now(),
                     is_admitted=True,
                     admitted_by=request.user,
-                    admission_notes=d.get('admission_notes', ''),
+                    admission_notes=admission_notes,
                 )
 
                 # ── Shared post-admission setup (account + SPE) ───────────────
@@ -2107,7 +2198,7 @@ class DirectAdmissionEntryView(APIView):
                     celery_application_notification.delay(
                         request.user.id,
                         'Direct Admission Completed',
-                        f'Student {d["first_name"]} {d["last_name"]} admitted directly as {reg_no}.',
+                        f'Student {first_name} {last_name} admitted directly as {reg_no}.',
                     )
                 except Exception:
                     pass
@@ -2116,8 +2207,10 @@ class DirectAdmissionEntryView(APIView):
                     'admission_id': admission.id,
                     'student_id': admission.student_id,
                     'reg_no': admission.reg_no,
+                    'schoolpay_code': admission.schoolpay_code or admission.reg_no,
                     'application_id': app.id,
                     'application_reference': app.application_reference,
+                    'direct_admission_reason': direct_reason,
                     'message': (
                         f'Student admitted successfully. '
                         f'Reg No: {admission.reg_no} | Student ID: {admission.student_id}'

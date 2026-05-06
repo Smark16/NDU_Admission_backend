@@ -17,9 +17,9 @@ GET  /api/payments/student/tuition_payment_status/<payment_ref>
 
 Design notes
 ------------
-• reg_no is used as the stable "SchoolPay ID" displayed to students so they
-  can pay outside the portal at any SchoolPay agent using their reg_no.
-• ext_ref for portal-initiated payments embeds the reg_no so staff can
+• schoolpay_code (fallback: reg_no) is used as the stable "SchoolPay ID" displayed
+  to students so they can pay outside the portal at any SchoolPay agent.
+• ext_ref for portal-initiated payments embeds the payment code so staff can
   reconcile outside payments by looking at the reference prefix.
 • Webhook handling (for outside-portal or async confirmation) is in views.py.
 """
@@ -102,9 +102,16 @@ class InitiateTuitionPayment(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        payment_code = (student.schoolpay_code or student.reg_no or "").strip()
+        if not payment_code:
+            return Response(
+                {"detail": "SchoolPay code is not set for this account. Contact admissions office."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         # Build references
-        # ext_ref embeds reg_no for traceability; unique suffix prevents SchoolPay collision
-        ext_ref = f"TUT-{student.reg_no}-{uuid.uuid4().hex[:8].upper()}"
+        # ext_ref embeds payment code for traceability; unique suffix prevents SchoolPay collision
+        ext_ref = f"TUT-{payment_code}-{uuid.uuid4().hex[:8].upper()}"
 
         # Student name from linked application
         first_name = ""
@@ -114,7 +121,7 @@ class InitiateTuitionPayment(APIView):
             first_name = app.first_name or ""
             last_name  = app.last_name  or ""
         except Exception:
-            first_name = student.reg_no
+            first_name = payment_code
             last_name  = ""
 
         client = SchoolPayClient()
@@ -147,7 +154,7 @@ class InitiateTuitionPayment(APIView):
         payment = StudentTuitionPayment.objects.create(
             student=student,
             source="ad_hoc",
-            label=f"Tuition payment — portal initiated ({student.reg_no})",
+            label=f"Tuition payment — portal initiated ({payment_code})",
             amount=amount_decimal,
             currency="UGX",
             payment_method="mobile_money",
@@ -164,6 +171,104 @@ class InitiateTuitionPayment(APIView):
             "currency": "UGX",
             "status": payment.status,
         })
+
+
+class GenerateTuitionPaymentReference(APIView):
+    """
+    POST /api/payments/student/generate_tuition_reference
+    Body: { amount }
+    Returns a SchoolPay payment reference for manual/agent/bank payment.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        student = get_admitted_student_for_user(request.user)
+        if not student:
+            return Response(
+                {"detail": "No admitted student record found for this account."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        amount = request.data.get("amount")
+        if not amount:
+            return Response({"detail": "amount is required."}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            amount_decimal = float(amount)
+            if amount_decimal <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            return Response({"detail": "amount must be a positive number."}, status=status.HTTP_400_BAD_REQUEST)
+
+        payment_code = (student.schoolpay_code or student.reg_no or "").strip()
+        if not payment_code:
+            return Response(
+                {"detail": "SchoolPay code is not set for this account. Contact admissions office."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        ext_ref = f"TREF-{payment_code}-{uuid.uuid4().hex[:8].upper()}"
+        try:
+            app = student.application
+            first_name = app.first_name or payment_code
+            last_name = app.last_name or ""
+        except Exception:
+            first_name = payment_code
+            last_name = ""
+
+        client = SchoolPayClient()
+        try:
+            resp = client.register_payment_reference(
+                amount=amount_decimal,
+                ext_ref=ext_ref,
+                first_name=first_name,
+                last_name=last_name,
+                reason="Tuition Payment",
+                callBackUrl=_callback_url(request),
+            )
+        except ValueError as exc:
+            logger.error("SchoolPay register payment reference failed: %s", exc)
+            return Response(
+                {"detail": "Payment gateway error. Please try again."},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        if resp.get("returnCode") != 0:
+            return Response(
+                {"detail": resp.get("returnMessage", "Could not generate payment reference.")},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        payment_reference = (resp.get("paymentReference") or "").strip()
+        if not payment_reference:
+            return Response(
+                {"detail": "SchoolPay did not return a payment reference."},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        payment = StudentTuitionPayment.objects.create(
+            student=student,
+            source="ad_hoc",
+            label=f"Tuition payment reference generated ({payment_code})",
+            amount=amount_decimal,
+            currency="UGX",
+            payment_method="other",
+            status="pending",
+            payment_reference=payment_reference,
+            transaction_id=ext_ref,
+            charged_by=None,
+            notes="Generated via SchoolPay Register endpoint.",
+        )
+
+        return Response(
+            {
+                "payment_reference": payment.payment_reference,
+                "external_reference": ext_ref,
+                "amount": amount_decimal,
+                "currency": "UGX",
+                "status": payment.status,
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 class CheckTuitionPaymentStatus(APIView):

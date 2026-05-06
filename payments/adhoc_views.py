@@ -18,7 +18,7 @@ GET    /api/payments/fee_heads                                  — list active 
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAdminUser, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -85,6 +85,8 @@ class FeeHeadListView(APIView):
         return Response([_feehead_to_dict(h) for h in qs.order_by('category', 'name')])
 
     def post(self, request):
+        if not request.user.is_staff:
+            return Response({"detail": "Only staff can create fee heads."}, status=status.HTTP_403_FORBIDDEN)
         code = (request.data.get("code") or "").strip().upper()
         name = (request.data.get("name") or "").strip()
         category = (request.data.get("category") or "other").strip()
@@ -112,7 +114,7 @@ class FeeHeadDetailView(APIView):
     PATCH  /api/payments/fee_heads/<pk>  — update
     DELETE /api/payments/fee_heads/<pk>  — deactivate (soft delete)
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdminUser]
 
     def _get(self, pk):
         return get_object_or_404(FeeHead, pk=pk)
@@ -160,7 +162,7 @@ class StudentAdHocChargeListCreate(APIView):
     GET  /api/payments/admin/student/<student_id>/charges — list charges
     POST /api/payments/admin/student/<student_id>/charges — create charge
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdminUser]
 
     def get(self, request, student_id):
         student = get_object_or_404(AdmittedStudent, pk=student_id)
@@ -226,7 +228,7 @@ class StudentAdHocChargeDetailView(APIView):
     POST   /api/payments/admin/charge/<pk>/waive   — waive
     DELETE /api/payments/admin/charge/<pk>         — hard delete (pending only)
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdminUser]
 
     def _get(self, pk):
         return get_object_or_404(
@@ -285,7 +287,7 @@ class StudentAdHocChargeDetailView(APIView):
 
 class StudentAdHocChargeWaiveView(APIView):
     """POST /api/payments/admin/charge/<pk>/waive"""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdminUser]
 
     def post(self, request, pk):
         charge = get_object_or_404(

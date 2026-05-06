@@ -524,6 +524,17 @@ class Semester(models.Model):
 
     def clean(self):
         from django.core.exceptions import ValidationError
+        program = self.program_batch.program
+        max_allowed = int(program.min_years or 0) * int(program.max_terms_per_year or 0)
+
+        # Hard cap: a batch cannot have more terms than the programme structure allows.
+        if max_allowed > 0 and self.order and self.order > max_allowed:
+            raise ValidationError({
+                'order': (
+                    f"Order {self.order} exceeds the maximum allowed semesters/terms "
+                    f"({max_allowed}) for this programme."
+                )
+            })
         # year_of_study and term_number must be set together or not at all
         both_set = self.year_of_study is not None and self.term_number is not None
         either_set = self.year_of_study is not None or self.term_number is not None
@@ -532,7 +543,6 @@ class Semester(models.Model):
                 "year_of_study and term_number must both be set together, or both left blank."
             )
         if both_set:
-            program = self.program_batch.program
             if self.year_of_study < 1 or self.year_of_study > program.max_years:
                 raise ValidationError({
                     'year_of_study': (

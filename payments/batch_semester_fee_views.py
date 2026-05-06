@@ -10,7 +10,7 @@ Reads/writes FeePlanRule rows for Programs.ProgramBatch × Programs.Semester
 from decimal import InvalidOperation
 
 from rest_framework import status
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAdminUser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -36,7 +36,7 @@ class BatchSemesterFeeMatrixView(APIView):
     POST: body program_id, program_batch_id, semester_id + amounts → upsert rules.
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdminUser]
 
     def get(self, request):
         ensure_feeplanrule_table()
@@ -188,7 +188,7 @@ class BulkUploadSemesterTuitionView(APIView):
       }
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdminUser]
 
     def post(self, request):
         import csv
