@@ -15,10 +15,10 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        migrations.RenameField(
+        migrations.AddField(
             model_name='draftapplication',
-            old_name='next_of_kin_name',
-            new_name='nextOfKinName',
+            name='nextOfKinName',
+            field=models.CharField(max_length=200, blank=True, null=True),
         ),
         migrations.RemoveField(
             model_name='draftapplication',
