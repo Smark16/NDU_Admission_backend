@@ -8,7 +8,6 @@ import platform
 
 from django.core.files.base import ContentFile
 from django.db import close_old_connections
-from django.conf import settings
 from tempfile import NamedTemporaryFile
 
 from admissions.models import Application
@@ -92,7 +91,7 @@ def convert_and_save_pdf_task(self, encoded_docx, applicant_id):
         applicant.save(update_fields=["admission_letter_pdf", "status"])
 
         # Step 4: Send email
-        send_offerletter_email.delay(applicant.id)
+        # send_offerletter_email.delay(applicant.id)
 
         applicant.offer_letter_status = "email_sent"
         applicant.offer_letter_progress = 100

@@ -289,12 +289,11 @@ def resend_offer_letter(request, applicant_id):
             status=400,
         )
 
-    send_offerletter_email.delay(applicant.id)
+    # send_offerletter_email.delay(applicant.id)
     return Response(
         {"detail": "Offer letter email queued successfully.", "status": "queued"},
         status=200,
     )
-
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
