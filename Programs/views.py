@@ -15,7 +15,7 @@ from accounts.models import Campus
 from .utils.excel import create_workbook
 from django.http import HttpResponse
 from django.utils.timezone import localtime
-from django.db.models import Count, Q
+from django.db.models import Count, Q, Exists, OuterRef
 
 # Create your views here.
 
@@ -123,7 +123,73 @@ class ExportProgramTemplateView(APIView):
         response["Content-Disposition"] = 'attachment; filename="program_upload_template.xlsx"'
         wb.save(response)
         return response
-    
+
+
+# --- NEW: list programs that already have academic ProgramBatch rows (for intakes / finance UIs) ---
+
+
+class ListProgramsWithBatches(generics.ListAPIView):
+    """
+    Programs that have at least one active ProgramBatch (academic structure configured).
+
+    Route: list_programs_with_batches (see Programs/urls.py).
+    """
+    serializer_class = ListProgramsSerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+    def get_queryset(self):
+        has_batches = ProgramBatch.objects.filter(
+            program=OuterRef('pk'),
+            is_active=True,
+        )
+        return Program.objects.select_related(
+            'faculty',
+            'academic_level',
+        ).prefetch_related(
+            'campuses',
+        ).annotate(
+            has_batches=Exists(has_batches),
+        ).filter(
+            has_batches=True,
+            is_active=True,
+        ).order_by('name')
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.get_queryset()
+        data = []
+        for program in queryset:
+            program_data = self.get_serializer(program).data
+            batches = ProgramBatch.objects.filter(
+                program_id=program.id,
+                is_active=True,
+            ).order_by('-start_date', 'name')
+            program_data['batch_count'] = batches.count()
+            program_data['batches'] = [
+                {
+                    'id': b.id,
+                    'name': b.name,
+                    'academic_year': b.academic_year or '',
+                    'start_date': b.start_date.isoformat() if b.start_date else None,
+                    'semesters': [
+                        {'id': s.id, 'name': s.name}
+                        for s in b.semesters.filter(is_active=True).order_by(
+                            'order', 'start_date', 'id'
+                        )
+                    ],
+                }
+                for b in batches
+            ]
+            data.append(program_data)
+
+        return Response(
+            {
+                'count': len(data),
+                'results': data,
+                'message': 'Only programs with configured academic structure are shown',
+            },
+            status=status.HTTP_200_OK,
+        )
+
 # ============================================================Bulk Upload====================================================
 
 # === STRICT HEADER MAPPING (Exact match only) ===

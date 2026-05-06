@@ -1,21 +1,21 @@
 from django.db import models
 from django.contrib.auth.models import AbstractUser
-from django.core.validators import RegexValidator
-from django.utils.translation import gettext_lazy as _
+from django.utils import timezone
 from django.db.models.signals import post_save
 from rest_framework.exceptions import ValidationError
+
 
 class Campus(models.Model):
     name = models.CharField(max_length=100, unique=True)
     code = models.CharField(max_length=50, unique=True)
-    address = models.TextField(max_length=100, blank=True, default='')
-    email = models.EmailField(max_length=100, blank=True, default='')
+    address = models.TextField(max_length=100, blank=True, default="")
+    email = models.EmailField(max_length=100, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         verbose_name_plural = "Campuses"
-        ordering = ['name']
+        ordering = ["name"]
 
     def __str__(self):
         return self.name
@@ -23,16 +23,17 @@ class Campus(models.Model):
     def delete(self, *args, **kwargs):
         raise ValidationError({"detail": "Deletion of Campus is not allowed."})
 
+
 class User(AbstractUser):
     role = models.CharField(max_length=20, blank=True, null=True)
-    campuses = models.ManyToManyField(Campus, blank=True, related_name='users')
+    campuses = models.ManyToManyField(Campus, blank=True, related_name="users")
     phone = models.CharField(max_length=20, blank=True, null=True)
+    staff_id = models.CharField(max_length=50, blank=True, null=True, unique=True, db_index=True)
     is_staff = models.BooleanField(default=False)
     is_applicant = models.BooleanField(default=False, db_index=True)
-    is_lecturer = models.BooleanField(default=False)
-    is_student = models.BooleanField(default=False)
+    is_student = models.BooleanField(default=False, db_index=True)
+    is_lecturer = models.BooleanField(default=False, db_index=True)
     must_change_password = models.BooleanField(default=False)
-    staff_id = models.CharField(max_length=50, blank=True, null=True)
 
     @property
     def full_name(self):
@@ -47,34 +48,55 @@ class User(AbstractUser):
 
     def __str__(self):
         return f"{self.get_full_name()}"
-    
+
+
 class Profile(models.Model):
-    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="profile")
     first_name = models.CharField(max_length=50)
     last_name = models.CharField(max_length=50)
     email = models.EmailField(max_length=100)
-    phone = models.CharField(max_length=20, blank=True, null=True)
-    profile_photo = models.ImageField(upload_to='passport_photos/', blank=True, null=True)
+    phone = models.CharField(max_length=32, blank=True, null=True)
+    profile_photo = models.ImageField(upload_to="passport_photos/", blank=True, null=True)
     is_staff = models.BooleanField(default=False)
     is_applicant = models.BooleanField(default=False)
     date_joined = models.DateTimeField(null=True, blank=True)
+
 
 def create_profile(sender, instance, created, **kwargs):
     if created:
         Profile.objects.create(
             user=instance,
-            first_name=instance.first_name or '',
-            last_name=instance.last_name or '',
-            date_joined=instance.date_joined,
+            first_name=instance.first_name or "",
+            last_name=instance.last_name or "",
+            date_joined=instance.date_joined or timezone.now(),
             is_staff=instance.is_staff,
             is_applicant=instance.is_applicant,
-            email=instance.email or '',
-            phone=instance.phone or '',
+            email=instance.email or "",
+            phone=(instance.phone or None),
         )
 
+
 def save_profile(sender, instance, **kwargs):
-    if hasattr(instance, 'profile'):
-        instance.profile.save()
+    if not hasattr(instance, "profile"):
+        return
+    profile = instance.profile
+    profile.first_name = instance.first_name or ""
+    profile.last_name = instance.last_name or ""
+    profile.email = instance.email or ""
+    profile.phone = instance.phone or ""
+    profile.is_staff = instance.is_staff
+    profile.is_applicant = instance.is_applicant
+    profile.save(
+        update_fields=[
+            "first_name",
+            "last_name",
+            "email",
+            "phone",
+            "is_staff",
+            "is_applicant",
+        ]
+    )
+
 
 post_save.connect(create_profile, sender=User)
 post_save.connect(save_profile, sender=User)
@@ -82,13 +104,19 @@ post_save.connect(save_profile, sender=User)
 
 class SystemSettings(models.Model):
     student_session_timeout = models.PositiveIntegerField(
-        default=30, help_text="Minutes before a student session expires due to inactivity"
+        default=30,
+        help_text="Minutes before a student session expires due to inactivity",
     )
     admin_session_timeout = models.PositiveIntegerField(
-        default=60, help_text="Minutes before an admin session expires due to inactivity"
+        default=60,
+        help_text="Minutes before an admin session expires due to inactivity",
     )
     updated_by = models.ForeignKey(
-        User, on_delete=models.SET_NULL, null=True, blank=True, related_name='settings_updates'
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="settings_updates",
     )
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -96,7 +124,7 @@ class SystemSettings(models.Model):
         verbose_name = "System Settings"
 
     def save(self, *args, **kwargs):
-        self.pk = 1  # Singleton — only one row ever exists
+        self.pk = 1
         super().save(*args, **kwargs)
 
     @classmethod
@@ -105,10 +133,28 @@ class SystemSettings(models.Model):
         return obj
 
 
+class ErpAccessPolicy(models.Model):
+    label = models.CharField(max_length=64, default="default", unique=True, editable=False)
 
+    class Meta:
+        verbose_name = "ERP access policy"
+        verbose_name_plural = "ERP access policies"
+        default_permissions = ()
+        permissions = [
+            ("access_admissions", "Access Admissions module"),
+            ("access_academics", "Access Academics (programmes, curriculum, enrollment)"),
+            ("access_finance", "Access Finance and payments"),
+            ("access_reports", "Access Reports and analytics"),
+            ("access_user_management", "Access user administration"),
+            ("access_audit", "Access audit logs"),
+            ("access_system_settings", "Access academic and admission setup"),
+            ("access_lecturer_portal", "Access lecturer workspace"),
+            ("manage_direct_applications", "Manage direct-entry applications"),
+            ("approve_admissions", "Approve or reject applications and admissions"),
+            ("manage_batches", "Manage admission intakes and batches"),
+            ("assign_roles", "Assign Django groups to staff users"),
+            ("manage_payment_reconciliation", "Manage payment reconciliation tools"),
+        ]
 
-
-
-
-
-
+    def __str__(self):
+        return self.label

@@ -7,31 +7,33 @@ from rest_framework.permissions import *
 from rest_framework.response import Response
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from .serializers import *
+from .permissions import VerifyPhysicalDocumentsPermission
+from audit.utils import log_audit_event
 from rest_framework.parsers import MultiPartParser, FormParser
 from django.utils import timezone
 from rest_framework.decorators import api_view, permission_classes
 from django.conf import settings
 from django.db import transaction
+from django.db.models.deletion import ProtectedError
+from django.db.utils import OperationalError
 # from .utils.validate_photo import validate_passport_photo
-from .tasks import celery_rejection_email, celery_send_application_email, celery_application_notification, celery_admission_email, celery_admission_update, celery_bulk_announcement
+from .tasks import celery_send_application_email, celery_application_notification, celery_admission_email, celery_admission_update
 from accounts.tasks import celery_send_account_email
 from payments.models import ApplicationPayment
 from Drafts.models import DraftApplication
-from django.db.models import Q, Sum
-import dateutil.parser
+from django.db.models import Q
+import time
 
 import logging
 import json
-import os
 
-try:
-    from weasyprint import HTML
-except OSError:
-    HTML = None
+# WeasyPrint is imported lazily inside DownloadAdmissionPDF.get — a top-level import
+# fails on Windows without GTK/Pango (libgobject), which breaks the whole URLconf.
 from django.shortcuts import get_object_or_404
 from django.http import HttpResponse
 from django.template.loader import render_to_string
 from datetime import date
+
 from urllib.parse import quote
 from .utils.reg_no import generate_reg_no
 
@@ -545,44 +547,72 @@ class ListApplications(generics.ListAPIView):
             ~Q(status__in=['draft', 'Admitted', 'rejected']),
             is_direct_entry=False
         ).order_by('created_at')
+
+        # Optional query-param filters so the frontend can narrow server-side
+        status_filter = self.request.query_params.get('status')
+        fee_paid = self.request.query_params.get('fee_paid')
+        batch_id = self.request.query_params.get('batch')
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+        if fee_paid is not None:
+            qs = qs.filter(application_fee_paid=(fee_paid.lower() == 'true'))
+        if batch_id:
+            qs = qs.filter(batch_id=batch_id)
         return qs
 
-# All applications report (no status filter — returns everything)
 class AllApplicationsReport(generics.ListAPIView):
     serializer_class = AllApplicationsReportSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
     def get_queryset(self):
+
         return Application.objects.select_related(
             'academic_level', 'batch', 'campus', 'entered_by'
         ).prefetch_related('programs', 'programs__faculty').filter(
             ~Q(status__in=['draft', 'Admitted', 'rejected']),
         ).order_by('created_at')
 
-# Direct entry applicants
 class ListDirectEntryApplications(generics.ListAPIView):
     queryset = (
-        Application.objects
-        .filter(is_direct_entry=True)
-        .select_related('academic_level', 'batch', 'campus', 'entered_by')
-        .prefetch_related('programs', 'programs__faculty')
-        .order_by('-created_at')
+        Application.objects.filter(is_direct_entry=True)
+        .select_related("academic_level", "batch", "campus", "entered_by")
+        .prefetch_related("programs", "programs__faculty")
+        .order_by("-created_at")
     )
     serializer_class = AllApplicationsReportSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
-# rejected Students
-class ListRejectedStudents(generics.ListAPIView):
-    queryset = Application.objects.filter(status__in=['rejected']).order_by('-created_at')
-    serializer_class = ListApplicationsSerializer
+
+class RejectStudent(APIView):
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+    def patch(self, request, application_id):
+        _rejection_reason = request.data.get("rejection_reason", "No reason provided")
+        try:
+            with transaction.atomic():
+                application = Application.objects.select_related("applicant").get(pk=application_id)
+                application.status = "rejected"
+                application.save()
+                try:
+                    celery_application_notification.delay(
+                        application.applicant_id,
+                        "Application Rejected",
+                        "We regret to inform you that your application has been rejected.",
+                    )
+                except Exception as exc:
+                    logger.warning("Reject notification task failed: %s", exc)
+                return Response({"detail": "Application rejected successfully"}, status=200)
+        except Application.DoesNotExist:
+            return Response({"detail": "Application not found"}, status=404)
+        except Exception as e:
+            return Response({"detail": str(e)}, status=400)
 
 # delete application
 class DeleteApplication(generics.RetrieveDestroyAPIView):
     queryset = Application.objects.all()
     serializer_class = CudApplicationSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
-    
+
     def delete(self, request,*args, **kwargs):
         instance = self.get_object()
         instance.delete()
@@ -617,27 +647,17 @@ class ChangeApplicationStatus(APIView):
                 app_id = self.kwargs['pk']
                 newStatus = request.data.get('status')
 
-                print(f"[ChangeApplicationStatus] app_id={app_id} newStatus={newStatus!r}")
-
                 try:
                     application = Application.objects.prefetch_related('programs').select_related(
                       'applicant', 'batch', 'campus', 'academic_level', 'reviewed_by').get(pk=app_id)
-                    print(f"[ChangeApplicationStatus] Before save: id={application.id} name={application.first_name} {application.last_name} status={application.status!r}")
                     application.status = newStatus
                     application.save()
-                    after = Application.objects.get(pk=app_id)
-                    print(f"[ChangeApplicationStatus] After save:  id={after.id} status={after.status!r}")
 
                     return Response({"detail":"status changed successfully"})
                 except Application.DoesNotExist:
-                    print(f"[ChangeApplicationStatus] Application {app_id} does not exist")
-                    return Response({"detail":"student Application does not exist"})
-
+                    return Response({"detail":"student Application does not exist"})        
         except Exception as e:
-            print(f"[ChangeApplicationStatus] Exception: {e}")
-            return Response({"detail":str(e)})
-
-    
+            return Response({"detail":str(e)}) 
 # ================================subjects================================================
 
 # create O subjects
@@ -649,23 +669,25 @@ class CreateOlevelSubjects(generics.CreateAPIView):
 class ListOlevelSubjects(generics.ListAPIView):
     queryset = OLevelSubject.objects.all()
     serializer_class = OlevelSubjectSerializer
-    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    permission_classes = [IsAuthenticated]
 
     def get(self, request, *args, **kwargs):
         cache_key = 'all_olevel_subjects_list'
+        try:
+            cached_data = cache.get(cache_key)
+            if cached_data is not None:
+                return Response(cached_data)
+        except Exception:
+            cached_data = None
 
-        # Try cache first
-        cached_data = cache.get(cache_key)
-        if cached_data is not None:
-            return Response(cached_data)
-
-        # Get fresh data
         queryset = self.get_queryset()
         serializer = self.get_serializer(queryset, many=True)
         data = serializer.data
 
-        # Cache for 24 hours (86,400 seconds)
-        cache.set(cache_key, data, timeout=60 * 60 * 24)
+        try:
+            cache.set(cache_key, data, timeout=60 * 60 * 24)
+        except Exception:
+            pass
 
         return Response(data)
 
@@ -703,23 +725,25 @@ class CreateAlevelSubjects(generics.CreateAPIView):
 class ListAlevelSubjects(generics.ListAPIView):
     queryset = ALevelSubject.objects.all()
     serializer_class = AlevelSubjectSerializer
-    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    permission_classes = [IsAuthenticated]
 
     def get(self, request, *args, **kwargs):
         cache_key = 'all_alevel_subjects_list'
+        try:
+            cached_data = cache.get(cache_key)
+            if cached_data is not None:
+                return Response(cached_data)
+        except Exception:
+            cached_data = None
 
-        # Try cache first
-        cached_data = cache.get(cache_key)
-        if cached_data is not None:
-            return Response(cached_data)
-
-        # Get fresh data
         queryset = self.get_queryset()
         serializer = self.get_serializer(queryset, many=True)
         data = serializer.data
 
-        # Cache for 24 hours (86,400 seconds)
-        cache.set(cache_key, data, timeout=60 * 60 * 24)
+        try:
+            cache.set(cache_key, data, timeout=60 * 60 * 24)
+        except Exception:
+            pass
 
         return Response(data)
 
@@ -762,17 +786,16 @@ class ListBatch(generics.ListAPIView):
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
 # edit batch
-class EditBatch(generics.ListAPIView):
+class EditBatch(generics.UpdateAPIView):
     queryset = Batch.objects.all()
     serializer_class = BatchSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
     def put(self, request, *args, **kwargs):
         instance = self.get_object()
-        serializer = self.serializer_class(instance, data=request.data)
+        serializer = self.serializer_class(instance, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
-
         return Response(serializer.data, status=200)
     
 # delete batch
@@ -796,18 +819,19 @@ class GetActiveApplicationBatch(generics.ListAPIView):
     def get(self, request):
         now = timezone.now().date()
 
-        # Get current version (fallback to 0 if missing)
-        version = cache.get('active_batch_version', 0)
+        # Try cache (skip gracefully if Redis is unavailable)
+        cached = None
+        try:
+            version = cache.get('active_batch_version', 0)
+            cache_key = f'active_batch_{version}'
+            cached = cache.get(cache_key)
+        except Exception:
+            cache_key = 'active_batch_0'
 
-        cache_key = f'active_batch_{version}'
-
-        # Try cache first
-        cached = cache.get(cache_key)
         if cached is not None:
             return Response(cached, status=status.HTTP_200_OK)
 
         try:
-            # Optimized query
             batch = (
                 Batch.objects
                 .select_related('created_by')
@@ -822,8 +846,10 @@ class GetActiveApplicationBatch(generics.ListAPIView):
             serializer = self.get_serializer(batch)
             data = serializer.data
 
-            # Cache for 24 hours
-            cache.set(cache_key, data, timeout=60 * 60 * 24)
+            try:
+                cache.set(cache_key, data, timeout=60 * 60 * 24)
+            except Exception:
+                pass
 
             return Response(data, status=status.HTTP_200_OK)
 
@@ -889,7 +915,57 @@ class IntakeOptions(APIView):
         ]
 
         return Response(data)
-  
+
+
+class CheckStudentStatus(APIView):
+    """Check if the logged-in user is an admitted student (student portal gate)."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        try:
+            admitted_student = (
+                AdmittedStudent.objects.select_related(
+                    "admitted_program",
+                    "admitted_campus",
+                    "admitted_batch",
+                    "application",
+                )
+                .filter(
+                    Q(application__applicant=user) | Q(student_user=user) | Q(reg_no=user.username),
+                    is_admitted=True,
+                )
+                .first()
+            )
+            if admitted_student:
+                return Response(
+                    {
+                        "is_admitted_student": True,
+                        "student_id": admitted_student.student_id,
+                        "reg_no": admitted_student.reg_no,
+                        "program": admitted_student.admitted_program.name
+                        if admitted_student.admitted_program
+                        else None,
+                        "program_id": admitted_student.admitted_program_id,
+                        "campus": admitted_student.admitted_campus.name
+                        if admitted_student.admitted_campus
+                        else None,
+                        "campus_id": admitted_student.admitted_campus_id,
+                        "study_mode": admitted_student.study_mode,
+                        "passport_photo": request.build_absolute_uri(admitted_student.application.passport_photo.url)
+                            if admitted_student.application and admitted_student.application.passport_photo
+                            else None,
+                    },
+                    status=status.HTTP_200_OK,
+                )
+            return Response({"is_admitted_student": False}, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response(
+                {"is_admitted_student": False, "error": str(e)},
+                status=status.HTTP_200_OK,
+            )
+
+
 # =========================================================Applicant Dashboard===============================
 class ApplicantDashboard(APIView):
     permission_classes = [IsAuthenticated]
@@ -901,6 +977,32 @@ class ApplicantDashboard(APIView):
         application = Application.objects.filter(applicant=user).order_by('-created_at').first()
 
         if not application:
+            # Fall back to a saved draft so the applicant can see and continue it
+            from Drafts.models import DraftApplication
+            draft = DraftApplication.objects.filter(applicant=user).order_by('-updated_at').first()
+
+            if draft:
+                name_parts = [p for p in [draft.first_name, draft.last_name] if p]
+                program_names = (
+                    list(draft.programs.values_list('name', flat=True))
+                    if hasattr(draft, 'programs') and draft.programs.exists()
+                    else []
+                )
+                return Response({
+                    "application_status": "draft",
+                    "draft_id": draft.id,
+                    "last_saved": draft.updated_at,
+                    "applicant_name": " ".join(name_parts) if name_parts else None,
+                    "campus": draft.campus.name if draft.campus_id and hasattr(draft, 'campus') and draft.campus else None,
+                    "programs": program_names,
+                    "has_admission": False,
+                    "id": None,
+                    "batch": None,
+                    "applied_date": draft.updated_at,
+                    "admission_letter_pdf": None,
+                    "student_id": None,
+                }, status=status.HTTP_200_OK)
+
             return Response(
                 {"detail": "You have not submitted any application yet."},
                 status=status.HTTP_404_NOT_FOUND
@@ -989,90 +1091,6 @@ class ReviewApplication(APIView):
 
         return Response(data)
 
-# change programme
-class ChangeProgramme(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def patch(self, request, application_id):
-        from accounts.models import Campus as CampusModel
-        application = get_object_or_404(Application, pk=application_id)
-        program_ids = request.data.get('program_ids', [])
-        campus_id = request.data.get('campus_id')
-        note = request.data.get('note', '').strip()
-
-        if not program_ids:
-            return Response({'detail': 'At least one programme is required.'}, status=400)
-
-        programs = Program.objects.filter(id__in=program_ids)
-        if programs.count() != len(program_ids):
-            return Response({'detail': 'One or more programme IDs are invalid.'}, status=400)
-
-        if campus_id:
-            campus = get_object_or_404(CampusModel, pk=campus_id)
-            application.campus = campus
-
-        application.programs.set(programs)
-        application.save()
-
-        return Response({
-            'detail': f'Programme and campus updated successfully.{" Note: " + note if note else ""}',
-            'programs': [{'id': p.id, 'name': p.name} for p in programs],
-            'campus': application.campus.name,
-        })
-
-# edit application personal details
-class EditApplicationProfile(APIView):
-    permission_classes = [IsAuthenticated]
-
-    EDITABLE_FIELDS = [
-        'first_name', 'last_name', 'middle_name', 'date_of_birth', 'gender',
-        'nationality', 'phone', 'email', 'address', 'disabled',
-        'next_of_kin_name', 'next_of_kin_contact', 'next_of_kin_relationship',
-        'nin', 'passport_number',
-    ]
-
-    def patch(self, request, application_id):
-        application = get_object_or_404(Application, pk=application_id)
-
-        if application.status == 'Admitted':
-            return Response({'detail': 'Cannot edit profile of an already admitted student.'}, status=400)
-
-        # Only take allowed fields
-        updates = {k: v for k, v in request.data.items() if k in self.EDITABLE_FIELDS}
-
-        if not updates:
-            return Response({'detail': 'No valid fields provided.'}, status=400)
-
-        # Safely update fields with proper type conversion
-        for field, value in updates.items():
-            if field == 'date_of_birth' and isinstance(value, str) and value.strip():
-                try:
-                    # Convert string to date object
-                    parsed_date = dateutil.parser.parse(value.strip()).date()
-                    setattr(application, field, parsed_date)
-                except Exception:
-                    return Response({'detail': f'Invalid date format for {field}. Use YYYY-MM-DD.'}, status=400)
-            
-            elif field == 'middle_name':
-                # Explicitly allow empty string for middle_name
-                setattr(application, field, value.strip() if isinstance(value, str) else value)
-            
-            elif field == 'disabled':
-                # Convert to boolean if sent as string
-                if isinstance(value, str):
-                    setattr(application, field, value.lower() in ('true', '1', 'yes'))
-                else:
-                    setattr(application, field, bool(value))
-            else:
-                # For all other fields
-                setattr(application, field, value)
-        try:
-            application.save(update_fields=list(updates.keys()))
-        except Exception as e:
-            return Response({'detail': f'Failed to save changes: {str(e)}'}, status=400)
-
-        return Response({'detail': 'Profile updated successfully.'})
-
 # ==================================================Academic Levels==========================================
 
 # create level
@@ -1087,29 +1105,11 @@ class ListAdminAcademicLevels(generics.ListAPIView):
     serializer_class = AcademicLevelSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
     
-# list level
+# list level (active only — e.g. applicants)
 class ListAcademicLevel(generics.ListAPIView):
     queryset = AcademicLevel.objects.filter(is_active=True)
     serializer_class = AcademicLevelSerializer
     permission_classes = [IsAuthenticated]
-
-    def get(self, request, *args, **kwargs):
-        cache_key = 'active_academic_levels_list'
-
-        # Try cache first
-        cached_data = cache.get(cache_key)
-        if cached_data is not None:
-            return Response(cached_data)
-
-        # Get fresh data
-        queryset = self.get_queryset()
-        serializer = self.get_serializer(queryset, many=True)
-        data = serializer.data
-
-        # Cache for 24 hours (86,400 seconds)
-        cache.set(cache_key, data, timeout=60 * 60 * 24)
-
-        return Response(data)
 
 # edit level
 class UpdateAcademicLevel(generics.UpdateAPIView):
@@ -1131,11 +1131,23 @@ class DeleteAcademicLevel(generics.RetrieveDestroyAPIView):
     serializer_class = AcademicLevelSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
-    def delete(self, request, *args, **kwargs):
+    def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
-        instance.delete()
-
-        return Response({"detail":"academic Level deleted successfully"})
+        try:
+            with transaction.atomic():
+                instance.delete()
+        except ProtectedError:
+            return Response(
+                {
+                    "detail": (
+                        "Cannot delete this academic level because other records still depend on it "
+                        "(for example programmes with student enrollments or fee rules). Remove or "
+                        "reassign those first."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 # ============================================faculties============================
 class ListFaculties(generics.ListCreateAPIView):
@@ -1168,9 +1180,23 @@ class DeleteFaculty(generics.RetrieveDestroyAPIView):
 
     def delete(self, request, *args, **kwargs):
         instance = self.get_object()
-        instance.delete()
+        try:
+            with transaction.atomic():
+                instance.delete()
+        except ProtectedError:
+            return Response(
+                {
+                    "detail": (
+                        "Cannot delete this faculty because one or more of its programmes "
+                        "still have protected links (for example student programme enrollments "
+                        "or other records). Remove or reassign those records first, or delete "
+                        "the programmes individually after clearing dependencies."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        return Response({"detail":"faculty deleted successfully"})
+        return Response({"detail": "faculty deleted successfully"})
 
 # change status
 class ChangeFacultyStatus(APIView):
@@ -1203,19 +1229,6 @@ class AdmitStudent(generics.CreateAPIView):
         try:
             with transaction.atomic():
 
-                # Guard: application must be approved before admission
-                application_id = request.data.get('application')
-                try:
-                    pre_check = Application.objects.get(pk=application_id)
-                except Application.DoesNotExist:
-                    return Response({"detail": "Application not found."}, status=404)
-
-                if pre_check.status.lower() != 'accepted':
-                    return Response(
-                        {"detail": "This application has not been approved yet. Please approve it before proceeding with admission."},
-                        status=400
-                    )
-
                 # Validate and save admission
                 serializer = self.get_serializer(data=request.data)
                 serializer.is_valid(raise_exception=True)
@@ -1230,38 +1243,109 @@ class AdmitStudent(generics.CreateAPIView):
                     return Response({"detail": "Student application doesn't exist"}, status=400)
 
                 # Update status
-                Application.objects.filter(id=application.id).update(status="Admitted", admitted_by=request.user)
+                Application.objects.filter(id=application.id).update(status="accepted")
 
-                celery_admission_email.delay(application.id, admission.id)
-                celery_application_notification.delay(request.user.id,"Admission Successful","Congratulations! You have been admitted to Ndejje University")
-               
-                # ======================================================================
+                try:
+                    celery_admission_email.delay(application.id, admission.id)
+                    celery_application_notification.delay(request.user.id, "Admission Successful", "Congratulations! You have been admitted to Ndejje University")
+                except Exception:
+                    pass
+
+                # ── Create student portal account ──────────────────────────────
+                try:
+                    from accounts.models import User as UserModel
+                    applicant = application.applicant
+                    student_username = str(admission.reg_no).strip().replace("/", "_")
+
+                    # Avoid duplicates if re-admitting
+                    if not admission.student_user_id:
+                        existing = UserModel.objects.filter(username=student_username).first()
+                        if existing:
+                            student_user = existing
+                        else:
+                            student_user = UserModel.objects.create_user(
+                                username=student_username,
+                                first_name=applicant.first_name,
+                                last_name=applicant.last_name,
+                                email=applicant.email,
+                                password='NDU@1234',
+                                is_staff=False,
+                                is_applicant=False,
+                                is_student=True,
+                                must_change_password=True,
+                            )
+                        admission.student_user = student_user
+                        admission.save(update_fields=['student_user'])
+                except Exception as e:
+                    logger.warning(
+                        "Student account creation failed: %s",
+                        f"{e.__class__.__name__}: {e}",
+                    )  # Never block admission due to account creation failure
+                # ──────────────────────────────────────────────────────────────
+
+                # ── Academic programme enrollment (commitment-fee gate) ───────
+                # If admin enabled auto-enroll, create/activate SPE immediately.
+                # Otherwise create SPE in 'pending' so student must pay commitment fee first.
+                try:
+                    from django.utils import timezone
+                    from payments.models import RegistrationSettings
+                    from Programs.models import StudentProgrammeEnrollment, ProgramBatch
+
+                    reg_settings = RegistrationSettings.get_settings()
+
+                    # Pick a sensible ProgramBatch for the admitted program.
+                    # Preference: active batch with name containing "Year 1", else any active, else first.
+                    pb_qs = ProgramBatch.objects.filter(program=admission.admitted_program).order_by("-is_active", "-start_date", "name")
+                    program_batch = (
+                        pb_qs.filter(is_active=True, name__icontains="year 1").first()
+                        or pb_qs.filter(is_active=True).first()
+                        or pb_qs.first()
+                    )
+
+                    # If the programme has no academic batches configured yet, create a default.
+                    # Without a ProgramBatch we cannot create StudentProgrammeEnrollment.
+                    if not program_batch:
+                        program_batch, _ = ProgramBatch.objects.get_or_create(
+                            program=admission.admitted_program,
+                            name="Year 1",
+                            defaults=dict(
+                                start_date=timezone.now().date(),
+                                is_active=True,
+                                academic_year=getattr(admission.admitted_batch, "academic_year", "") or "",
+                            ),
+                        )
+
+                    if program_batch:
+                        spe, created = StudentProgrammeEnrollment.objects.get_or_create(
+                            student=admission,
+                            defaults=dict(
+                                program=admission.admitted_program,
+                                program_batch=program_batch,
+                                current_year_of_study=1,
+                                current_term_number=1,
+                                status="enrolled" if reg_settings.auto_enroll_on_admission else "pending",
+                                enrolled_by=request.user if reg_settings.auto_enroll_on_admission else None,
+                                enrolled_at=timezone.now() if reg_settings.auto_enroll_on_admission else None,
+                                notes=(
+                                    "Auto-enrolled on admission (commitment fee skipped)."
+                                    if reg_settings.auto_enroll_on_admission
+                                    else "Pending commitment fee confirmation."
+                                ),
+                            ),
+                        )
+
+                        # If SPE already exists, promote if auto-enroll is now enabled.
+                        if (not created) and reg_settings.auto_enroll_on_admission and spe.status != "enrolled":
+                            spe.status = "enrolled"
+                            spe.enrolled_by = request.user
+                            spe.enrolled_at = timezone.now()
+                            spe.save(update_fields=["status", "enrolled_by", "enrolled_at"])
+                except Exception as e:
+                    logger.warning("Auto-enrollment step failed: %s", f"{e.__class__.__name__}: {e}")
+                # ──────────────────────────────────────────────────────────────
 
                 return Response(self.serializer_class(admission).data, status=201)
 
-        except Exception as e:
-            return Response({"detail": str(e)}, status=400)
-
-class RejectStudent(APIView):
-    queryset = Application.objects.all()
-    serializer_class = ApplicationSerializer
-    permission_classes = [IsAuthenticated, DjangoModelPermissions]
-
-    def update(self, request, application_id):
-        rejection_reason = request.data.get('rejection_reason', 'No reason provided')
-        try:
-            with transaction.atomic():
-                application = Application.objects.select_related('applicant').get(pk=application_id)
-                application.status = 'rejected'
-                application.save()
-
-                celery_rejection_email.delay(application.id, rejection_reason)
-                celery_application_notification.delay(request.user.id,"Application Rejected","We regret to inform you that your application has been rejected")
-
-                return Response({"detail": "Application rejected successfully"}, status=200)
-
-        except Application.DoesNotExist:
-            return Response({"detail": "Application not found"}, status=404)
         except Exception as e:
             return Response({"detail": str(e)}, status=400)
  
@@ -1272,11 +1356,130 @@ class ListAdmittedStudents(generics.ListAPIView):
         'admitted_batch',
         'admitted_campus',
         'admitted_by',
-        'application__applicant'
+        'application__applicant',
+        'physical_documents_verified_by',
     ).all()
 
     serializer_class = AdmittedStudentListSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        p = self.request.query_params
+        dv = (p.get("documents_verified") or "").lower()
+        if dv in ("1", "true", "yes"):
+            qs = qs.filter(physical_documents_verified=True)
+        elif dv in ("0", "false", "no"):
+            qs = qs.filter(physical_documents_verified=False)
+
+        ay = p.get("academic_year")
+        if ay:
+            qs = qs.filter(admitted_batch__academic_year=ay)
+        batch_id = p.get("batch")
+        if batch_id:
+            qs = qs.filter(admitted_batch_id=batch_id)
+        campus_id = p.get("campus")
+        if campus_id:
+            qs = qs.filter(admitted_campus_id=campus_id)
+        program_id = p.get("program")
+        if program_id:
+            qs = qs.filter(admitted_program_id=program_id)
+        faculty_id = p.get("faculty")
+        if faculty_id:
+            qs = qs.filter(admitted_program__faculty_id=faculty_id)
+        reg = (p.get("is_registered") or "").lower()
+        if reg in ("1", "true", "yes"):
+            qs = qs.filter(is_registered=True)
+        elif reg in ("0", "false", "no"):
+            qs = qs.filter(is_registered=False)
+        return qs
+
+
+class MarkPhysicalDocumentsVerified(APIView):
+    """Record that original hard-copy documents were checked (does not register the student)."""
+
+    permission_classes = [IsAuthenticated, VerifyPhysicalDocumentsPermission]
+
+    def post(self, request, pk):
+        notes = (request.data.get("notes") or "").strip()
+        student = get_object_or_404(
+            AdmittedStudent.objects.select_related("application"),
+            pk=pk,
+        )
+        student.physical_documents_verified = True
+        student.physical_documents_verified_at = timezone.now()
+        student.physical_documents_verified_by = request.user
+        if notes:
+            student.physical_documents_notes = notes[:4000]
+        student.save(
+            update_fields=[
+                "physical_documents_verified",
+                "physical_documents_verified_at",
+                "physical_documents_verified_by",
+                "physical_documents_notes",
+                "updated_at",
+            ]
+        )
+        desc = (
+            f"Physical documents verified for admitted student id={student.pk} "
+            f"student_id={student.student_id} reg_no={student.reg_no}. "
+            f"Notes: {notes[:500]}"
+            if notes
+            else f"Physical documents verified id={student.pk}"
+        )
+        log_audit_event(request.user, "phys_verify", student, desc, request)
+        student = AdmittedStudent.objects.select_related(
+            "physical_documents_verified_by",
+            "admitted_program__faculty",
+            "admitted_batch",
+            "admitted_campus",
+            "application__applicant",
+        ).get(pk=student.pk)
+        return Response(AdmittedStudentListSerializer(student).data, status=200)
+
+
+class ClearPhysicalDocumentsVerification(APIView):
+    permission_classes = [IsAuthenticated, VerifyPhysicalDocumentsPermission]
+
+    def post(self, request, pk):
+        confirm = request.data.get("confirm")
+        if confirm is not True and str(confirm).lower() not in ("true", "1", "yes"):
+            return Response(
+                {"detail": "Send JSON body {\"confirm\": true} to clear verification."},
+                status=400,
+            )
+        student = get_object_or_404(AdmittedStudent, pk=pk)
+        if not student.physical_documents_verified:
+            return Response({"detail": "This student is not marked as physically verified."}, status=400)
+        student.physical_documents_verified = False
+        student.physical_documents_verified_at = None
+        student.physical_documents_verified_by = None
+        student.physical_documents_notes = ""
+        student.save(
+            update_fields=[
+                "physical_documents_verified",
+                "physical_documents_verified_at",
+                "physical_documents_verified_by",
+                "physical_documents_notes",
+                "updated_at",
+            ]
+        )
+        log_audit_event(
+            request.user,
+            "phys_clear",
+            student,
+            f"Physical document verification cleared for admitted student id={student.pk} "
+            f"student_id={student.student_id}",
+            request,
+        )
+        student = AdmittedStudent.objects.select_related(
+            "physical_documents_verified_by",
+            "admitted_program__faculty",
+            "admitted_batch",
+            "admitted_campus",
+            "application__applicant",
+        ).get(pk=student.pk)
+        return Response(AdmittedStudentListSerializer(student).data, status=200)
 
 # update admitted students
 class UpdateAdmittedStudent(generics.UpdateAPIView):
@@ -1290,7 +1493,7 @@ class UpdateAdmittedStudent(generics.UpdateAPIView):
         try:
             celery_admission_update.delay(admission_data.id)
         except Exception as e:
-            print("Celery error:", e)
+            logger.warning("Celery error: %s", f"{e.__class__.__name__}: {e}")
 
 # candidate admission
 class CandidateAdmission(generics.RetrieveAPIView):
@@ -1300,6 +1503,7 @@ class CandidateAdmission(generics.RetrieveAPIView):
         'admitted_batch',
         'admitted_campus',
         'admitted_by',
+        'physical_documents_verified_by',
     ).prefetch_related('admitted_program__campuses')
     serializer_class = AdmissionDetailSerializer
     lookup_field = "id"
@@ -1315,34 +1519,21 @@ class DeleteAdmittedStudent(generics.DestroyAPIView):
 # Admin dashboard stats
 class AdminDashboardStats(APIView):
     permission_classes = [IsAuthenticated]
-
     def get(self, request):
-        total_applications = Application.objects.count()
-        online_applications = Application.objects.filter(is_direct_entry=False).count()
-        direct_applications = Application.objects.filter(is_direct_entry=True).count()
+        total_applications = Application.objects.all().count()
         pending_applications = Application.objects.filter(status='submitted').count()
-        admitted_students = AdmittedStudent.objects.count()
+        admitted_students = AdmittedStudent.objects.filter(is_registered=True).count()
         rejected_students = Application.objects.filter(status='rejected').count()
-        total_batches = Batch.objects.count()
+        total_batches = Batch.objects.all().count()
         active_batches = Batch.objects.filter(is_active=True).count()
 
-        # Income from online SchoolPay payments only — direct entry excluded
-        online_fee_income = ApplicationPayment.objects.filter(
-            status="PAID",
-            application__isnull=False,
-            application__is_direct_entry=False,
-        ).aggregate(total=Sum("amount"))["total"] or 0
-
         return Response({
-            "totalApplication": total_applications,
-            "onlineApplications": online_applications,
-            "directApplications": direct_applications,
-            "pendingApplications": pending_applications,
-            "admittedStudents": admitted_students,
-            "rejectedStudents": rejected_students,
-            "total_batches": total_batches,
-            "activeBatches": active_batches,
-            "onlineFeeIncome": float(online_fee_income),
+            "totalApplication":total_applications,
+            "pendingApplications":pending_applications,
+            "admittedStudents":admitted_students,
+            "rejectedStudents":rejected_students,
+            "total_batches":total_batches,
+            "activeBatches":active_batches
         }, status=200)
 
 # ===================================================notifications======================================
@@ -1359,6 +1550,7 @@ class ListNotifications(generics.ListAPIView):
         return Response(serializer.data, status=200)
 
 #========================================pdf download=================================================
+
 class DownloadAdmissionPDF(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -1379,10 +1571,15 @@ class DownloadAdmissionPDF(APIView):
 
         # ── Base64-encode the university logo ─────────────────────────────────
         # Resolve relative to this file so it works regardless of CWD
-        _here = _os.path.dirname(_os.path.abspath(__file__))           
+        _here = _os.path.dirname(_os.path.abspath(__file__))            # admissions/
+        _backend_root = _os.path.dirname(_here)                          # project root
+        _frontend_pub = _os.path.join(
+            _os.path.dirname(_backend_root),
+            'NDU_Admission_Frontend', 'public',
+        )
         logo_b64 = ""
-        for _ext in ('ndejje_logo.jpg', 'ndejje_logo.png'):
-            _logo_path = _os.path.join(settings.BASE_DIR, "static", "ndejje_logo.jpg")
+        for _ext in ('Ndejje_University_Logo.png', 'Ndejje_University_Logo.jpg'):
+            _logo_path = _os.path.join(_frontend_pub, _ext)
             if _os.path.exists(_logo_path):
                 with open(_logo_path, 'rb') as _f:
                     _mime = 'jpeg' if _ext.endswith('.jpg') else 'png'
@@ -1401,7 +1598,8 @@ class DownloadAdmissionPDF(APIView):
                     _photo_mime = {'jpg': 'jpeg', 'jpeg': 'jpeg', 'png': 'png'}.get(_photo_ext, 'jpeg')
                     photo_b64 = f"data:image/{_photo_mime};base64,{b64_mod.b64encode(_raw).decode()}"
             except Exception:
-                pass 
+                pass  # photo unavailable — template shows placeholder
+
         # Current date for the letter
         today = date.today()
 
@@ -1456,62 +1654,120 @@ class DownloadAdmissionPDF(APIView):
         return response
 
 
-# ── Bulk Announcement ──────────────────────────────────────────────────────────
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def send_bulk_announcement(request):
-    subject = (request.data.get('subject') or '').strip()
-    body = (request.data.get('body') or '').strip()
-    message_type = request.data.get('message_type', 'email')  # email | sms | both
-    status_filter = request.data.get('status', 'all')
-    batch_filter = request.data.get('batch', 'all')
-    level_filter = request.data.get('academic_level', 'all')
+# ══════════════════════════════════════════════════════════════════════════════
+# ADMISSION CHANGE REQUESTS
+# ══════════════════════════════════════════════════════════════════════════════
 
-    if not subject or not body:
-        return Response({"detail": "Subject and body are required."}, status=400)
+class StudentChangeRequestListCreate(APIView):
+    """Student: list own requests + submit a new one."""
+    permission_classes = [IsAuthenticated]
 
-    if message_type in ('sms', 'both'):
-        return Response({"detail": "SMS is not yet configured. Please use Email only for now."}, status=400)
+    def _get_admission(self, user):
+        try:
+            return AdmittedStudent.objects.select_related(
+                'admitted_program', 'admitted_campus'
+            ).filter(
+                Q(application__applicant=user) | Q(student_user=user) | Q(reg_no=user.username),
+                is_admitted=True,
+            ).first()
+        except Exception:
+            return None
 
-    explicit_ids = request.data.get('application_ids', None)
-    if explicit_ids:
-        ids = [int(i) for i in explicit_ids if str(i).isdigit()]
-    else:
-        qs = Application.objects.all()
-        if status_filter != 'all':
+    def get(self, request):
+        admission = self._get_admission(request.user)
+        if not admission:
+            return Response({'detail': 'No active admission found.'}, status=404)
+        qs = AdmissionChangeRequest.objects.filter(
+            admitted_student=admission
+        ).select_related('new_program', 'new_campus', 'reviewed_by')
+
+        return Response(AdmissionChangeRequestSerializer(qs, many=True).data)
+    def post(self, request):
+        admission = self._get_admission(request.user)
+        if not admission:
+            return Response({'detail': 'No active admission found.'}, status=404)
+
+        # Block if there's already a pending request of the same type
+        change_type = request.data.get('change_type')
+        if AdmissionChangeRequest.objects.filter(
+            admitted_student=admission, change_type=change_type, status='pending'
+        ).exists():
+            return Response(
+                {'detail': 'You already have a pending request of this type. Please wait for it to be reviewed.'},
+                status=400
+            )
+
+        serializer = AdmissionChangeRequestCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        obj = serializer.save(
+            admitted_student=admission,
+            requested_by=request.user,
+            current_program=admission.admitted_program,
+            current_campus=admission.admitted_campus,
+            current_study_mode=admission.study_mode,
+        )
+        return Response(AdmissionChangeRequestSerializer(obj).data, status=201)
+
+
+class AdminChangeRequestList(APIView):
+    """Admin: list all requests with optional status filter."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        qs = AdmissionChangeRequest.objects.select_related(
+            'admitted_student__application__applicant',
+            'admitted_student__admitted_program',
+            'admitted_student__admitted_campus',
+            'current_program', 'current_campus',
+            'new_program', 'new_campus',
+            'reviewed_by',
+        ).order_by('-created_at')
+
+        status_filter = request.query_params.get('status')
+        if status_filter:
             qs = qs.filter(status=status_filter)
-        if batch_filter != 'all':
-            qs = qs.filter(batch__name=batch_filter)
-        if level_filter != 'all':
-            qs = qs.filter(academic_level__name=level_filter)
-        ids = list(qs.values_list('id', flat=True))
 
-    if not ids:
-        return Response({"detail": "No applicants match the selected filters."}, status=400)
+        change_type = request.query_params.get('change_type')
+        if change_type:
+            qs = qs.filter(change_type=change_type)
 
-    celery_bulk_announcement.delay(ids, subject, body)
-    return Response({"detail": f"Announcement queued for {len(ids)} applicant(s).", "count": len(ids)})
+        return Response(AdmissionChangeRequestSerializer(qs, many=True).data)
 
 
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def test_announcement(request):
-    subject = (request.data.get('subject') or '').strip()
-    body = (request.data.get('body') or '').strip()
-    test_email = (request.data.get('test_email') or '').strip()
+class AdminChangeRequestReview(APIView):
+    """Admin: approve or reject a specific request."""
+    permission_classes = [IsAuthenticated]
 
-    if not subject or not body:
-        return Response({"detail": "Subject and body are required."}, status=400)
-    if not test_email or '@' not in test_email:
-        return Response({"detail": "A valid test email address is required."}, status=400)
+    def post(self, request, pk):
+        req_obj = get_object_or_404(AdmissionChangeRequest, pk=pk)
 
-    from ndu_portal.send_grid import send_configurable_email
-    personalised = body.replace("{first_name}", "Test").replace("{last_name}", "User")
-    sent = send_configurable_email(test_email, f"[TEST] {subject}", personalised)
+        if req_obj.status != 'pending':
+            return Response({'detail': 'This request has already been reviewed.'}, status=400)
 
-    if sent:
-        return Response({"detail": f"Test email sent to {test_email}."})
-    return Response({"detail": "Failed to send test email. Check your SendGrid configuration."}, status=500)
+        action = request.data.get('action')  # 'approve' or 'reject'
+        review_notes = request.data.get('review_notes', '')
+
+        if action not in ('approve', 'reject'):
+            return Response({'detail': 'action must be "approve" or "reject".'}, status=400)
+
+        with transaction.atomic():
+            req_obj.status = 'approved' if action == 'approve' else 'rejected'
+            req_obj.reviewed_by = request.user
+            req_obj.reviewed_at = timezone.now()  
+            req_obj.review_notes = review_notes
+            if action == 'approve':
+                admission = req_obj.admitted_student
+                if req_obj.change_type == 'program' and req_obj.new_program:
+                    admission.admitted_program = req_obj.new_program
+                elif req_obj.change_type == 'campus' and req_obj.new_campus:
+                    admission.admitted_campus = req_obj.new_campus
+                elif req_obj.change_type == 'study_mode' and req_obj.new_study_mode:
+                    admission.study_mode = req_obj.new_study_mode
+                admission.save()
+
+            req_obj.save()
+
+        return Response(AdmissionChangeRequestSerializer(req_obj).data)
 
 # Generate reg no
 @api_view(['POST'])
@@ -1549,3 +1805,355 @@ def generate_reg_no_view(request):
             {"error": str(e)},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
+# ══════════════════════════════════════════════════════════════════════════════
+# DIRECT APPLICATION ENTRY  (admin-side manual / legacy entry)
+def _generate_student_id():
+    """Return a unique 10-digit student ID string."""
+    import random
+    for _ in range(20):
+        prefix = str(random.randint(1, 2))
+        rest = ''.join([str(random.randint(0, 9)) for _ in range(9)])
+        sid = prefix + rest
+        if not AdmittedStudent.objects.filter(student_id=sid).exists():
+            return sid
+    raise ValueError('Could not generate a unique student_id after 20 attempts.')
+
+def _run_post_admission_setup(request, admission, application):
+    # ── Student portal account ────────────────────────────────────────────────
+    try:
+        from accounts.models import User as UserModel
+        applicant = application.applicant
+        student_username = str(admission.reg_no).strip().replace('/', '_')
+        if not admission.student_user_id:
+            existing = UserModel.objects.filter(username=student_username).first()
+            if existing:
+                student_user = existing
+            else:
+                student_user = UserModel.objects.create_user(
+                    username=student_username,
+                    first_name=applicant.first_name,
+                    last_name=applicant.last_name,
+                    email=applicant.email,
+                    password='NDU@1234',
+                    is_staff=False,
+                    is_applicant=False,
+                    is_student=True,
+                    must_change_password=True,
+                )
+            admission.student_user = student_user
+            admission.save(update_fields=['student_user'])
+    except Exception as e:
+        logger.warning('DirectEntry: student account creation failed: %s', f'{e.__class__.__name__}: {e}')
+
+    # ── Academic programme enrollment ─────────────────────────────────────────
+    try:
+        from payments.models import RegistrationSettings
+        from Programs.models import StudentProgrammeEnrollment, ProgramBatch
+
+        reg_settings = RegistrationSettings.get_settings()
+        pb_qs = ProgramBatch.objects.filter(program=admission.admitted_program).order_by('-is_active', '-start_date', 'name')
+        program_batch = (
+            pb_qs.filter(is_active=True, name__icontains='year 1').first()
+            or pb_qs.filter(is_active=True).first()
+            or pb_qs.first()
+        )
+        if not program_batch:
+            program_batch, _ = ProgramBatch.objects.get_or_create(
+                program=admission.admitted_program,
+                name='Year 1',
+                defaults=dict(
+                    start_date=timezone.now().date(),
+                    is_active=True,
+                    academic_year=getattr(admission.admitted_batch, 'academic_year', '') or '',
+                ),
+            )
+        spe, created = StudentProgrammeEnrollment.objects.get_or_create(
+            student=admission,
+            defaults=dict(
+                program=admission.admitted_program,
+                program_batch=program_batch,
+                current_year_of_study=1,
+                current_term_number=1,
+                status='enrolled' if reg_settings.auto_enroll_on_admission else 'pending',
+                enrolled_by=request.user if reg_settings.auto_enroll_on_admission else None,
+                enrolled_at=timezone.now() if reg_settings.auto_enroll_on_admission else None,
+                notes=(
+                    'Auto-enrolled on direct admission.'
+                    if reg_settings.auto_enroll_on_admission
+                    else 'Pending commitment fee confirmation.'
+                ),
+            ),
+        )
+        if (not created) and reg_settings.auto_enroll_on_admission and spe.status != 'enrolled':
+            spe.status = 'enrolled'
+            spe.enrolled_by = request.user
+            spe.enrolled_at = timezone.now()
+            spe.save(update_fields=['status', 'enrolled_by', 'enrolled_at'])
+    except Exception as e:
+        logger.warning('DirectEntry: SPE creation failed: %s', f'{e.__class__.__name__}: {e}')
+
+
+class DirectApplicationEntryView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        if not request.user.is_staff:
+            return Response({'detail': 'Only staff members can use direct entry.'}, status=403)
+
+        d = request.data
+
+        # ── Validate required fields ──────────────────────────────────────────
+        required_fields = [
+            'first_name', 'last_name', 'date_of_birth', 'gender', 'nationality',
+            'phone', 'email', 'next_of_kin_name', 'next_of_kin_contact',
+            'next_of_kin_relationship', 'batch', 'campus', 'program', 'academic_level',
+        ]
+        errors = {f: 'This field is required.' for f in required_fields if not d.get(f)}
+        if errors:
+            return Response(errors, status=400)
+
+        try:
+            with transaction.atomic():
+                email = d['email'].strip().lower()
+                batch = Batch.objects.get(id=d['batch'])
+                campus = Campus.objects.get(id=d['campus'])
+                from Programs.models import Program as ProgramModel
+                program = ProgramModel.objects.get(id=d['program'])
+                academic_level = AcademicLevel.objects.get(id=d['academic_level'])
+
+                # ── Applicant user ────────────────────────────────────────────
+                from accounts.models import User as UserModel
+                applicant_user = UserModel.objects.filter(email=email, is_applicant=True).first()
+                if not applicant_user:
+                    base_username = email
+                    username = base_username
+                    if UserModel.objects.filter(username=username).exists():
+                        suffix = generate_reference().replace('APP-', '')
+                        username = f'{base_username}_{suffix}'
+                    applicant_user = UserModel.objects.create_user(
+                        username=username,
+                        first_name=d['first_name'],
+                        last_name=d['last_name'],
+                        email=email,
+                        password='NDU@1234',
+                        is_applicant=True,
+                        must_change_password=True,
+                    )
+
+                # ── Application ───────────────────────────────────────────────
+                app = Application.objects.create(
+                    applicant=applicant_user,
+                    batch=batch,
+                    campus=campus,
+                    academic_level=academic_level,
+                    source=Application.SOURCE_DIRECT,
+                    legacy_application_number=d.get('legacy_application_number') or '',
+                    first_name=d['first_name'],
+                    last_name=d['last_name'],
+                    middle_name=d.get('middle_name', ''),
+                    date_of_birth=d['date_of_birth'],
+                    gender=d['gender'],
+                    nationality=d['nationality'],
+                    phone=d['phone'],
+                    email=email,
+                    address=d.get('address', ''),
+                    nin=d.get('nin', ''),
+                    passport_number=d.get('passport_number', ''),
+                    next_of_kin_name=d['next_of_kin_name'],
+                    next_of_kin_contact=d['next_of_kin_contact'],
+                    next_of_kin_relationship=d['next_of_kin_relationship'],
+                    # Education — use provided values or safe defaults
+                    olevel_year=int(d.get('olevel_year') or 0),
+                    olevel_index_number=d.get('olevel_index_number') or 'N/A',
+                    olevel_school=d.get('olevel_school') or 'N/A',
+                    alevel_year=int(d.get('alevel_year') or 0),
+                    alevel_index_number=d.get('alevel_index_number') or 'N/A',
+                    alevel_school=d.get('alevel_school') or 'N/A',
+                    alevel_combination=d.get('alevel_combination') or 'N/A',
+                    status='submitted',
+                    application_reference=generate_reference(),
+                )
+                app.programs.set([program])
+
+                # Async notification (best-effort)
+                try:
+                    celery_application_notification.delay(
+                        request.user.id,
+                        'Direct Application Created',
+                        f'Application {app.application_reference} was created manually for '
+                        f'{app.first_name} {app.last_name}.',
+                    )
+                except Exception:
+                    pass
+
+                return Response({
+                    'application_id': app.id,
+                    'application_reference': app.application_reference,
+                    'applicant_user_id': applicant_user.id,
+                    'message': f'Application {app.application_reference} created successfully.',
+                }, status=201)
+
+        except (Batch.DoesNotExist, Campus.DoesNotExist, AcademicLevel.DoesNotExist) as e:
+            return Response({'detail': f'Invalid reference: {e}'}, status=400)
+        except Exception as e:
+            logger.exception('DirectApplicationEntryView error')
+            return Response({'detail': str(e)}, status=500)
+
+
+class DirectAdmissionEntryView(APIView):
+    """
+    Admin-side: create a fully admitted student record directly, bypassing
+    the applicant portal.  Creates User (applicant) + Application +
+    AdmittedStudent + student portal account + SPE in one transaction.
+
+    POST /api/admissions/direct_admission_entry
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        if not request.user.is_staff:
+            return Response({'detail': 'Only staff members can use direct admission.'}, status=403)
+
+        d = request.data
+
+        # ── Validate required fields ──────────────────────────────────────────
+        required_fields = [
+            'first_name', 'last_name', 'date_of_birth', 'gender', 'nationality',
+            'phone', 'email', 'next_of_kin_name', 'next_of_kin_contact',
+            'next_of_kin_relationship', 'batch', 'campus', 'program',
+            'academic_level', 'study_mode',
+        ]
+        errors = {f: 'This field is required.' for f in required_fields if not d.get(f)}
+        if errors:
+            return Response(errors, status=400)
+
+        try:
+            with transaction.atomic():
+                email = d['email'].strip().lower()
+                batch = Batch.objects.get(id=d['batch'])
+                campus = Campus.objects.get(id=d['campus'])
+                from Programs.models import Program as ProgramModel
+                program = ProgramModel.objects.get(id=d['program'])
+                academic_level = AcademicLevel.objects.get(id=d['academic_level'])
+                study_mode = d['study_mode'].strip().upper()
+
+                # ── Applicant user ────────────────────────────────────────────
+                from accounts.models import User as UserModel
+                applicant_user = UserModel.objects.filter(email=email, is_applicant=True).first()
+                if not applicant_user:
+                    base_username = email
+                    username = base_username
+                    if UserModel.objects.filter(username=username).exists():
+                        suffix = generate_reference().replace('APP-', '')
+                        username = f'{base_username}_{suffix}'
+                    applicant_user = UserModel.objects.create_user(
+                        username=username,
+                        first_name=d['first_name'],
+                        last_name=d['last_name'],
+                        email=email,
+                        password='NDU@1234',
+                        is_applicant=True,
+                        must_change_password=True,
+                    )
+
+                # ── Application ───────────────────────────────────────────────
+                app = Application.objects.create(
+                    applicant=applicant_user,
+                    batch=batch,
+                    campus=campus,
+                    academic_level=academic_level,
+                    source=Application.SOURCE_DIRECT,
+                    legacy_application_number=d.get('legacy_application_number') or '',
+                    first_name=d['first_name'],
+                    last_name=d['last_name'],
+                    middle_name=d.get('middle_name', ''),
+                    date_of_birth=d['date_of_birth'],
+                    gender=d['gender'],
+                    nationality=d['nationality'],
+                    phone=d['phone'],
+                    email=email,
+                    address=d.get('address', ''),
+                    nin=d.get('nin', ''),
+                    passport_number=d.get('passport_number', ''),
+                    next_of_kin_name=d['next_of_kin_name'],
+                    next_of_kin_contact=d['next_of_kin_contact'],
+                    next_of_kin_relationship=d['next_of_kin_relationship'],
+                    olevel_year=int(d.get('olevel_year') or 0),
+                    olevel_index_number=d.get('olevel_index_number') or 'N/A',
+                    olevel_school=d.get('olevel_school') or 'N/A',
+                    alevel_year=int(d.get('alevel_year') or 0),
+                    alevel_index_number=d.get('alevel_index_number') or 'N/A',
+                    alevel_school=d.get('alevel_school') or 'N/A',
+                    alevel_combination=d.get('alevel_combination') or 'N/A',
+                    status='accepted',
+                    application_reference=generate_reference(),
+                )
+                app.programs.set([program])
+
+                # ── Generate IDs server-side ──────────────────────────────────
+                # Allow override from request (e.g. legacy migration with known IDs)
+                provided_reg_no = d.get('reg_no', '').strip()
+                provided_student_id = d.get('student_id', '').strip()
+
+                if provided_reg_no:
+                    if AdmittedStudent.objects.filter(reg_no=provided_reg_no).exists():
+                        raise ValueError(f'reg_no "{provided_reg_no}" is already in use.')
+                    reg_no = provided_reg_no
+                else:
+                    reg_no = _generate_reg_no(campus, program, study_mode)
+
+                if provided_student_id:
+                    if AdmittedStudent.objects.filter(student_id=provided_student_id).exists():
+                        raise ValueError(f'student_id "{provided_student_id}" is already in use.')
+                    student_id = provided_student_id
+                else:
+                    student_id = _generate_student_id()
+
+                # ── AdmittedStudent ───────────────────────────────────────────
+                admission = AdmittedStudent.objects.create(
+                    application=app,
+                    student_id=student_id,
+                    reg_no=reg_no,
+                    admitted_program=program,
+                    admitted_batch=batch,
+                    admitted_campus=campus,
+                    study_mode=study_mode,
+                    admission_date=timezone.now(),
+                    is_admitted=True,
+                    admitted_by=request.user,
+                    admission_notes=d.get('admission_notes', ''),
+                )
+
+                # ── Shared post-admission setup (account + SPE) ───────────────
+                _run_post_admission_setup(request, admission, app)
+
+                # Async email / notification (best-effort)
+                try:
+                    celery_admission_email.delay(app.id, admission.id)
+                    celery_application_notification.delay(
+                        request.user.id,
+                        'Direct Admission Completed',
+                        f'Student {d["first_name"]} {d["last_name"]} admitted directly as {reg_no}.',
+                    )
+                except Exception:
+                    pass
+
+                return Response({
+                    'admission_id': admission.id,
+                    'student_id': admission.student_id,
+                    'reg_no': admission.reg_no,
+                    'application_id': app.id,
+                    'application_reference': app.application_reference,
+                    'message': (
+                        f'Student admitted successfully. '
+                        f'Reg No: {admission.reg_no} | Student ID: {admission.student_id}'
+                    ),
+                }, status=201)
+
+        except (Batch.DoesNotExist, Campus.DoesNotExist, AcademicLevel.DoesNotExist) as e:
+            return Response({'detail': f'Invalid reference: {e}'}, status=400)
+        except ValueError as e:
+            return Response({'detail': str(e)}, status=400)
+        except Exception as e:
+            logger.exception('DirectAdmissionEntryView error')
+            return Response({'detail': str(e)}, status=500)

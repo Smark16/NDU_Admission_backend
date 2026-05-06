@@ -1,25 +1,27 @@
 from django.urls import path
 from admissions import views
+from admissions.analytics_views import AnalyticsDashboardView
 
 app_name = 'admissions'
 
 urlpatterns = [
+    # Analytics
+    path('analytics/dashboard', AnalyticsDashboardView.as_view(), name='analytics_dashboard'),
+
     # Dashboard URLs
     path('dashboard', views.ApplicantDashboard.as_view(), name='dashboard'),
+    path('check_student_status', views.CheckStudentStatus.as_view()),
     path('admission_dashboard_stats', views.AdminDashboardStats.as_view()),
     
     # # Application URLs
     path('applications', views.ListApplications.as_view()),
-    path('reject_application/<int:application_id>', views.RejectStudent.as_view()),
-    path('rejected_applications', views.ListRejectedStudents.as_view()),
     path('create_applications', views.create_applications),
     path('create_direct_applications', views.create_direct_applications),
     path('direct_entry_applications', views.ListDirectEntryApplications.as_view()),
     path('all_applications_report', views.AllApplicationsReport.as_view()),
+    path('reject_application/<int:application_id>', views.RejectStudent.as_view()),
     path('application_detail/<int:application_id>', views.application_detail),
     path('review_application/<int:application_id>', views.ReviewApplication.as_view()),
-    path('change_programme/<int:application_id>', views.ChangeProgramme.as_view()),
-    path('edit_application_profile/<int:application_id>', views.EditApplicationProfile.as_view()),
     path('single_app/<int:application_id>', views.SingleApplication.as_view()),
     path('change_applicatio_status/<int:pk>', views.ChangeApplicationStatus.as_view()),
     path('generate-reg-no/', views.generate_reg_no_view, name='generate_reg_no'),
@@ -65,6 +67,14 @@ urlpatterns = [
     path('create_admissions', views.AdmitStudent.as_view()),
     path('update_admission/<int:pk>/', views.UpdateAdmittedStudent.as_view()),
     path('list_admitted_students',  views.ListAdmittedStudents.as_view()),
+    path(
+        'admitted_students/<int:pk>/verify_physical_documents/',
+        views.MarkPhysicalDocumentsVerified.as_view(),
+    ),
+    path(
+        'admitted_students/<int:pk>/clear_physical_documents/',
+        views.ClearPhysicalDocumentsVerification.as_view(),
+    ),
     path('delete_admission/<int:pk>/', views.DeleteAdmittedStudent.as_view()),
     path('candidate_admission/<int:admission_id>/', views.CandidateAdmission.as_view()),
     path('student-profile/pdf/<int:application_id>/', views.DownloadAdmissionPDF.as_view(), name='download_admission_pdf'),
@@ -72,9 +82,14 @@ urlpatterns = [
     # notifications
     path('list_user_notification', views.ListNotifications.as_view()),
 
-    # bulk announcement
-    path('send_announcement', views.send_bulk_announcement),
-    path('test_announcement', views.test_announcement),
+    # Admission Change Requests
+    path('change_requests/my', views.StudentChangeRequestListCreate.as_view(), name='student_change_requests'),
+    path('change_requests/all', views.AdminChangeRequestList.as_view(), name='admin_change_requests'),
+    path('change_requests/<int:pk>/review', views.AdminChangeRequestReview.as_view(), name='review_change_request'),
+
+    # Direct entry (admin / manual / legacy migration)
+    path('direct_application_entry', views.DirectApplicationEntryView.as_view(), name='direct_application_entry'),
+    path('direct_admission_entry', views.DirectAdmissionEntryView.as_view(), name='direct_admission_entry'),
 ]
 
 

@@ -10,6 +10,7 @@ urlpatterns = [
     path('resend_letter/<int:applicant_id>', resend_offer_letter),
     path('bulk_send_letters', bulk_send_offer_letters),
     path('status/<int:applicant_id>', offer_letter_status),
+    path('verify_offer/<str:token>', verify_offer_letter_public),
     path('pdf_preview/<int:pk>', pdf_template_preview),
     path('save_field_positions/<int:pk>', save_pdf_field_positions),
 ]

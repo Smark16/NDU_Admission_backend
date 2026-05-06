@@ -42,17 +42,3 @@ def send_admission_update(admission, subject="Admission updated Successfully"):
             f"If you did not expect this email, please ignore it."
         )
     return send_configurable_email(admission.application.email, subject, body)
-
-def send_rejection_email(application, subject="Application Update: Admission Decision", rejection_reason=""):
-    body = (
-        f"Dear {application.first_name} {application.last_name},\n\n"
-        f"We regret to inform you that your application for admission to Ndejje University has been reviewed and unfortunately, we are unable to offer you admission at this time.\n\n"
-        f"Application ID: {application.id}\n"
-        f"Submitted on: {application.created_at.strftime('%d %B %Y')}\n\n"
-        f"This is the reason for the rejection. Look through the feedback provided.\n\n"
-        f"{rejection_reason}\n\n"
-        f"Thank you for considering Ndejje University.\n\n"
-        f"Admissions Office\nNdejje University"
-    )
-
-    return send_configurable_email(application.email, subject, body)

@@ -5,7 +5,6 @@ from accounts.models import User, Campus
 from Programs.models import Program
 from .utils.academic_year import get_current_academic_year
 from .utils.reference import generate_reference
-from rest_framework.exceptions import ValidationError
 
 class Faculty(models.Model):
     name = models.CharField(max_length=200, unique=True)
@@ -21,9 +20,6 @@ class Faculty(models.Model):
 
     def __str__(self):
         return f"{self.name} ({self.code})"
-    
-    def delete(self, *args, **kwargs):
-        raise ValidationError({"detail": "Deletion of Faculty is not allowed."})
 
 class AcademicLevel(models.Model):
     name = models.CharField(max_length=50, unique=True)
@@ -35,9 +31,6 @@ class AcademicLevel(models.Model):
 
     def __str__(self):
         return self.name
-    
-    def delete(self, *args, **kwargs):
-        raise ValidationError({"detail": "Deletion of AcademicLevel is not allowed."})
 
 class Batch(models.Model):
     name = models.CharField(max_length=100)
@@ -111,31 +104,50 @@ class Application(models.Model):
     nationality = models.CharField(max_length=100)
     phone = models.CharField(max_length=20)
     email = models.EmailField()
-    address = models.TextField(max_length=255, blank=True, null=True)
+    address = models.TextField(max_length=40, blank=True, null=True)
     nin = models.CharField(max_length=20, blank=True, null=True)
     passport_number = models.CharField(max_length=20, blank=True, null=True)
     disabled = models.CharField(max_length=5, null=True, blank=True)
     
     # Next of Kin Information
     next_of_kin_name = models.CharField(max_length=200)
-    next_of_kin_contact = models.CharField(max_length=20)
+    next_of_kin_contact = models.CharField(max_length=25)
     next_of_kin_relationship = models.CharField(max_length=20)
     
     # O-Level Information
-    has_olevel = models.BooleanField(default=False)
-    olevel_year = models.PositiveIntegerField(null=True, blank=True)
-    olevel_index_number = models.CharField(max_length=50, null=True, blank=True)
-    olevel_school = models.CharField(max_length=200, null=True, blank=True)
+    olevel_year = models.PositiveIntegerField()
+    olevel_index_number = models.CharField(max_length=50)
+    olevel_school = models.CharField(max_length=200)
     
     # A-Level Information
-    has_alevel = models.BooleanField(default=False)
-    alevel_year = models.PositiveIntegerField(null=True, blank=True)
-    alevel_index_number = models.CharField(max_length=50, null=True, blank=True)
-    alevel_school = models.CharField(max_length=200, null=True, blank=True)
-    alevel_combination = models.CharField(max_length=30, null=True, blank=True)
+    alevel_year = models.PositiveIntegerField()
+    alevel_index_number = models.CharField(max_length=50)
+    alevel_school = models.CharField(max_length=200)
+    alevel_combination = models.CharField(max_length=10)
     
-    # Document uploads
-    passport_photo = models.ImageField(upload_to='passport_photos/')
+    # Source / audit tracing (direct entry, legacy migration, portal)
+    SOURCE_PORTAL = 'portal'
+    SOURCE_DIRECT = 'direct_entry'
+    SOURCE_LEGACY = 'legacy_import'
+    SOURCE_CHOICES = [
+        (SOURCE_PORTAL, 'Applicant Portal'),
+        (SOURCE_DIRECT, 'Direct Entry'),
+        (SOURCE_LEGACY, 'Legacy Import'),
+    ]
+    source = models.CharField(max_length=30, choices=SOURCE_CHOICES, default=SOURCE_PORTAL)
+    legacy_application_number = models.CharField(max_length=100, blank=True, null=True)
+    # Staff wizard (multi-step direct application) — mirrors admission portal v2
+    is_direct_entry = models.BooleanField(default=False)
+    entered_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="entered_applications",
+    )
+
+    # Document uploads — passport_photo nullable so direct/legacy entry works without an upload
+    passport_photo = models.ImageField(upload_to='passport_photos/', blank=True, null=True)
     payment_proof = models.FileField(upload_to='payment_proofs/', blank=True, null=True, help_text="Payment Proof (PDF)")
    
     # Application Status
@@ -143,13 +155,9 @@ class Application(models.Model):
     application_reference = models.CharField(max_length=50, unique=True, blank=True, null=True)
     application_fee_paid = models.BooleanField(default=False)
     application_fee_amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
-    school_pay_reference = models.CharField(max_length=100, blank=True, null=True)
-    entered_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='entered_applications')
-    is_direct_entry = models.BooleanField(default=False)
-
+    
     # Review Information
     reviewed_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='reviewed_applications')
-    admitted_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='admissions')
     reviewed_at = models.DateTimeField(null=True, blank=True)
     review_notes = models.TextField(blank=True)
 
@@ -157,7 +165,19 @@ class Application(models.Model):
     admission_letter_pdf = models.FileField(upload_to="admission_template/", null=True, blank=True)
     offer_letter_status = models.CharField(max_length=20, default='pending')
     offer_letter_progress = models.IntegerField(default=0)
-   
+    # Offer letter authenticity (QR + public verify page)
+    offer_letter_verification_token = models.CharField(
+        max_length=64, unique=True, null=True, blank=True, db_index=True
+    )
+    offer_letter_generated_at = models.DateTimeField(null=True, blank=True)
+    offer_letter_generated_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="generated_offer_letters",
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -178,9 +198,9 @@ class Application(models.Model):
         return f"{self.first_name} {self.middle_name} {self.last_name}".strip()
 
 class OLevelResult(models.Model):
-    application = models.ForeignKey(Application, on_delete=models.CASCADE, null=True, blank=True, related_name='olevel_results')
-    subject = models.ForeignKey(OLevelSubject, on_delete=models.CASCADE, null=True, blank=True)
-    grade = models.CharField(max_length=10, null=True, blank=True)
+    application = models.ForeignKey(Application, on_delete=models.CASCADE, related_name='olevel_results')
+    subject = models.ForeignKey(OLevelSubject, on_delete=models.CASCADE)
+    grade = models.CharField(max_length=10)
 
     class Meta:
         ordering = ['subject__name']
@@ -196,9 +216,9 @@ class OLevelResult(models.Model):
         return f"{self.application.full_name} - {self.subject.name}: {self.grade}"
 
 class ALevelResult(models.Model):
-    application = models.ForeignKey(Application, on_delete=models.CASCADE, null=True, blank=True, related_name='alevel_results')
-    subject = models.ForeignKey(ALevelSubject, on_delete=models.CASCADE, null=True, blank=True)
-    grade = models.CharField(max_length=10, null=True, blank=True)
+    application = models.ForeignKey(Application, on_delete=models.CASCADE, related_name='alevel_results')
+    subject = models.ForeignKey(ALevelSubject, on_delete=models.CASCADE)
+    grade = models.CharField(max_length=10)
 
     class Meta:
         ordering = ['subject__name']
@@ -215,7 +235,7 @@ class ALevelResult(models.Model):
 
 class ApplicationDocument(models.Model): 
     application = models.ForeignKey(Application, on_delete=models.CASCADE, related_name='documents')
-    name = models.CharField(max_length=100, null=True, blank=True)
+    name = models.CharField(max_length=25, null=True, blank=True)
     document_type = models.CharField(max_length=30)
     file_url = models.URLField(max_length=100, null=True, blank=True)
     file = models.FileField(upload_to='application_documents/')
@@ -250,13 +270,29 @@ class AdmittedStudent(models.Model):
     admission_letter_sent_at = models.DateTimeField(null=True, blank=True)
     is_admitted= models.BooleanField(default=False)
     
-    # Registration information
+    # Registration information (official registration only — do not conflate with document checks)
     is_registered = models.BooleanField(default=False)
     registration_date = models.DateTimeField(null=True, blank=True)
+
+    # Physical document verification (original hard-copy check — separate from registration)
+    physical_documents_verified = models.BooleanField(default=False)
+    physical_documents_verified_at = models.DateTimeField(null=True, blank=True)
+    physical_documents_verified_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="physical_document_verifications",
+    )
+    physical_documents_notes = models.TextField(
+        blank=True,
+        help_text="Staff notes when documents were verified at the desk",
+    )
     
     # Notes
     admission_notes = models.TextField(blank=True, help_text="Notes about the admission")
     admitted_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='admitted_students')
+    student_user = models.OneToOneField(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='student_admission')
     
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -265,12 +301,16 @@ class AdmittedStudent(models.Model):
         ordering = ['-admission_date']
         verbose_name = "Admitted Student"
         verbose_name_plural = "Admitted Students"
+        permissions = [
+            ("verify_physical_documents", "Can verify physical admission documents"),
+        ]
  
         indexes = [
             models.Index(fields=['application', 'created_at']),
             models.Index(fields=['is_registered']),
             models.Index(fields=['admitted_batch', 'is_admitted']),
-            models.Index(fields=['is_admitted'])
+            models.Index(fields=['is_admitted']),
+            models.Index(fields=['physical_documents_verified']),
         ]
     
     def __str__(self):
@@ -287,6 +327,77 @@ class AdmittedStudent(models.Model):
     @property
     def phone(self):
         return self.application.phone
+
+class AdmissionChangeRequest(models.Model):
+    CHANGE_TYPE_CHOICES = [
+        ('program', 'Programme Change'),
+        ('campus', 'Campus Transfer'),
+        ('study_mode', 'Study Mode Change'),
+        ('dead_semester', 'Dead Semester'),
+        ('dead_year', 'Dead Year'),
+    ]
+    STATUS_CHOICES = [
+        ('pending', 'Pending Review'),
+        ('approved', 'Approved'),
+        ('rejected', 'Rejected'),
+    ]
+
+    admitted_student = models.ForeignKey(
+        AdmittedStudent, on_delete=models.CASCADE, related_name='change_requests'
+    )
+    change_type = models.CharField(max_length=20, choices=CHANGE_TYPE_CHOICES)
+    requested_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, related_name='submitted_change_requests'
+    )
+
+    # Snapshot of current values at time of request
+    current_program = models.ForeignKey(
+        Program, on_delete=models.SET_NULL, null=True, blank=True, related_name='+'
+    )
+    current_campus = models.ForeignKey(
+        Campus, on_delete=models.SET_NULL, null=True, blank=True, related_name='+'
+    )
+    current_study_mode = models.CharField(max_length=30, blank=True)
+
+    # Requested new values (only the relevant one is filled)
+    new_program = models.ForeignKey(
+        Program, on_delete=models.SET_NULL, null=True, blank=True, related_name='transfer_requests'
+    )
+    new_campus = models.ForeignKey(
+        Campus, on_delete=models.SET_NULL, null=True, blank=True, related_name='transfer_requests'
+    )
+    new_study_mode = models.CharField(max_length=30, blank=True)
+
+    # For dead semester / dead year requests
+    requested_year = models.PositiveSmallIntegerField(
+        null=True, blank=True,
+        help_text="Year of study being declared dead (e.g. 1, 2, 3)"
+    )
+    requested_semester = models.PositiveSmallIntegerField(
+        null=True, blank=True,
+        help_text="Semester number being declared dead (e.g. 1 or 2); leave blank for dead year"
+    )
+
+    reason = models.TextField(help_text="Student's reason for requesting the change")
+
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    reviewed_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name='reviewed_change_requests'
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    review_notes = models.TextField(blank=True, help_text="Admin notes on approval or rejection")
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = "Admission Change Request"
+        verbose_name_plural = "Admission Change Requests"
+
+    def __str__(self):
+        return f"{self.admitted_student.student_id} — {self.get_change_type_display()} [{self.status}]"
+
 
 class PortalNotification(models.Model):
     recipient = models.ForeignKey(User, on_delete=models.CASCADE, related_name='notifications')

@@ -1,6 +1,8 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import *
+
+from admissions.permissions import ExportVerificationRegisterPermission
 from admissions.models import * 
 from django.db.models.functions import Coalesce
 from django.db.models import Count, F, Q
@@ -12,6 +14,29 @@ from .utils.calculate_passes import calculate_pp_sp
 from django.http import HttpResponse
 from admissions.models import *
 from admissions.utils.academic_year import get_current_academic_year
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
+from openpyxl.utils import get_column_letter
+
+
+def _application_full_name_upper(app):
+    parts = [app.first_name or "", app.middle_name or "", app.last_name or ""]
+    return " ".join(p.strip() for p in parts if p and p.strip()).upper()
+
+
+def _gender_short(app):
+    g = (app.gender or "").strip().upper()
+    if g.startswith("F"):
+        return "F"
+    if g.startswith("M"):
+        return "M"
+    return (app.gender or "").strip()
+
+
+def _admission_mode_label(app):
+    if app.academic_level_id:
+        return (app.academic_level.name or "").strip()
+    return ""
 
 # Create your views here.
 
@@ -231,14 +256,13 @@ class ViewFacultyAdmissions(APIView):
                 "payments": "PAID" if app.application_fee_paid else "NOT PAID",
                 "admission_date": adm.admission_date.strftime("%Y-%m-%d") if adm.admission_date else "",
                 "origin": "APPLIED ONLINE",
-                "admitted_by": f"{adm.admitted_by.first_name } {adm.admitted_by.last_name}" if adm.admitted_by else "No Available"
             })
 
         return Response(list(grouped.values()), status=200)
     
 # excel reports
 class ExportFacultyAdmissionsExcel(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, ExportVerificationRegisterPermission]
 
     def get(self, request):
         # --------------------------------------------------------------
@@ -247,12 +271,21 @@ class ExportFacultyAdmissionsExcel(APIView):
         academic_year = request.query_params.get("academic_year") or get_current_academic_year()
         admission_period = request.query_params.get("admission_period")
         campus_id = request.query_params.get("campus")
+        program_id = request.query_params.get("program")
+        faculty_id = request.query_params.get("faculty")
+        documents_verified = (request.query_params.get("documents_verified") or "").lower()
+        is_registered = (request.query_params.get("is_registered") or "").lower()
 
         # --------------------------------------------------------------
         # 2. MAIN QUERY
         # --------------------------------------------------------------
         qs = AdmittedStudent.objects.select_related(
-            "application", "admitted_program", "admitted_campus", "admitted_batch"
+            "application",
+            "admitted_program",
+            "admitted_program__faculty",
+            "admitted_campus",
+            "admitted_batch",
+            "physical_documents_verified_by",
         ).filter(is_admitted=True)
 
         if academic_year:
@@ -261,6 +294,18 @@ class ExportFacultyAdmissionsExcel(APIView):
             qs = qs.filter(admitted_batch__name__icontains=admission_period)
         if campus_id:
             qs = qs.filter(admitted_campus_id=campus_id)
+        if program_id:
+            qs = qs.filter(admitted_program_id=program_id)
+        if faculty_id:
+            qs = qs.filter(admitted_program__faculty_id=faculty_id)
+        if documents_verified in ("1", "true", "yes"):
+            qs = qs.filter(physical_documents_verified=True)
+        elif documents_verified in ("0", "false", "no"):
+            qs = qs.filter(physical_documents_verified=False)
+        if is_registered in ("1", "true", "yes"):
+            qs = qs.filter(is_registered=True)
+        elif is_registered in ("0", "false", "no"):
+            qs = qs.filter(is_registered=False)
 
         admitted_students = list(qs)
         app_ids = [adm.application_id for adm in admitted_students]
@@ -325,13 +370,45 @@ class ExportFacultyAdmissionsExcel(APIView):
         # 7. BUILD ROWS
         # --------------------------------------------------------------
         headers = [
-            "ID", "ACADEMIC YEAR", "INTAKE", "STUDENT NAMES", "GENDER", "NATIONALITY",
-            "CONTACT/ADDRESS", "COURSE APPLIED FOR", "OTHER COURSE CHOICES", "PROGRAM",
-            "STUDY MODE", "CAMPUS", "O-LEVEL SCHOOL", "O-LEVEL YEAR", "O-LEVEL INDEX NO",
-            "O-LEVEL SCORES", "A-LEVEL SCHOOL", "A-LEVEL YEAR", "A-LEVEL INDEX NO",
-            "A-LEVEL COMBINATION", "A-LEVEL SCORES", "PRINCIPALS/SUBSIDIARIES",
-            "OTHER QUALIFICATIONS", "INSTITUTION", "CLASS OF AWARD",
-            "COURSE ADMITTED FOR", "REMARKS", "PAYMENTS", "DATE OF ENTRY", "ORIGIN", "ADMITTED BY"
+            "ID",
+            "STUDENT NO",
+            "REG NO",
+            "ACADEMIC YEAR",
+            "INTAKE",
+            "FACULTY",
+            "STUDENT NAMES",
+            "GENDER",
+            "NATIONALITY",
+            "ADMISSION SOURCE",
+            "REGISTERED (Y/N)",
+            "PHYS DOCS VERIFIED",
+            "VERIFIED AT",
+            "VERIFIED BY",
+            "PHYS VERIFY NOTES",
+            "CONTACT/ADDRESS",
+            "COURSE APPLIED FOR",
+            "OTHER COURSE CHOICES",
+            "PROGRAM",
+            "STUDY MODE",
+            "CAMPUS",
+            "O-LEVEL SCHOOL",
+            "O-LEVEL YEAR",
+            "O-LEVEL INDEX NO",
+            "O-LEVEL SCORES",
+            "A-LEVEL SCHOOL",
+            "A-LEVEL YEAR",
+            "A-LEVEL INDEX NO",
+            "A-LEVEL COMBINATION",
+            "A-LEVEL SCORES",
+            "PRINCIPALS/SUBSIDIARIES",
+            "OTHER QUALIFICATIONS",
+            "INSTITUTION",
+            "CLASS OF AWARD",
+            "COURSE ADMITTED FOR",
+            "REMARKS",
+            "PAYMENTS",
+            "DATE OF ENTRY",
+            "ORIGIN",
         ]
 
         rows = []
@@ -377,14 +454,34 @@ class ExportFacultyAdmissionsExcel(APIView):
             institution_str = ", ".join(institutions) if institutions else ""
             class_of_award_str = ", ".join(class_of_awards) if class_of_awards else ""
 
+            faculty_name = ""
+            if adm.admitted_program and adm.admitted_program.faculty:
+                faculty_name = adm.admitted_program.faculty.name or ""
+            verified_by = ""
+            if adm.physical_documents_verified_by_id:
+                vb = adm.physical_documents_verified_by
+                verified_by = (vb.get_full_name() or vb.username or "") if vb else ""
+            verified_at = ""
+            if adm.physical_documents_verified_at:
+                verified_at = adm.physical_documents_verified_at.strftime("%Y-%m-%d %H:%M")
+
             # Build row (all strings)
             rows.append([
                 adm.id,
+                adm.student_id or "",
+                adm.reg_no or "",
                 batch.academic_year if batch else "",
                 batch.name if batch else "",
-                f"{app.first_name} {app.last_name}",   # assuming you have full_name or use this
+                faculty_name,
+                f"{app.first_name} {app.last_name}",
                 app.gender or "",
                 app.nationality or "",
+                app.get_source_display() if hasattr(app, "get_source_display") else (app.source or ""),
+                "Y" if adm.is_registered else "N",
+                "Y" if adm.physical_documents_verified else "N",
+                verified_at,
+                verified_by,
+                (adm.physical_documents_notes or "").replace("\r\n", " ").replace("\n", " ")[:2000],
                 app.address or "",
                 course_applied_for,
                 other_choices,
@@ -401,15 +498,14 @@ class ExportFacultyAdmissionsExcel(APIView):
                 app.alevel_combination or "",
                 alevel_scores_str,
                 principal_sub,
-                other_qual_str,           # Clean combined string
-                institution_str,          # All institutions joined by comma
-                class_of_award_str,       # All class of awards joined by comma
+                other_qual_str,
+                institution_str,
+                class_of_award_str,
                 adm.admitted_program.name if adm.admitted_program else "",
                 adm.admission_notes or "",
                 "PAID" if app.application_fee_paid else "NOT PAID",
                 adm.admission_date.strftime("%Y-%m-%d") if adm.admission_date else "",
                 "APPLIED ONLINE",
-                f"{adm.admitted_by.first_name} {adm.admitted_by.last_name}" if adm.admitted_by else "Not Available"
             ])
 
         # --------------------------------------------------------------
@@ -425,3 +521,377 @@ class ExportFacultyAdmissionsExcel(APIView):
         wb.save(response)
 
         return response
+
+
+class ExportFirstRegistrationReportExcel(APIView):
+    """Registration-details Excel after desk verification (default: verified students only)."""
+
+    permission_classes = [IsAuthenticated, ExportVerificationRegisterPermission]
+
+    def get(self, request):
+        academic_year = request.query_params.get("academic_year") or get_current_academic_year()
+        admission_period = request.query_params.get("admission_period")
+        campus_id = request.query_params.get("campus")
+        program_id = request.query_params.get("program")
+        faculty_id = request.query_params.get("faculty")
+        documents_verified_raw = request.query_params.get("documents_verified")
+        documents_verified = (documents_verified_raw or "").lower()
+        is_registered = (request.query_params.get("is_registered") or "").lower()
+        include_all = (request.query_params.get("include_all") or "").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+
+        qs = (
+            AdmittedStudent.objects.select_related(
+                "application",
+                "application__academic_level",
+                "admitted_program",
+                "admitted_program__faculty",
+                "admitted_campus",
+                "admitted_batch",
+                "physical_documents_verified_by",
+                "programme_enrollment",
+            )
+            .filter(is_admitted=True)
+        )
+
+        if academic_year:
+            qs = qs.filter(admitted_batch__academic_year=academic_year)
+        if admission_period:
+            qs = qs.filter(admitted_batch__name__icontains=admission_period)
+        if campus_id:
+            qs = qs.filter(admitted_campus_id=campus_id)
+        if program_id:
+            qs = qs.filter(admitted_program_id=program_id)
+        if faculty_id:
+            qs = qs.filter(admitted_program__faculty_id=faculty_id)
+
+        # Physical documents: default to verified-only (post–desk-check roster) unless include_all or explicit param.
+        if documents_verified_raw is not None and str(documents_verified_raw).strip() != "":
+            if documents_verified in ("1", "true", "yes"):
+                qs = qs.filter(physical_documents_verified=True)
+            elif documents_verified in ("0", "false", "no"):
+                qs = qs.filter(physical_documents_verified=False)
+        elif not include_all:
+            qs = qs.filter(physical_documents_verified=True)
+
+        if is_registered in ("1", "true", "yes"):
+            qs = qs.filter(is_registered=True)
+        elif is_registered in ("0", "false", "no"):
+            qs = qs.filter(is_registered=False)
+
+        # Subtitle for cover rows (what verification filter was applied)
+        if documents_verified_raw is not None and str(documents_verified_raw).strip() != "":
+            if documents_verified in ("0", "false", "no"):
+                verification_blurb = "Scope: physical documents not verified only"
+            else:
+                verification_blurb = "Scope: physical documents verified only"
+        elif include_all:
+            verification_blurb = "Scope: all admitted students (desk verification not filtered)"
+        else:
+            verification_blurb = "Scope: physical documents verified at desk only"
+
+        admitted_students = list(qs.order_by("application__last_name", "application__first_name"))
+
+        headers = [
+            "NAME",
+            "GEN",
+            "REGISTRATION. NO",
+            "STUDENT ID",
+            "PROGRAM",
+            "FACULTY",
+            "STUDY",
+            "HALL",
+            "CAMPUS",
+            "CONTACT",
+            "NAME OF NEXT OF KIN",
+            "TEL. OF NEXT OF KIN",
+            "YEAR",
+            "INTAKE",
+            "YEAR (ACADEMIC)",
+            "NATIONALITY",
+            "MODE OF ADMISSION",
+            "PHYS DOCS VERIFIED",
+            "VERIFIED AT",
+            "VERIFIED BY",
+        ]
+        n_cols = len(headers)
+        rows = []
+
+        for adm in admitted_students:
+            app = adm.application
+            batch = adm.admitted_batch
+            prog = adm.admitted_program
+            faculty_name = ""
+            if prog and prog.faculty_id:
+                faculty_name = (prog.faculty.name or "").strip()
+            program_code = ""
+            if prog:
+                program_code = (prog.code or prog.short_form or "").strip()
+            spe = getattr(adm, "programme_enrollment", None)
+            year_study = ""
+            if spe is not None:
+                year_study = str(spe.current_year_of_study)
+            verified_by = ""
+            if adm.physical_documents_verified_by_id:
+                vb = adm.physical_documents_verified_by
+                verified_by = (vb.get_full_name() or vb.username or "") if vb else ""
+            verified_at = ""
+            if adm.physical_documents_verified_at:
+                verified_at = adm.physical_documents_verified_at.strftime("%Y-%m-%d %H:%M")
+
+            rows.append(
+                [
+                    _application_full_name_upper(app),
+                    _gender_short(app),
+                    adm.reg_no or "",
+                    adm.student_id or "",
+                    program_code,
+                    faculty_name,
+                    (adm.study_mode or "").strip().upper(),
+                    "",
+                    (adm.admitted_campus.name if adm.admitted_campus_id else "") or "",
+                    (app.phone or "").strip(),
+                    (app.next_of_kin_name or "").strip(),
+                    (app.next_of_kin_contact or "").strip(),
+                    year_study,
+                    (batch.name if batch else "") or "",
+                    (batch.academic_year if batch else "") or "",
+                    (app.nationality or "").strip(),
+                    _admission_mode_label(app),
+                    "Y" if adm.physical_documents_verified else "N",
+                    verified_at,
+                    verified_by,
+                ]
+            )
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Verified registration"
+
+        title_font = Font(bold=True, size=14)
+        subtitle_font = Font(bold=True, size=11)
+        header_font = Font(bold=True, color="FFFFFF")
+        header_fill = PatternFill(start_color="1e3a5f", fill_type="solid")
+        thin = Side(style="thin", color="000000")
+        thin_border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=n_cols)
+        t1 = ws.cell(
+            row=1,
+            column=1,
+            value="VERIFIED REGISTRATION ROSTER (POST–DOCUMENT CHECK)",
+        )
+        t1.font = title_font
+        t1.alignment = Alignment(horizontal="center", vertical="center")
+
+        sub_parts = [f"Academic year {academic_year}", verification_blurb]
+        if admission_period:
+            sub_parts.append(f"Intake contains: {admission_period}")
+        ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=n_cols)
+        t2 = ws.cell(row=2, column=1, value=" · ".join(sub_parts))
+        t2.font = subtitle_font
+        t2.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+        header_row = 4
+        for col_idx, header in enumerate(headers, 1):
+            cell = ws.cell(row=header_row, column=col_idx, value=header)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            cell.border = thin_border
+            ws.column_dimensions[get_column_letter(col_idx)].width = max(14, min(28, len(str(header)) + 2))
+
+        for row in rows:
+            ws.append(row)
+        data_start = header_row + 1
+        for row in ws.iter_rows(
+            min_row=data_start, max_row=ws.max_row, min_col=1, max_col=n_cols
+        ):
+            for cell in row:
+                cell.alignment = Alignment(horizontal="left", vertical="center")
+                cell.border = thin_border
+
+        ws.freeze_panes = ws.cell(row=data_start, column=1).coordinate
+
+        response = HttpResponse(
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        safe_ay = "".join(c if c.isalnum() or c in "-_" else "_" for c in academic_year)
+        fname = f"verified_registration_roster_{safe_ay}.xlsx"
+        response["Content-Disposition"] = f'attachment; filename="{fname}"'
+        wb.save(response)
+        return response
+
+
+# class ExportFacultyAdmissionsExcel(APIView):
+#     permission_classes = [IsAuthenticated]
+
+#     def get(self, request):
+#         # --------------------------------------------------------------
+#         # 1. FILTERS
+#         # --------------------------------------------------------------
+#         academic_year   = request.query_params.get("academic_year") or get_current_academic_year()
+#         admission_period = request.query_params.get("admission_period")
+#         campus_id       = request.query_params.get("campus")          
+
+#         # --------------------------------------------------------------
+#         # 2. ONE BIG QUERY + three prefetches (exactly like the JSON view)
+#         # --------------------------------------------------------------
+#         qs = (
+#             AdmittedStudent.objects
+#             .select_related(
+#                 "application",
+#                 "admitted_program",
+#                 "admitted_campus",
+#                 "admitted_batch",
+#             )
+#             .filter(is_admitted=True)
+#         )
+
+#         if academic_year:
+#             qs = qs.filter(admitted_batch__academic_year=academic_year)
+#         if admission_period:
+#             qs = qs.filter(admitted_batch__name__icontains=admission_period)
+#         if campus_id:
+#             qs = qs.filter(admitted_campus_id=campus_id)   # <-- use ID
+
+#         admitted_students = list(qs)                         # materialise
+#         app_ids = [adm.application_id for adm in admitted_students]
+
+#         if not app_ids:
+#             # empty file
+#             wb = create_workbook([], [], sheet_name="Faculty Admissions")
+#             resp = HttpResponse(
+#                 content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+#             )
+#             resp["Content-Disposition"] = 'attachment; filename="faculty_admissions.xlsx"'
+#             wb.save(resp)
+#             return resp
+
+#         # --------------------------------------------------------------
+#         # 3. ONE QUERY – program names
+#         # --------------------------------------------------------------
+#         program_data = defaultdict(list)
+#         for prog in (
+#             Program.objects
+#             .filter(application_programs__id__in=app_ids)
+#             .values("application_programs__id", "name")
+#             .order_by("application_programs__id")
+#         ):
+#             program_data[prog["application_programs__id"]].append(prog["name"])
+
+#         # --------------------------------------------------------------
+#         # 4. ONE QUERY – O-Level (code:grade)
+#         # --------------------------------------------------------------
+#         olevel_data = defaultdict(list)
+#         for res in (
+#             OLevelResult.objects
+#             .filter(application_id__in=app_ids)
+#             .select_related("subject")
+#             .values("application_id", "subject__code", "grade")
+#         ):
+#             olevel_data[res["application_id"]].append(f"{res['subject__code']}:{res['grade']}")
+
+#         # --------------------------------------------------------------
+#         # 5. ONE QUERY – A-Level (for scores + PP/SP)
+#         # --------------------------------------------------------------
+#         alevel_scores = defaultdict(list)   
+#         alevel_for_pp = defaultdict(list)   
+#         for res in (
+#             ALevelResult.objects
+#             .filter(application_id__in=app_ids)
+#             .select_related("subject")
+#             .values("application_id", "subject__name", "grade")
+#         ):
+#             app_id = res["application_id"]
+#             alevel_scores[app_id].append(f"{res['subject__name']}:{res['grade']}")
+#             alevel_for_pp[app_id].append({
+#                 "subject_name": res["subject__name"],
+#                 "grade": res["grade"],
+#             })
+
+#         # --------------------------------------------------------------
+#         # 6. BUILD EXCEL ROWS
+#         # --------------------------------------------------------------
+#         headers = [
+#             "ID","ACADEMIC YEAR","INTAKE","STUDENT NAMES","GENDER","NATIONALITY",
+#             "CONTACT/ADDRESS","COURSE APPLIED FOR","OTHER COURSE CHOICES","PROGRAM",
+#             "STUDY MODE","CAMPUS","O-LEVEL SCHOOL","O-LEVEL YEAR","O-LEVEL INDEX NO",
+#             "O-LEVEL SCORES","A-LEVEL SCHOOL","A-LEVEL YEAR","A-LEVEL INDEX NO",
+#             "A-LEVEL COMBINATION","A-LEVEL SCORES","PRINCIPALS/SUBSIDIARIES",
+#             "OTHER QUALIFICATIONS","INSTITUTION","CLASS OF AWARD",
+#             "COURSE ADMITTED FOR","REMARKS","PAYMENTS","DATE OF ENTRY","ORIGIN"
+#         ]
+
+#         rows = []
+#         # for adm in admitted_students:
+#         for adm in qs.iterator(chunk_size=1000):
+#             app   = adm.application
+#             batch = adm.admitted_batch
+
+#             # ---- programs -------------------------------------------------
+#             programs = program_data.get(app.id, [])
+#             course_applied_for = programs[0] if programs else ""
+#             other_choices = ", ".join(programs[1:])
+
+#             # ---- O-Level --------------------------------------------------
+#             olevel_scores = "; ".join(olevel_data[app.id])
+
+#             # ---- A-Level --------------------------------------------------
+#             alevel_scores_str = "; ".join(alevel_scores[app.id])
+
+#             # ---- PP / SP --------------------------------------------------
+#             pp, sp = calculate_pp_sp(alevel_for_pp[app.id])
+#             principal_sub = f"{pp}PP, {sp}SP"
+
+#             # ---- other fields ---------------------------------------------
+#             rows.append([
+#                 adm.id,
+#                 batch.academic_year if batch else "",
+#                 batch.name if batch else "",
+#                 app.full_name,
+#                 app.gender,
+#                 app.nationality,
+#                 app.address,
+#                 course_applied_for,
+#                 other_choices,
+#                 adm.admitted_program.name,
+#                 adm.study_mode,
+#                 adm.admitted_campus.name if adm.admitted_campus else "",
+#                 app.olevel_school,
+#                 app.olevel_year,
+#                 app.olevel_index_number,
+#                 olevel_scores,
+#                 app.alevel_school,
+#                 app.alevel_year,
+#                 app.alevel_index_number,
+#                 app.alevel_combination,
+#                 alevel_scores_str,
+#                 principal_sub,                     # ← FIXED
+#                 app.additional_qualification_type or "",
+#                 app.additional_qualification_institution or "",
+#                 app.class_of_award or "",
+#                 adm.admitted_program.name,
+#                 adm.admission_notes or "",
+#                 "NOT IMPLEMENTED",
+#                 adm.admission_date.strftime("%Y-%m-%d"),
+#                 "APPLIED ONLINE",
+#             ])
+
+#         # --------------------------------------------------------------
+#         # 7. CREATE EXCEL FILE
+#         # --------------------------------------------------------------
+#         wb = create_workbook(headers, rows, sheet_name="Faculty Admissions")
+
+#         response = HttpResponse(
+#             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+#         )
+#         response["Content-Disposition"] = (
+#             f'attachment; filename="faculty_admissions_{academic_year}_{admission_period or "all"}.xlsx"'
+#         )
+#         wb.save(response)
+#         return response
+        

@@ -37,12 +37,15 @@ class ObtainSerializer(TokenObtainPairSerializer):
         token['last_name'] = user.last_name
         token['is_staff'] = user.is_staff
         token['is_applicant'] = user.is_applicant
+        token['is_student'] = user.is_student
+        token['is_lecturer'] = user.is_lecturer
+        token['must_change_password'] = user.must_change_password
         token['last_login'] = user.last_login.isoformat() if user.last_login else None
         token['role'] = user.groups.first().name if user.groups.exists() else None
         token['phone'] = user.phone
-        token['email'] = user.email 
+        token['email'] = user.email
         token['username'] = user.username
-        token['permissions'] = list(user.get_all_permissions()) 
+        token['permissions'] = list(user.get_all_permissions())
 
         return token
     
@@ -55,7 +58,7 @@ class RegisterSerializer(serializers.ModelSerializer):
         style={'input_type': 'password'}
     )
 
-    confirm_password = serializers.CharField(write_only=True, required=True, validators=[validate_password], style={'input_type': 'password'})
+    confirm_password = serializers.CharField(write_only=True, required=True, style={'input_type': 'password'})
 
     campuses = serializers.PrimaryKeyRelatedField(
         queryset=Campus.objects.all(),
@@ -72,6 +75,12 @@ class RegisterSerializer(serializers.ModelSerializer):
             'date_joined', 'role', 'campuses','phone',
             'is_active', 'is_staff', 'is_applicant'
         ]
+        read_only_fields = ('id', 'last_login', 'date_joined')
+
+    def validate_phone(self, value):
+        if value in (None, ''):
+            return ''
+        return str(value).strip().replace(' ', '')[:20]
 
     def validate(self, data):
         if data['password'] != data['confirm_password']:
@@ -116,8 +125,17 @@ class RegisterSerializer(serializers.ModelSerializer):
             except Group.DoesNotExist:
                 raise serializers.ValidationError({'role': f'Role "{role_name}" does not exist.'})
 
-        # Send email
-        celery_send_account_email.delay(user.id, password)
+            # If the assigned role is Lecturer, also set the is_lecturer flag so the
+            # lecturer portal access check (CheckLecturerStatus) passes immediately.
+            if role_name == "Lecturer" and not user.is_lecturer:
+                user.is_lecturer = True
+                user.save(update_fields=["is_lecturer"])
+
+        # Send email (best-effort — skip if broker/Redis is unavailable)
+        try:
+            celery_send_account_email.delay(user.id, password)
+        except Exception:
+            pass
 
         return user
 
@@ -178,7 +196,7 @@ class ProfileSerializer(serializers.ModelSerializer):
         model = Profile
         fields = '__all__'
 
-# system settings
+
 class SystemSettingsSerializer(serializers.ModelSerializer):
     updated_by_name = serializers.CharField(source='updated_by.full_name', read_only=True, allow_null=True)
 
