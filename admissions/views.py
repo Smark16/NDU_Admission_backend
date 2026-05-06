@@ -7,6 +7,8 @@ from rest_framework.permissions import *
 from rest_framework.response import Response
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from .serializers import *
+from .permissions import VerifyPhysicalDocumentsPermission
+from audit.utils import log_audit_event
 from rest_framework.parsers import MultiPartParser, FormParser
 from django.utils import timezone
 from rest_framework.decorators import api_view, permission_classes
@@ -1338,11 +1340,130 @@ class ListAdmittedStudents(generics.ListAPIView):
         'admitted_batch',
         'admitted_campus',
         'admitted_by',
-        'application__applicant'
+        'application__applicant',
+        'physical_documents_verified_by',
     ).all()
 
     serializer_class = AdmittedStudentListSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        p = self.request.query_params
+        dv = (p.get("documents_verified") or "").lower()
+        if dv in ("1", "true", "yes"):
+            qs = qs.filter(physical_documents_verified=True)
+        elif dv in ("0", "false", "no"):
+            qs = qs.filter(physical_documents_verified=False)
+
+        ay = p.get("academic_year")
+        if ay:
+            qs = qs.filter(admitted_batch__academic_year=ay)
+        batch_id = p.get("batch")
+        if batch_id:
+            qs = qs.filter(admitted_batch_id=batch_id)
+        campus_id = p.get("campus")
+        if campus_id:
+            qs = qs.filter(admitted_campus_id=campus_id)
+        program_id = p.get("program")
+        if program_id:
+            qs = qs.filter(admitted_program_id=program_id)
+        faculty_id = p.get("faculty")
+        if faculty_id:
+            qs = qs.filter(admitted_program__faculty_id=faculty_id)
+        reg = (p.get("is_registered") or "").lower()
+        if reg in ("1", "true", "yes"):
+            qs = qs.filter(is_registered=True)
+        elif reg in ("0", "false", "no"):
+            qs = qs.filter(is_registered=False)
+        return qs
+
+
+class MarkPhysicalDocumentsVerified(APIView):
+    """Record that original hard-copy documents were checked (does not register the student)."""
+
+    permission_classes = [IsAuthenticated, VerifyPhysicalDocumentsPermission]
+
+    def post(self, request, pk):
+        notes = (request.data.get("notes") or "").strip()
+        student = get_object_or_404(
+            AdmittedStudent.objects.select_related("application"),
+            pk=pk,
+        )
+        student.physical_documents_verified = True
+        student.physical_documents_verified_at = timezone.now()
+        student.physical_documents_verified_by = request.user
+        if notes:
+            student.physical_documents_notes = notes[:4000]
+        student.save(
+            update_fields=[
+                "physical_documents_verified",
+                "physical_documents_verified_at",
+                "physical_documents_verified_by",
+                "physical_documents_notes",
+                "updated_at",
+            ]
+        )
+        desc = (
+            f"Physical documents verified for admitted student id={student.pk} "
+            f"student_id={student.student_id} reg_no={student.reg_no}. "
+            f"Notes: {notes[:500]}"
+            if notes
+            else f"Physical documents verified id={student.pk}"
+        )
+        log_audit_event(request.user, "phys_verify", student, desc, request)
+        student = AdmittedStudent.objects.select_related(
+            "physical_documents_verified_by",
+            "admitted_program__faculty",
+            "admitted_batch",
+            "admitted_campus",
+            "application__applicant",
+        ).get(pk=student.pk)
+        return Response(AdmittedStudentListSerializer(student).data, status=200)
+
+
+class ClearPhysicalDocumentsVerification(APIView):
+    permission_classes = [IsAuthenticated, VerifyPhysicalDocumentsPermission]
+
+    def post(self, request, pk):
+        confirm = request.data.get("confirm")
+        if confirm is not True and str(confirm).lower() not in ("true", "1", "yes"):
+            return Response(
+                {"detail": "Send JSON body {\"confirm\": true} to clear verification."},
+                status=400,
+            )
+        student = get_object_or_404(AdmittedStudent, pk=pk)
+        if not student.physical_documents_verified:
+            return Response({"detail": "This student is not marked as physically verified."}, status=400)
+        student.physical_documents_verified = False
+        student.physical_documents_verified_at = None
+        student.physical_documents_verified_by = None
+        student.physical_documents_notes = ""
+        student.save(
+            update_fields=[
+                "physical_documents_verified",
+                "physical_documents_verified_at",
+                "physical_documents_verified_by",
+                "physical_documents_notes",
+                "updated_at",
+            ]
+        )
+        log_audit_event(
+            request.user,
+            "phys_clear",
+            student,
+            f"Physical document verification cleared for admitted student id={student.pk} "
+            f"student_id={student.student_id}",
+            request,
+        )
+        student = AdmittedStudent.objects.select_related(
+            "physical_documents_verified_by",
+            "admitted_program__faculty",
+            "admitted_batch",
+            "admitted_campus",
+            "application__applicant",
+        ).get(pk=student.pk)
+        return Response(AdmittedStudentListSerializer(student).data, status=200)
 
 # update admitted students
 class UpdateAdmittedStudent(generics.UpdateAPIView):
@@ -1366,6 +1487,7 @@ class CandidateAdmission(generics.RetrieveAPIView):
         'admitted_batch',
         'admitted_campus',
         'admitted_by',
+        'physical_documents_verified_by',
     ).prefetch_related('admitted_program__campuses')
     serializer_class = AdmissionDetailSerializer
     lookup_field = "id"
@@ -1439,10 +1561,10 @@ class DownloadAdmissionPDF(APIView):
         _backend_root = _os.path.dirname(_here)                          # project root
         _frontend_pub = _os.path.join(
             _os.path.dirname(_backend_root),
-            'Ndu_portal_frontend', 'NDU_PORTAL', 'public',
+            'NDU_Admission_Frontend', 'public',
         )
         logo_b64 = ""
-        for _ext in ('Ndejje_University_Logo.jpg', 'Ndejje_University_Logo.png'):
+        for _ext in ('Ndejje_University_Logo.png', 'Ndejje_University_Logo.jpg'):
             _logo_path = _os.path.join(_frontend_pub, _ext)
             if _os.path.exists(_logo_path):
                 with open(_logo_path, 'rb') as _f:

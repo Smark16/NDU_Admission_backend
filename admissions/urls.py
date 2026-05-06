@@ -66,6 +66,14 @@ urlpatterns = [
     path('create_admissions', views.AdmitStudent.as_view()),
     path('update_admission/<int:pk>/', views.UpdateAdmittedStudent.as_view()),
     path('list_admitted_students',  views.ListAdmittedStudents.as_view()),
+    path(
+        'admitted_students/<int:pk>/verify_physical_documents/',
+        views.MarkPhysicalDocumentsVerified.as_view(),
+    ),
+    path(
+        'admitted_students/<int:pk>/clear_physical_documents/',
+        views.ClearPhysicalDocumentsVerification.as_view(),
+    ),
     path('delete_admission/<int:pk>/', views.DeleteAdmittedStudent.as_view()),
     path('candidate_admission/<int:admission_id>/', views.CandidateAdmission.as_view()),
     path('student-profile/pdf/<int:application_id>/', views.DownloadAdmissionPDF.as_view(), name='download_admission_pdf'),

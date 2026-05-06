@@ -38,7 +38,8 @@ class ListFeePlan(generics.ListAPIView):
     ).prefetch_related('academic_level')
     
     serializer_class = ListApplicationFeeSerializer
-    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    # Applicants must read active fee rows to pay and submit; model permissions would block them.
+    permission_classes = [IsAuthenticated]
 
     def get(self, request, *args, **kwargs):
         cache_key = 'all_fee_plans_list'

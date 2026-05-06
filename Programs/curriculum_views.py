@@ -40,6 +40,7 @@ from .models import (
     ProgramCurriculumLine,
     ProgramCurriculumVersion,
     Semester,
+    ensure_program_default_curriculum_version,
     resolve_program_default_curriculum_version,
 )
 from .serializers import ProgramCurriculumLineSerializer, ProgramCurriculumVersionSerializer
@@ -63,10 +64,10 @@ class ListCreateCurriculumView(APIView):
                 )
             return version, None
 
-        version = resolve_program_default_curriculum_version(program)
+        version = ensure_program_default_curriculum_version(program)
         if not version:
             return None, Response(
-                {'detail': 'No curriculum version exists for this programme. Create one first.'},
+                {'detail': 'Could not resolve curriculum version for this programme.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         return version, None
@@ -148,9 +149,6 @@ class ListCreateCurriculumView(APIView):
 
     def post(self, request, program_id):
         program = get_object_or_404(Program, pk=program_id)
-        curriculum_version, error = ListCreateCurriculumView._resolve_version(program, request)
-        if error:
-            return error
         curriculum_version, error = self._resolve_version(program, request)
         if error:
             return error
@@ -248,6 +246,7 @@ class CurriculumVersionListCreateView(APIView):
 
     def get(self, request, program_id):
         program = get_object_or_404(Program, pk=program_id)
+        ensure_program_default_curriculum_version(program)
         qs = ProgramCurriculumVersion.objects.filter(program=program).order_by('-is_default', 'name')
         active_only = request.query_params.get('active_only', 'false').lower() == 'true'
         if active_only:

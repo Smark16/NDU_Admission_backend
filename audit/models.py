@@ -6,11 +6,13 @@ from accounts.models import User
 class AuditLog(models.Model): 
     ACTION_CHOICES = [
         ('login', 'Login'),
-        ('register', 'register')
+        ('register', 'register'),
+        ('phys_verify', 'Physical documents verified'),
+        ('phys_clear', 'Physical documents verification cleared'),
     ]
     
     user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
-    action = models.CharField(max_length=20, choices=ACTION_CHOICES)
+    action = models.CharField(max_length=32, choices=ACTION_CHOICES)
     content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE, null=True, blank=True)
     object_id = models.PositiveIntegerField(null=True, blank=True)
     content_object = GenericForeignKey('content_type', 'object_id')

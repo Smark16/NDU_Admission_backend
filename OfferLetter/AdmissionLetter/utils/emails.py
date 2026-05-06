@@ -1,8 +1,9 @@
 from ndu_portal.send_grid import send_configurable_email
 
 def offerletter_email(applicant_local, subject = "Admission letter sent successfully" ):
+    name_caps = f"{applicant_local.first_name or ''} {applicant_local.last_name or ''}".strip().upper()
     body = (
-            f"Dear {applicant_local.first_name} {applicant_local.last_name},\n\n"
+            f"Dear {name_caps},\n\n"
             f"CONGRATULATIONS!\n\n"
             f"We are delighted to inform you that your admission letter has been **successfully sent to your portal**.\n\n"
             f"Next Steps:\n"

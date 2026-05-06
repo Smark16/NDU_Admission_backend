@@ -272,8 +272,14 @@ def send_offer_letter(request, applicant_id):
     else:
         hall = "To Be Assigned"
 
+    _fn = (applicant.first_name or "").strip()
+    _ln = (applicant.last_name or "").strip()
+    _full = f"{_fn} {_ln}".strip().upper()
+
     context = {
-        "full_name": f"{applicant.first_name} {applicant.last_name}",
+        "full_name": _full,
+        "first_name": _fn.upper(),
+        "last_name": _ln.upper(),
         "phone_number": applicant.phone or "",
         "phone": applicant.phone or "",
         "student_no": admission.student_id or "TBD",
@@ -467,7 +473,7 @@ def verify_offer_letter_public(request, token: str):
     return Response(
         {
             "valid": True,
-            "student_name": f"{app.first_name} {app.last_name}".strip(),
+            "student_name": f"{app.first_name or ''} {app.last_name or ''}".strip().upper(),
             "programme": admission.admitted_program.name
             if admission and admission.admitted_program
             else None,

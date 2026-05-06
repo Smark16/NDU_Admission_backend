@@ -73,10 +73,11 @@ class Program(models.Model):
         return 3 if self.calendar_type == 'trimester' else 2
 
     def credit_summary(self, curriculum_version=None):
-        """Compute curriculum completeness against minimum_graduation_load.
+        """Compute curriculum completeness against effective minimum graduation load.
 
-        Queries active curriculum lines only.  Returns a plain dict — safe to
-        embed directly in any serializer or API response.
+        When ``curriculum_version`` is set, compares totals to that version's
+        effective minimum (version override if set, else programme default).
+        Queries active curriculum lines only. Returns a plain dict for API use.
         """
         from django.db.models import Sum
 
@@ -95,28 +96,36 @@ class Program(models.Model):
             ),
         )
 
-        total     = agg['total']     or Decimal('0.00')
+        total = agg['total'] or Decimal('0.00')
         mandatory = agg['mandatory'] or Decimal('0.00')
-        elective  = agg['elective']  or Decimal('0.00')
-        min_load  = self.minimum_graduation_load or Decimal('0.00')
+        elective = agg['elective'] or Decimal('0.00')
+        programme_min = self.minimum_graduation_load or Decimal('0.00')
+        if curriculum_version is not None:
+            min_load = curriculum_version.effective_minimum_graduation_load
+            inherits_programme_default = curriculum_version.minimum_graduation_load is None
+        else:
+            min_load = programme_min
+            inherits_programme_default = True
 
         if min_load == Decimal('0.00'):
-            credit_status = 'no_minimum_set'
+            credit_status = 'unknown'
         elif total < min_load:
-            credit_status = 'below_minimum'
+            credit_status = 'deficit'
         elif total == min_load:
-            credit_status = 'meets_minimum'
+            credit_status = 'ok'
         else:
-            credit_status = 'exceeds_minimum'
+            credit_status = 'excess'
 
         return {
             'minimum_graduation_load': str(min_load),
-            'total_mapped_credits':    str(total),
-            'mandatory_credits':       str(mandatory),
-            'elective_credits':        str(elective),
-            'credit_status':           credit_status,
-            'credit_deficit':          str(max(Decimal('0.00'), min_load - total)),
-            'credit_excess':           str(max(Decimal('0.00'), total - min_load)),
+            'programme_minimum_graduation_load': str(programme_min),
+            'graduation_load_inherits_from_programme': inherits_programme_default,
+            'total_mapped_credits': str(total),
+            'mandatory_credits': str(mandatory),
+            'elective_credits': str(elective),
+            'credit_status': credit_status,
+            'credit_deficit': str(max(Decimal('0.00'), min_load - total)),
+            'credit_excess': str(max(Decimal('0.00'), total - min_load)),
         }
 
 
@@ -137,6 +146,16 @@ class ProgramCurriculumVersion(models.Model):
     description = models.TextField(blank=True, default="")
     is_active = models.BooleanField(default=True)
     is_default = models.BooleanField(default=False)
+    minimum_graduation_load = models.DecimalField(
+        max_digits=6,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text=(
+            "Optional minimum total credit units for this version. "
+            "Leave blank to use the programme's minimum_graduation_load."
+        ),
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -150,6 +169,13 @@ class ProgramCurriculumVersion(models.Model):
         tag = " (default)" if self.is_default else ""
         return f"{self.program.short_form} - {self.name}{tag}"
 
+    @property
+    def effective_minimum_graduation_load(self) -> Decimal:
+        """Minimum credits for summaries: version override, else programme default."""
+        if self.minimum_graduation_load is not None:
+            return self.minimum_graduation_load
+        return self.program.minimum_graduation_load or Decimal('0.00')
+
 
 def resolve_program_default_curriculum_version(program: Program):
     """Best-effort default curriculum version resolver for backward compatibility."""
@@ -159,6 +185,32 @@ def resolve_program_default_curriculum_version(program: Program):
     if default_version:
         return default_version
     return program.curriculum_versions.order_by('id').first()
+
+
+def ensure_program_default_curriculum_version(program: Program):
+    """Return the programme's default curriculum version, creating one if missing.
+
+    Older programmes (pre–curriculum-version feature) had no rows here, which
+    blocked the admin UI from loading versions or mapping catalog courses.
+    """
+    if not program:
+        return None
+    existing = resolve_program_default_curriculum_version(program)
+    if existing:
+        return existing
+
+    from django.db import IntegrityError
+
+    try:
+        return ProgramCurriculumVersion.objects.create(
+            program=program,
+            name="Default curriculum",
+            description="Created automatically. Rename or add more versions as needed.",
+            is_active=True,
+            is_default=True,
+        )
+    except IntegrityError:
+        return ProgramCurriculumVersion.objects.filter(program=program).order_by("id").first()
 
 
 # =============================================================================

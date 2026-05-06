@@ -45,6 +45,8 @@ class ProgramCurriculumVersionSerializer(serializers.ModelSerializer):
     program_name = serializers.CharField(source="program.name", read_only=True)
     program_short_form = serializers.CharField(source="program.short_form", read_only=True)
     lines_count = serializers.IntegerField(source="lines.count", read_only=True)
+    effective_minimum_graduation_load = serializers.SerializerMethodField(read_only=True)
+    graduation_load_inherits_from_programme = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = ProgramCurriculumVersion
@@ -57,11 +59,32 @@ class ProgramCurriculumVersionSerializer(serializers.ModelSerializer):
             "description",
             "is_active",
             "is_default",
+            "minimum_graduation_load",
+            "effective_minimum_graduation_load",
+            "graduation_load_inherits_from_programme",
             "lines_count",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "created_at", "updated_at", "lines_count"]
+        read_only_fields = [
+            "id",
+            "created_at",
+            "updated_at",
+            "lines_count",
+            "effective_minimum_graduation_load",
+            "graduation_load_inherits_from_programme",
+        ]
+
+    def get_effective_minimum_graduation_load(self, obj):
+        return str(obj.effective_minimum_graduation_load)
+
+    def get_graduation_load_inherits_from_programme(self, obj):
+        return obj.minimum_graduation_load is None
+
+    def validate_minimum_graduation_load(self, value):
+        if value is not None and value < 0:
+            raise serializers.ValidationError("Minimum graduation load cannot be negative.")
+        return value
 
     def validate_name(self, value):
         v = (value or "").strip()
@@ -305,9 +328,30 @@ class ProgramCurriculumLineSerializer(serializers.ModelSerializer):
                     f"at Year {year_of_study} Term {term_number}."
                 )
 
-        # specialization must be one of the programme's defined tracks (if defined)
+        # No track-specific lines before the programme's specialization entry point
+        from .specialization_rules import has_complete_specialization_entry, is_before_specialization_entry
+
         specialization = attrs.get('specialization', getattr(self.instance, 'specialization', None))
         spec_value = (specialization or '').strip()
+        if (
+            program
+            and program.has_specialization
+            and has_complete_specialization_entry(program)
+            and year_of_study is not None
+            and term_number is not None
+            and is_before_specialization_entry(program, int(year_of_study), int(term_number))
+            and spec_value
+        ):
+            ey = program.specialization_entry_year
+            et = program.specialization_entry_term
+            raise serializers.ValidationError({
+                'specialization': (
+                    f"Track-specific courses are not allowed before specialization entry "
+                    f"(Year {ey} Term {et}). Use a blank / shared course for all students in earlier terms."
+                )
+            })
+
+        # specialization must be one of the programme's defined tracks (if defined)
         if spec_value and program:
             allowed = list(
                 ProgramSpecialization.objects.filter(program=program, is_active=True)
