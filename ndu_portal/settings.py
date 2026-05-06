@@ -238,8 +238,7 @@ CSRF_TRUSTED_ORIGINS = [
     'https://applications.ndu.ac.ug',
     'https://applications-admin.ndu.ac.ug',
     'http://172.17.31.147',
-    "https://admissions.ndu.ac.ug",
-    "https://erp.ndejje.ndu.ac.ug"
+    "https://admissions.ndu.ac.ug"
 ]
 
 CORS_ALLOWED_ORIGINS = [
@@ -253,7 +252,6 @@ CORS_ALLOWED_ORIGINS = [
    'https://applications-admin.ndu.ac.ug',
    'https://admissions.ndu.ac.ug',
    'http://137.63.139.78',
-   "https://erp.ndejje.ndu.ac.ug"
 ]
 
 CORS_ALLOW_CREDENTIALS = True
