@@ -284,6 +284,7 @@ class CheckPaymentStatus(APIView):
 
         return Response({
             'status': payment.status,
+            "transactionId":payment.transaction_id,
             })
 # ========================================================end schoolpay====================================================
 

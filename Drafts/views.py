@@ -94,36 +94,36 @@ def save_draft_applications(request):
         draft.status = data.get('status', 'draft')
 
         # Programs (ManyToMany)
-        # programs_input = request.data.getlist('programs')
+        programs_input = request.data.getlist('programs')
 
-        # if programs_input:
-        #     valid_program_ids = []
-        #     for p in programs_input:
-        #         try:
-        #             pid = int(p)
-        #             if pid > 0:
-        #                 valid_program_ids.append(pid)
-        #         except (ValueError, TypeError):
-        #             continue
-        #     draft.programs.set(valid_program_ids)
-        # else:
-        #     draft.programs.clear()
-
-        programs_data = request.data.get('programs')
-
-        if programs_data:
-            try:
-                if isinstance(programs_data, str):
-                    program_list = json.loads(programs_data)
-                else:
-                    program_list = programs_data
-
-                valid_ids = [int(pid) for pid in program_list if str(pid).isdigit() and int(pid) > 0]
-                draft.programs.set(valid_ids)
-            except:
-                draft.programs.clear()
+        if programs_input:
+            valid_program_ids = []
+            for p in programs_input:
+                try:
+                    pid = int(p)
+                    if pid > 0:
+                        valid_program_ids.append(pid)
+                except (ValueError, TypeError):
+                    continue
+            draft.programs.set(valid_program_ids)
         else:
             draft.programs.clear()
+
+        # programs_data = request.data.get('programs')
+
+        # if programs_data:
+        #     try:
+        #         if isinstance(programs_data, str):
+        #             program_list = json.loads(programs_data)
+        #         else:
+        #             program_list = programs_data
+
+        #         valid_ids = [int(pid) for pid in program_list if str(pid).isdigit() and int(pid) > 0]
+        #         draft.programs.set(valid_ids)
+        #     except:
+        #         draft.programs.clear()
+        # else:
+        #     draft.programs.clear()
 
         # Date of birth
         dob_str = data.get('dateOfBirth')
@@ -239,8 +239,8 @@ def get_draft_application(request):
             "campus": str(draft.campus_id) if draft.campus_id else "",
             "academic_level": str(draft.academic_level_id) if draft.academic_level_id else "",
             
-            # "programs": list(draft.programs.values_list('id', flat=True)) if draft.programs.exists() else [],
-            "programs": list(draft.programs.order_by('id').values_list('id', flat=True)),
+            "programs": list(draft.programs.values_list('id', flat=True)) if draft.programs.exists() else [],
+            # "programs": list(draft.programs.order_by('id').values_list('id', flat=True)),
 
             # O-Level
             "hasOlevel": draft.has_olevel or False,
