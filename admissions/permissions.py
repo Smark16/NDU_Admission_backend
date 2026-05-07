@@ -1,5 +1,3 @@
-"""DRF permissions for admissions workflows."""
-
 from rest_framework.permissions import BasePermission
 
 from accounts.erp_drf_permissions import user_has_any_erp_perm

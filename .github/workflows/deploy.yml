@@ -30,9 +30,6 @@ jobs:
           source venv/bin/activate
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          rm -f ***/migrations/0003_application_school_pay_reference.py
-          rm -f ***/migrations/0004_merge_20260507_1337.py
-          python manage.py makemigrations admissions --empty
           python manage.py makemigrations --merge --noinput
           python manage.py migrate
           python manage.py collectstatic --noinput
