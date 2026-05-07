@@ -275,19 +275,19 @@ class AdmittedStudent(models.Model):
     registration_date = models.DateTimeField(null=True, blank=True)
 
     # Physical document verification (original hard-copy check — separate from registration)
-    physical_documents_verified = models.BooleanField(default=False)
-    physical_documents_verified_at = models.DateTimeField(null=True, blank=True)
-    physical_documents_verified_by = models.ForeignKey(
-        User,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="physical_document_verifications",
-    )
-    physical_documents_notes = models.TextField(
-        blank=True,
-        help_text="Staff notes when documents were verified at the desk",
-    )
+    # physical_documents_verified = models.BooleanField(default=False)
+    # physical_documents_verified_at = models.DateTimeField(null=True, blank=True)
+    # physical_documents_verified_by = models.ForeignKey(
+    #     User,
+    #     on_delete=models.SET_NULL,
+    #     null=True,
+    #     blank=True,
+    #     related_name="physical_document_verifications",
+    # )
+    # physical_documents_notes = models.TextField(
+    #     blank=True,
+    #     help_text="Staff notes when documents were verified at the desk",
+    # )
     
     # Notes
     admission_notes = models.TextField(blank=True, help_text="Notes about the admission")
@@ -310,7 +310,7 @@ class AdmittedStudent(models.Model):
             models.Index(fields=['is_registered']),
             models.Index(fields=['admitted_batch', 'is_admitted']),
             models.Index(fields=['is_admitted']),
-            models.Index(fields=['physical_documents_verified']),
+            # models.Index(fields=['physical_documents_verified']),
         ]
     
     def __str__(self):

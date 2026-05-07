@@ -18,19 +18,19 @@ class AdmittedStudentAdmin(admin.ModelAdmin):
         'admitted_program',
         'admitted_campus',
         'is_registered',
-        'physical_documents_verified',
-        'physical_documents_verified_at',
-        'physical_documents_verified_by',
+        # 'physical_documents_verified',
+        # 'physical_documents_verified_at',
+        # 'physical_documents_verified_by',
     ]
     list_filter = [
         'is_registered',
-        'physical_documents_verified',
+        # 'physical_documents_verified',
         'admitted_batch',
         'admitted_campus',
         'is_admitted',
     ]
     search_fields = ['student_id', 'reg_no', 'application__first_name', 'application__last_name']
-    raw_id_fields = ('physical_documents_verified_by',)
+    # raw_id_fields = ('physical_documents_verified_by',)
 
 @admin.register(AcademicLevel)
 class AcademicLevelAdmin(admin.ModelAdmin):
