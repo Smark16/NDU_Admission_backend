@@ -272,6 +272,16 @@ class AdmittedStudent(models.Model):
     admission_letter_sent = models.BooleanField(default=False)
     admission_letter_sent_at = models.DateTimeField(null=True, blank=True)
     is_admitted= models.BooleanField(default=False)
+    is_revoked = models.BooleanField(default=False)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    revoked_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="revoked_admissions",
+    )
+    revocation_reason = models.TextField(blank=True, default="")
     
     # Registration information (official registration only — do not conflate with document checks)
     is_registered = models.BooleanField(default=False)
@@ -306,6 +316,7 @@ class AdmittedStudent(models.Model):
         verbose_name_plural = "Admitted Students"
         permissions = [
             ("verify_physical_documents", "Can verify physical admission documents"),
+            ("revoke_admission", "Can revoke admitted students"),
         ]
  
         indexes = [
