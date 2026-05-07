@@ -113,25 +113,25 @@ class ProgramSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
     def validate(self, attrs):
-        from .specialization_rules import MSG_PROGRAM_ENTRY_FIELDS
-
         has_spec = attrs.get('has_specialization')
         if has_spec is None and self.instance:
-            has_spec = self.instance.has_specialization
-        if has_spec is None:
-            has_spec = False
+            has_spec = getattr(self.instance, 'has_specialization', False)
         if not has_spec:
             return attrs
 
-        ey = attrs.get('specialization_entry_year')
-        et = attrs.get('specialization_entry_term')
-        if self.instance:
-            if ey is None:
-                ey = self.instance.specialization_entry_year
-            if et is None:
-                et = self.instance.specialization_entry_term
-        if ey is None or et is None:
-            raise serializers.ValidationError(MSG_PROGRAM_ENTRY_FIELDS)
+        try:
+            from .specialization_rules import MSG_PROGRAM_ENTRY_FIELDS
+            ey = attrs.get('specialization_entry_year')
+            et = attrs.get('specialization_entry_term')
+            if self.instance:
+                if ey is None:
+                    ey = getattr(self.instance, 'specialization_entry_year', None)
+                if et is None:
+                    et = getattr(self.instance, 'specialization_entry_term', None)
+            if ey is None or et is None:
+                raise serializers.ValidationError(MSG_PROGRAM_ENTRY_FIELDS)
+        except ImportError:
+            pass
         return attrs
 
     def to_representation(self, instance):
@@ -149,8 +149,6 @@ class ListProgramsSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'name', 'code', 'short_form', 'faculty', 'academic_level',
             'campuses', 'min_years', 'max_years',
-            'calendar_type', 'minimum_graduation_load',
-            'has_specialization', 'specialization_entry_year', 'specialization_entry_term',
             'is_active', 'created_at', 'updated_at',
         ]
 
