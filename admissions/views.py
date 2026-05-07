@@ -659,7 +659,11 @@ class SingleApplication(generics.RetrieveAPIView):
                 'applicant', 'batch', 'campus', 'academic_level', 'reviewed_by').get(pk=application_id)
 
             serializer = SingleApplicationSerializer(application)
-            return Response(serializer.data, status=200)
+            data = serializer.data
+            # Keep review page consistent: once admission record exists, expose status as admitted.
+            if AdmittedStudent.objects.filter(application_id=application.id).exists():
+                data["status"] = "admitted"
+            return Response(data, status=200)
         except Application.DoesNotExist:
             return Response({"detail":"Application not found"})
         
