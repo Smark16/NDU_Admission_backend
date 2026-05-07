@@ -115,17 +115,17 @@ class Application(models.Model):
     next_of_kin_relationship = models.CharField(max_length=20)
     
     # O-Level Information
-    olevel_year = models.PositiveIntegerField()
-    olevel_index_number = models.CharField(max_length=50)
-    olevel_school = models.CharField(max_length=200)
+    olevel_year = models.PositiveIntegerField(null=True, blank=True)
+    olevel_index_number = models.CharField(max_length=50, null=True, blank=True)
+    olevel_school = models.CharField(max_length=200, null=True, blank=True)
     
     # O-Level / A-Level flags (column exists in DB; must be set explicitly on every INSERT)
     has_olevel = models.BooleanField(default=False)
     has_alevel = models.BooleanField(default=False)
-    alevel_year = models.PositiveIntegerField()
-    alevel_index_number = models.CharField(max_length=50)
-    alevel_school = models.CharField(max_length=200)
-    alevel_combination = models.CharField(max_length=10)
+    alevel_year = models.PositiveIntegerField(null=True, blank=True)
+    alevel_index_number = models.CharField(max_length=50, null=True, blank=True)
+    alevel_school = models.CharField(max_length=200, null=True, blank=True)
+    alevel_combination = models.CharField(max_length=10, null=True, blank=True)
     
     # Source / audit tracing (direct entry, legacy migration, portal)
     SOURCE_PORTAL = 'portal'
