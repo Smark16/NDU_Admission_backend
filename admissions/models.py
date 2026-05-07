@@ -119,7 +119,8 @@ class Application(models.Model):
     olevel_index_number = models.CharField(max_length=50)
     olevel_school = models.CharField(max_length=200)
     
-    # A-Level Information
+    # O-Level / A-Level flags (column exists in DB; must be set explicitly on every INSERT)
+    has_olevel = models.BooleanField(default=False)
     has_alevel = models.BooleanField(default=False)
     alevel_year = models.PositiveIntegerField()
     alevel_index_number = models.CharField(max_length=50)
