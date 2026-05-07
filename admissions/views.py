@@ -1,4 +1,5 @@
 from accounts.models import Campus
+from accounts.erp_drf_permissions import CanViewAdmissionQueues
 from .models import *
 from rest_framework.views import APIView
 from django.shortcuts import get_object_or_404
@@ -540,7 +541,7 @@ def create_direct_applications(request):
 # list applications
 class ListApplications(generics.ListAPIView):
     serializer_class = ListApplicationsSerializer
-    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    permission_classes = [IsAuthenticated, CanViewAdmissionQueues]
 
     def get_queryset(self):
         qs = Application.objects.filter(
@@ -562,7 +563,7 @@ class ListApplications(generics.ListAPIView):
 
 class AllApplicationsReport(generics.ListAPIView):
     serializer_class = AllApplicationsReportSerializer
-    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    permission_classes = [IsAuthenticated, CanViewAdmissionQueues]
 
     def get_queryset(self):
 
@@ -580,13 +581,13 @@ class ListDirectEntryApplications(generics.ListAPIView):
         .order_by("-created_at")
     )
     serializer_class = AllApplicationsReportSerializer
-    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    permission_classes = [IsAuthenticated, CanViewAdmissionQueues]
 
 
 class ListRejectedApplications(generics.ListAPIView):
     """Rejected-only queue; AllApplicationsReport excludes these rows."""
     serializer_class = AllApplicationsReportSerializer
-    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    permission_classes = [IsAuthenticated, CanViewAdmissionQueues]
 
     def get_queryset(self):
         return (
