@@ -1243,59 +1243,59 @@ class AdmitStudent(generics.CreateAPIView):
                 Application.objects.filter(id=application.id).update(status="Admitted")
 
                 # Student Account Creation (Non-blocking)
-                try:
-                    from accounts.models import User
-                    applicant = application.applicant
-                    student_username = str(admission.reg_no).strip().replace("/", "_")
+                # try:
+                #     from accounts.models import User
+                #     applicant = application.applicant
+                #     student_username = str(admission.reg_no).strip().replace("/", "_")
 
-                    if not getattr(admission, 'student_user_id', None):
-                        student_user, created = User.objects.get_or_create(
-                            username=student_username,
-                            defaults={
-                                'first_name': applicant.first_name or "",
-                                'last_name': applicant.last_name or "",
-                                'email': applicant.email,
-                                'is_student': True,
-                                'must_change_password': True,
-                            }
-                        )
-                        if created:
-                            student_user.set_password('NDU@1234')
-                            student_user.save()
+                #     if not getattr(admission, 'student_user_id', None):
+                #         student_user, created = User.objects.get_or_create(
+                #             username=student_username,
+                #             defaults={
+                #                 'first_name': applicant.first_name or "",
+                #                 'last_name': applicant.last_name or "",
+                #                 'email': applicant.email,
+                #                 'is_student': True,
+                #                 'must_change_password': True,
+                #             }
+                #         )
+                #         if created:
+                #             student_user.set_password('NDU@1234')
+                #             student_user.save()
 
-                        admission.student_user = student_user
-                        admission.save(update_fields=['student_user'])
-                except Exception as e:
-                    logger.warning(f"Student account creation failed: {e}")
+                #         admission.student_user = student_user
+                #         admission.save(update_fields=['student_user'])
+                # except Exception as e:
+                #     logger.warning(f"Student account creation failed: {e}")
 
                 # Auto Enrollment (Non-blocking)
-                try:
-                    from django.utils import timezone
-                    from payments.models import RegistrationSettings
-                    from Programs.models import StudentProgrammeEnrollment, ProgramBatch
+                # try:
+                #     from django.utils import timezone
+                #     from payments.models import RegistrationSettings
+                #     from Programs.models import StudentProgrammeEnrollment, ProgramBatch
 
-                    reg_settings = RegistrationSettings.get_settings()
+                #     reg_settings = RegistrationSettings.get_settings()
 
-                    # Get or create ProgramBatch
-                    program_batch = ProgramBatch.objects.filter(
-                        program=admission.admitted_program
-                    ).order_by('-is_active', '-start_date').first()
+                #     # Get or create ProgramBatch
+                #     program_batch = ProgramBatch.objects.filter(
+                #         program=admission.admitted_program
+                #     ).order_by('-is_active', '-start_date').first()
 
-                    if program_batch:
-                        StudentProgrammeEnrollment.objects.get_or_create(
-                            student=admission,
-                            defaults={
-                                'program': admission.admitted_program,
-                                'program_batch': program_batch,
-                                'current_year_of_study': 1,
-                                'current_term_number': 1,
-                                'status': "enrolled" if reg_settings.auto_enroll_on_admission else "pending",
-                                'enrolled_by': request.user if reg_settings.auto_enroll_on_admission else None,
-                                'enrolled_at': timezone.now() if reg_settings.auto_enroll_on_admission else None,
-                            }
-                        )
-                except Exception as e:
-                    logger.warning(f"Auto-enrollment failed: {e}")
+                #     if program_batch:
+                #         StudentProgrammeEnrollment.objects.get_or_create(
+                #             student=admission,
+                #             defaults={
+                #                 'program': admission.admitted_program,
+                #                 'program_batch': program_batch,
+                #                 'current_year_of_study': 1,
+                #                 'current_term_number': 1,
+                #                 'status': "enrolled" if reg_settings.auto_enroll_on_admission else "pending",
+                #                 'enrolled_by': request.user if reg_settings.auto_enroll_on_admission else None,
+                #                 'enrolled_at': timezone.now() if reg_settings.auto_enroll_on_admission else None,
+                #             }
+                #         )
+                # except Exception as e:
+                #     logger.warning(f"Auto-enrollment failed: {e}")
 
                 return Response(self.serializer_class(admission).data, status=201)
 
