@@ -120,6 +120,7 @@ class Application(models.Model):
     olevel_school = models.CharField(max_length=200)
     
     # A-Level Information
+    has_alevel = models.BooleanField(default=False)
     alevel_year = models.PositiveIntegerField()
     alevel_index_number = models.CharField(max_length=50)
     alevel_school = models.CharField(max_length=200)

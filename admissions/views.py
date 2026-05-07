@@ -146,6 +146,7 @@ def create_applications(request):
             application = Application(**serializer.validated_data)
             application.applicant = request.user
             application.status = "submitted"
+            application.has_alevel = str(request.data.get('has_alevel', '')).lower() in ('true', '1', 'yes')
 
             if payment:
                 application.application_fee_paid = True
@@ -419,6 +420,7 @@ def create_direct_applications(request):
             application.entered_by = request.user
             application.application_fee_paid = True
             application.is_direct_entry = True
+            application.has_alevel = str(request.data.get('has_alevel', '')).lower() in ('true', '1', 'yes')
 
             if passport_photo := files.get("passport_photo"):
                 application.passport_photo = passport_photo
