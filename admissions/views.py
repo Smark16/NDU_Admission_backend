@@ -582,8 +582,11 @@ class AllApplicationsReport(generics.ListAPIView):
 
 class ListDirectEntryApplications(generics.ListAPIView):
     queryset = (
-        Application.objects.filter(is_direct_entry=True)
-        .exclude(status__in=["admitted", "rejected", "draft"])
+        Application.objects.filter(
+            is_direct_entry=True,
+            admission__isnull=True,  # hide rows already admitted even if status is stale
+        )
+        .exclude(status__in=["rejected", "draft"])
         .select_related("academic_level", "batch", "campus", "entered_by")
         .prefetch_related("programs", "programs__faculty")
         .order_by("-created_at")
