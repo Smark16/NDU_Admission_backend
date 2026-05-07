@@ -391,7 +391,10 @@ def create_direct_applications(request):
             account_password = 'applicant@12345'
             is_new_account = False
 
-            user = User.objects.filter(email=email).first()
+            # Reuse existing account by either email or username to avoid unique collisions.
+            user = User.objects.filter(
+                Q(email__iexact=email) | Q(username__iexact=email)
+            ).first()
             if not user:
                 # Create new user
                 base_username = email.split('@')[0]
@@ -406,7 +409,7 @@ def create_direct_applications(request):
                     first_name=data.get('first_name', ''),
                     last_name=data.get('last_name', ''),
                     phone=data.get('phone', ''),
-                    username=email,
+                    username=username,
                     is_applicant=True,
                 )
 
@@ -549,7 +552,7 @@ class ListApplications(generics.ListAPIView):
 
     def get_queryset(self):
         qs = Application.objects.filter(
-            ~Q(status__in=['draft', 'accepted', 'Admitted', 'rejected']),
+            ~Q(status__in=['draft', 'accepted', 'admitted', 'Admitted', 'rejected']),
             is_direct_entry=False
         ).order_by('created_at')
 
@@ -574,7 +577,7 @@ class AllApplicationsReport(generics.ListAPIView):
         return Application.objects.select_related(
             'academic_level', 'batch', 'campus', 'entered_by'
         ).prefetch_related('programs', 'programs__faculty').filter(
-            ~Q(status__in=['draft', 'accepted', 'Admitted', 'rejected']),
+            ~Q(status__in=['draft', 'accepted', 'admitted', 'Admitted', 'rejected']),
         ).order_by('created_at')
 
 class ListDirectEntryApplications(generics.ListAPIView):
