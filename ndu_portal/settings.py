@@ -252,8 +252,6 @@ CORS_ALLOWED_ORIGINS = [
     "http://applications-admin.ndu.ac.ug",
     "http://localhost:5173",
     "http://127.0.0.1:5173",
-    "http://localhost:3001",
-    "http://127.0.0.1:3001",
     "https://admissions.ndu.ac.ug",
     "http://localhost:3001",
     "https://erp.ndejje.ndu.ac.ug",

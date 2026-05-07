@@ -303,7 +303,6 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
     is_approved = serializers.SerializerMethodField()
     approved_by_name = serializers.SerializerMethodField()
     approved_at = serializers.SerializerMethodField()
-    revoked_by_name = serializers.SerializerMethodField()
 
     class Meta:
         model = AdmittedStudent
@@ -325,10 +324,6 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
             'is_approved',
             'approved_by_name',
             'approved_at',
-            'is_revoked',
-            'revoked_at',
-            'revoked_by_name',
-            'revocation_reason',
         ]
 
     def get_faculty(self, obj):
@@ -359,12 +354,6 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
     def get_approved_at(self, obj):
         return getattr(obj, "approved_at", None)
 
-    def get_revoked_by_name(self, obj):
-        user = getattr(obj, "revoked_by", None)
-        if user is None:
-            return None
-        return user.get_full_name() or getattr(user, "username", None)
-
 # admission detail serializer
 class AdmissionDetailSerializer(serializers.ModelSerializer):
     class Meta:
@@ -380,9 +369,6 @@ class AdmissionDetailSerializer(serializers.ModelSerializer):
             'application',
             'is_registered',
             'registration_date',
-            'is_revoked',
-            'revoked_at',
-            'revocation_reason',
         ]
 
     def to_representation(self, instance):
