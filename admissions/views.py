@@ -1380,7 +1380,9 @@ class ListAdmittedStudents(generics.ListAPIView):
     ).all()
 
     serializer_class = AdmittedStudentListSerializer
-    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    # Align with other admissions queues so ERP-access staff can view admitted list
+    # even when model-level Django perms are not fully synchronized.
+    permission_classes = [IsAuthenticated, CanViewAdmissionQueues]
 
     def get_queryset(self):
         qs = super().get_queryset()
