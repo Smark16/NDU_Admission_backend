@@ -395,19 +395,12 @@ def create_direct_applications(request):
             ).first()
             if not user:
                 # Create new user
-                base_username = email.split('@')[0]
-                username = base_username
-                counter = 1
-                while User.objects.filter(username=username).exists():
-                    username = f"{base_username}_{counter}"
-                    counter += 1
-
                 user = User.objects.create(
                     email=email,
                     first_name=data.get('first_name', ''),
                     last_name=data.get('last_name', ''),
                     phone=data.get('phone', ''),
-                    username=username,
+                    username=email,
                     is_applicant=True,
                 )
 
@@ -420,11 +413,8 @@ def create_direct_applications(request):
             application.applicant = user
             application.status = "submitted"
             application.entered_by = request.user
-            application.application_fee_paid = fee_paid
-            application.school_pay_reference = school_pay_ref or None
+            application.application_fee_paid = True
             application.is_direct_entry = True
-            application.has_olevel = str(request.data.get('has_olevel', '')).lower() in ('true', '1', 'yes')
-            application.has_alevel = str(request.data.get('has_alevel', '')).lower() in ('true', '1', 'yes')
 
             if passport_photo := files.get("passport_photo"):
                 application.passport_photo = passport_photo
@@ -547,11 +537,11 @@ def create_direct_applications(request):
 # list applications
 class ListApplications(generics.ListAPIView):
     serializer_class = ListApplicationsSerializer
-    permission_classes = [IsAuthenticated, CanViewAdmissionQueues]
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
     def get_queryset(self):
         qs = Application.objects.filter(
-            ~Q(status__in=['draft', 'accepted', 'admitted', 'Admitted', 'rejected']),
+            ~Q(status__in=['draft', 'Admitted', 'rejected']),
             is_direct_entry=False
         ).order_by('created_at')
 
@@ -569,46 +559,25 @@ class ListApplications(generics.ListAPIView):
 
 class AllApplicationsReport(generics.ListAPIView):
     serializer_class = AllApplicationsReportSerializer
-    permission_classes = [IsAuthenticated, CanViewAdmissionQueues]
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
     def get_queryset(self):
 
         return Application.objects.select_related(
             'academic_level', 'batch', 'campus', 'entered_by'
         ).prefetch_related('programs', 'programs__faculty').filter(
-            ~Q(status__in=['draft', 'accepted', 'admitted', 'Admitted', 'rejected']),
+            ~Q(status__in=['draft', 'Admitted', 'rejected']),
         ).order_by('created_at')
 
 class ListDirectEntryApplications(generics.ListAPIView):
     queryset = (
-        Application.objects.filter(
-            is_direct_entry=True,
-            admission__isnull=True,  # hide rows already admitted even if status is stale
-        )
-        .exclude(status__in=["rejected", "draft"])
+        Application.objects.filter(is_direct_entry=True)
         .select_related("academic_level", "batch", "campus", "entered_by")
         .prefetch_related("programs", "programs__faculty")
         .order_by("-created_at")
     )
     serializer_class = AllApplicationsReportSerializer
-    permission_classes = [IsAuthenticated, CanViewAdmissionQueues]
-
-
-class ListRejectedApplications(generics.ListAPIView):
-    """Rejected-only queue; AllApplicationsReport excludes these rows."""
-    serializer_class = AllApplicationsReportSerializer
-    permission_classes = [IsAuthenticated, CanViewAdmissionQueues]
-
-    def get_queryset(self):
-        return (
-            Application.objects.select_related(
-                "academic_level", "batch", "campus", "entered_by"
-            )
-            .prefetch_related("programs", "programs__faculty")
-            .filter(status__iexact="rejected")
-            .order_by("-created_at")
-        )
-
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
 class RejectStudent(APIView):
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
@@ -658,11 +627,7 @@ class SingleApplication(generics.RetrieveAPIView):
                 'applicant', 'batch', 'campus', 'academic_level', 'reviewed_by').get(pk=application_id)
 
             serializer = SingleApplicationSerializer(application)
-            data = serializer.data
-            # Keep review page consistent: once admission record exists, expose status as admitted.
-            if AdmittedStudent.objects.filter(application_id=application.id).exists():
-                data["status"] = "admitted"
-            return Response(data, status=200)
+            return Response(serializer.data, status=200)
         except Application.DoesNotExist:
             return Response({"detail":"Application not found"})
         
@@ -689,6 +654,13 @@ class ChangeApplicationStatus(APIView):
                     return Response({"detail":"student Application does not exist"})        
         except Exception as e:
             return Response({"detail":str(e)}) 
+
+# list rejected students
+class ListRejectedApplications(generics.ListAPIView):
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    serializer_class = ListApplicationsSerializer
+    queryset = Application.objects.filter(status='rejected')
+
 # ================================subjects================================================
 
 # create O subjects
@@ -898,7 +870,7 @@ class GetActiveApplicationBatch(generics.ListAPIView):
 
 # active admission batch
 class GetActiveAdmissionBatch(generics.RetrieveAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
     queryset = Batch.objects.all()
     serializer_class = BatchSerializer
 
@@ -995,7 +967,6 @@ class CheckStudentStatus(APIView):
                 {"is_admitted_student": False, "error": str(e)},
                 status=status.HTTP_200_OK,
             )
-
 
 # =========================================================Applicant Dashboard===============================
 class ApplicantDashboard(APIView):
@@ -1105,7 +1076,6 @@ class ReviewApplication(APIView):
         application = Application.objects.select_related(
             'applicant', 'batch', 'campus', 'academic_level', 'reviewed_by'
         ).prefetch_related('programs').get(pk=application_id)
-        admission = AdmittedStudent.objects.filter(application=application).select_related("revoked_by").first()
 
         # Related queries
         olevel_results = OLevelResult.objects.filter(application=application).select_related('subject')
@@ -1113,13 +1083,8 @@ class ReviewApplication(APIView):
         documents = ApplicationDocument.objects.filter(application=application).select_related('application')
         qualifications = AdditionalQualifications.objects.filter(application=application).select_related('application')
 
-        app_payload = ApplicationDetailSerializer(application).data
-        app_payload["admission_id"] = admission.id if admission else None
-        app_payload["is_revoked"] = bool(getattr(admission, "is_revoked", False))
-        app_payload["revoked_at"] = getattr(admission, "revoked_at", None)
-        app_payload["revocation_reason"] = getattr(admission, "revocation_reason", "")
         data = {
-            'application': app_payload,
+            'application': ApplicationDetailSerializer(application).data,
             'olevel_results': ListOlevelResultSerializer(olevel_results, many=True).data,
             'alevel_results': ListAlevelResultSerializer(alevel_results, many=True).data,
             'documents': DocumentSerializer(documents, many=True).data,
@@ -1140,19 +1105,13 @@ class CreateAcademicLevels(generics.CreateAPIView):
 class ListAdminAcademicLevels(generics.ListAPIView):
     queryset = AcademicLevel.objects.all()
     serializer_class = AcademicLevelSerializer
-    permission_classes = [IsAuthenticated, CanViewAdmissionQueues]
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
     
 # list level (active only — e.g. applicants)
 class ListAcademicLevel(generics.ListAPIView):
+    queryset = AcademicLevel.objects.filter(is_active=True)
     serializer_class = AcademicLevelSerializer
     permission_classes = [IsAuthenticated]
-
-    def get_queryset(self):
-        active_qs = AcademicLevel.objects.filter(is_active=True).order_by("name")
-        # Fail-open for environments where all levels were deactivated accidentally.
-        if active_qs.exists():
-            return active_qs
-        return AcademicLevel.objects.all().order_by("name")
 
 # edit level
 class UpdateAcademicLevel(generics.UpdateAPIView):
@@ -1202,33 +1161,6 @@ class CreateFaculty(generics.CreateAPIView):
     queryset = Faculty.objects.all()
     serializer_class = FacultySerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
-
-    def create(self, request, *args, **kwargs):
-        data = request.data.copy()
-        name = str(data.get("name", "")).strip()
-        code = str(data.get("code", "")).strip()
-        campuses = data.get("campuses", [])
-        is_active = data.get("is_active", True)
-
-        existing = Faculty.objects.filter(Q(name__iexact=name) | Q(code__iexact=code)).distinct()
-        if existing.count() > 1:
-            return Response(
-                {"detail": "Conflicting faculty records exist for this name/code. Contact support."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        if existing.count() == 1:
-            faculty = existing.first()
-            if faculty is None:
-                return Response({"detail": "Faculty lookup failed."}, status=status.HTTP_400_BAD_REQUEST)
-            if campuses:
-                faculty.campuses.add(*campuses)
-            faculty.is_active = bool(is_active)
-            faculty.save(update_fields=["is_active", "updated_at"])
-            serializer = self.serializer_class(faculty)
-            return Response(serializer.data, status=status.HTTP_200_OK)
-
-        return super().create(request, *args, **kwargs)
 
 class UpdateFaculty(generics.UpdateAPIView):
     queryset = Faculty.objects.all()
@@ -1313,7 +1245,7 @@ class AdmitStudent(generics.CreateAPIView):
                     return Response({"detail": "Student application doesn't exist"}, status=400)
 
                 # Update status
-                Application.objects.filter(id=application.id).update(status="admitted")
+                Application.objects.filter(id=application.id).update(status="Admitted")
 
                 try:
                     celery_admission_email.delay(application.id, admission.id)
@@ -1418,6 +1350,95 @@ class AdmitStudent(generics.CreateAPIView):
 
         except Exception as e:
             return Response({"detail": str(e)}, status=400)
+
+# revoke student 
+class RevokeAdmittedStudent(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        if not (
+            request.user.has_perm("admissions.revoke_admission")
+            or request.user.has_perm("admissions.change_admittedstudent")
+        ):
+            return Response({"detail": "You do not have permission to revoke admissions."}, status=403)
+
+        admission = get_object_or_404(AdmittedStudent, pk=pk)
+        reason = str(request.data.get("reason", "")).strip()
+        if not reason:
+            return Response({"detail": "Revocation reason is required."}, status=400)
+
+        with transaction.atomic():
+            admission.is_revoked = True
+            admission.is_admitted = False
+            admission.revoked_at = timezone.now()
+            admission.revoked_by = request.user
+            admission.revocation_reason = reason
+            admission.save(
+                update_fields=[
+                    "is_revoked",
+                    "is_admitted",
+                    "revoked_at",
+                    "revoked_by",
+                    "revocation_reason",
+                    "updated_at",
+                ]
+            )
+            Application.objects.filter(id=admission.application_id).update(status="revoked")
+
+        refreshed = (
+            AdmittedStudent.objects.select_related(
+                "application__applicant",
+                "admitted_program__faculty",
+                "admitted_batch",
+                "admitted_campus",
+                "revoked_by",
+            )
+            .get(pk=admission.pk)
+        )
+        return Response(AdmittedStudentListSerializer(refreshed).data, status=200)
+
+# restore student 
+class RestoreAdmittedStudent(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        if not (
+            request.user.has_perm("admissions.revoke_admission")
+            or request.user.has_perm("admissions.change_admittedstudent")
+        ):
+            return Response({"detail": "You do not have permission to restore admissions."}, status=403)
+
+        admission = get_object_or_404(AdmittedStudent, pk=pk)
+
+        with transaction.atomic():
+            admission.is_revoked = False
+            admission.is_admitted = True
+            admission.revoked_at = None
+            admission.revoked_by = None
+            admission.revocation_reason = ""
+            admission.save(
+                update_fields=[
+                    "is_revoked",
+                    "is_admitted",
+                    "revoked_at",
+                    "revoked_by",
+                    "revocation_reason",
+                    "updated_at",
+                ]
+            )
+            Application.objects.filter(id=admission.application_id).update(status="admitted")
+
+        refreshed = (
+            AdmittedStudent.objects.select_related(
+                "application__applicant",
+                "admitted_program__faculty",
+                "admitted_batch",
+                "admitted_campus",
+                "revoked_by",
+            )
+            .get(pk=admission.pk)
+        )
+        return Response(AdmittedStudentListSerializer(refreshed).data, status=200)
  
 # list Admitted students
 class ListAdmittedStudents(generics.ListAPIView):
@@ -1426,16 +1447,22 @@ class ListAdmittedStudents(generics.ListAPIView):
         'admitted_batch',
         'admitted_campus',
         'application__applicant',
+        'revoked_by',
+        'programme_enrollment'
     ).all()
 
     serializer_class = AdmittedStudentListSerializer
-    # Align with other admissions queues so ERP-access staff can view admitted list
-    # even when model-level Django perms are not fully synchronized.
-    permission_classes = [IsAuthenticated, CanViewAdmissionQueues]
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
     def get_queryset(self):
         qs = super().get_queryset()
         p = self.request.query_params
+        dv = (p.get("documents_verified") or "").lower()
+        if dv in ("1", "true", "yes"):
+            qs = qs.filter(physical_documents_verified=True)
+        elif dv in ("0", "false", "no"):
+            qs = qs.filter(physical_documents_verified=False)
+
         ay = p.get("academic_year")
         if ay:
             qs = qs.filter(admitted_batch__academic_year=ay)
@@ -1457,7 +1484,6 @@ class ListAdmittedStudents(generics.ListAPIView):
         elif reg in ("0", "false", "no"):
             qs = qs.filter(is_registered=False)
         return qs
-
 
 class MarkPhysicalDocumentsVerified(APIView):
     """Record that original hard-copy documents were checked (does not register the student)."""
@@ -1566,6 +1592,8 @@ class CandidateAdmission(generics.RetrieveAPIView):
         'admitted_program',
         'admitted_batch',
         'admitted_campus',
+        'admitted_by',
+        'physical_documents_verified_by',
     ).prefetch_related('admitted_program__campuses')
     serializer_class = AdmissionDetailSerializer
     lookup_field = "id"
@@ -1577,95 +1605,6 @@ class DeleteAdmittedStudent(generics.DestroyAPIView):
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
     queryset = AdmittedStudent.objects.all()
     serializer_class = AdmittedStudentSerializer
-
-
-class RevokeAdmittedStudent(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request, pk):
-        if not (
-            request.user.has_perm("admissions.revoke_admission")
-            or request.user.has_perm("admissions.change_admittedstudent")
-        ):
-            return Response({"detail": "You do not have permission to revoke admissions."}, status=403)
-
-        admission = get_object_or_404(AdmittedStudent, pk=pk)
-        reason = str(request.data.get("reason", "")).strip()
-        if not reason:
-            return Response({"detail": "Revocation reason is required."}, status=400)
-
-        with transaction.atomic():
-            admission.is_revoked = True
-            admission.is_admitted = False
-            admission.revoked_at = timezone.now()
-            admission.revoked_by = request.user
-            admission.revocation_reason = reason
-            admission.save(
-                update_fields=[
-                    "is_revoked",
-                    "is_admitted",
-                    "revoked_at",
-                    "revoked_by",
-                    "revocation_reason",
-                    "updated_at",
-                ]
-            )
-            Application.objects.filter(id=admission.application_id).update(status="revoked")
-
-        refreshed = (
-            AdmittedStudent.objects.select_related(
-                "application__applicant",
-                "admitted_program__faculty",
-                "admitted_batch",
-                "admitted_campus",
-                "revoked_by",
-            )
-            .get(pk=admission.pk)
-        )
-        return Response(AdmittedStudentListSerializer(refreshed).data, status=200)
-
-
-class RestoreAdmittedStudent(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request, pk):
-        if not (
-            request.user.has_perm("admissions.revoke_admission")
-            or request.user.has_perm("admissions.change_admittedstudent")
-        ):
-            return Response({"detail": "You do not have permission to restore admissions."}, status=403)
-
-        admission = get_object_or_404(AdmittedStudent, pk=pk)
-
-        with transaction.atomic():
-            admission.is_revoked = False
-            admission.is_admitted = True
-            admission.revoked_at = None
-            admission.revoked_by = None
-            admission.revocation_reason = ""
-            admission.save(
-                update_fields=[
-                    "is_revoked",
-                    "is_admitted",
-                    "revoked_at",
-                    "revoked_by",
-                    "revocation_reason",
-                    "updated_at",
-                ]
-            )
-            Application.objects.filter(id=admission.application_id).update(status="admitted")
-
-        refreshed = (
-            AdmittedStudent.objects.select_related(
-                "application__applicant",
-                "admitted_program__faculty",
-                "admitted_batch",
-                "admitted_campus",
-                "revoked_by",
-            )
-            .get(pk=admission.pk)
-        )
-        return Response(AdmittedStudentListSerializer(refreshed).data, status=200)
 
 # Admin dashboard stats
 class AdminDashboardStats(APIView):
@@ -2236,7 +2175,7 @@ class DirectAdmissionEntryView(APIView):
                     alevel_index_number=d.get('alevel_index_number') or 'N/A',
                     alevel_school=d.get('alevel_school') or 'N/A',
                     alevel_combination=d.get('alevel_combination') or 'N/A',
-                    status='admitted',
+                    status='accepted',
                     application_reference=generate_reference(),
                 )
                 app.programs.set([program])
@@ -2251,8 +2190,8 @@ class DirectAdmissionEntryView(APIView):
                         raise ValueError(f'reg_no "{provided_reg_no}" is already in use.')
                     reg_no = provided_reg_no
                 else:
-                    reg_no = _generate_reg_no(campus, program, study_mode)
-
+                    reg_no = generate_reg_no(campus, program, study_mode)
+    
                 if provided_student_id:
                     if AdmittedStudent.objects.filter(student_id=provided_student_id).exists():
                         raise ValueError(f'student_id "{provided_student_id}" is already in use.')
@@ -2271,6 +2210,7 @@ class DirectAdmissionEntryView(APIView):
                     study_mode=study_mode,
                     admission_date=timezone.now(),
                     is_admitted=True,
+                    admitted_by=request.user,
                     admission_notes=d.get('admission_notes', ''),
                 )
 
