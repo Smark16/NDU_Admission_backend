@@ -30,7 +30,10 @@ jobs:
           source venv/bin/activate
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          python manage.py migrate --fake
+          python manage.py migrate admissions zero --fake
+          find admissions/migrations/ -name "000*.py" -delete
+          python manage.py makemigrations admissions
+          python manage.py migrate admissions
           python manage.py makemigrations --merge --noinput
           python manage.py migrate
           python manage.py collectstatic --noinput
