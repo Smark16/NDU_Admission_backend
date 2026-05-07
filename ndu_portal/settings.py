@@ -241,21 +241,44 @@ CSRF_TRUSTED_ORIGINS = [
     "https://admissions.ndu.ac.ug"
 ]
 
+CORS_ALLOW_CREDENTIALS = True
+
 CORS_ALLOWED_ORIGINS = [
-   'http://localhost:5173',
-   'http://localhost:5174',
-   'http://localhost:3000',
-   'http://localhost:3001',
-   'http://127.0.0.1:3000',
-   'http://127.0.0.1:3001',
-   'https://applications.ndu.ac.ug',
-   'https://applications-admin.ndu.ac.ug',
-   'https://admissions.ndu.ac.ug',
-   'http://137.63.139.78',
+    "https://applications.ndu.ac.ug",
+    "https://applications-admin.ndu.ac.ug",
+    "http://applications.ndu.ac.ug",
+    "http://applications-admin.ndu.ac.ug",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
 ]
 
-CORS_ALLOW_CREDENTIALS = True
-CORS_ALLOW_ALL_ORIGINS = False
+# Also allow subdomains if needed
+CORS_ALLOWED_ORIGIN_REGEXES = [
+    r"^https?://.*\.ndu\.ac\.ug$",
+]
+
+# Important headers for authentication
+CORS_ALLOW_HEADERS = [
+    'accept',
+    'accept-encoding',
+    'authorization',
+    'content-type',
+    'dnt',
+    'origin',
+    'user-agent',
+    'x-csrftoken',
+    'x-requested-with',
+]
+
+# Allow these methods
+CORS_ALLOW_METHODS = [
+    'DELETE',
+    'GET',
+    'OPTIONS',
+    'PATCH',
+    'POST',
+    'PUT',
+]
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
