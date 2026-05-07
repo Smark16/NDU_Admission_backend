@@ -1230,64 +1230,45 @@ class AdmitStudent(generics.CreateAPIView):
     def create(self, request, *args, **kwargs):
         try:
             with transaction.atomic():
-
-                # Validate and save admission
                 serializer = self.get_serializer(data=request.data)
                 serializer.is_valid(raise_exception=True)
                 admission = serializer.save()
 
-                # Fetch related application
-                try:
-                    application = Application.objects.select_related(
-                        "applicant", "batch", "campus"
-                    ).get(pk=admission.application_id)
-                except Application.DoesNotExist:
-                    return Response({"detail": "Student application doesn't exist"}, status=400)
+                # Fetch application
+                application = Application.objects.select_related("applicant", "batch", "campus").get(
+                    pk=admission.application_id
+                )
 
-                # Update status
+                # CRITICAL: Update status immediately
                 Application.objects.filter(id=application.id).update(status="Admitted")
 
+                # Student Account Creation (Non-blocking)
                 try:
-                    celery_admission_email.delay(application.id, admission.id)
-                    celery_application_notification.delay(request.user.id, "Admission Successful", "Congratulations! You have been admitted to Ndejje University")
-                except Exception:
-                    pass
-
-                # ── Create student portal account ──────────────────────────────
-                try:
-                    from accounts.models import User as UserModel
+                    from accounts.models import User
                     applicant = application.applicant
                     student_username = str(admission.reg_no).strip().replace("/", "_")
 
-                    # Avoid duplicates if re-admitting
-                    if not admission.student_user_id:
-                        existing = UserModel.objects.filter(username=student_username).first()
-                        if existing:
-                            student_user = existing
-                        else:
-                            student_user = UserModel.objects.create_user(
-                                username=student_username,
-                                first_name=applicant.first_name,
-                                last_name=applicant.last_name,
-                                email=applicant.email,
-                                password='NDU@1234',
-                                is_staff=False,
-                                is_applicant=False,
-                                is_student=True,
-                                must_change_password=True,
-                            )
+                    if not getattr(admission, 'student_user_id', None):
+                        student_user, created = User.objects.get_or_create(
+                            username=student_username,
+                            defaults={
+                                'first_name': applicant.first_name or "",
+                                'last_name': applicant.last_name or "",
+                                'email': applicant.email,
+                                'is_student': True,
+                                'must_change_password': True,
+                            }
+                        )
+                        if created:
+                            student_user.set_password('NDU@1234')
+                            student_user.save()
+
                         admission.student_user = student_user
                         admission.save(update_fields=['student_user'])
                 except Exception as e:
-                    logger.warning(
-                        "Student account creation failed: %s",
-                        f"{e.__class__.__name__}: {e}",
-                    )  # Never block admission due to account creation failure
-                # ──────────────────────────────────────────────────────────────
+                    logger.warning(f"Student account creation failed: {e}")
 
-                # ── Academic programme enrollment (commitment-fee gate) ───────
-                # If admin enabled auto-enroll, create/activate SPE immediately.
-                # Otherwise create SPE in 'pending' so student must pay commitment fee first.
+                # Auto Enrollment (Non-blocking)
                 try:
                     from django.utils import timezone
                     from payments.models import RegistrationSettings
@@ -1295,61 +1276,160 @@ class AdmitStudent(generics.CreateAPIView):
 
                     reg_settings = RegistrationSettings.get_settings()
 
-                    # Pick a sensible ProgramBatch for the admitted program.
-                    # Preference: active batch with name containing "Year 1", else any active, else first.
-                    pb_qs = ProgramBatch.objects.filter(program=admission.admitted_program).order_by("-is_active", "-start_date", "name")
-                    program_batch = (
-                        pb_qs.filter(is_active=True, name__icontains="year 1").first()
-                        or pb_qs.filter(is_active=True).first()
-                        or pb_qs.first()
-                    )
-
-                    # If the programme has no academic batches configured yet, create a default.
-                    # Without a ProgramBatch we cannot create StudentProgrammeEnrollment.
-                    if not program_batch:
-                        program_batch, _ = ProgramBatch.objects.get_or_create(
-                            program=admission.admitted_program,
-                            name="Year 1",
-                            defaults=dict(
-                                start_date=timezone.now().date(),
-                                is_active=True,
-                                academic_year=getattr(admission.admitted_batch, "academic_year", "") or "",
-                            ),
-                        )
+                    # Get or create ProgramBatch
+                    program_batch = ProgramBatch.objects.filter(
+                        program=admission.admitted_program
+                    ).order_by('-is_active', '-start_date').first()
 
                     if program_batch:
-                        spe, created = StudentProgrammeEnrollment.objects.get_or_create(
+                        StudentProgrammeEnrollment.objects.get_or_create(
                             student=admission,
-                            defaults=dict(
-                                program=admission.admitted_program,
-                                program_batch=program_batch,
-                                current_year_of_study=1,
-                                current_term_number=1,
-                                status="enrolled" if reg_settings.auto_enroll_on_admission else "pending",
-                                enrolled_by=request.user if reg_settings.auto_enroll_on_admission else None,
-                                enrolled_at=timezone.now() if reg_settings.auto_enroll_on_admission else None,
-                                notes=(
-                                    "Auto-enrolled on admission (commitment fee skipped)."
-                                    if reg_settings.auto_enroll_on_admission
-                                    else "Pending commitment fee confirmation."
-                                ),
-                            ),
+                            defaults={
+                                'program': admission.admitted_program,
+                                'program_batch': program_batch,
+                                'current_year_of_study': 1,
+                                'current_term_number': 1,
+                                'status': "enrolled" if reg_settings.auto_enroll_on_admission else "pending",
+                                'enrolled_by': request.user if reg_settings.auto_enroll_on_admission else None,
+                                'enrolled_at': timezone.now() if reg_settings.auto_enroll_on_admission else None,
+                            }
                         )
-
-                        # If SPE already exists, promote if auto-enroll is now enabled.
-                        if (not created) and reg_settings.auto_enroll_on_admission and spe.status != "enrolled":
-                            spe.status = "enrolled"
-                            spe.enrolled_by = request.user
-                            spe.enrolled_at = timezone.now()
-                            spe.save(update_fields=["status", "enrolled_by", "enrolled_at"])
                 except Exception as e:
-                    logger.warning("Auto-enrollment step failed: %s", f"{e.__class__.__name__}: {e}")
-                # ──────────────────────────────────────────────────────────────
+                    logger.warning(f"Auto-enrollment failed: {e}")
 
                 return Response(self.serializer_class(admission).data, status=201)
 
         except Exception as e:
+            logger.error(f"Admission failed: {e}", exc_info=True)
             return Response({"detail": str(e)}, status=400)
+# class AdmitStudent(generics.CreateAPIView):
+#     queryset = AdmittedStudent.objects.all()
+#     serializer_class = AdmittedStudentSerializer
+#     permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+#     def create(self, request, *args, **kwargs):
+#         try:
+#             with transaction.atomic():
+
+#                 # Validate and save admission
+#                 serializer = self.get_serializer(data=request.data)
+#                 serializer.is_valid(raise_exception=True)
+#                 admission = serializer.save()
+
+#                 # Fetch related application
+#                 try:
+#                     application = Application.objects.select_related(
+#                         "applicant", "batch", "campus"
+#                     ).get(pk=admission.application_id)
+#                 except Application.DoesNotExist:
+#                     return Response({"detail": "Student application doesn't exist"}, status=400)
+
+#                 # Update status
+#                 Application.objects.filter(id=application.id).update(status="Admitted")
+
+#                 try:
+#                     celery_admission_email.delay(application.id, admission.id)
+#                     celery_application_notification.delay(request.user.id, "Admission Successful", "Congratulations! You have been admitted to Ndejje University")
+#                 except Exception:
+#                     pass
+
+#                 # ── Create student portal account ──────────────────────────────
+#                 try:
+#                     from accounts.models import User as UserModel
+#                     applicant = application.applicant
+#                     student_username = str(admission.reg_no).strip().replace("/", "_")
+
+#                     # Avoid duplicates if re-admitting
+#                     if not admission.student_user_id:
+#                         existing = UserModel.objects.filter(username=student_username).first()
+#                         if existing:
+#                             student_user = existing
+#                         else:
+#                             student_user = UserModel.objects.create_user(
+#                                 username=student_username,
+#                                 first_name=applicant.first_name,
+#                                 last_name=applicant.last_name,
+#                                 email=applicant.email,
+#                                 password='NDU@1234',
+#                                 is_staff=False,
+#                                 is_applicant=False,
+#                                 is_student=True,
+#                                 must_change_password=True,
+#                             )
+#                         admission.student_user = student_user
+#                         admission.save(update_fields=['student_user'])
+#                 except Exception as e:
+#                     logger.warning(
+#                         "Student account creation failed: %s",
+#                         f"{e.__class__.__name__}: {e}",
+#                     )  # Never block admission due to account creation failure
+#                 # ──────────────────────────────────────────────────────────────
+
+#                 # ── Academic programme enrollment (commitment-fee gate) ───────
+#                 # If admin enabled auto-enroll, create/activate SPE immediately.
+#                 # Otherwise create SPE in 'pending' so student must pay commitment fee first.
+#                 try:
+#                     from django.utils import timezone
+#                     from payments.models import RegistrationSettings
+#                     from Programs.models import StudentProgrammeEnrollment, ProgramBatch
+
+#                     reg_settings = RegistrationSettings.get_settings()
+
+#                     # Pick a sensible ProgramBatch for the admitted program.
+#                     # Preference: active batch with name containing "Year 1", else any active, else first.
+#                     pb_qs = ProgramBatch.objects.filter(program=admission.admitted_program).order_by("-is_active", "-start_date", "name")
+#                     program_batch = (
+#                         pb_qs.filter(is_active=True, name__icontains="year 1").first()
+#                         or pb_qs.filter(is_active=True).first()
+#                         or pb_qs.first()
+#                     )
+
+#                     # If the programme has no academic batches configured yet, create a default.
+#                     # Without a ProgramBatch we cannot create StudentProgrammeEnrollment.
+#                     if not program_batch:
+#                         program_batch, _ = ProgramBatch.objects.get_or_create(
+#                             program=admission.admitted_program,
+#                             name="Year 1",
+#                             defaults=dict(
+#                                 start_date=timezone.now().date(),
+#                                 is_active=True,
+#                                 academic_year=getattr(admission.admitted_batch, "academic_year", "") or "",
+#                             ),
+#                         )
+
+#                     if program_batch:
+#                         spe, created = StudentProgrammeEnrollment.objects.get_or_create(
+#                             student=admission,
+#                             defaults=dict(
+#                                 program=admission.admitted_program,
+#                                 program_batch=program_batch,
+#                                 current_year_of_study=1,
+#                                 current_term_number=1,
+#                                 status="enrolled" if reg_settings.auto_enroll_on_admission else "pending",
+#                                 enrolled_by=request.user if reg_settings.auto_enroll_on_admission else None,
+#                                 enrolled_at=timezone.now() if reg_settings.auto_enroll_on_admission else None,
+#                                 notes=(
+#                                     "Auto-enrolled on admission (commitment fee skipped)."
+#                                     if reg_settings.auto_enroll_on_admission
+#                                     else "Pending commitment fee confirmation."
+#                                 ),
+#                             ),
+#                         )
+
+#                         # If SPE already exists, promote if auto-enroll is now enabled.
+#                         if (not created) and reg_settings.auto_enroll_on_admission and spe.status != "enrolled":
+#                             spe.status = "enrolled"
+#                             spe.enrolled_by = request.user
+#                             spe.enrolled_at = timezone.now()
+#                             spe.save(update_fields=["status", "enrolled_by", "enrolled_at"])
+#                 except Exception as e:
+#                     logger.warning("Auto-enrollment step failed: %s", f"{e.__class__.__name__}: {e}")
+#                 # ──────────────────────────────────────────────────────────────
+
+#                 return Response(self.serializer_class(admission).data, status=201)
+
+#         except Exception as e:
+#             return Response({"detail": str(e)}, status=400)
 
 # revoke student 
 class RevokeAdmittedStudent(APIView):

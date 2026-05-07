@@ -716,20 +716,6 @@ class StudentSemesterProgression(models.Model):
 
 
 class StudentProgrammeEnrollment(models.Model):
-    """Academic enrollment record created after commitment fee is confirmed.
-
-    One record per admitted student.  ``current_year_of_study`` and
-    ``current_term_number`` are updated in place as the student progresses;
-    they are NOT re-created each term.
-
-    Status lifecycle:
-        pending   → commitment fee not yet confirmed (default)
-        enrolled  → commitment fee confirmed by admin; student has portal access
-        suspended → access blocked (e.g. non-payment, disciplinary)
-        completed → programme finished
-        withdrawn → student left voluntarily or administratively
-    """
-
     STATUS_CHOICES = [
         ('pending',   'Pending Commitment Fee'),
         ('enrolled',  'Enrolled'),
