@@ -20,38 +20,38 @@ class Program(models.Model):
     campuses = models.ManyToManyField(Campus, related_name='programs', blank=True)
     min_years = models.PositiveIntegerField()
     max_years = models.PositiveIntegerField()
-    calendar_type = models.CharField(
-        max_length=20,
-        choices=CALENDAR_TYPE_CHOICES,
-        default='semester',
-        help_text="Academic calendar structure: semester (2 terms/year) or trimester (3 terms/year).",
-    )
-    minimum_graduation_load = models.DecimalField(
-        max_digits=6,
-        decimal_places=2,
-        default=Decimal('0.00'),
-        help_text="Minimum total credit units a student must accumulate to graduate from this programme.",
-    )
-    has_specialization = models.BooleanField(
-        default=False,
-        help_text="Set to True if this programme branches into specialization tracks.",
-    )
-    specialization_entry_year = models.PositiveSmallIntegerField(
-        null=True,
-        blank=True,
-        help_text=(
-            "Year of study when students must choose a specialization "
-            "(e.g. 3 for Year 3). Only relevant when has_specialization is True."
-        ),
-    )
-    specialization_entry_term = models.PositiveSmallIntegerField(
-        null=True,
-        blank=True,
-        help_text=(
-            "Term within specialization_entry_year when the choice is required "
-            "(e.g. 1 for the first term of Year 3)."
-        ),
-    )
+    # calendar_type = models.CharField(
+    #     max_length=20,
+    #     choices=CALENDAR_TYPE_CHOICES,
+    #     default='semester',
+    #     help_text="Academic calendar structure: semester (2 terms/year) or trimester (3 terms/year).",
+    # )
+    # minimum_graduation_load = models.DecimalField(
+    #     max_digits=6,
+    #     decimal_places=2,
+    #     default=Decimal('0.00'),
+    #     help_text="Minimum total credit units a student must accumulate to graduate from this programme.",
+    # )
+    # has_specialization = models.BooleanField(
+    #     default=False,
+    #     help_text="Set to True if this programme branches into specialization tracks.",
+    # )
+    # specialization_entry_year = models.PositiveSmallIntegerField(
+    #     null=True,
+    #     blank=True,
+    #     help_text=(
+    #         "Year of study when students must choose a specialization "
+    #         "(e.g. 3 for Year 3). Only relevant when has_specialization is True."
+    #     ),
+    # )
+    # specialization_entry_term = models.PositiveSmallIntegerField(
+    #     null=True,
+    #     blank=True,
+    #     help_text=(
+    #         "Term within specialization_entry_year when the choice is required "
+    #         "(e.g. 1 for the first term of Year 3)."
+    #     ),
+    # )
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
