@@ -829,7 +829,7 @@ class DeleteBatch(generics.RetrieveDestroyAPIView):
     
 # get active batch
 class GetActiveApplicationBatch(generics.ListAPIView):
-    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    permission_classes = [IsAuthenticated, CanViewAdmissionQueues]
     queryset = Batch.objects.all()
     serializer_class = BatchSerializer
 
@@ -884,7 +884,7 @@ class GetActiveApplicationBatch(generics.ListAPIView):
 
 # active admission batch
 class GetActiveAdmissionBatch(generics.RetrieveAPIView):
-    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    permission_classes = [IsAuthenticated, CanViewAdmissionQueues]
     queryset = Batch.objects.all()
     serializer_class = BatchSerializer
 
