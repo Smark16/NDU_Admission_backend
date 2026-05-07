@@ -580,6 +580,7 @@ class AllApplicationsReport(generics.ListAPIView):
 class ListDirectEntryApplications(generics.ListAPIView):
     queryset = (
         Application.objects.filter(is_direct_entry=True)
+        .exclude(status__in=["admitted", "rejected", "draft"])
         .select_related("academic_level", "batch", "campus", "entered_by")
         .prefetch_related("programs", "programs__faculty")
         .order_by("-created_at")
@@ -1264,7 +1265,7 @@ class AdmitStudent(generics.CreateAPIView):
                     return Response({"detail": "Student application doesn't exist"}, status=400)
 
                 # Update status
-                Application.objects.filter(id=application.id).update(status="accepted")
+                Application.objects.filter(id=application.id).update(status="admitted")
 
                 try:
                     celery_admission_email.delay(application.id, admission.id)
@@ -2098,7 +2099,7 @@ class DirectAdmissionEntryView(APIView):
                     alevel_index_number=d.get('alevel_index_number') or 'N/A',
                     alevel_school=d.get('alevel_school') or 'N/A',
                     alevel_combination=d.get('alevel_combination') or 'N/A',
-                    status='accepted',
+                    status='admitted',
                     application_reference=generate_reference(),
                 )
                 app.programs.set([program])
