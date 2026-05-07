@@ -41,6 +41,16 @@ class CudApplicationSerializer(serializers.ModelSerializer):
     class Meta:
         model = Application
         fields = '__all__'
+        extra_kwargs = {
+            # Academic result fields are optional — not all applicants have O/A levels
+            'olevel_year':          {'required': False, 'default': 0},
+            'olevel_index_number':  {'required': False, 'allow_blank': True, 'default': ''},
+            'olevel_school':        {'required': False, 'allow_blank': True, 'default': ''},
+            'alevel_year':          {'required': False, 'default': 0},
+            'alevel_index_number':  {'required': False, 'allow_blank': True, 'default': ''},
+            'alevel_school':        {'required': False, 'allow_blank': True, 'default': ''},
+            'alevel_combination':   {'required': False, 'allow_blank': True, 'default': ''},
+        }
 
 # single application
 class SingleApplicationSerializer(serializers.ModelSerializer):
