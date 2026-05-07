@@ -17,7 +17,14 @@ from accounts.erp_drf_permissions import CanViewAdmissionsAnalytics
 from .models import Application, AdmittedStudent, Batch, AcademicLevel
 from accounts.models import Campus
 from payments.models import ApplicationPayment
-from Programs.models import StudentProgrammeEnrollment, Program
+from django.db.utils import ProgrammingError
+from Programs.models import Program
+try:
+    from Programs.models import StudentProgrammeEnrollment
+    _HAS_ENROLLMENT = True
+except (ImportError, ProgrammingError):
+    StudentProgrammeEnrollment = None
+    _HAS_ENROLLMENT = False
 
 
 LOCAL_NATIONALITIES = {"Uganda", "Kenya", "Tanzania", "Rwanda", "Burundi", "South Sudan"}
@@ -256,14 +263,19 @@ class AnalyticsDashboardView(APIView):
         ]
 
         # ── Enrollment Status (bar) ───────────────────────────────────────────
-        enroll_qs = StudentProgrammeEnrollment.objects.all()
-        if batch_id:
-            enroll_qs = enroll_qs.filter(program_batch_id=batch_id)
-        enrollment_breakdown = list(
-            enroll_qs.values("status")
-            .annotate(count=Count("id"))
-            .order_by("-count")
-        )
+        enrollment_breakdown = []
+        if _HAS_ENROLLMENT and StudentProgrammeEnrollment is not None:
+            try:
+                enroll_qs = StudentProgrammeEnrollment.objects.all()
+                if batch_id:
+                    enroll_qs = enroll_qs.filter(program_batch_id=batch_id)
+                enrollment_breakdown = list(
+                    enroll_qs.values("status")
+                    .annotate(count=Count("id"))
+                    .order_by("-count")
+                )
+            except ProgrammingError:
+                enrollment_breakdown = []
 
         # ── Admission by Batch ────────────────────────────────────────────────
         by_batch = list(

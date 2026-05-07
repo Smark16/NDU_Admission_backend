@@ -11,17 +11,21 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from django.db.utils import ProgrammingError
 from .models import CourseCatalogUnit
 from .serializers import CourseCatalogUnitSerializer
 
 
 class CourseCatalogUnitListCreateView(generics.ListCreateAPIView):
-    queryset = CourseCatalogUnit.objects.all()
+    queryset = CourseCatalogUnit.objects.none()
     serializer_class = CourseCatalogUnitSerializer
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        qs = CourseCatalogUnit.objects.all().order_by("code", "title")
+        try:
+            qs = CourseCatalogUnit.objects.all().order_by("code", "title")
+        except ProgrammingError:
+            return CourseCatalogUnit.objects.none()
         search = (self.request.query_params.get("search") or "").strip()
         if search:
             qs = qs.filter(Q(code__icontains=search) | Q(title__icontains=search))
