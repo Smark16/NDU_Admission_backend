@@ -293,7 +293,6 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
     is_approved = serializers.SerializerMethodField()
     approved_by_name = serializers.SerializerMethodField()
     approved_at = serializers.SerializerMethodField()
-    physical_documents_verified_by_name = serializers.SerializerMethodField()
 
     class Meta:
         model = AdmittedStudent
@@ -345,12 +344,6 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
     def get_approved_at(self, obj):
         return getattr(obj, "approved_at", None)
 
-    def get_physical_documents_verified_by_name(self, obj):
-        u = getattr(obj, "physical_documents_verified_by", None)
-        if u is None:
-            return None
-        return u.get_full_name() or getattr(u, "username", None)
-    
 # admission detail serializer
 class AdmissionDetailSerializer(serializers.ModelSerializer):
     class Meta:
