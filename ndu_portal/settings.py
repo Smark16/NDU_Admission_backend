@@ -238,7 +238,8 @@ CSRF_TRUSTED_ORIGINS = [
     'https://applications.ndu.ac.ug',
     'https://applications-admin.ndu.ac.ug',
     'http://172.17.31.147',
-    "https://admissions.ndu.ac.ug"
+    "https://admissions.ndu.ac.ug",
+    "https://erp.ndejje.ndu.ac.ug",
 ]
 
 # CORS_ALLOW_ALL_ORIGINS = True
@@ -253,6 +254,7 @@ CORS_ALLOWED_ORIGINS = [
     "http://127.0.0.1:5173",
     "https://admissions.ndu.ac.ug",
     "http://localhost:3001"
+    "https://erp.ndejje.ndu.ac.ug",
 ]
 
 REST_FRAMEWORK = {

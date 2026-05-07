@@ -549,7 +549,7 @@ class ListApplications(generics.ListAPIView):
 
     def get_queryset(self):
         qs = Application.objects.filter(
-            ~Q(status__in=['draft', 'Admitted', 'rejected']),
+            ~Q(status__in=['draft', 'accepted', 'Admitted', 'rejected']),
             is_direct_entry=False
         ).order_by('created_at')
 
@@ -574,12 +574,13 @@ class AllApplicationsReport(generics.ListAPIView):
         return Application.objects.select_related(
             'academic_level', 'batch', 'campus', 'entered_by'
         ).prefetch_related('programs', 'programs__faculty').filter(
-            ~Q(status__in=['draft', 'Admitted', 'rejected']),
+            ~Q(status__in=['draft', 'accepted', 'Admitted', 'rejected']),
         ).order_by('created_at')
 
 class ListDirectEntryApplications(generics.ListAPIView):
     queryset = (
         Application.objects.filter(is_direct_entry=True)
+        .exclude(status__in=["admitted", "rejected", "draft"])
         .select_related("academic_level", "batch", "campus", "entered_by")
         .prefetch_related("programs", "programs__faculty")
         .order_by("-created_at")
@@ -1264,7 +1265,7 @@ class AdmitStudent(generics.CreateAPIView):
                     return Response({"detail": "Student application doesn't exist"}, status=400)
 
                 # Update status
-                Application.objects.filter(id=application.id).update(status="accepted")
+                Application.objects.filter(id=application.id).update(status="admitted")
 
                 try:
                     celery_admission_email.delay(application.id, admission.id)
@@ -1380,7 +1381,9 @@ class ListAdmittedStudents(generics.ListAPIView):
     ).all()
 
     serializer_class = AdmittedStudentListSerializer
-    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    # Align with other admissions queues so ERP-access staff can view admitted list
+    # even when model-level Django perms are not fully synchronized.
+    permission_classes = [IsAuthenticated, CanViewAdmissionQueues]
 
     def get_queryset(self):
         qs = super().get_queryset()
@@ -2096,7 +2099,7 @@ class DirectAdmissionEntryView(APIView):
                     alevel_index_number=d.get('alevel_index_number') or 'N/A',
                     alevel_school=d.get('alevel_school') or 'N/A',
                     alevel_combination=d.get('alevel_combination') or 'N/A',
-                    status='accepted',
+                    status='admitted',
                     application_reference=generate_reference(),
                 )
                 app.programs.set([program])
