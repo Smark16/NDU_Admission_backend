@@ -22,10 +22,7 @@ class CourseCatalogUnitListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        try:
-            qs = CourseCatalogUnit.objects.all().order_by("code", "title")
-        except ProgrammingError:
-            return CourseCatalogUnit.objects.none()
+        qs = CourseCatalogUnit.objects.all().order_by("code", "title")
         search = (self.request.query_params.get("search") or "").strip()
         if search:
             qs = qs.filter(Q(code__icontains=search) | Q(title__icontains=search))
@@ -37,11 +34,23 @@ class CourseCatalogUnitListCreateView(generics.ListCreateAPIView):
                 qs = qs.filter(is_active=False)
         return qs
 
+    def list(self, request, *args, **kwargs):
+        try:
+            return super().list(request, *args, **kwargs)
+        except ProgrammingError:
+            return Response([], status=status.HTTP_200_OK)
+
 
 class CourseCatalogUnitDetailView(generics.RetrieveUpdateDestroyAPIView):
-    queryset = CourseCatalogUnit.objects.all()
+    queryset = CourseCatalogUnit.objects.none()
     serializer_class = CourseCatalogUnitSerializer
     permission_classes = [IsAuthenticated]
+
+    def retrieve(self, request, *args, **kwargs):
+        try:
+            return super().retrieve(request, *args, **kwargs)
+        except ProgrammingError:
+            return Response({'detail': 'Course catalog not available on this server.'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
