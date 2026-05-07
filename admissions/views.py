@@ -583,6 +583,22 @@ class ListDirectEntryApplications(generics.ListAPIView):
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
 
+class ListRejectedApplications(generics.ListAPIView):
+    """Rejected-only queue; AllApplicationsReport excludes these rows."""
+    serializer_class = AllApplicationsReportSerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+    def get_queryset(self):
+        return (
+            Application.objects.select_related(
+                "academic_level", "batch", "campus", "entered_by"
+            )
+            .prefetch_related("programs", "programs__faculty")
+            .filter(status__iexact="rejected")
+            .order_by("-created_at")
+        )
+
+
 class RejectStudent(APIView):
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
