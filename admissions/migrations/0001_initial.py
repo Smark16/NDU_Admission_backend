@@ -102,7 +102,7 @@ class Migration(migrations.Migration):
                 ('new_program', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='transfer_requests', to='Programs.program')),
                 ('requested_by', models.ForeignKey(null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='submitted_change_requests', to=settings.AUTH_USER_MODEL)),
                 ('reviewed_by', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='reviewed_change_requests', to=settings.AUTH_USER_MODEL)),
-                ('admitted_student', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='change_requests', to='admissions.admittedstudent')),
+                ('admitted_student', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='change_requests', to='admissions.admittedstudent', null=True, blank=True)),
             ],
             options={
                 'verbose_name': 'Admission Change Request',
