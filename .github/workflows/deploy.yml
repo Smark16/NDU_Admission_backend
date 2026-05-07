@@ -32,6 +32,7 @@ jobs:
           pip install -r requirements.txt
           python manage.py migrate admissions 0001 --fake
           python manage.py migrate Drafts 0002 --fake
+          python manage.py migrate Programs 0002 --fake
           python manage.py makemigrations --merge --noinput
           python manage.py migrate
           python manage.py collectstatic --noinput
