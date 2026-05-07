@@ -277,6 +277,18 @@ class AdmittedStudent(models.Model):
     is_registered = models.BooleanField(default=False)
     registration_date = models.DateTimeField(null=True, blank=True)
 
+    # Revocation workflow (soft revoke, never hard-delete admission history)
+    is_revoked = models.BooleanField(default=False)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    revoked_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="revoked_admissions",
+    )
+    revocation_reason = models.TextField(blank=True, default="")
+
     # Physical document verification (original hard-copy check — separate from registration)
     # physical_documents_verified = models.BooleanField(default=False)
     # physical_documents_verified_at = models.DateTimeField(null=True, blank=True)
@@ -306,6 +318,7 @@ class AdmittedStudent(models.Model):
         verbose_name_plural = "Admitted Students"
         permissions = [
             ("verify_physical_documents", "Can verify physical admission documents"),
+            ("revoke_admission", "Can revoke admitted students"),
         ]
  
         indexes = [
