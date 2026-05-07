@@ -11,6 +11,7 @@ from datetime import date, datetime, timedelta
 import io
 
 from django.db import transaction
+from django.db.utils import ProgrammingError
 from django.http import HttpResponse
 from rest_framework import status
 from rest_framework.parsers import FormParser, MultiPartParser
@@ -30,7 +31,19 @@ from .models import (
 from .utils.excel import create_workbook
 
 
-class CreateBatchView(APIView):
+class _BatchUnavailableMixin:
+    """Returns a clear 503 when the ProgramBatch table has not been migrated yet."""
+    def dispatch(self, request, *args, **kwargs):
+        try:
+            return super().dispatch(request, *args, **kwargs)
+        except ProgrammingError:
+            return Response(
+                {'detail': 'Batch management is not available on this server.'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+
+class CreateBatchView(_BatchUnavailableMixin, APIView):
     """Create a program batch (academic year level)."""
     permission_classes = [IsAuthenticated]
 
@@ -153,7 +166,7 @@ class CreateBatchView(APIView):
             )
 
 
-class CreateSemesterView(APIView):
+class CreateSemesterView(_BatchUnavailableMixin, APIView):
     """Create a semester for a program batch."""
     permission_classes = [IsAuthenticated]
 
@@ -281,7 +294,7 @@ class CreateSemesterView(APIView):
             )
 
 
-class CreateSubjectView(APIView):
+class CreateSubjectView(_BatchUnavailableMixin, APIView):
     """Create a course unit for a program batch/semester."""
     permission_classes = [IsAuthenticated]
 
@@ -380,7 +393,7 @@ class CreateSubjectView(APIView):
             )
 
 
-class ListProgramBatchesView(APIView):
+class ListProgramBatchesView(_BatchUnavailableMixin, APIView):
     """List all program batches for a program."""
     permission_classes = [IsAuthenticated]
 
@@ -452,7 +465,7 @@ class ListProgramBatchesView(APIView):
             )
 
 
-class UpdateProgramBatchView(APIView):
+class UpdateProgramBatchView(_BatchUnavailableMixin, APIView):
     """Update a program batch."""
     permission_classes = [IsAuthenticated]
 
@@ -550,7 +563,7 @@ class UpdateProgramBatchView(APIView):
             )
 
 
-class DeleteProgramBatchView(APIView):
+class DeleteProgramBatchView(_BatchUnavailableMixin, APIView):
     """Delete a program batch (only if no semesters or course units)."""
     permission_classes = [IsAuthenticated]
 
@@ -671,7 +684,7 @@ _BATCH_TEMPLATE_HEADERS = [
 ]
 
 
-class BatchTemplateDownloadView(APIView):
+class BatchTemplateDownloadView(_BatchUnavailableMixin, APIView):
     """GET /api/program/batches/template — downloadable Excel template.
 
     Query params:
@@ -781,7 +794,7 @@ class BatchTemplateDownloadView(APIView):
         return response
 
 
-class BatchBulkUploadView(APIView):
+class BatchBulkUploadView(_BatchUnavailableMixin, APIView):
     """POST /api/program/batches/bulk_upload — create ProgramBatch rows from file."""
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser]
@@ -1042,7 +1055,7 @@ class BatchBulkUploadView(APIView):
         )
 
 
-class AutoCreateSemestersView(APIView):
+class AutoCreateSemestersView(_BatchUnavailableMixin, APIView):
     """
     POST /api/program/batches/auto_create_semesters
 

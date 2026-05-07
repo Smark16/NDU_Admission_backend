@@ -829,7 +829,7 @@ class DeleteBatch(generics.RetrieveDestroyAPIView):
     
 # get active batch
 class GetActiveApplicationBatch(generics.ListAPIView):
-    permission_classes = [IsAuthenticated, CanViewAdmissionQueues]
+    permission_classes = [IsAuthenticated]
     queryset = Batch.objects.all()
     serializer_class = BatchSerializer
 
@@ -884,7 +884,7 @@ class GetActiveApplicationBatch(generics.ListAPIView):
 
 # active admission batch
 class GetActiveAdmissionBatch(generics.RetrieveAPIView):
-    permission_classes = [IsAuthenticated, CanViewAdmissionQueues]
+    permission_classes = [IsAuthenticated]
     queryset = Batch.objects.all()
     serializer_class = BatchSerializer
 
@@ -1372,9 +1372,7 @@ class ListAdmittedStudents(generics.ListAPIView):
         'admitted_program__faculty',
         'admitted_batch',
         'admitted_campus',
-        'admitted_by',
         'application__applicant',
-        'physical_documents_verified_by',
     ).all()
 
     serializer_class = AdmittedStudentListSerializer
@@ -1383,12 +1381,6 @@ class ListAdmittedStudents(generics.ListAPIView):
     def get_queryset(self):
         qs = super().get_queryset()
         p = self.request.query_params
-        dv = (p.get("documents_verified") or "").lower()
-        if dv in ("1", "true", "yes"):
-            qs = qs.filter(physical_documents_verified=True)
-        elif dv in ("0", "false", "no"):
-            qs = qs.filter(physical_documents_verified=False)
-
         ay = p.get("academic_year")
         if ay:
             qs = qs.filter(admitted_batch__academic_year=ay)
@@ -1519,8 +1511,6 @@ class CandidateAdmission(generics.RetrieveAPIView):
         'admitted_program',
         'admitted_batch',
         'admitted_campus',
-        'admitted_by',
-        'physical_documents_verified_by',
     ).prefetch_related('admitted_program__campuses')
     serializer_class = AdmissionDetailSerializer
     lookup_field = "id"
@@ -2137,7 +2127,6 @@ class DirectAdmissionEntryView(APIView):
                     study_mode=study_mode,
                     admission_date=timezone.now(),
                     is_admitted=True,
-                    admitted_by=request.user,
                     admission_notes=d.get('admission_notes', ''),
                 )
 

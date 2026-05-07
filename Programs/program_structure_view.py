@@ -2,6 +2,7 @@
 REST API endpoint to get program structure (batches, semesters, course units)
 Returns hierarchical structure of program with all its batches, semesters, and course units
 """
+from django.db.utils import ProgrammingError
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -143,6 +144,8 @@ class ProgramStructureView(APIView):
                 {'detail': 'Program not found'},
                 status=status.HTTP_404_NOT_FOUND
             )
+        except ProgrammingError:
+            return Response({'batches': [], 'detail': 'Batch management not available on this server.'}, status=status.HTTP_200_OK)
         except Exception as e:
             import logging
             logger = logging.getLogger(__name__)
