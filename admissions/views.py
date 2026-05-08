@@ -1067,10 +1067,12 @@ class ApplicantDashboard(APIView):
             )
 
         # Base data from application
+        selected_programs = list(application.programs.values_list("name", flat=True))
         base_data = {
             "id":application.id,
             "batch": application.batch.name if application.batch else None,
-            "campus": application.campus.name,
+            "campus": application.campus.name if application.campus else None,
+            "programs": selected_programs,
             "applied_date": application.created_at,
             "application_status": application.status,
             "admission_letter_pdf": application.admission_letter_pdf.url if application.admission_letter_pdf else None
@@ -1092,6 +1094,7 @@ class ApplicantDashboard(APIView):
             **base_data,
             "program": admission.admitted_program.name,
             "campus": admission.admitted_campus.name,  
+            "programs": [admission.admitted_program.name] if admission.admitted_program else base_data.get("programs", []),
             "student_id": admission.student_id,
             "has_admission": True,
             "is_admitted": admission.is_admitted,  
