@@ -818,9 +818,26 @@ class StudentProgrammeEnrollment(models.Model):
         ordering = ['-enrolled_at', '-created_at']
 
     def __str__(self):
+        # Be defensive for audit/delete flows where related rows may already
+        # be gone and relation access can raise DoesNotExist.
+        try:
+            student_label = self.student.student_id
+        except Exception:
+            student_label = f"student#{self.student_id}" if self.student_id else "student#?"
+
+        try:
+            program_label = self.program.short_form
+        except Exception:
+            program_label = f"program#{self.program_id}" if self.program_id else "program#?"
+
+        try:
+            batch_label = self.program_batch.name
+        except Exception:
+            batch_label = f"batch#{self.program_batch_id}" if self.program_batch_id else "batch#?"
+
         return (
-            f"{self.student.student_id} → "
-            f"{self.program.short_form} / {self.program_batch.name} "
+            f"{student_label} → "
+            f"{program_label} / {batch_label} "
             f"Y{self.current_year_of_study}T{self.current_term_number} "
             f"({self.get_status_display()})"
         )

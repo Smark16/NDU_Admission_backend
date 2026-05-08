@@ -541,7 +541,7 @@ class ListApplications(generics.ListAPIView):
 
     def get_queryset(self):
         qs = Application.objects.filter(
-            ~Q(status__in=['draft', 'Admitted', 'rejected']),
+            ~Q(status__in=['draft', 'admitted', 'Admitted', 'rejected']),
             is_direct_entry=False
         ).order_by('created_at')
 
@@ -566,7 +566,7 @@ class AllApplicationsReport(generics.ListAPIView):
         return Application.objects.select_related(
             'academic_level', 'batch', 'campus', 'entered_by'
         ).prefetch_related('programs', 'programs__faculty').filter(
-            ~Q(status__in=['draft', 'Admitted', 'rejected']),
+            ~Q(status__in=['draft']),
         ).order_by('created_at')
 
 class ListDirectEntryApplications(generics.ListAPIView):
@@ -1286,9 +1286,35 @@ class AdmitStudent(generics.CreateAPIView):
     def create(self, request, *args, **kwargs):
         try:
             with transaction.atomic():
-                serializer = self.get_serializer(data=request.data)
-                serializer.is_valid(raise_exception=True)
-                admission = serializer.save()
+                application_id = request.data.get("application")
+                application_obj = get_object_or_404(Application, pk=application_id)
+                existing_admission = (
+                    AdmittedStudent.objects.select_for_update()
+                    .filter(application=application_obj)
+                    .first()
+                )
+
+                if existing_admission:
+                    if existing_admission.is_admitted and not existing_admission.is_revoked:
+                        return Response(
+                            {"detail": "This application is already in admitted list."},
+                            status=400,
+                        )
+
+                    serializer = self.get_serializer(existing_admission, data=request.data, partial=True)
+                    serializer.is_valid(raise_exception=True)
+                    admission = serializer.save(
+                        admission_date=timezone.now(),
+                        is_admitted=True,
+                        is_revoked=False,
+                        revoked_at=None,
+                        revoked_by=None,
+                        revocation_reason="",
+                    )
+                else:
+                    serializer = self.get_serializer(data=request.data)
+                    serializer.is_valid(raise_exception=True)
+                    admission = serializer.save()
 
                 # Fetch application
                 application = Application.objects.select_related("applicant", "batch", "campus").get(
@@ -1296,7 +1322,7 @@ class AdmitStudent(generics.CreateAPIView):
                 )
 
                 # CRITICAL: Update status immediately
-                Application.objects.filter(id=application.id).update(status="Admitted")
+                Application.objects.filter(id=application.id).update(status="admitted")
 
                 # Student Account Creation (Non-blocking)
                 # try:
@@ -1605,19 +1631,35 @@ class DeleteAdmittedStudent(generics.DestroyAPIView):
     queryset = AdmittedStudent.objects.all()
     serializer_class = AdmittedStudentSerializer
 
+    def destroy(self, request, *args, **kwargs):
+        admission = self.get_object()
+        application_id = admission.application_id
+        with transaction.atomic():
+            admission.delete()
+            # Keep application available in queue for fresh admission.
+            Application.objects.filter(id=application_id).update(status="accepted")
+        return Response({"detail": "Admission deleted successfully."}, status=200)
+
 # Admin dashboard stats
 class AdminDashboardStats(APIView):
     permission_classes = [IsAuthenticated]
     def get(self, request):
         total_applications = Application.objects.all().count()
+        online_applications = Application.objects.filter(is_direct_entry=False).count()
+        direct_applications = Application.objects.filter(is_direct_entry=True).count()
         pending_applications = Application.objects.filter(status='submitted').count()
-        admitted_students = AdmittedStudent.objects.filter(is_registered=True).count()
+        admitted_students = AdmittedStudent.objects.filter(
+            is_admitted=True,
+            is_revoked=False,
+        ).count()
         rejected_students = Application.objects.filter(status='rejected').count()
         total_batches = Batch.objects.all().count()
         active_batches = Batch.objects.filter(is_active=True).count()
 
         return Response({
             "totalApplication":total_applications,
+            "onlineApplications":online_applications,
+            "directApplications":direct_applications,
             "pendingApplications":pending_applications,
             "admittedStudents":admitted_students,
             "rejectedStudents":rejected_students,
