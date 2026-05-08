@@ -106,28 +106,3 @@ class NotificationAdmin(admin.ModelAdmin):
     list_display = ['recipient', 'title', 'message']
     list_filter = ['created_at']
     ordering = ['-created_at']
-
-
-@admin.register(IDCard)
-class IDCardAdmin(admin.ModelAdmin):
-    list_display = [
-        "id",
-        "card_number",
-        "admitted_student",
-        "status",
-        "is_active",
-        "print_count",
-        "issue_date",
-        "expiry_date",
-    ]
-    list_filter = ["status", "is_active", "template_version", "issue_date", "generated_at"]
-    search_fields = ["card_number", "barcode_value", "admitted_student__student_id", "admitted_student__reg_no"]
-    ordering = ["-generated_at"]
-
-
-@admin.register(IDCardPrintLog)
-class IDCardPrintLogAdmin(admin.ModelAdmin):
-    list_display = ["id", "id_card", "action", "performed_by", "performed_at"]
-    list_filter = ["action", "performed_at"]
-    search_fields = ["id_card__card_number", "performed_by__username", "performed_by__email"]
-    ordering = ["-performed_at"]
