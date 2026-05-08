@@ -199,7 +199,7 @@ class ApplicationDetailSerializer(serializers.ModelSerializer):
     batch = serializers.CharField(source='batch.name', read_only=True)
     class Meta:
         model = Application
-        fields = ['id', 'first_name', 'last_name', 'date_of_birth', 'gender', 'nationality', 'phone', 'email',
+        fields = ['id', 'first_name', 'last_name','middle_name', 'date_of_birth', 'gender', 'nationality', 'phone', 'email',
                   'batch',"nin", "passport_number","disabled", 'olevel_school', 'olevel_year', 'alevel_school', 'alevel_year', 'address',
                   'status', 'application_fee_amount','application_fee_paid', 'created_at', 'reviewed_at', 'passport_photo','reviewed_by']
     
