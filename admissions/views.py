@@ -655,6 +655,62 @@ class ChangeApplicationStatus(APIView):
         except Exception as e:
             return Response({"detail":str(e)}) 
 
+class EditApplicationProfile(APIView):
+    permission_classes = [IsAuthenticated, CanViewAdmissionQueues]
+
+    def patch(self, request, application_id):
+        application = get_object_or_404(Application, pk=application_id)
+        allowed_fields = {
+            "first_name",
+            "last_name",
+            "middle_name",
+            "date_of_birth",
+            "gender",
+            "nationality",
+            "phone",
+            "email",
+            "address",
+            "disabled",
+            "next_of_kin_name",
+            "next_of_kin_contact",
+            "next_of_kin_relationship",
+            "nin",
+            "passport_number",
+        }
+        payload = {k: v for k, v in request.data.items() if k in allowed_fields}
+        required_non_blank_fields = {
+            "first_name",
+            "last_name",
+            "date_of_birth",
+            "gender",
+            "nationality",
+            "phone",
+            "email",
+            "next_of_kin_name",
+            "next_of_kin_contact",
+            "next_of_kin_relationship",
+        }
+        # Avoid failing partial updates when frontend sends empty strings
+        # for required fields it did not actually intend to clear.
+        payload = {
+            key: value
+            for key, value in payload.items()
+            if not (key in required_non_blank_fields and str(value).strip() == "")
+        }
+        if not payload:
+            return Response({"detail": "No valid profile fields provided."}, status=status.HTTP_400_BAD_REQUEST)
+
+        serializer = CudApplicationSerializer(application, data=payload, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+
+        return Response(
+            {
+                "detail": "Profile updated successfully.",
+                "application": ApplicationDetailSerializer(application).data,
+            },
+            status=status.HTTP_200_OK,
+        )
 # list rejected students
 class ListRejectedApplications(generics.ListAPIView):
     permission_classes = [IsAuthenticated, DjangoModelPermissions]

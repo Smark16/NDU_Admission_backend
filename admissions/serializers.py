@@ -197,11 +197,18 @@ class AllApplicationsReportSerializer(serializers.ModelSerializer):
 class ApplicationDetailSerializer(serializers.ModelSerializer):
     reviewed_by = serializers.CharField(source='reviewed_by.full_name', read_only=True, allow_null=True)
     batch = serializers.CharField(source='batch.name', read_only=True)
+    programs = serializers.SerializerMethodField()
+
+    def get_programs(self, obj):
+        return [{"id": p.id, "name": p.name} for p in obj.programs.all()]
+
     class Meta:
         model = Application
         fields = ['id', 'first_name', 'last_name', 'date_of_birth', 'gender', 'nationality', 'phone', 'email',
                   'batch',"nin", "passport_number","disabled", 'olevel_school', 'olevel_year', 'alevel_school', 'alevel_year', 'address',
-                  'status', 'application_fee_amount','application_fee_paid', 'created_at', 'reviewed_at', 'passport_photo','reviewed_by']
+                  'middle_name', 'next_of_kin_name', 'next_of_kin_contact', 'next_of_kin_relationship',
+                  'status', 'application_fee_amount','application_fee_paid', 'created_at', 'reviewed_at', 'passport_photo','reviewed_by',
+                  'programs']
     
 # o level subject
 class OlevelSubjectSerializer(serializers.ModelSerializer):
