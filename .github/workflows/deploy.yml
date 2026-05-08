@@ -38,7 +38,7 @@ jobs:
           python manage.py migrate payments 0001 --fake
           python manage.py migrate admissions 0006 --fake
           python manage.py migrate AdmissionLetter 0002 --fake
-          python manage.py migrate --fake admissions.0007_remove_admittedstudent_is_revoked_and_more
+          python manage.py migrate admissions 0007 --fake
           python manage.py makemigrations --merge --noinput
           python manage.py migrate
           python manage.py collectstatic --noinput
