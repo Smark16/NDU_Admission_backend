@@ -1650,7 +1650,6 @@ class AdminDashboardStats(APIView):
         pending_applications = Application.objects.filter(status='submitted').count()
         admitted_students = AdmittedStudent.objects.filter(
             is_admitted=True,
-            is_revoked=False,
         ).count()
         rejected_students = Application.objects.filter(status='rejected').count()
         total_batches = Batch.objects.all().count()
