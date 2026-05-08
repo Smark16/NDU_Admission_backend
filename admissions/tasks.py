@@ -61,12 +61,6 @@ def celery_create_student_account(self, admission_id, application_id):
         admission = Admission.objects.get(id=admission_id)
         application = Application.objects.get(id=application_id)
 
-        admission = (
-                Admission.objects
-                .select_for_update()
-                .get(id=admission_id)
-            )
-        
         if admission.student_user_id:
                 return
 
