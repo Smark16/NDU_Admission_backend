@@ -1371,39 +1371,31 @@ class RevokeAdmittedStudent(APIView):
             return Response({"detail": "You do not have permission to revoke admissions."}, status=403)
 
         admission = get_object_or_404(AdmittedStudent, pk=pk)
+        application = get_object_or_404(Application, pk=admission.application_id)
+
         reason = str(request.data.get("reason", "")).strip()
         if not reason:
             return Response({"detail": "Revocation reason is required."}, status=400)
 
         with transaction.atomic():
-            admission.is_revoked = True
-            admission.is_admitted = False
-            admission.revoked_at = timezone.now()
-            admission.revoked_by = request.user
-            admission.revocation_reason = reason
-            admission.save(
+            application.is_revoked = True
+            application.revoked_at = timezone.now()
+            application.revoked_by = request.user
+            application.revocation_reason = reason
+            application.status = "revoked"
+            application.save(
                 update_fields=[
                     "is_revoked",
-                    "is_admitted",
                     "revoked_at",
                     "revoked_by",
                     "revocation_reason",
-                    "updated_at",
+                    "status"
                 ]
             )
-            Application.objects.filter(id=admission.application_id).update(status="revoked")
+           
+        admission.delete()
 
-        refreshed = (
-            AdmittedStudent.objects.select_related(
-                "application__applicant",
-                "admitted_program__faculty",
-                "admitted_batch",
-                "admitted_campus",
-                "revoked_by",
-            )
-            .get(pk=admission.pk)
-        )
-        return Response(AdmittedStudentListSerializer(refreshed).data, status=200)
+        return Response({"detail":"Candidate has been removed from Admitted Students"}, status=200)
 
 # restore student 
 class RestoreAdmittedStudent(APIView):
@@ -1455,7 +1447,6 @@ class ListAdmittedStudents(generics.ListAPIView):
         'admitted_batch',
         'admitted_campus',
         'application__applicant',
-        'revoked_by',
         'programme_enrollment'
     ).all()
 

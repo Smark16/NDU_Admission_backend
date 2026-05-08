@@ -196,6 +196,7 @@ class AllApplicationsReportSerializer(serializers.ModelSerializer):
 # detail serializer
 class ApplicationDetailSerializer(serializers.ModelSerializer):
     reviewed_by = serializers.CharField(source='reviewed_by.full_name', read_only=True, allow_null=True)
+    revoked_by = serializers.CharField(source='revoked_by.full_name', read_only=True, allow_null=True)
     batch = serializers.CharField(source='batch.name', read_only=True)
     programs = serializers.SerializerMethodField()
 
@@ -206,7 +207,7 @@ class ApplicationDetailSerializer(serializers.ModelSerializer):
         model = Application
         fields = ['id', 'first_name', 'last_name','middle_name', 'date_of_birth', 'gender', 'nationality', 'phone', 'email',
                   'batch',"nin", "passport_number","disabled", 'olevel_school', 'olevel_year', 'alevel_school', 'alevel_year', 'address',
-                  'middle_name', 'next_of_kin_name', 'next_of_kin_contact', 'next_of_kin_relationship',
+                  'middle_name', 'next_of_kin_name', 'next_of_kin_contact', 'next_of_kin_relationship', 'revoked_by', 'is_revoked','revocation_reason',
                   'status', 'application_fee_amount','application_fee_paid', 'created_at', 'reviewed_at', 'passport_photo','reviewed_by',
                   'programs']
     
@@ -310,7 +311,6 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
     is_approved = serializers.SerializerMethodField()
     approved_by_name = serializers.SerializerMethodField()
     approved_at = serializers.SerializerMethodField()
-    revoked_by_name = serializers.SerializerMethodField()
 
     class Meta:
         model = AdmittedStudent
@@ -332,10 +332,6 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
             'is_approved',
             'approved_by_name',
             'approved_at',
-            'is_revoked',
-            'revoked_at',
-            'revoked_by_name',
-            'revocation_reason',
         ]
 
     def get_faculty(self, obj):

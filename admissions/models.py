@@ -164,6 +164,18 @@ class Application(models.Model):
     reviewed_at = models.DateTimeField(null=True, blank=True)
     review_notes = models.TextField(blank=True)
 
+    # revocation
+    is_revoked = models.BooleanField(default=False)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    revoked_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="revoked_admissions",
+    )
+    revocation_reason = models.TextField(blank=True, default="")
+
     admission_letter_docx = models.FileField(upload_to="admission_template/", null=True, blank=True)
     admission_letter_pdf = models.FileField(upload_to="admission_template/", null=True, blank=True)
     offer_letter_status = models.CharField(max_length=20, default='pending')
@@ -272,16 +284,6 @@ class AdmittedStudent(models.Model):
     admission_letter_sent = models.BooleanField(default=False)
     admission_letter_sent_at = models.DateTimeField(null=True, blank=True)
     is_admitted= models.BooleanField(default=False)
-    is_revoked = models.BooleanField(default=False)
-    revoked_at = models.DateTimeField(null=True, blank=True)
-    revoked_by = models.ForeignKey(
-        User,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="revoked_admissions",
-    )
-    revocation_reason = models.TextField(blank=True, default="")
     
     # Registration information (official registration only — do not conflate with document checks)
     is_registered = models.BooleanField(default=False)
