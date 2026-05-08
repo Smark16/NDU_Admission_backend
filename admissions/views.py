@@ -1782,6 +1782,8 @@ class AdminDashboardStats(APIView):
     permission_classes = [IsAuthenticated]
     def get(self, request):
         total_applications = Application.objects.all().count()
+        online_applications = Application.objects.filter(is_direct_entry=False).count()
+        direct_applications = Application.objects.filter(is_direct_entry=True).count()
         pending_applications = Application.objects.filter(status='submitted').count()
         admitted_students = AdmittedStudent.objects.filter(
             is_admitted=True,
@@ -1793,6 +1795,8 @@ class AdminDashboardStats(APIView):
 
         return Response({
             "totalApplication":total_applications,
+            "onlineApplications":online_applications,
+            "directApplications":direct_applications,
             "pendingApplications":pending_applications,
             "admittedStudents":admitted_students,
             "rejectedStudents":rejected_students,
