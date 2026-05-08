@@ -12,6 +12,12 @@ urlpatterns = [
     path('dashboard', views.ApplicantDashboard.as_view(), name='dashboard'),
     path('check_student_status', views.CheckStudentStatus.as_view()),
     path('admission_dashboard_stats', views.AdminDashboardStats.as_view()),
+    path('id_cards/eligible', views.IDCardEligibleStudents.as_view()),
+    path('id_cards', views.IDCardList.as_view()),
+    path('id_cards/generate', views.GenerateIDCard.as_view()),
+    path('id_cards/<int:card_id>/preview-data', views.IDCardPreviewData.as_view()),
+    path('id_cards/<int:card_id>/revoke', views.RevokeIDCard.as_view()),
+    path('id_cards/<int:card_id>/reissue', views.ReissueIDCard.as_view()),
     
     # # Application URLs
     path('applications', views.ListApplications.as_view()),

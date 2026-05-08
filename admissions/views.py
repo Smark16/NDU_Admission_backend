@@ -1,4 +1,4 @@
-from accounts.models import Campus
+from accounts.models import Campus, SystemSettings
 from accounts.erp_drf_permissions import CanViewAdmissionQueues
 from .models import *
 from rest_framework.views import APIView
@@ -37,11 +37,47 @@ from datetime import date
 
 from urllib.parse import quote
 from .utils.reg_no import generate_reg_no
+import secrets
 
 # caching
 from django.core.cache import cache
 
 logger = logging.getLogger(__name__)
+
+
+def _generate_card_number(adm: AdmittedStudent) -> str:
+    base = f"NDU-ID-{(adm.student_id or str(adm.id)).replace('/', '-')}"
+    card_number = base
+    if IDCard.objects.filter(card_number=card_number).exists():
+        card_number = f"{base}-{secrets.token_hex(2).upper()}"
+    return card_number
+
+
+def _generate_verification_token() -> str:
+    return secrets.token_urlsafe(24)
+
+
+def _get_active_id_template():
+    settings_obj = SystemSettings.get_settings()
+    templates = settings_obj.id_card_templates or []
+    active_key = (settings_obj.active_id_card_template or "").strip()
+    active_template = None
+    for t in templates:
+        if isinstance(t, dict) and str(t.get("key", "")).strip() == active_key:
+            active_template = t
+            break
+    if not active_template and templates:
+        first = templates[0]
+        if isinstance(first, dict):
+            active_template = first
+    if not active_template:
+        active_template = {
+            "key": "ndu-default-v1",
+            "name": "NDU Default V1",
+            "front_title": "NDEJJE UNIVERSITY",
+            "back_text": "Return to Academic Registrar",
+        }
+    return active_template
 
 # ===========================applications ===========================================
 @api_view(['POST'])
@@ -1665,6 +1701,281 @@ class AdminDashboardStats(APIView):
             "total_batches":total_batches,
             "activeBatches":active_batches
         }, status=200)
+
+
+class IDCardEligibleStudents(APIView):
+    permission_classes = [IsAuthenticated, CanViewAdmissionQueues]
+
+    def get(self, request):
+        qs = (
+            AdmittedStudent.objects.select_related(
+                "application",
+                "admitted_program",
+                "admitted_campus",
+                "admitted_batch",
+            )
+            .filter(is_admitted=True, is_revoked=False)
+            .exclude(id_cards__is_active=True)
+            .order_by("-created_at")
+        )
+
+        campus_id = request.query_params.get("campus")
+        program_id = request.query_params.get("program")
+        batch_id = request.query_params.get("batch")
+        q = (request.query_params.get("q") or "").strip()
+
+        if campus_id:
+            qs = qs.filter(admitted_campus_id=campus_id)
+        if program_id:
+            qs = qs.filter(admitted_program_id=program_id)
+        if batch_id:
+            qs = qs.filter(admitted_batch_id=batch_id)
+        if q:
+            qs = qs.filter(
+                Q(student_id__icontains=q)
+                | Q(reg_no__icontains=q)
+                | Q(application__first_name__icontains=q)
+                | Q(application__last_name__icontains=q)
+            )
+
+        return Response(IDCardEligibleStudentSerializer(qs, many=True).data, status=200)
+
+
+class IDCardList(APIView):
+    permission_classes = [IsAuthenticated, CanViewAdmissionQueues]
+
+    def get(self, request):
+        qs = (
+            IDCard.objects.select_related(
+                "admitted_student__application",
+                "admitted_student__admitted_program",
+                "admitted_student__admitted_campus",
+                "admitted_student__admitted_batch",
+                "generated_by",
+            )
+            .all()
+            .order_by("-generated_at")
+        )
+
+        status_param = request.query_params.get("status")
+        active_param = (request.query_params.get("is_active") or "").lower()
+        campus_id = request.query_params.get("campus")
+        program_id = request.query_params.get("program")
+        batch_id = request.query_params.get("batch")
+        q = (request.query_params.get("q") or "").strip()
+
+        if status_param:
+            qs = qs.filter(status=status_param)
+        if active_param in ("1", "true", "yes"):
+            qs = qs.filter(is_active=True)
+        elif active_param in ("0", "false", "no"):
+            qs = qs.filter(is_active=False)
+        if campus_id:
+            qs = qs.filter(admitted_student__admitted_campus_id=campus_id)
+        if program_id:
+            qs = qs.filter(admitted_student__admitted_program_id=program_id)
+        if batch_id:
+            qs = qs.filter(admitted_student__admitted_batch_id=batch_id)
+        if q:
+            qs = qs.filter(
+                Q(card_number__icontains=q)
+                | Q(barcode_value__icontains=q)
+                | Q(admitted_student__student_id__icontains=q)
+                | Q(admitted_student__reg_no__icontains=q)
+                | Q(admitted_student__application__first_name__icontains=q)
+                | Q(admitted_student__application__last_name__icontains=q)
+            )
+
+        return Response(IDCardSerializer(qs, many=True).data, status=200)
+
+
+class GenerateIDCard(APIView):
+    permission_classes = [IsAuthenticated, CanViewAdmissionQueues]
+
+    def post(self, request):
+        admitted_student_id = request.data.get("admitted_student_id")
+        expiry_date = request.data.get("expiry_date")
+        if not admitted_student_id:
+            return Response({"detail": "admitted_student_id is required."}, status=400)
+
+        admitted_student = get_object_or_404(
+            AdmittedStudent.objects.select_related(
+                "application",
+                "admitted_program",
+                "admitted_campus",
+                "admitted_batch",
+            ),
+            pk=admitted_student_id,
+        )
+        if not admitted_student.is_admitted or admitted_student.is_revoked:
+            return Response({"detail": "Only active admitted students are eligible."}, status=400)
+
+        if not getattr(admitted_student.application, "passport_photo", None):
+            return Response({"detail": "Student has no passport photo."}, status=400)
+
+        active_card = IDCard.objects.filter(admitted_student=admitted_student, is_active=True).first()
+        if active_card:
+            return Response(
+                {
+                    "detail": "An active ID card already exists for this student.",
+                    "id_card": IDCardSerializer(active_card).data,
+                },
+                status=200,
+            )
+
+        issue_date = timezone.now().date()
+        parsed_expiry = None
+        if expiry_date:
+            try:
+                parsed_expiry = date.fromisoformat(str(expiry_date))
+            except Exception:
+                return Response({"detail": "expiry_date must be YYYY-MM-DD."}, status=400)
+        if parsed_expiry is None:
+            parsed_expiry = date(issue_date.year + 2, issue_date.month, min(issue_date.day, 28))
+
+        card = IDCard.objects.create(
+            admitted_student=admitted_student,
+            card_number=_generate_card_number(admitted_student),
+            status="generated",
+            issue_date=issue_date,
+            expiry_date=parsed_expiry,
+            barcode_value=admitted_student.student_id or admitted_student.reg_no,
+            verification_token=_generate_verification_token(),
+            generated_by=request.user,
+            is_active=True,
+        )
+        IDCardPrintLog.objects.create(
+            id_card=card,
+            action="generate",
+            performed_by=request.user,
+            reason="Initial ID card generation",
+        )
+        return Response(IDCardSerializer(card).data, status=201)
+
+
+class IDCardPreviewData(APIView):
+    permission_classes = [IsAuthenticated, CanViewAdmissionQueues]
+
+    def get(self, request, card_id):
+        card = get_object_or_404(
+            IDCard.objects.select_related(
+                "admitted_student__application",
+                "admitted_student__admitted_program",
+                "admitted_student__admitted_campus",
+                "admitted_student__admitted_batch",
+            ),
+            pk=card_id,
+        )
+        adm = card.admitted_student
+        app = adm.application
+        template = _get_active_id_template()
+        return Response(
+            {
+                "id_card_id": card.id,
+                "card_number": card.card_number,
+                "status": card.status,
+                "is_active": card.is_active,
+                "template": {
+                    "key": str(template.get("key", "")).strip(),
+                    "name": str(template.get("name", "")).strip(),
+                    "front_title": str(template.get("front_title", "")).strip(),
+                    "back_text": str(template.get("back_text", "")).strip(),
+                },
+                "front": {
+                    "name": app.full_name,
+                    "student_no": adm.student_id,
+                    "reg_no": adm.reg_no,
+                    "course": getattr(adm.admitted_program, "short_form", "") or adm.admitted_program.name,
+                    "gender": app.gender,
+                    "expiry_date": card.expiry_date.isoformat() if card.expiry_date else None,
+                    "barcode_value": card.barcode_value,
+                    "passport_photo": app.passport_photo.url if app.passport_photo else None,
+                },
+                "back": {
+                    "institution": str(template.get("front_title", "")).strip() or "NDEJJE UNIVERSITY",
+                    "issuer_title": "Academic Registrar",
+                    "issued_on": card.issue_date.isoformat() if card.issue_date else None,
+                    "return_to": str(template.get("back_text", "")).strip() or "Office of the Academic Registrar, Ndejje University, P.O. Box 7088 Kampala, Uganda",
+                    "tel": "+256-392-730321",
+                    "email": "registrar@ndejjeuniversity.ac.ug",
+                },
+            },
+            status=200,
+        )
+
+
+class RevokeIDCard(APIView):
+    permission_classes = [IsAuthenticated, CanViewAdmissionQueues]
+
+    def post(self, request, card_id):
+        reason = str(request.data.get("reason", "")).strip()
+        if not reason:
+            return Response({"detail": "Revocation reason is required."}, status=400)
+
+        card = get_object_or_404(IDCard, pk=card_id)
+        if not card.is_active:
+            return Response({"detail": "Card is already inactive."}, status=400)
+
+        card.is_active = False
+        card.status = "revoked"
+        card.save(update_fields=["is_active", "status", "updated_at"])
+        IDCardPrintLog.objects.create(
+            id_card=card,
+            action="revoke",
+            performed_by=request.user,
+            reason=reason,
+        )
+        return Response({"detail": "ID card revoked successfully."}, status=200)
+
+
+class ReissueIDCard(APIView):
+    permission_classes = [IsAuthenticated, CanViewAdmissionQueues]
+
+    def post(self, request, card_id):
+        reason = str(request.data.get("reason", "")).strip()
+        if not reason:
+            return Response({"detail": "Reissue reason is required."}, status=400)
+
+        old_card = get_object_or_404(
+            IDCard.objects.select_related("admitted_student", "admitted_student__application"),
+            pk=card_id,
+        )
+        adm = old_card.admitted_student
+        if not adm.is_admitted or adm.is_revoked:
+            return Response({"detail": "Student is not currently eligible for active ID cards."}, status=400)
+
+        with transaction.atomic():
+            old_card.is_active = False
+            old_card.status = "reissued"
+            old_card.save(update_fields=["is_active", "status", "updated_at"])
+            IDCardPrintLog.objects.create(
+                id_card=old_card,
+                action="reissue",
+                performed_by=request.user,
+                reason=reason,
+            )
+
+            issue_date = timezone.now().date()
+            expiry = date(issue_date.year + 2, issue_date.month, min(issue_date.day, 28))
+            new_card = IDCard.objects.create(
+                admitted_student=adm,
+                card_number=_generate_card_number(adm),
+                status="generated",
+                issue_date=issue_date,
+                expiry_date=expiry,
+                barcode_value=adm.student_id or adm.reg_no,
+                verification_token=_generate_verification_token(),
+                generated_by=request.user,
+                is_active=True,
+            )
+            IDCardPrintLog.objects.create(
+                id_card=new_card,
+                action="generate",
+                performed_by=request.user,
+                reason=f"Reissued from card {old_card.card_number}",
+            )
+
+        return Response(IDCardSerializer(new_card).data, status=201)
 
 # ===================================================notifications======================================
 # list user notifications

@@ -16,8 +16,73 @@ from .utils.excel import create_workbook
 from django.http import HttpResponse
 from django.utils.timezone import localtime
 from django.db.models import Count, Q, Exists, OuterRef
+from datetime import date
+import calendar as _calendar
 
 # Create your views here.
+
+
+def _add_months(d: date, months: int) -> date:
+    """Return date shifted by `months`, clamped to month end."""
+    year = d.year + (d.month - 1 + months) // 12
+    month = (d.month - 1 + months) % 12 + 1
+    day = min(d.day, _calendar.monthrange(year, month)[1])
+    return date(year, month, day)
+
+
+def _ensure_min_year_semesters(program: Program) -> int:
+    """
+    Ensure each active batch has semester rows up to program.min_years.
+    Creates only missing slots; never duplicates existing semesters.
+    """
+    raw_min = getattr(program, "min_years", None)
+    min_years = max(int(raw_min), 1) if raw_min else 1
+
+    cal_type = getattr(program, "calendar_type", None) or "semester"
+    terms_per_year = 3 if cal_type == "trimester" else 2
+    label = "Trimester" if cal_type == "trimester" else "Semester"
+    months_each = 4 if cal_type == "trimester" else 6
+
+    created = 0
+    batches = ProgramBatch.objects.filter(program=program, is_active=True).prefetch_related("semesters")
+    for batch in batches:
+        existing_slots = set(
+            batch.semesters.exclude(year_of_study__isnull=True, term_number__isnull=True)
+            .values_list("year_of_study", "term_number")
+        )
+        used_orders = set(batch.semesters.values_list("order", flat=True))
+        max_order = max(used_orders) if used_orders else 0
+
+        for year in range(1, min_years + 1):
+            for term in range(1, terms_per_year + 1):
+                if (year, term) in existing_slots:
+                    continue
+
+                suggested_order = ((year - 1) * terms_per_year) + term
+                if suggested_order in used_orders:
+                    max_order += 1
+                    order = max_order
+                else:
+                    order = suggested_order
+
+                term_start = _add_months(batch.start_date, (order - 1) * months_each)
+                term_end = _add_months(batch.start_date, order * months_each)
+
+                Semester.objects.create(
+                    program_batch=batch,
+                    name=f"Year {year} {label} {term}",
+                    order=order,
+                    year_of_study=year,
+                    term_number=term,
+                    start_date=term_start,
+                    end_date=term_end,
+                    is_active=True,
+                )
+                used_orders.add(order)
+                existing_slots.add((year, term))
+                created += 1
+
+    return created
 
 # ====================================Programs==================================================================
 
@@ -43,7 +108,9 @@ class UpdateProgram(generics.UpdateAPIView):
         instance = self.get_object()
         serializer = self.serializer_class(instance, data=request.data)
         serializer.is_valid(raise_exception=True)
-        serializer.save()
+        with transaction.atomic():
+            program = serializer.save()
+            _ensure_min_year_semesters(program)
 
         return Response(serializer.data, status=200)
     

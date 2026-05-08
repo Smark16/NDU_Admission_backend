@@ -202,4 +202,57 @@ class SystemSettingsSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = SystemSettings
-        fields = ['student_session_timeout', 'admin_session_timeout', 'updated_by_name', 'updated_at']
+        fields = [
+            'student_session_timeout',
+            'admin_session_timeout',
+            'id_card_templates',
+            'active_id_card_template',
+            'updated_by_name',
+            'updated_at',
+        ]
+
+    def validate_id_card_templates(self, value):
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise serializers.ValidationError("id_card_templates must be a list.")
+
+        normalized = []
+        keys = set()
+        for idx, item in enumerate(value):
+            if not isinstance(item, dict):
+                raise serializers.ValidationError(f"Template at index {idx} must be an object.")
+            key = str(item.get("key", "")).strip()
+            name = str(item.get("name", "")).strip()
+            if not key or not name:
+                raise serializers.ValidationError(
+                    f"Template at index {idx} must have non-empty key and name."
+                )
+            if key in keys:
+                raise serializers.ValidationError(f"Duplicate template key: {key}")
+            keys.add(key)
+            normalized.append(
+                {
+                    "key": key,
+                    "name": name,
+                    "front_title": str(item.get("front_title", "")).strip(),
+                    "back_text": str(item.get("back_text", "")).strip(),
+                }
+            )
+        return normalized
+
+    def validate(self, attrs):
+        templates = attrs.get("id_card_templates")
+        active = str(attrs.get("active_id_card_template", "")).strip()
+        if templates is None and self.instance is not None:
+            templates = self.instance.id_card_templates
+        if not active and self.instance is not None and "active_id_card_template" not in attrs:
+            active = self.instance.active_id_card_template
+
+        if active:
+            keys = {str(t.get("key", "")).strip() for t in (templates or []) if isinstance(t, dict)}
+            if active not in keys:
+                raise serializers.ValidationError(
+                    {"active_id_card_template": "Active template key must exist in id_card_templates."}
+                )
+        return attrs

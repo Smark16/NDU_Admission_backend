@@ -111,6 +111,17 @@ class SystemSettings(models.Model):
         default=60,
         help_text="Minutes before an admin session expires due to inactivity",
     )
+    id_card_templates = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="List of configurable ID card templates.",
+    )
+    active_id_card_template = models.CharField(
+        max_length=50,
+        blank=True,
+        default="",
+        help_text="Template key currently used for ID card rendering.",
+    )
     updated_by = models.ForeignKey(
         User,
         on_delete=models.SET_NULL,

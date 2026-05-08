@@ -470,3 +470,80 @@ class AdditionalQualifficationsSerializer(serializers.ModelSerializer):
     class Meta:
         model = AdditionalQualifications
         fields = '__all__'
+
+
+class IDCardSerializer(serializers.ModelSerializer):
+    admitted_student_name = serializers.CharField(
+        source="admitted_student.application.full_name",
+        read_only=True,
+        allow_null=True,
+    )
+    student_id = serializers.CharField(source="admitted_student.student_id", read_only=True)
+    reg_no = serializers.CharField(source="admitted_student.reg_no", read_only=True)
+    program = serializers.CharField(source="admitted_student.admitted_program.name", read_only=True)
+    campus = serializers.CharField(source="admitted_student.admitted_campus.name", read_only=True)
+    batch = serializers.CharField(source="admitted_student.admitted_batch.name", read_only=True)
+
+    class Meta:
+        model = IDCard
+        fields = [
+            "id",
+            "admitted_student",
+            "admitted_student_name",
+            "student_id",
+            "reg_no",
+            "program",
+            "campus",
+            "batch",
+            "card_number",
+            "status",
+            "issue_date",
+            "expiry_date",
+            "barcode_value",
+            "verification_token",
+            "template_version",
+            "print_count",
+            "is_active",
+            "generated_by",
+            "generated_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "card_number",
+            "barcode_value",
+            "verification_token",
+            "print_count",
+            "generated_by",
+            "generated_at",
+            "updated_at",
+        ]
+
+
+class IDCardEligibleStudentSerializer(serializers.ModelSerializer):
+    name = serializers.CharField(source="application.full_name", read_only=True)
+    gender = serializers.CharField(source="application.gender", read_only=True)
+    program = serializers.CharField(source="admitted_program.name", read_only=True)
+    campus = serializers.CharField(source="admitted_campus.name", read_only=True)
+    batch = serializers.CharField(source="admitted_batch.name", read_only=True)
+    has_passport_photo = serializers.SerializerMethodField()
+
+    class Meta:
+        model = AdmittedStudent
+        fields = [
+            "id",
+            "student_id",
+            "reg_no",
+            "name",
+            "gender",
+            "program",
+            "campus",
+            "batch",
+            "is_registered",
+            "has_passport_photo",
+        ]
+
+    def get_has_passport_photo(self, obj):
+        try:
+            return bool(obj.application and obj.application.passport_photo)
+        except Exception:
+            return False
