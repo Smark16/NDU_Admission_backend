@@ -175,7 +175,7 @@ def send_offer_letter(request, applicant_id):
            title = "MS."    
            
     context = {
-        "full_name": f"{title} {(applicant.first_name or '').strip()} {(applicant.last_name or '').strip()}".upper(),
+        "full_name": f"{title} {(applicant.first_name or '').strip()} {(applicant.last_name or '').strip()} {(applicant.middle_name or '').strip()}".upper(),
         "phone_number": applicant.phone or "",
         "phone": applicant.phone or "",
         "student_no": admission.student_id or "TBD",
