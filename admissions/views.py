@@ -18,8 +18,9 @@ from django.db import transaction
 from django.db.models.deletion import ProtectedError
 from django.db.utils import OperationalError
 # from .utils.validate_photo import validate_passport_photo
-from .tasks import celery_send_application_email, celery_application_notification, celery_admission_email, celery_admission_update
+from .tasks import celery_send_application_email, celery_application_notification, celery_admission_email, celery_admission_update, celery_create_student_account
 from accounts.tasks import celery_send_account_email
+from .utils.trigger_background_tasks import trigger_background_tasks
 from payments.models import ApplicationPayment
 from Drafts.models import DraftApplication
 from django.db.models import Q
@@ -28,8 +29,6 @@ import time
 import logging
 import json
 
-# WeasyPrint is imported lazily inside DownloadAdmissionPDF.get — a top-level import
-# fails on Windows without GTK/Pango (libgobject), which breaks the whole URLconf.
 from django.shortcuts import get_object_or_404
 from django.http import HttpResponse
 from django.template.loader import render_to_string
@@ -1298,7 +1297,7 @@ class AdmitStudent(generics.CreateAPIView):
                 )
 
                 if existing_admission:
-                    if existing_admission.is_admitted and not existing_admission.is_revoked:
+                    if existing_admission.is_admitted:
                         return Response(
                             {"detail": "This application is already in admitted list."},
                             status=400,
@@ -1309,10 +1308,6 @@ class AdmitStudent(generics.CreateAPIView):
                     admission = serializer.save(
                         admission_date=timezone.now(),
                         is_admitted=True,
-                        is_revoked=False,
-                        revoked_at=None,
-                        revoked_by=None,
-                        revocation_reason="",
                     )
                 else:
                     serializer = self.get_serializer(data=request.data)
@@ -1320,38 +1315,24 @@ class AdmitStudent(generics.CreateAPIView):
                     admission = serializer.save()
 
                 # Fetch application
-                application = Application.objects.select_related("applicant", "batch", "campus").get(
-                    pk=admission.application_id
-                )
+                try:
+                    application = Application.objects.select_related(
+                        "applicant",
+                        "batch",
+                        "campus"
+                    ).get(pk=admission.application_id)
+                    
+                except Application.DoesNotExist:
+                    logger.warning(f"Application {admission.application_id} not found")
+                    return
 
                 # CRITICAL: Update status immediately
-                Application.objects.filter(id=application.id).update(status="admitted")
+                Application.objects.filter(id=application.id).update(status="Admitted")
 
                 # Student Account Creation (Non-blocking)
-                # try:
-                #     from accounts.models import User
-                #     applicant = application.applicant
-                #     student_username = str(admission.reg_no).strip().replace("/", "_")
-
-                #     if not getattr(admission, 'student_user_id', None):
-                #         student_user, created = User.objects.get_or_create(
-                #             username=student_username,
-                #             defaults={
-                #                 'first_name': applicant.first_name or "",
-                #                 'last_name': applicant.last_name or "",
-                #                 'email': applicant.email,
-                #                 'is_student': True,
-                #                 'must_change_password': True,
-                #             }
-                #         )
-                #         if created:
-                #             student_user.set_password('NDU@1234')
-                #             student_user.save()
-
-                #         admission.student_user = student_user
-                #         admission.save(update_fields=['student_user'])
-                # except Exception as e:
-                #     logger.warning(f"Student account creation failed: {e}")
+                transaction.on_commit(
+                    lambda: trigger_background_tasks(admission.id, application.id)
+                )
 
                 # Auto Enrollment (Non-blocking)
                 # try:
