@@ -26,6 +26,7 @@ urlpatterns = [
     path('single_app/<int:application_id>', views.SingleApplication.as_view()),
     path('change_applicatio_status/<int:pk>', views.ChangeApplicationStatus.as_view()),
     path('edit_application_profile/<int:application_id>', views.EditApplicationProfile.as_view()),
+    path('change_programme/<int:application_id>', views.ChangeApplicationProgramme.as_view()),
     path('generate-reg-no/', views.generate_reg_no_view, name='generate_reg_no'),
 
     # Subject Urls
@@ -88,6 +89,7 @@ urlpatterns = [
 
     # Admission Change Requests
     path('change_requests/my', views.StudentChangeRequestListCreate.as_view(), name='student_change_requests'),
+    path('change_requests/options', views.StudentChangeRequestOptions.as_view(), name='student_change_request_options'),
     path('change_requests/all', views.AdminChangeRequestList.as_view(), name='admin_change_requests'),
     path('change_requests/<int:pk>/review', views.AdminChangeRequestReview.as_view(), name='review_change_request'),
 

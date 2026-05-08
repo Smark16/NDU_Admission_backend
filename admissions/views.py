@@ -711,6 +711,53 @@ class EditApplicationProfile(APIView):
             },
             status=status.HTTP_200_OK,
         )
+
+
+class ChangeApplicationProgramme(APIView):
+    permission_classes = [IsAuthenticated, CanViewAdmissionQueues]
+
+    def patch(self, request, application_id):
+        application = get_object_or_404(
+            Application.objects.prefetch_related("programs").select_related("campus"),
+            pk=application_id,
+        )
+        raw_program_ids = request.data.get("program_ids", [])
+        if not isinstance(raw_program_ids, list) or not raw_program_ids:
+            return Response({"detail": "program_ids must be a non-empty list."}, status=400)
+
+        try:
+            program_ids = [int(pid) for pid in raw_program_ids]
+        except (TypeError, ValueError):
+            return Response({"detail": "program_ids must contain valid integers."}, status=400)
+
+        program_qs = Program.objects.filter(id__in=program_ids)
+        if program_qs.count() != len(set(program_ids)):
+            return Response({"detail": "One or more selected programmes are invalid."}, status=400)
+
+        campus_id = request.data.get("campus_id")
+        campus_changed = False
+        if campus_id not in (None, "", "null"):
+            try:
+                application.campus = Campus.objects.get(pk=int(campus_id))
+                campus_changed = True
+            except (TypeError, ValueError, Campus.DoesNotExist):
+                return Response({"detail": "Invalid campus_id."}, status=400)
+
+        application.programs.set(program_qs)
+        if campus_changed:
+            application.save(update_fields=["campus", "updated_at"])
+        else:
+            application.save(update_fields=["updated_at"])
+
+        return Response(
+            {
+                "detail": "Programme choices updated successfully.",
+                "programs": [{"id": p.id, "name": p.name} for p in application.programs.all()],
+                "campus": application.campus.name if application.campus else None,
+            },
+            status=200,
+        )
+
 # list rejected students
 class ListRejectedApplications(generics.ListAPIView):
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
@@ -1840,6 +1887,44 @@ class StudentChangeRequestListCreate(APIView):
             current_study_mode=admission.study_mode,
         )
         return Response(AdmissionChangeRequestSerializer(obj).data, status=201)
+
+
+class StudentChangeRequestOptions(APIView):
+    """Student: fetch available program/campus options for change requests."""
+    permission_classes = [IsAuthenticated]
+
+    def _get_admission(self, user):
+        try:
+            return AdmittedStudent.objects.select_related(
+                'admitted_program', 'admitted_campus'
+            ).filter(
+                Q(application__applicant=user) | Q(student_user=user) | Q(reg_no=user.username),
+                is_admitted=True,
+            ).first()
+        except Exception:
+            return None
+
+    def get(self, request):
+        admission = self._get_admission(request.user)
+        if not admission:
+            return Response({'detail': 'No active admission found.'}, status=404)
+
+        base_program_qs = Program.objects.all().order_by("name")
+        try:
+            # Prefer same academic level options for safer programme transitions.
+            if admission.admitted_program and admission.admitted_program.academic_level_id:
+                base_program_qs = base_program_qs.filter(
+                    academic_level_id=admission.admitted_program.academic_level_id
+                )
+        except Exception:
+            pass
+
+        programs = [
+            {"id": p.id, "name": p.name, "code": p.code}
+            for p in base_program_qs
+        ]
+        campuses = [{"id": c.id, "name": c.name} for c in Campus.objects.all().order_by("name")]
+        return Response({"programs": programs, "campuses": campuses}, status=200)
 
 
 class AdminChangeRequestList(APIView):
