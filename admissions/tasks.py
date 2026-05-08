@@ -4,6 +4,7 @@ from django.apps import apps
 from .utils.email import send_application_email, send_admission_email, send_admission_update, send_student_login_credentials
 from .utils.notification import create_notification
 from django.db import transaction
+from django.db import close_old_connections
 from accounts.models import User
 import logging
 
@@ -34,6 +35,8 @@ def celery_send_student_credentials_email(self, user_id, password):
 
 @shared_task(bind=True, max_retries=5)
 def celery_admission_email(self, application_id, admission_id):
+    close_old_connections()
+
     Application = apps.get_model('admissions', 'Application')
     Admission = apps.get_model('admissions', 'AdmittedStudent')
 
@@ -50,6 +53,7 @@ def celery_admission_update(admission_id):
 
 @shared_task(bind=True, max_retries=5)
 def celery_create_student_account(self, admission_id, application_id):
+    close_old_connections()
     try:
         Admission = apps.get_model('admissions', 'AdmittedStudent')
         Application = apps.get_model('admissions', 'Application')
