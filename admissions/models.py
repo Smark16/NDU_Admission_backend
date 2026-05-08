@@ -104,7 +104,7 @@ class Application(models.Model):
     nationality = models.CharField(max_length=100)
     phone = models.CharField(max_length=20)
     email = models.EmailField()
-    address = models.TextField(max_length=40, blank=True, null=True)
+    address = models.TextField(max_length=255, blank=True, null=True)
     nin = models.CharField(max_length=20, blank=True, null=True)
     passport_number = models.CharField(max_length=20, blank=True, null=True)
     disabled = models.CharField(max_length=5, null=True, blank=True)
