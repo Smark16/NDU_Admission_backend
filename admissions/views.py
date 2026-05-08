@@ -566,7 +566,7 @@ class AllApplicationsReport(generics.ListAPIView):
         return Application.objects.select_related(
             'academic_level', 'batch', 'campus', 'entered_by'
         ).prefetch_related('programs', 'programs__faculty').filter(
-            ~Q(status__in=['draft']),
+            ~Q(status__in=['draft', 'Admitted', 'rejected']),
         ).order_by('created_at')
 
 class ListDirectEntryApplications(generics.ListAPIView):
