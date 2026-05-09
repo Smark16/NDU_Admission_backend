@@ -348,10 +348,6 @@ def create_direct_applications(request):
             olevel_results = json.loads(request.data.get("olevel_results", "[]"))
             alevel_results = json.loads(request.data.get("alevel_results", "[]"))
 
-            # Direct-entry flow resolves applicant from email/user below; do not
-            # let a malformed/undefined applicant in request payload break validation.
-            # data.pop("applicant", None)
-
             # === VALIDATE MAIN APPLICATION DATA ===
             serializer = CudApplicationSerializer(data=data, context={"request": request})
             serializer.is_valid(raise_exception=True)
@@ -406,6 +402,10 @@ def create_direct_applications(request):
                 user.set_password(account_password)
                 user.save()
                 is_new_account = True
+            else:
+                return Response({
+                    "detail": "An account with this email already exists.",  
+                }, status=400)
 
             # === CREATE APPLICATION ===
             application = Application(**serializer.validated_data)
