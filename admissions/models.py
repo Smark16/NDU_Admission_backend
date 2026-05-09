@@ -307,8 +307,7 @@ class AdmittedStudent(models.Model):
     
     # Notes
     admission_notes = models.TextField(blank=True, help_text="Notes about the admission")
-    # admitted_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='admitted_students')
-    # student_user = models.OneToOneField(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='student_admission')
+    admitted_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='admitted_students')
     
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

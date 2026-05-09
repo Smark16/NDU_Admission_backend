@@ -1435,17 +1435,30 @@ class RevokeAdmittedStudent(APIView):
             return Response({"detail": "Revocation reason is required."}, status=400)
 
         with transaction.atomic():
+            # Delete actual files from storage
+            if application.admission_letter_pdf:
+                application.admission_letter_pdf.delete(save=False)
+
+            if application.admission_letter_docx:
+                application.admission_letter_docx.delete(save=False)
+
             application.is_revoked = True
             application.revoked_at = timezone.now()
             application.revoked_by = request.user
             application.revocation_reason = reason
             application.status = "revoked"
+            # Clear database fields
+            application.admission_letter_pdf = None
+            application.admission_letter_docx = None
+
             application.save(
                 update_fields=[
                     "is_revoked",
                     "revoked_at",
                     "revoked_by",
                     "revocation_reason",
+                    "admission_letter_pdf",
+                    "admission_letter_docx",
                     "status"
                 ]
             )
@@ -1648,7 +1661,7 @@ class CandidateAdmission(generics.RetrieveAPIView):
         'admitted_program',
         'admitted_batch',
         'admitted_campus',
-        # 'admitted_by',
+        'admitted_by',
         # 'physical_documents_verified_by',
     ).prefetch_related('admitted_program__campuses')
     serializer_class = AdmissionDetailSerializer
