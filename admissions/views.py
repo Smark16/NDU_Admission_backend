@@ -1463,6 +1463,7 @@ class RevokeAdmittedStudent(APIView):
                 ]
             )
            
+        User.objects.filter(username=admission.reg_no).delete()
         admission.delete()
 
         return Response({"detail":"Candidate has been removed from Admitted Students"}, status=200)
