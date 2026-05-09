@@ -573,6 +573,7 @@ class ListDirectEntryApplications(generics.ListAPIView):
         Application.objects.filter(is_direct_entry=True)
         .select_related("academic_level", "batch", "campus", "entered_by")
         .prefetch_related("programs", "programs__faculty")
+        .filter(~Q(status__in=["draft", "Admitted", "rejected"]))
         .order_by("-created_at")
     )
     serializer_class = AllApplicationsReportSerializer
@@ -1355,11 +1356,16 @@ class AdmitStudent(generics.CreateAPIView):
                     admission = serializer.save(
                         admission_date=timezone.now(),
                         is_admitted=True,
+                        admitted_by=request.user,
                     )
                 else:
                     serializer = self.get_serializer(data=request.data)
                     serializer.is_valid(raise_exception=True)
-                    admission = serializer.save()
+                    admission = serializer.save(
+                        admitted_by=request.user,
+                        admission_date=timezone.now(),
+                        is_admitted=True,
+                    )
 
                 # Fetch application
                 try:

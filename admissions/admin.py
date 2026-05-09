@@ -13,11 +13,12 @@ class FacultyAdmin(admin.ModelAdmin):
 class AdmittedStudentAdmin(admin.ModelAdmin):
     list_display = [
         'id',
+        'application',
         'student_id',
         'reg_no',
+        'admitted_batch',
         'admitted_program',
-        'admitted_campus',
-        'is_registered',
+        'admitted_by'
         # 'physical_documents_verified',
         # 'physical_documents_verified_at',
         # 'physical_documents_verified_by',

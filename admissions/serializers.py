@@ -327,6 +327,7 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
             'is_registered',
             'application',
             'is_admitted',
+            'admitted_by',
             'status',
             'admission_letter_pdf',
             'is_approved',
@@ -361,12 +362,6 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
 
     def get_approved_at(self, obj):
         return getattr(obj, "approved_at", None)
-
-    def get_revoked_by_name(self, obj):
-        user = getattr(obj, "revoked_by", None)
-        if user is None:
-            return None
-        return user.get_full_name() or getattr(user, "username", None)
 
 # admission detail serializer
 class AdmissionDetailSerializer(serializers.ModelSerializer):
