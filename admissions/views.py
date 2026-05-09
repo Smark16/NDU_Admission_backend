@@ -1648,8 +1648,8 @@ class CandidateAdmission(generics.RetrieveAPIView):
         'admitted_program',
         'admitted_batch',
         'admitted_campus',
-        'admitted_by',
-        'physical_documents_verified_by',
+        # 'admitted_by',
+        # 'physical_documents_verified_by',
     ).prefetch_related('admitted_program__campuses')
     serializer_class = AdmissionDetailSerializer
     lookup_field = "id"

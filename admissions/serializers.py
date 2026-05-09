@@ -383,9 +383,6 @@ class AdmissionDetailSerializer(serializers.ModelSerializer):
             'application',
             'is_registered',
             'registration_date',
-            'is_revoked',
-            'revoked_at',
-            'revocation_reason',
         ]
 
     def to_representation(self, instance):
