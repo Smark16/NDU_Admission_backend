@@ -1,10 +1,13 @@
 from celery import shared_task
 from django.apps import apps
+from django.utils import timezone
+from payments.models import RegistrationSettings
+from Programs.models import StudentProgrammeEnrollment, ProgramBatch
 
 from .utils.email import send_application_email, send_admission_email, send_admission_update, send_student_login_credentials
 from .utils.notification import create_notification
 from django.db import transaction
-from django.db import close_old_connections
+# from django.db import close_old_connections
 from accounts.models import User
 import logging
 
@@ -35,8 +38,6 @@ def celery_send_student_credentials_email(self, user_id, password):
 
 @shared_task(bind=True, max_retries=5)
 def celery_admission_email(self, application_id, admission_id):
-    close_old_connections()
-
     Application = apps.get_model('admissions', 'Application')
     Admission = apps.get_model('admissions', 'AdmittedStudent')
 
@@ -53,7 +54,6 @@ def celery_admission_update(admission_id):
 
 @shared_task(bind=True, max_retries=5)
 def celery_create_student_account(self, admission_id, application_id):
-    close_old_connections()
     try:
         Admission = apps.get_model('admissions', 'AdmittedStudent')
         Application = apps.get_model('admissions', 'Application')
@@ -88,3 +88,35 @@ def celery_create_student_account(self, admission_id, application_id):
                 admission.save(update_fields=['student_user'])
     except Exception as e:
         logger.warning(f"Student account creation failed: {e}")
+
+# AutoEnroll Students
+@shared_task(bind=True, max_retries=5)
+def celery_auto_enroll_students(self, admission_id, user_id):
+    Admission = apps.get_model('admissions', 'AdmittedStudent')
+    User = apps.get_model('accounts', 'User')
+
+    admission = Admission.objects.get(id=admission_id)
+    user = User.objects.get(id=user_id)
+    try:
+        reg_settings = RegistrationSettings.get_settings()
+
+        # Get or create ProgramBatch
+        program_batch = ProgramBatch.objects.filter(
+            program=admission.admitted_program
+        ).order_by('-is_active', '-start_date').first()
+
+        if program_batch:
+            StudentProgrammeEnrollment.objects.get_or_create(
+                student=admission,
+                defaults={
+                    'program': admission.admitted_program,
+                    'program_batch': program_batch,
+                    'current_year_of_study': 1,
+                    'current_term_number': 1,
+                    'status': "enrolled" if reg_settings.auto_enroll_on_admission else "pending",
+                    'enrolled_by': user if reg_settings.auto_enroll_on_admission else None,
+                    'enrolled_at': timezone.now() if reg_settings.auto_enroll_on_admission else None,
+                }
+        )
+    except Exception as e:
+        logger.warning(f"Auto-enrollment failed: {e}")

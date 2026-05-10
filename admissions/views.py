@@ -1382,40 +1382,11 @@ class AdmitStudent(generics.CreateAPIView):
                 # CRITICAL: Update status immediately
                 Application.objects.filter(id=application.id).update(status="Admitted")
 
-                # Student Account Creation (Non-blocking)
+                # Student Account Creation and auto Enrollment
                 transaction.on_commit(
-                    lambda: trigger_background_tasks(admission.id, application.id)
+                    lambda: trigger_background_tasks(admission.id, application.id, request.user.id)
                 )
-
-                # Auto Enrollment (Non-blocking)
-                # try:
-                #     from django.utils import timezone
-                #     from payments.models import RegistrationSettings
-                #     from Programs.models import StudentProgrammeEnrollment, ProgramBatch
-
-                #     reg_settings = RegistrationSettings.get_settings()
-
-                #     # Get or create ProgramBatch
-                #     program_batch = ProgramBatch.objects.filter(
-                #         program=admission.admitted_program
-                #     ).order_by('-is_active', '-start_date').first()
-
-                #     if program_batch:
-                #         StudentProgrammeEnrollment.objects.get_or_create(
-                #             student=admission,
-                #             defaults={
-                #                 'program': admission.admitted_program,
-                #                 'program_batch': program_batch,
-                #                 'current_year_of_study': 1,
-                #                 'current_term_number': 1,
-                #                 'status': "enrolled" if reg_settings.auto_enroll_on_admission else "pending",
-                #                 'enrolled_by': request.user if reg_settings.auto_enroll_on_admission else None,
-                #                 'enrolled_at': timezone.now() if reg_settings.auto_enroll_on_admission else None,
-                #             }
-                #         )
-                # except Exception as e:
-                #     logger.warning(f"Auto-enrollment failed: {e}")
-
+            
                 return Response(self.serializer_class(admission).data, status=201)
 
         except Exception as e:
@@ -1497,13 +1468,13 @@ class RestoreAdmittedStudent(APIView):
                 update_fields=[
                     "is_revoked",
                     "is_admitted",
-                    "revoked_at",
-                    "revoked_by",
-                    "revocation_reason",
+                    # "revoked_at",
+                    # "revoked_by",
+                    # "revocation_reason",
                     "updated_at",
                 ]
             )
-            Application.objects.filter(id=admission.application_id).update(status="admitted")
+            Application.objects.filter(id=admission.application_id).update(status="Admitted")
 
         refreshed = (
             AdmittedStudent.objects.select_related(
@@ -1511,7 +1482,7 @@ class RestoreAdmittedStudent(APIView):
                 "admitted_program__faculty",
                 "admitted_batch",
                 "admitted_campus",
-                "revoked_by",
+                # "revoked_by",
             )
             .get(pk=admission.pk)
         )
