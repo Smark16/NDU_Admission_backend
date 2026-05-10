@@ -80,14 +80,21 @@ def celery_create_student_account(self, admission_id, application_id):
                 student_user.set_password('NDU@1234')
                 student_user.save()
 
-                transaction.on_commit(
-                    lambda: celery_send_student_credentials_email.delay(student_user.id, password='NDU@1234')
+                celery_send_student_credentials_email.delay(
+                    student_user.id,
+                    password='NDU@1234'
                 )
 
-                admission.student_user = student_user
-                admission.save(update_fields=['student_user'])
+        admission.student_user = student_user
+        admission.save(update_fields=['student_user'])
+
+        celery_auto_enroll_students.delay(
+            admission.id,
+            admission.admitted_by_id
+        )
+
     except Exception as e:
-        logger.warning(f"Student account creation failed: {e}")
+        logger.exception(f"Student account creation failed: {e }")
 
 # AutoEnroll Students
 @shared_task(bind=True, max_retries=5)
@@ -119,4 +126,4 @@ def celery_auto_enroll_students(self, admission_id, user_id):
                 }
         )
     except Exception as e:
-        logger.warning(f"Auto-enrollment failed: {e}")
+        logger.exception(f"Auto-enrollment failed: {e}")

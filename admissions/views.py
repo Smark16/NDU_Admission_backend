@@ -1384,13 +1384,13 @@ class AdmitStudent(generics.CreateAPIView):
 
                 # Student Account Creation and auto Enrollment
                 transaction.on_commit(
-                    lambda: trigger_background_tasks(admission.id, application.id, request.user.id)
+                    lambda: trigger_background_tasks(admission.id, application.id)
                 )
             
                 return Response(self.serializer_class(admission).data, status=201)
 
         except Exception as e:
-            logger.error(f"Admission failed: {e}", exc_info=True)
+            logger.exception(f"Admission failed: {e}", exc_info=True)
             return Response({"detail": str(e)}, status=400)
 
 # revoke student 
