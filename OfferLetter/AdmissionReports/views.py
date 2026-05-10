@@ -285,7 +285,7 @@ class ExportFacultyAdmissionsExcel(APIView):
             "admitted_program__faculty",
             "admitted_campus",
             "admitted_batch",
-            "physical_documents_verified_by",
+            # "physical_documents_verified_by",
         ).filter(is_admitted=True)
 
         if academic_year:
