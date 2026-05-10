@@ -409,6 +409,7 @@ class ExportFacultyAdmissionsExcel(APIView):
             "PAYMENTS",
             "DATE OF ENTRY",
             "ORIGIN",
+            "ADMITTED BY"
         ]
 
         rows = []
@@ -458,12 +459,12 @@ class ExportFacultyAdmissionsExcel(APIView):
             if adm.admitted_program and adm.admitted_program.faculty:
                 faculty_name = adm.admitted_program.faculty.name or ""
             verified_by = ""
-            if adm.physical_documents_verified_by_id:
-                vb = adm.physical_documents_verified_by
-                verified_by = (vb.get_full_name() or vb.username or "") if vb else ""
-            verified_at = ""
-            if adm.physical_documents_verified_at:
-                verified_at = adm.physical_documents_verified_at.strftime("%Y-%m-%d %H:%M")
+            # if adm.physical_documents_verified_by_id:
+            #     vb = adm.physical_documents_verified_by
+            #     verified_by = (vb.get_full_name() or vb.username or "") if vb else ""
+            # verified_at = ""
+            # if adm.physical_documents_verified_at:
+            #     verified_at = adm.physical_documents_verified_at.strftime("%Y-%m-%d %H:%M")
 
             # Build row (all strings)
             rows.append([
@@ -479,8 +480,8 @@ class ExportFacultyAdmissionsExcel(APIView):
                 app.get_source_display() if hasattr(app, "get_source_display") else (app.source or ""),
                 "Y" if adm.is_registered else "N",
                 "Y" if adm.physical_documents_verified else "N",
-                verified_at,
-                verified_by,
+                # verified_at,
+                # verified_by,
                 (adm.physical_documents_notes or "").replace("\r\n", " ").replace("\n", " ")[:2000],
                 app.address or "",
                 course_applied_for,
@@ -506,6 +507,7 @@ class ExportFacultyAdmissionsExcel(APIView):
                 "PAID" if app.application_fee_paid else "NOT PAID",
                 adm.admission_date.strftime("%Y-%m-%d") if adm.admission_date else "",
                 "APPLIED ONLINE",
+                adm.admitted_by.get_full_name() if adm.admitted_by else ""
             ])
 
         # --------------------------------------------------------------
