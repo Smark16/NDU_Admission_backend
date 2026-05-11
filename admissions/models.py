@@ -275,6 +275,15 @@ class AdmittedStudent(models.Model):
     student_id = models.CharField(max_length=50, unique=True)
     study_mode = models.CharField(max_length=30)
     reg_no = models.CharField(max_length=100, unique=True)
+    schoolpay_code = models.CharField(
+        max_length=100,
+        blank=True,
+        default='',
+        help_text=(
+            'Official SchoolPay / PRN shown to the student. Left blank at admission to default to reg_no on save; '
+            'finance may set a different value if the gateway uses another number.'
+        ),
+    )
     admitted_program = models.ForeignKey(Program, on_delete=models.CASCADE)
     admitted_batch = models.ForeignKey(Batch, on_delete=models.CASCADE, related_name='admitted_students')
     admitted_campus = models.ForeignKey(Campus, on_delete=models.CASCADE, related_name='admitted_students')
@@ -307,7 +316,13 @@ class AdmittedStudent(models.Model):
     # Notes
     admission_notes = models.TextField(blank=True, help_text="Notes about the admission")
     # admitted_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='admitted_students')
-    # student_user = models.OneToOneField(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='student_admission')
+    student_user = models.OneToOneField(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="student_admission",
+    )
     
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -331,6 +346,12 @@ class AdmittedStudent(models.Model):
     
     def __str__(self):
         return f"{self.application.full_name} - {self.student_id}"
+
+    def save(self, *args, **kwargs):
+        # Always persist a payment reference: default PRN to reg_no when not set by staff.
+        if self.reg_no and not (self.schoolpay_code or '').strip():
+            self.schoolpay_code = str(self.reg_no).strip()
+        super().save(*args, **kwargs)
     
     @property
     def full_name(self):

@@ -22,6 +22,11 @@ from .semester_registration_views import (
     RegisterForCourses,
     UpdateRegistrationSettings,
 )
+from .other_fee_schedule_views import (
+    OtherFeeScheduleCloneView,
+    OtherFeeScheduleRuleDetailView,
+    OtherFeeScheduleView,
+)
 from .views import *
 
 app_name = 'payments'
@@ -79,6 +84,10 @@ urlpatterns = [
         StudentAdHocChargeWaiveView.as_view(),
         name='adhoc_charge_waive',
     ),
+
+    path('other_fee_schedule/clone', OtherFeeScheduleCloneView.as_view()),
+    path('other_fee_schedule/<int:pk>', OtherFeeScheduleRuleDetailView.as_view()),
+    path('other_fee_schedule', OtherFeeScheduleView.as_view()),
 
     # school payment
     path('initiate_payment/', InitiatePayment.as_view()),

@@ -102,9 +102,9 @@ class InitiateTuitionPayment(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Build references
-        # ext_ref embeds reg_no for traceability; unique suffix prevents SchoolPay collision
-        ext_ref = f"TUT-{student.reg_no}-{uuid.uuid4().hex[:8].upper()}"
+        # Build references — use stored SchoolPay/PRN when set (same value shown on tuition page).
+        pay_id = (getattr(student, "schoolpay_code", None) or "").strip() or (student.reg_no or "").strip()
+        ext_ref = f"TUT-{pay_id}-{uuid.uuid4().hex[:8].upper()}"
 
         # Student name from linked application
         first_name = ""

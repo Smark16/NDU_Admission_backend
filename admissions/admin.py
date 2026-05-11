@@ -15,6 +15,7 @@ class AdmittedStudentAdmin(admin.ModelAdmin):
         'id',
         'student_id',
         'reg_no',
+        'schoolpay_code',
         'admitted_program',
         'admitted_campus',
         'is_registered',
@@ -29,7 +30,7 @@ class AdmittedStudentAdmin(admin.ModelAdmin):
         'admitted_campus',
         'is_admitted',
     ]
-    search_fields = ['student_id', 'reg_no', 'application__first_name', 'application__last_name']
+    search_fields = ['student_id', 'reg_no', 'schoolpay_code', 'application__first_name', 'application__last_name']
     # raw_id_fields = ('physical_documents_verified_by',)
 
 @admin.register(AcademicLevel)
