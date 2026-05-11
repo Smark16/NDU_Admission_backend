@@ -45,6 +45,7 @@ jobs:
           python manage.py migrate admissions 0012_admittedstudent_is_registered_with_schoolpay --fake
           python manage.py migrate admissions 0009_admitted_student_schoolpay_code --fake
           python manage.py migrate admissions 0014_cleanup_schoolpay_codes --fake
+          python manage.py migrate admissions 0010_admittedstudent_student_user --fake
           python manage.py migrate admissions 0015_emailtemplate --fake
           python manage.py migrate Programs 0003_program_academic_metadata --fake
           python manage.py migrate Programs 0003_program_calendar_type_program_has_specialization_and_more --fake
