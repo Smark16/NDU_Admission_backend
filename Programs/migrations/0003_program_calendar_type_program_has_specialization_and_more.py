@@ -25,15 +25,5 @@ class Migration(migrations.Migration):
             model_name='program',
             name='minimum_graduation_load',
             field=models.DecimalField(decimal_places=2, default=Decimal('0.00'), help_text='Minimum total credit units a student must accumulate to graduate from this programme.', max_digits=6),
-        ),
-        migrations.AddField(
-            model_name='program',
-            name='specialization_entry_term',
-            field=models.PositiveSmallIntegerField(blank=True, help_text='Term within specialization_entry_year when the choice is required (e.g. 1 for the first term of Year 3).', null=True),
-        ),
-        migrations.AddField(
-            model_name='program',
-            name='specialization_entry_year',
-            field=models.PositiveSmallIntegerField(blank=True, help_text='Year of study when students must choose a specialization (e.g. 3 for Year 3). Only relevant when has_specialization is True.', null=True),
-        ),
+        )
     ]

@@ -99,7 +99,7 @@ class GetStudentPaymentStatus(APIView):
                 {"detail": "Admitted student profile not found."},
                 status=status.HTTP_404_NOT_FOUND,
             )
-        return Response(payment_status_dict(student))
+        return Response(payment_status_dict(student, request))
 
     def post(self, request):
         return self.get(request)

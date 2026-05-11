@@ -18,11 +18,13 @@ GET    /api/payments/fee_heads                                  — list active 
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAdminUser, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from admissions.models import AdmittedStudent
+from Programs.models import ProgramBatch, Semester
+
 from .models import FeeHead, StudentTuitionPayment
 
 
@@ -30,7 +32,118 @@ from .models import FeeHead, StudentTuitionPayment
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _semester_label(semester: Semester | None) -> str | None:
+    if semester is None:
+        return None
+    if semester.year_of_study and semester.term_number:
+        return f"Year {semester.year_of_study}, Term {semester.term_number} — {semester.name}"
+    return semester.name
+
+
+def _semester_to_dict(semester: Semester | None) -> dict | None:
+    if semester is None:
+        return None
+    return {
+        "id": semester.id,
+        "name": semester.name,
+        "year_of_study": semester.year_of_study,
+        "term_number": semester.term_number,
+        "label": _semester_label(semester),
+    }
+
+
+def _student_program_batch_id(student: AdmittedStudent) -> int | None:
+    try:
+        enrollment = student.programme_enrollment
+        if enrollment is not None and enrollment.program_batch_id:
+            return int(enrollment.program_batch_id)
+    except Exception:
+        pass
+    if not student.admitted_program_id:
+        return None
+    fallback = (
+        ProgramBatch.objects.filter(program_id=student.admitted_program_id, is_active=True)
+        .order_by("-start_date", "name")
+        .first()
+    )
+    return int(fallback.id) if fallback else None
+
+
+def _student_charge_defaults(student: AdmittedStudent) -> dict:
+    year = 1
+    term = 1
+    program_batch_id = _student_program_batch_id(student)
+    try:
+        enrollment = student.programme_enrollment
+        if enrollment is not None:
+            year = int(enrollment.current_year_of_study or 1)
+            term = int(enrollment.current_term_number or 1)
+    except Exception:
+        pass
+    return {
+        "year_of_study": year,
+        "term_number": term,
+        "program_batch_id": program_batch_id,
+    }
+
+
+def _semester_options_for_student(student: AdmittedStudent) -> list[Semester]:
+    program_batch_id = _student_program_batch_id(student)
+    if not program_batch_id:
+        return []
+    return list(
+        Semester.objects.filter(program_batch_id=program_batch_id, is_active=True).order_by(
+            "year_of_study",
+            "term_number",
+            "order",
+            "name",
+        )
+    )
+
+
+def _resolve_charge_semester(student: AdmittedStudent, data) -> Semester | None:
+    semester_id = data.get("semester_id")
+    if semester_id not in (None, ""):
+        try:
+            semester_id = int(semester_id)
+        except (TypeError, ValueError):
+            return None
+        program_batch_id = _student_program_batch_id(student)
+        qs = Semester.objects.filter(pk=semester_id)
+        if program_batch_id:
+            qs = qs.filter(program_batch_id=program_batch_id)
+        return qs.first()
+
+    year = data.get("year_of_study")
+    term = data.get("term_number")
+    if year in (None, "") or term in (None, ""):
+        defaults = _student_charge_defaults(student)
+        year = defaults["year_of_study"]
+        term = defaults["term_number"]
+
+    try:
+        year = int(year)
+        term = int(term)
+    except (TypeError, ValueError):
+        return None
+
+    program_batch_id = _student_program_batch_id(student)
+    if not program_batch_id:
+        return None
+    return (
+        Semester.objects.filter(
+            program_batch_id=program_batch_id,
+            year_of_study=year,
+            term_number=term,
+            is_active=True,
+        )
+        .order_by("order", "id")
+        .first()
+    )
+
+
 def _charge_to_dict(c: StudentTuitionPayment) -> dict:
+    semester = getattr(c, "semester", None)
     return {
         "id":            c.id,
         "source":        c.source,
@@ -50,6 +163,11 @@ def _charge_to_dict(c: StudentTuitionPayment) -> dict:
         "notes":         c.notes,
         "charged_by":    c.charged_by.get_full_name() if c.charged_by_id else None,
         "created_at":    c.created_at.isoformat(),
+        "semester_id":   c.semester_id,
+        "semester":      _semester_to_dict(semester),
+        "year_of_study": semester.year_of_study if semester else None,
+        "term_number":   semester.term_number if semester else None,
+        "applies_to":    _semester_label(semester),
     }
 
 
@@ -85,6 +203,8 @@ class FeeHeadListView(APIView):
         return Response([_feehead_to_dict(h) for h in qs.order_by('category', 'name')])
 
     def post(self, request):
+        if not request.user.is_staff:
+            return Response({"detail": "Only staff can create fee heads."}, status=status.HTTP_403_FORBIDDEN)
         code = (request.data.get("code") or "").strip().upper()
         name = (request.data.get("name") or "").strip()
         category = (request.data.get("category") or "other").strip()
@@ -112,7 +232,7 @@ class FeeHeadDetailView(APIView):
     PATCH  /api/payments/fee_heads/<pk>  — update
     DELETE /api/payments/fee_heads/<pk>  — deactivate (soft delete)
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdminUser]
 
     def _get(self, pk):
         return get_object_or_404(FeeHead, pk=pk)
@@ -160,26 +280,44 @@ class StudentAdHocChargeListCreate(APIView):
     GET  /api/payments/admin/student/<student_id>/charges — list charges
     POST /api/payments/admin/student/<student_id>/charges — create charge
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdminUser]
 
     def get(self, request, student_id):
-        student = get_object_or_404(AdmittedStudent, pk=student_id)
+        student = get_object_or_404(
+            AdmittedStudent.objects.select_related(
+                "admitted_program",
+                "programme_enrollment",
+                "programme_enrollment__program_batch",
+            ),
+            pk=student_id,
+        )
         charges = (
             StudentTuitionPayment.objects
             .filter(student=student, source='ad_hoc')
-            .select_related('fee_head', 'charged_by', 'waived_by')
+            .select_related('fee_head', 'charged_by', 'waived_by', 'semester')
             .order_by('-created_at')
         )
         return Response({
             "student_id":   student.student_id,
             "reg_no":       student.reg_no,
             "student_name": student.full_name,
+            "charge_defaults": _student_charge_defaults(student),
+            "semester_options": [
+                _semester_to_dict(semester) for semester in _semester_options_for_student(student)
+            ],
             "charges":      [_charge_to_dict(c) for c in charges],
             "total_count":  charges.count(),
         })
 
     def post(self, request, student_id):
-        student = get_object_or_404(AdmittedStudent, pk=student_id)
+        student = get_object_or_404(
+            AdmittedStudent.objects.select_related(
+                "admitted_program",
+                "programme_enrollment",
+                "programme_enrollment__program_batch",
+            ),
+            pk=student_id,
+        )
 
         fee_head_id = request.data.get("fee_head_id")
         amount      = request.data.get("amount")
@@ -203,6 +341,8 @@ class StudentAdHocChargeListCreate(APIView):
 
         fee_head = get_object_or_404(FeeHead, pk=fee_head_id, is_active=True)
 
+        semester = _resolve_charge_semester(student, request.data)
+
         charge = StudentTuitionPayment.objects.create(
             student=student,
             source='ad_hoc',
@@ -214,6 +354,7 @@ class StudentAdHocChargeListCreate(APIView):
             payment_method='',
             notes=notes,
             charged_by=request.user,
+            semester=semester,
         )
 
         return Response(_charge_to_dict(charge), status=status.HTTP_201_CREATED)
@@ -226,12 +367,13 @@ class StudentAdHocChargeDetailView(APIView):
     POST   /api/payments/admin/charge/<pk>/waive   — waive
     DELETE /api/payments/admin/charge/<pk>         — hard delete (pending only)
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdminUser]
 
     def _get(self, pk):
         return get_object_or_404(
             StudentTuitionPayment.objects.select_related(
-                'fee_head', 'charged_by', 'waived_by', 'student'
+                'fee_head', 'charged_by', 'waived_by', 'semester',
+                'student', 'student__programme_enrollment', 'student__admitted_program',
             ),
             pk=pk,
             source='ad_hoc',
@@ -267,6 +409,11 @@ class StudentAdHocChargeDetailView(APIView):
             charge.currency = (request.data["currency"] or "UGX").strip().upper()
         if "notes" in request.data:
             charge.notes = request.data["notes"]
+        if any(
+            key in request.data
+            for key in ("semester_id", "year_of_study", "term_number")
+        ):
+            charge.semester = _resolve_charge_semester(charge.student, request.data)
 
         charge.save()
         return Response(_charge_to_dict(charge))
@@ -285,7 +432,7 @@ class StudentAdHocChargeDetailView(APIView):
 
 class StudentAdHocChargeWaiveView(APIView):
     """POST /api/payments/admin/charge/<pk>/waive"""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdminUser]
 
     def post(self, request, pk):
         charge = get_object_or_404(

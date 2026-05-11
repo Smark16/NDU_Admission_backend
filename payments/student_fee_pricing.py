@@ -43,11 +43,16 @@ def required_by_currency(rules: list, international: bool) -> dict[str, Decimal]
     return dict(out)
 
 
-def paid_by_currency(student: AdmittedStudent):
+def paid_by_currency(student: AdmittedStudent, allowed_rule_ids: set[int] | None = None):
     from .models import StudentTuitionPayment
 
     out: defaultdict[str, Decimal] = defaultdict(Decimal)
-    for p in StudentTuitionPayment.objects.filter(student=student, status="completed"):
+    qs = StudentTuitionPayment.objects.filter(student=student, status="completed", is_waived=False)
+    if allowed_rule_ids is not None:
+        if not allowed_rule_ids:
+            return {}
+        qs = qs.filter(fee_plan_rule_id__in=allowed_rule_ids)
+    for p in qs:
         cur = (p.currency or "UGX").strip()[:3] or "UGX"
         out[cur.upper()] += p.amount or Decimal("0")
     return dict(out)

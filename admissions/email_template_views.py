@@ -1,0 +1,99 @@
+from django.conf import settings
+from rest_framework import status
+from rest_framework.permissions import IsAdminUser
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+from admissions.email_templates import (
+    EMAIL_TEMPLATE_DEFINITIONS,
+    render_email_template,
+)
+from admissions.models import EmailTemplate
+from admissions.serializers import EmailTemplateSerializer, EmailTemplateUpdateSerializer
+
+
+class EmailTemplateListView(APIView):
+    permission_classes = [IsAdminUser]
+
+    def get(self, request):
+        templates = EmailTemplate.objects.all().order_by("name")
+        return Response(EmailTemplateSerializer(templates, many=True).data, status=status.HTTP_200_OK)
+
+
+class EmailTemplateDetailView(APIView):
+    permission_classes = [IsAdminUser]
+
+    def get(self, request, key):
+        template = EmailTemplate.objects.filter(key=key).first()
+        if not template:
+            return Response({"detail": "Template not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(EmailTemplateSerializer(template).data, status=status.HTTP_200_OK)
+
+    def patch(self, request, key):
+        template = EmailTemplate.objects.filter(key=key).first()
+        if not template:
+            return Response({"detail": "Template not found."}, status=status.HTTP_404_NOT_FOUND)
+        serializer = EmailTemplateUpdateSerializer(template, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        updated = serializer.save(updated_by=request.user)
+        return Response(EmailTemplateSerializer(updated).data, status=status.HTTP_200_OK)
+
+
+class EmailTemplatePreviewView(APIView):
+    permission_classes = [IsAdminUser]
+
+    def post(self, request, key):
+        if key not in EMAIL_TEMPLATE_DEFINITIONS:
+            return Response({"detail": "Unknown template key."}, status=status.HTTP_404_NOT_FOUND)
+
+        sample_context = {
+            "first_name": "John",
+            "last_name": "Doe",
+            "full_name": "John Doe",
+            "full_name_upper": "JOHN DOE",
+            "application_id": "1001",
+            "submitted_date": "05 May 2026",
+            "program": "Bachelor of Business Administration",
+            "campus": "Main Campus",
+            "study_mode": "Day",
+            "batch_name": "August Intake",
+            "academic_year": "2025/2026",
+            "student_id": "NU/STD/1001",
+            "reg_no": "NU/REG/1001",
+            "portal_url": (getattr(settings, "FRONTEND_URL", "") or "http://localhost:3001").rstrip("/"),
+        }
+        sample_context.update(request.data.get("context", {}))
+
+        subject, html_body, plain_text = render_email_template(key, sample_context)
+        return Response(
+            {
+                "key": key,
+                "subject": subject,
+                "html_body": html_body,
+                "plain_text": plain_text,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class EmailTemplateResetDefaultView(APIView):
+    permission_classes = [IsAdminUser]
+
+    def post(self, request, key):
+        definition = EMAIL_TEMPLATE_DEFINITIONS.get(key)
+        if not definition:
+            return Response({"detail": "Unknown template key."}, status=status.HTTP_404_NOT_FOUND)
+
+        template = EmailTemplate.objects.filter(key=key).first()
+        if not template:
+            template = EmailTemplate(key=key, name=str(definition["name"]))
+
+        template.name = str(definition["name"])
+        template.description = str(definition.get("description", ""))
+        template.subject_template = str(definition["subject_template"])
+        template.body_template_html = str(definition["body_template_html"])
+        template.is_active = True
+        template.updated_by = request.user
+        template.save()
+        return Response(EmailTemplateSerializer(template).data, status=status.HTTP_200_OK)
+

@@ -1,6 +1,12 @@
 from django.urls import path
 from admissions import views
 from admissions.analytics_views import AnalyticsDashboardView
+from admissions.email_template_views import (
+    EmailTemplateDetailView,
+    EmailTemplateListView,
+    EmailTemplatePreviewView,
+    EmailTemplateResetDefaultView,
+)
 
 app_name = 'admissions'
 
@@ -86,6 +92,10 @@ urlpatterns = [
 
     # notifications
     path('list_user_notification', views.ListNotifications.as_view()),
+    path('email_templates', EmailTemplateListView.as_view(), name='email_template_list'),
+    path('email_templates/<str:key>', EmailTemplateDetailView.as_view(), name='email_template_detail'),
+    path('email_templates/<str:key>/preview', EmailTemplatePreviewView.as_view(), name='email_template_preview'),
+    path('email_templates/<str:key>/reset', EmailTemplateResetDefaultView.as_view(), name='email_template_reset'),
 
     # Admission Change Requests
     path('change_requests/my', views.StudentChangeRequestListCreate.as_view(), name='student_change_requests'),

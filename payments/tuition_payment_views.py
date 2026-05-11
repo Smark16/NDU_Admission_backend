@@ -48,6 +48,112 @@ def _callback_url(request) -> str:
     return request.build_absolute_uri('/api/payments/webhook/')
 
 
+def _student_payment_phone(student, phone: str) -> str:
+    phone = (phone or "").strip()
+    if phone:
+        return phone
+    try:
+        return (student.application.phone or "").strip()
+    except Exception:
+        return ""
+
+
+def _student_payment_name(student) -> tuple[str, str]:
+    first_name = ""
+    last_name = ""
+    try:
+        app = student.application
+        first_name = app.first_name or ""
+        last_name = app.last_name or ""
+    except Exception:
+        first_name = student.reg_no
+    return first_name, last_name
+
+
+def _initiate_student_tuition_payment(student, request, *, phone: str, amount, reason: str):
+    try:
+        amount_decimal = float(amount)
+        if amount_decimal <= 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        return None, Response(
+            {"detail": "amount must be a positive number."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    phone = _student_payment_phone(student, phone)
+    if not phone:
+        return None, Response(
+            {"detail": "phone is required (or set on your application profile)."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    from datetime import timedelta
+
+    StudentTuitionPayment.objects.filter(
+        student=student,
+        source="ad_hoc",
+        status="pending",
+        created_at__lt=timezone.now() - timedelta(minutes=15),
+    ).update(status="cancelled")
+
+    existing = StudentTuitionPayment.objects.filter(
+        student=student,
+        source="ad_hoc",
+        status="pending",
+    ).first()
+    if existing:
+        return None, Response(
+            {
+                "detail": "You already have a pending payment. Wait for it to complete or expire.",
+                "payment_reference": existing.payment_reference,
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    pay_id = student.effective_schoolpay_code
+    ext_ref = f"TUT-{pay_id}-{uuid.uuid4().hex[:8].upper()}"
+    first_name, last_name = _student_payment_name(student)
+
+    client = SchoolPayClient()
+    try:
+        resp = client.request_payment(
+            amount=amount_decimal,
+            phone=phone,
+            ext_ref=ext_ref,
+            first_name=first_name,
+            last_name=last_name,
+            reason=reason,
+            callBackUrl=_callback_url(request),
+        )
+    except ValueError as exc:
+        logger.error("SchoolPay tuition initiation failed: %s", exc)
+        return None, Response(
+            {"detail": "Payment gateway error. Please try again."},
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
+
+    if resp.get("returnCode") != 0:
+        return None, Response(
+            {"detail": resp.get("returnMessage", "Payment initiation failed.")},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    payment = StudentTuitionPayment.objects.create(
+        student=student,
+        source="ad_hoc",
+        label=f"{reason} — portal initiated ({student.reg_no})",
+        amount=amount_decimal,
+        currency="UGX",
+        payment_method="mobile_money",
+        status="pending",
+        payment_reference=resp.get("paymentReference"),
+        transaction_id=ext_ref,
+        charged_by=None,
+    )
+    return payment, None
+
+
 # ── views ──────────────────────────────────────────────────────────────────
 
 class InitiateTuitionPayment(APIView):
@@ -65,104 +171,64 @@ class InitiateTuitionPayment(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        phone  = (request.data.get("phone") or "").strip()
+        phone = request.data.get("phone")
         amount = request.data.get("amount")
-
-        if not phone:
-            return Response({"detail": "phone is required."}, status=status.HTTP_400_BAD_REQUEST)
         if not amount:
             return Response({"detail": "amount is required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        try:
-            amount_decimal = float(amount)
-            if amount_decimal <= 0:
-                raise ValueError
-        except (TypeError, ValueError):
-            return Response({"detail": "amount must be a positive number."}, status=status.HTTP_400_BAD_REQUEST)
-
-        # Expire stale pending payments for this student (older than 15 min)
-        from django.utils import timezone as tz
-        from datetime import timedelta
-        StudentTuitionPayment.objects.filter(
-            student=student,
-            source="ad_hoc",   # portal-initiated uses ad_hoc source temporarily
-            status="pending",
-            created_at__lt=tz.now() - timedelta(minutes=15),
-        ).update(status="cancelled")
-
-        # Prevent duplicate active portal payment
-        existing = StudentTuitionPayment.objects.filter(
-            student=student,
-            source="ad_hoc",
-            status="pending",
-        ).first()
-        if existing:
-            return Response(
-                {"detail": "You already have a pending payment. Wait for it to complete or expire."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        # Build references
-        # ext_ref embeds reg_no for traceability; unique suffix prevents SchoolPay collision
-        ext_ref = f"TUT-{student.reg_no}-{uuid.uuid4().hex[:8].upper()}"
-
-        # Student name from linked application
-        first_name = ""
-        last_name  = ""
-        try:
-            app = student.application
-            first_name = app.first_name or ""
-            last_name  = app.last_name  or ""
-        except Exception:
-            first_name = student.reg_no
-            last_name  = ""
-
-        client = SchoolPayClient()
-        try:
-            resp = client.request_payment(
-                amount=amount_decimal,
-                phone=phone,
-                ext_ref=ext_ref,
-                first_name=first_name,
-                last_name=last_name,
-                reason="Tuition Payment",
-                callBackUrl=_callback_url(request),
-            )
-
-            print("SchoolPay request_payment response:", resp)
-        except ValueError as exc:
-            logger.error("SchoolPay tuition initiation failed: %s", exc)
-            return Response(
-                {"detail": "Payment gateway error. Please try again."},
-                status=status.HTTP_502_BAD_GATEWAY,
-            )
-
-        if resp.get("returnCode") != 0:
-            return Response(
-                {"detail": resp.get("returnMessage", "Payment initiation failed.")},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        # Create a pending StudentTuitionPayment record
-        # source='ad_hoc' is re-used here so we don't need a new source type;
-        # label clearly identifies it as a portal-initiated payment
-        payment = StudentTuitionPayment.objects.create(
-            student=student,
-            source="ad_hoc",
-            label=f"Tuition payment — portal initiated ({student.reg_no})",
-            amount=amount_decimal,
-            currency="UGX",
-            payment_method="mobile_money",
-            status="pending",
-            payment_reference=resp.get("paymentReference"),
-            transaction_id=ext_ref,   # store ext_ref here for traceability
-            charged_by=None,          # self-initiated by student
+        payment, error = _initiate_student_tuition_payment(
+            student,
+            request,
+            phone=phone,
+            amount=amount,
+            reason="Tuition Payment",
         )
+        if error is not None:
+            return error
 
         return Response({
             "payment_reference": payment.payment_reference,
-            "external_reference": ext_ref,
-            "amount": amount_decimal,
+            "external_reference": payment.transaction_id,
+            "amount": float(payment.amount),
+            "currency": "UGX",
+            "status": payment.status,
+        })
+
+
+class GenerateTuitionReference(APIView):
+    """
+    POST /api/payments/student/generate_tuition_reference
+    Body: { amount: number, phone?: str }
+    Creates a SchoolPay PRN for agent or bank payment without opening the pay modal.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        student = get_admitted_student_for_user(request.user)
+        if not student:
+            return Response(
+                {"detail": "No admitted student record found for this account."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        amount = request.data.get("amount")
+        if not amount:
+            return Response({"detail": "amount is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        payment, error = _initiate_student_tuition_payment(
+            student,
+            request,
+            phone=request.data.get("phone"),
+            amount=amount,
+            reason="Tuition Payment",
+        )
+        if error is not None:
+            return error
+
+        return Response({
+            "payment_reference": payment.payment_reference,
+            "external_reference": payment.transaction_id,
+            "amount": float(payment.amount),
             "currency": "UGX",
             "status": payment.status,
         })
@@ -204,7 +270,6 @@ class CheckTuitionPaymentStatus(APIView):
         client = SchoolPayClient()
         try:
             data = client.check_status(payment.payment_reference)
-            print("SchoolPay check_status response:", data)
         except ValueError as exc:
             logger.error("SchoolPay tuition status check failed: %s", exc)
             return Response({"status": payment.status.upper()})
@@ -226,4 +291,8 @@ class CheckTuitionPaymentStatus(APIView):
                 payment.status = "failed"
                 payment.save()
 
-        return Response({"status": payment.status.upper()})
+        public_status = "PAID" if payment.status == "completed" else payment.status.upper()
+        return Response({
+            "status": public_status,
+            "receipt_number": payment.receipt_number or "",
+        })

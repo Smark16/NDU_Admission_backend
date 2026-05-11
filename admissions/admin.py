@@ -16,6 +16,8 @@ class AdmittedStudentAdmin(admin.ModelAdmin):
         'application',
         'student_id',
         'reg_no',
+        'schoolpay_code',
+        'is_registered_with_schoolpay',
         'admitted_batch',
         'admitted_program',
         'admitted_by'
@@ -25,12 +27,13 @@ class AdmittedStudentAdmin(admin.ModelAdmin):
     ]
     list_filter = [
         'is_registered',
+        'is_registered_with_schoolpay',
         # 'physical_documents_verified',
         'admitted_batch',
         'admitted_campus',
         'is_admitted',
     ]
-    search_fields = ['student_id', 'reg_no', 'application__first_name', 'application__last_name']
+    search_fields = ['student_id', 'reg_no', 'schoolpay_code', 'application__first_name', 'application__last_name']
     # raw_id_fields = ('physical_documents_verified_by',)
 
 @admin.register(AcademicLevel)
@@ -107,3 +110,12 @@ class NotificationAdmin(admin.ModelAdmin):
     list_display = ['recipient', 'title', 'message']
     list_filter = ['created_at']
     ordering = ['-created_at']
+
+
+@admin.register(EmailTemplate)
+class EmailTemplateAdmin(admin.ModelAdmin):
+    list_display = ['name', 'key', 'is_active', 'updated_by', 'updated_at']
+    list_filter = ['is_active', 'key']
+    search_fields = ['name', 'key', 'subject_template']
+    readonly_fields = ['created_at', 'updated_at']
+

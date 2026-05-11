@@ -3,18 +3,17 @@ from rest_framework import generics, status
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from .serializers import *
-from django.http import JsonResponse, HttpResponse
-from django.views.decorators.csrf import csrf_exempt
-from django.db import transaction
 import json
+import logging
 import uuid
 
-from .models import ApplicationFee, ApplicationPayment, StudentTuitionPayment
+from django.conf import settings
+from django.db import transaction
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
-from django.db import transaction
-from .models import ApplicationPayment
+
+from .models import ApplicationFee, ApplicationPayment, StudentTuitionPayment
 from .utils.schoolpay import SchoolPayClient
 from django.utils import timezone
 from datetime import timedelta
@@ -24,6 +23,8 @@ from payments.utils.school_pay_code import register_student_with_schoolpay
 from accounts.models import User
 from rest_framework.decorators import api_view, permission_classes
 from django.shortcuts import get_object_or_404
+
+logger = logging.getLogger(__name__)
 
 # caching
 from django.core.cache import cache
@@ -90,7 +91,7 @@ class InitiatePayment(APIView):
         if settings.DEBUG:
           callBackUrl = "https://4ddf-196-43-131-1.ngrok-free.app/api/payments/webhook/" 
         else:
-          callBackUrl = f"{settings.BACKEND_URL}/api/payments/webhook/"
+            callBackUrl = request.build_absolute_uri("/api/payments/webhook/")
 
         # EXPIRE OLD PAYMENTS
         ApplicationPayment.objects.filter(

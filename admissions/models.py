@@ -1,4 +1,5 @@
 from django.db import models
+from django.db.models import Q
 from django.core.validators import MinValueValidator, MaxValueValidator
 from django.utils import timezone
 from accounts.models import User, Campus
@@ -322,6 +323,13 @@ class AdmittedStudent(models.Model):
             ("verify_physical_documents", "Can verify physical admission documents"),
             ("revoke_admission", "Can revoke admitted students"),
         ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["schoolpay_code"],
+                condition=Q(schoolpay_code__isnull=False) & ~Q(schoolpay_code=""),
+                name="unique_admittedstudent_schoolpay_code",
+            ),
+        ]
  
         indexes = [
             models.Index(fields=['application', 'created_at']),
@@ -333,6 +341,18 @@ class AdmittedStudent(models.Model):
     
     def __str__(self):
         return f"{self.application.full_name} - {self.student_id}"
+
+    def save(self, *args, **kwargs):
+        if not self.is_registered_with_schoolpay and not (self.schoolpay_code or "").strip():
+            self.schoolpay_code = None
+        super().save(*args, **kwargs)
+
+    @property
+    def effective_schoolpay_code(self):
+        gateway_code = (self.schoolpay_code or "").strip()
+        if self.is_registered_with_schoolpay and gateway_code:
+            return gateway_code
+        return (self.reg_no or "").strip()
     
     @property
     def full_name(self):
@@ -435,6 +455,42 @@ class PortalNotification(models.Model):
         return f"{self.recipient.email} - {self.title}"
 
 
+class EmailTemplate(models.Model):
+    KEY_APPLICATION_SUBMITTED = "application_submitted"
+    KEY_ADMISSION_ACCEPTED = "admission_accepted"
+    KEY_ADMISSION_UPDATED = "admission_updated"
+    KEY_OFFER_LETTER_SENT = "offer_letter_sent"
+
+    TEMPLATE_KEY_CHOICES = [
+        (KEY_APPLICATION_SUBMITTED, "Application Submitted"),
+        (KEY_ADMISSION_ACCEPTED, "Admission Accepted"),
+        (KEY_ADMISSION_UPDATED, "Admission Updated"),
+        (KEY_OFFER_LETTER_SENT, "Offer Letter Sent"),
+    ]
+
+    key = models.CharField(max_length=80, unique=True, choices=TEMPLATE_KEY_CHOICES)
+    name = models.CharField(max_length=160)
+    description = models.TextField(blank=True)
+    subject_template = models.CharField(max_length=255)
+    body_template_html = models.TextField()
+    is_active = models.BooleanField(default=True)
+    updated_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="updated_email_templates",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name"]
+        verbose_name = "Email Template"
+        verbose_name_plural = "Email Templates"
+
+    def __str__(self):
+        return f"{self.name} ({self.key})"
 
 
 

@@ -38,6 +38,21 @@ def _admission_mode_label(app):
         return (app.academic_level.name or "").strip()
     return ""
 
+
+def _direct_admission_reason(adm):
+    app = getattr(adm, "application", None)
+    if not app or (app.source or "") != Application.SOURCE_DIRECT:
+        return ""
+    notes = (adm.admission_notes or "").strip()
+    if not notes:
+        return ""
+    prefix = "Direct admission reason:"
+    for line in notes.splitlines():
+        line_clean = line.strip()
+        if line_clean.lower().startswith(prefix.lower()):
+            return line_clean[len(prefix):].strip()
+    return notes
+
 # Create your views here.
 
 # general overview
@@ -380,6 +395,7 @@ class ExportFacultyAdmissionsExcel(APIView):
             "GENDER",
             "NATIONALITY",
             "ADMISSION SOURCE",
+            "DIRECT ADMISSION REASON",
             "REGISTERED (Y/N)",
             # "PHYS DOCS VERIFIED",
             # "VERIFIED AT",
@@ -478,6 +494,7 @@ class ExportFacultyAdmissionsExcel(APIView):
                 app.gender or "",
                 app.nationality or "",
                 app.get_source_display() if hasattr(app, "get_source_display") else (app.source or ""),
+                _direct_admission_reason(adm),
                 "Y" if adm.is_registered else "N",
                 # "Y" if adm.physical_documents_verified else "N",
                 # verified_at,
@@ -615,6 +632,7 @@ class ExportFirstRegistrationReportExcel(APIView):
             "YEAR (ACADEMIC)",
             "NATIONALITY",
             "MODE OF ADMISSION",
+            "DIRECT ADMISSION REASON",
             "PHYS DOCS VERIFIED",
             "VERIFIED AT",
             "VERIFIED BY",
@@ -663,6 +681,7 @@ class ExportFirstRegistrationReportExcel(APIView):
                     (batch.academic_year if batch else "") or "",
                     (app.nationality or "").strip(),
                     _admission_mode_label(app),
+                    _direct_admission_reason(adm),
                     "Y" if adm.physical_documents_verified else "N",
                     verified_at,
                     verified_by,

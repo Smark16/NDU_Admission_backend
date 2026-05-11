@@ -2034,27 +2034,9 @@ def _generate_student_id():
 def _run_post_admission_setup(request, admission, application):
     # ── Student portal account ────────────────────────────────────────────────
     try:
-        from accounts.models import User as UserModel
-        applicant = application.applicant
-        student_username = str(admission.reg_no).strip().replace('/', '_')
-        if not admission.student_user_id:
-            existing = UserModel.objects.filter(username=student_username).first()
-            if existing:
-                student_user = existing
-            else:
-                student_user = UserModel.objects.create_user(
-                    username=student_username,
-                    first_name=applicant.first_name,
-                    last_name=applicant.last_name,
-                    email=applicant.email,
-                    password='NDU@1234',
-                    is_staff=False,
-                    is_applicant=False,
-                    is_student=True,
-                    must_change_password=True,
-                )
-            admission.student_user = student_user
-            admission.save(update_fields=['student_user'])
+        from .student_accounts import ensure_student_portal_account
+
+        ensure_student_portal_account(admission)
     except Exception as e:
         logger.warning('DirectEntry: student account creation failed: %s', f'{e.__class__.__name__}: {e}')
 
@@ -2333,7 +2315,6 @@ class DirectAdmissionEntryView(APIView):
                     study_mode=study_mode,
                     admission_date=timezone.now(),
                     is_admitted=True,
-                    admitted_by=request.user,
                     admission_notes=d.get('admission_notes', ''),
                 )
 
