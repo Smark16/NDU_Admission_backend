@@ -332,11 +332,10 @@ class GetUserProfile(generics.ListAPIView):
 class PasswordResetRequestView(APIView):
     def post(self, request):
         email = request.data.get('email')
-        try:
-            user = User.objects.get(email=email)
-        except User.DoesNotExist:
-            return Response({"detail": "User with this Email not found."}, status=status.HTTP_404_NOT_FOUND)
-
+        user = User.objects.filter(email=email).first()
+        if not user:
+                return Response({"detail": "User with this Email not found."}, status=status.HTTP_404_NOT_FOUND)
+    
         try:
             celery_send_password_reset_Link.delay(user.id)
         except Exception:
