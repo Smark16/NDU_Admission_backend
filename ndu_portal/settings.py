@@ -226,6 +226,9 @@ SENDGRID_API_KEY=env('SENDGRID_API_KEY')
 # login url
 LOGIN_URL=env('LOGIN_URL')
 
+# erp frontend url
+ERP_FRONTEND_URL=env('ERP_FRONTEND_URL')
+
 # backend url
 BACKEND_URL=env('BACKEND_URL')
 

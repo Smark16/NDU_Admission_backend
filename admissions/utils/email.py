@@ -1,4 +1,6 @@
 from ndu_portal.send_grid import send_configurable_email
+from django.conf import settings
+from django.template.loader import render_to_string
 
 def send_application_email(application, subject="Application Submitted Successfully!"):
     body = (
@@ -11,25 +13,61 @@ def send_application_email(application, subject="Application Submitted Successfu
 
     return send_configurable_email(application.email, subject, body)
 
-def send_admission_email(application, admission,
-                         subject="Congratulations! You have been admitted to Ndejje University"):
-    body = (
-        f"Dear {application.first_name} {application.last_name},\n\n"
-        f"CONGRATULATIONS!\n\n"
-        f"We are delighted to inform you that your application has been successfully reviewed and ACCEPTED.\n\n"
-        f"You have been offered admission to study:\n"
-        f"• Program: {admission.admitted_program.name}\n"
-        f"• Campus: {admission.admitted_campus.name}\n"
-        f"• Study Mode: {admission.study_mode}\n"
-        f"• student number/paycode: {admission.student_id}\n"
-        f"• Registration Number: {admission.reg_no}\n"
-        f"• Batch: {admission.admitted_batch.name} ({admission.admitted_batch.academic_year})\n\n"
-        f"Your provisional admission letter will be sent shortly.\n\n"
-        f"We look forward to welcoming you!\n\n"
-        f"Admissions Office\nNdejje University"
-    )
+# admission email
+def send_admission_email(
+    application,
+    admission,
+    subject="Congratulations! You have been admitted to Ndejje University"
+):
+    confirmation_fee = "UGX 150,000"
 
-    return send_configurable_email(application.email, subject, body)
+    body = f"""
+Dear {application.first_name} {application.last_name},
+
+CONGRATULATIONS
+
+On behalf of the Admissions Board, we are pleased to inform you that you have been provisionally admitted to Ndejje University to pursue the academic programme indicated below:
+
+Programme of Study: {admission.admitted_program.name}
+
+Registration Number: {admission.reg_no}
+
+Payment Code: {admission.student_id}
+
+Duration of Programme: {getattr(admission.admitted_program, 'duration', 'As per programme structure')}
+
+ADMISSION CONFIRMATION
+
+You are required to confirm your acceptance of this admission by:
+
+i) Paying a non-refundable fee of {confirmation_fee} using your School Pay Code {admission.student_id} not later than the stipulated deadline.
+
+ii) NOTE: This amount shall be credited towards your tuition fees.
+
+iii) Sending the Bank Deposit Slip and payment confirmation receipt to:
+confirmation@ndejje.ac.ug
+
+iv) Pick your admission letter from any of our campuses or receive it through your portal.
+
+COMMUNICATION
+
+Kindly join the official WhatsApp group using the link below for proper communication and updates:
+
+https://chat.whatsapp.com/LZI1mItko834t6c1Vjwy9b
+
+Congratulations on your admission to Ndejje University! We hope you find your studies both enjoyable and fulfilling.
+
+We look forward to receiving you.
+
+Admissions Office
+Ndejje University
+"""
+
+    return send_configurable_email(
+        to_email=application.email,
+        subject=subject,
+        body=body
+    )
 
 def send_admission_update(admission, subject="Admission updated Successfully"):
     body = (
@@ -42,3 +80,19 @@ def send_admission_update(admission, subject="Admission updated Successfully"):
             f"If you did not expect this email, please ignore it."
         )
     return send_configurable_email(admission.application.email, subject, body)
+
+def send_student_login_credentials(user, password, subject="Account Created Successfully"):
+    login_url = f"{settings.ERP_FRONTEND_URL}"
+    html_body = render_to_string('student_login.html', {
+        'user': user,
+        'login_url': login_url,
+        'password': password
+    })
+    success = send_configurable_email(
+        to_email=user.email,
+        subject=subject,
+        body=html_body,
+        is_html=True,                 
+    )
+
+    return success

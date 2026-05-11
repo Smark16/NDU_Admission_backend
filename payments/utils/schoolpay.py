@@ -1,21 +1,16 @@
-# utils.py (or payments/utils.py)
-import hashlib
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from django.conf import settings
 
+from .schoolpay_auth import build_schoolpay_hash, schoolpay_api_root
+
+
 class SchoolPayClient:
     def __init__(self):
-        self.school_code = settings.SCHOOL_PAY_CODE  
+        self.school_code = settings.SCHOOL_PAY_CODE
         self.password = settings.SCHOOL_PAY_PASSWORD
-
-        # self.base_url = "https://schoolpaytest.servicecops.com/uatpaymentapi/AndroidRS/AdhocPayments"
-
-        if settings.DEBUG:
-          self.base_url = "https://schoolpaytest.servicecops.com/uatpaymentapi/AndroidRS/AdhocPayments"
-        else:
-           self.base_url = "https://schoolpay.co.ug/paymentapi/AndroidRS/AdhocPayments"
+        self.base_url = f"{schoolpay_api_root()}/AdhocPayments"
         
         # Session with retries (3 attempts, backoff)
         self.session = requests.Session()
@@ -24,8 +19,7 @@ class SchoolPayClient:
         self.session.mount('https://', adapter)
 
     def generate_hash(self, reference):
-        raw_string = f"{self.school_code}{reference}{self.password}"
-        return hashlib.md5(raw_string.encode()).hexdigest().upper()  
+        return build_schoolpay_hash(self.school_code, reference, self.password)
 
     def request_payment(self, amount, phone, ext_ref, first_name, last_name, reason, callBackUrl):
         hash_val = self.generate_hash(ext_ref)

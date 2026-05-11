@@ -18,8 +18,9 @@ from django.db import transaction
 from django.db.models.deletion import ProtectedError
 from django.db.utils import OperationalError
 # from .utils.validate_photo import validate_passport_photo
-from .tasks import celery_send_application_email, celery_application_notification, celery_admission_email, celery_admission_update
+from .tasks import celery_send_application_email, celery_application_notification, celery_admission_email, celery_admission_update, celery_create_student_account
 from accounts.tasks import celery_send_account_email
+from .utils.trigger_background_tasks import trigger_background_tasks
 from payments.models import ApplicationPayment
 from Drafts.models import DraftApplication
 from django.db.models import Q
@@ -28,8 +29,6 @@ import time
 import logging
 import json
 
-# WeasyPrint is imported lazily inside DownloadAdmissionPDF.get — a top-level import
-# fails on Windows without GTK/Pango (libgobject), which breaks the whole URLconf.
 from django.shortcuts import get_object_or_404
 from django.http import HttpResponse
 from django.template.loader import render_to_string
@@ -349,10 +348,6 @@ def create_direct_applications(request):
             olevel_results = json.loads(request.data.get("olevel_results", "[]"))
             alevel_results = json.loads(request.data.get("alevel_results", "[]"))
 
-            # Direct-entry flow resolves applicant from email/user below; do not
-            # let a malformed/undefined applicant in request payload break validation.
-            # data.pop("applicant", None)
-
             # === VALIDATE MAIN APPLICATION DATA ===
             serializer = CudApplicationSerializer(data=data, context={"request": request})
             serializer.is_valid(raise_exception=True)
@@ -407,6 +402,10 @@ def create_direct_applications(request):
                 user.set_password(account_password)
                 user.save()
                 is_new_account = True
+            else:
+                return Response({
+                    "detail": "An account with this email already exists.",  
+                }, status=400)
 
             # === CREATE APPLICATION ===
             application = Application(**serializer.validated_data)
@@ -574,6 +573,7 @@ class ListDirectEntryApplications(generics.ListAPIView):
         Application.objects.filter(is_direct_entry=True)
         .select_related("academic_level", "batch", "campus", "entered_by")
         .prefetch_related("programs", "programs__faculty")
+        .filter(~Q(status__in=["draft", "Admitted", "rejected"]))
         .order_by("-created_at")
     )
     serializer_class = AllApplicationsReportSerializer
@@ -1345,7 +1345,7 @@ class AdmitStudent(generics.CreateAPIView):
                 )
 
                 if existing_admission:
-                    if existing_admission.is_admitted and not existing_admission.is_revoked:
+                    if existing_admission.is_admitted:
                         return Response(
                             {"detail": "This application is already in admitted list."},
                             status=400,
@@ -1356,64 +1356,41 @@ class AdmitStudent(generics.CreateAPIView):
                     admission = serializer.save(
                         admission_date=timezone.now(),
                         is_admitted=True,
-                        is_revoked=False,
-                        revoked_at=None,
-                        revoked_by=None,
-                        revocation_reason="",
+                        admitted_by=request.user,
                     )
                 else:
                     serializer = self.get_serializer(data=request.data)
                     serializer.is_valid(raise_exception=True)
-                    admission = serializer.save()
+                    admission = serializer.save(
+                        admitted_by=request.user,
+                        admission_date=timezone.now(),
+                        is_admitted=True,
+                    )
 
                 # Fetch application
-                application = Application.objects.select_related("applicant", "batch", "campus").get(
-                    pk=admission.application_id
-                )
+                try:
+                    application = Application.objects.select_related(
+                        "applicant",
+                        "batch",
+                        "campus"
+                    ).get(pk=admission.application_id)
+                    
+                except Application.DoesNotExist:
+                    logger.warning(f"Application {admission.application_id} not found")
+                    return
 
                 # CRITICAL: Update status immediately
-                Application.objects.filter(id=application.id).update(status="admitted")
+                Application.objects.filter(id=application.id).update(status="Admitted")
 
-                try:
-                    from .student_accounts import ensure_student_portal_account
-
-                    ensure_student_portal_account(admission)
-                except Exception as e:
-                    logger.warning("Student account creation failed: %s", f"{e.__class__.__name__}: {e}")
-
-                # Auto Enrollment (Non-blocking)
-                # try:
-                #     from django.utils import timezone
-                #     from payments.models import RegistrationSettings
-                #     from Programs.models import StudentProgrammeEnrollment, ProgramBatch
-
-                #     reg_settings = RegistrationSettings.get_settings()
-
-                #     # Get or create ProgramBatch
-                #     program_batch = ProgramBatch.objects.filter(
-                #         program=admission.admitted_program
-                #     ).order_by('-is_active', '-start_date').first()
-
-                #     if program_batch:
-                #         StudentProgrammeEnrollment.objects.get_or_create(
-                #             student=admission,
-                #             defaults={
-                #                 'program': admission.admitted_program,
-                #                 'program_batch': program_batch,
-                #                 'current_year_of_study': 1,
-                #                 'current_term_number': 1,
-                #                 'status': "enrolled" if reg_settings.auto_enroll_on_admission else "pending",
-                #                 'enrolled_by': request.user if reg_settings.auto_enroll_on_admission else None,
-                #                 'enrolled_at': timezone.now() if reg_settings.auto_enroll_on_admission else None,
-                #             }
-                #         )
-                # except Exception as e:
-                #     logger.warning(f"Auto-enrollment failed: {e}")
-
+                # Student Account Creation and auto Enrollment
+                transaction.on_commit(
+                    lambda: trigger_background_tasks(admission.id, application.id)
+                )
+            
                 return Response(self.serializer_class(admission).data, status=201)
 
         except Exception as e:
-            logger.error(f"Admission failed: {e}", exc_info=True)
+            logger.exception(f"Admission failed: {e}", exc_info=True)
             return Response({"detail": str(e)}, status=400)
 
 # revoke student 
@@ -1435,21 +1412,35 @@ class RevokeAdmittedStudent(APIView):
             return Response({"detail": "Revocation reason is required."}, status=400)
 
         with transaction.atomic():
+            # Delete actual files from storage
+            if application.admission_letter_pdf:
+                application.admission_letter_pdf.delete(save=False)
+
+            if application.admission_letter_docx:
+                application.admission_letter_docx.delete(save=False)
+
             application.is_revoked = True
             application.revoked_at = timezone.now()
             application.revoked_by = request.user
             application.revocation_reason = reason
             application.status = "revoked"
+            # Clear database fields
+            application.admission_letter_pdf = None
+            application.admission_letter_docx = None
+
             application.save(
                 update_fields=[
                     "is_revoked",
                     "revoked_at",
                     "revoked_by",
                     "revocation_reason",
+                    "admission_letter_pdf",
+                    "admission_letter_docx",
                     "status"
                 ]
             )
            
+        User.objects.filter(username=admission.reg_no).delete()
         admission.delete()
 
         return Response({"detail":"Candidate has been removed from Admitted Students"}, status=200)
@@ -1477,13 +1468,13 @@ class RestoreAdmittedStudent(APIView):
                 update_fields=[
                     "is_revoked",
                     "is_admitted",
-                    "revoked_at",
-                    "revoked_by",
-                    "revocation_reason",
+                    # "revoked_at",
+                    # "revoked_by",
+                    # "revocation_reason",
                     "updated_at",
                 ]
             )
-            Application.objects.filter(id=admission.application_id).update(status="admitted")
+            Application.objects.filter(id=admission.application_id).update(status="Admitted")
 
         refreshed = (
             AdmittedStudent.objects.select_related(
@@ -1491,7 +1482,7 @@ class RestoreAdmittedStudent(APIView):
                 "admitted_program__faculty",
                 "admitted_batch",
                 "admitted_campus",
-                "revoked_by",
+                # "revoked_by",
             )
             .get(pk=admission.pk)
         )
@@ -1649,7 +1640,7 @@ class CandidateAdmission(generics.RetrieveAPIView):
         'admitted_batch',
         'admitted_campus',
         'admitted_by',
-        'physical_documents_verified_by',
+        # 'physical_documents_verified_by',
     ).prefetch_related('admitted_program__campuses')
     serializer_class = AdmissionDetailSerializer
     lookup_field = "id"

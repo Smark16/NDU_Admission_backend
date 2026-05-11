@@ -1,4 +1,5 @@
 from django.db import models
+from django.db.models import Q
 from django.core.validators import MinValueValidator, MaxValueValidator
 from django.utils import timezone
 from accounts.models import User, Campus
@@ -272,17 +273,23 @@ class AdditionalQualifications(models.Model):
 
 class AdmittedStudent(models.Model):
     application = models.OneToOneField(Application, on_delete=models.CASCADE, related_name='admission')
-    student_id = models.CharField(max_length=50, unique=True)
+    student_user = models.OneToOneField(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='student_admission')
+    student_id = models.CharField(max_length=50, unique=True, null=True, blank=True)
     study_mode = models.CharField(max_length=30)
     reg_no = models.CharField(max_length=100, unique=True)
     schoolpay_code = models.CharField(
         max_length=100,
         blank=True,
+        null=True,
         default='',
         help_text=(
             'Official SchoolPay / PRN shown to the student. Left blank at admission to default to reg_no on save; '
             'finance may set a different value if the gateway uses another number.'
         ),
+    )
+    is_registered_with_schoolpay = models.BooleanField(
+        default=False,
+        help_text="True after the student has been synced with the SchoolPay gateway.",
     )
     admitted_program = models.ForeignKey(Program, on_delete=models.CASCADE)
     admitted_batch = models.ForeignKey(Batch, on_delete=models.CASCADE, related_name='admitted_students')
@@ -315,14 +322,7 @@ class AdmittedStudent(models.Model):
     
     # Notes
     admission_notes = models.TextField(blank=True, help_text="Notes about the admission")
-    # admitted_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='admitted_students')
-    student_user = models.OneToOneField(
-        User,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="student_admission",
-    )
+    admitted_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='admitted_students')
     
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -334,6 +334,13 @@ class AdmittedStudent(models.Model):
         permissions = [
             ("verify_physical_documents", "Can verify physical admission documents"),
             ("revoke_admission", "Can revoke admitted students"),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["schoolpay_code"],
+                condition=Q(schoolpay_code__isnull=False) & ~Q(schoolpay_code=""),
+                name="unique_admittedstudent_schoolpay_code",
+            ),
         ]
  
         indexes = [
@@ -348,10 +355,16 @@ class AdmittedStudent(models.Model):
         return f"{self.application.full_name} - {self.student_id}"
 
     def save(self, *args, **kwargs):
-        # Always persist a payment reference: default PRN to reg_no when not set by staff.
-        if self.reg_no and not (self.schoolpay_code or '').strip():
-            self.schoolpay_code = str(self.reg_no).strip()
+        if not self.is_registered_with_schoolpay and not (self.schoolpay_code or "").strip():
+            self.schoolpay_code = None
         super().save(*args, **kwargs)
+
+    @property
+    def effective_schoolpay_code(self):
+        gateway_code = (self.schoolpay_code or "").strip()
+        if self.is_registered_with_schoolpay and gateway_code:
+            return gateway_code
+        return (self.reg_no or "").strip()
     
     @property
     def full_name(self):

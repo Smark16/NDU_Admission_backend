@@ -9,9 +9,16 @@ from .adhoc_views import (
     StudentAdHocChargeListCreate,
     StudentAdHocChargeWaiveView,
 )
+from .admin_ledger_views import (
+    AdminTuitionLedgerFiltersView,
+    AdminTuitionLedgerStudentDetailView,
+    AdminTuitionLedgerStudentsView,
+    AdminTuitionLedgerTransactionsView,
+)
 from .tuition_payment_views import (
     InitiateTuitionPayment,
     CheckTuitionPaymentStatus,
+    GenerateTuitionReference,
 )
 from .semester_registration_views import (
     CheckRegistrationEligibility,
@@ -53,7 +60,16 @@ urlpatterns = [
         GetSemestersForProgramBatch.as_view(),
         name='get_semesters_for_program_batch',
     ),
+    path('admin/tuition_ledger/filters', AdminTuitionLedgerFiltersView.as_view(), name='admin_tuition_ledger_filters'),
+    path('admin/tuition_ledger/students', AdminTuitionLedgerStudentsView.as_view(), name='admin_tuition_ledger_students'),
+    path(
+        'admin/tuition_ledger/students/<int:student_id>',
+        AdminTuitionLedgerStudentDetailView.as_view(),
+        name='admin_tuition_ledger_student_detail',
+    ),
+    path('admin/tuition_ledger/transactions', AdminTuitionLedgerTransactionsView.as_view(), name='admin_tuition_ledger_transactions'),
     path('student/initiate_tuition_payment', InitiateTuitionPayment.as_view(), name='initiate_tuition_payment'),
+    path('student/generate_tuition_reference', GenerateTuitionReference.as_view(), name='generate_tuition_reference'),
     path('student/tuition_payment_status/<str:payment_ref>', CheckTuitionPaymentStatus.as_view(), name='check_tuition_payment_status'),
     path('student/tuition_structure', GetStudentTuitionStructure.as_view(), name='get_student_tuition_structure'),
     path('student/payment_status', GetStudentPaymentStatus.as_view(), name='get_student_payment_status'),
@@ -93,6 +109,7 @@ urlpatterns = [
     path('initiate_payment/', InitiatePayment.as_view()),
     path('webhook/', schoolpay_webhook, name='schoolpay_webhook'),
     path('check_payment_status/<str:payment_ref>/', CheckPaymentStatus.as_view()),
+    path('register_with_schoolpay/<int:student_id>/', generate_paycode, name='register_with_schoolpay'),
 
     # payments
     path('list_payments', ListPayments.as_view()),

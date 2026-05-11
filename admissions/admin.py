@@ -13,18 +13,21 @@ class FacultyAdmin(admin.ModelAdmin):
 class AdmittedStudentAdmin(admin.ModelAdmin):
     list_display = [
         'id',
+        'application',
         'student_id',
         'reg_no',
         'schoolpay_code',
+        'is_registered_with_schoolpay',
+        'admitted_batch',
         'admitted_program',
-        'admitted_campus',
-        'is_registered',
+        'admitted_by'
         # 'physical_documents_verified',
         # 'physical_documents_verified_at',
         # 'physical_documents_verified_by',
     ]
     list_filter = [
         'is_registered',
+        'is_registered_with_schoolpay',
         # 'physical_documents_verified',
         'admitted_batch',
         'admitted_campus',

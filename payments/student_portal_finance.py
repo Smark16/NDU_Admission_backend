@@ -129,6 +129,51 @@ def _completed_amount_for_fee_plan_rule(student: AdmittedStudent, rule: FeePlanR
     return total
 
 
+def completed_commitment_paid_ugx(student: AdmittedStudent) -> Decimal:
+    total = Decimal("0")
+    for payment in StudentTuitionPayment.objects.filter(student=student, status="completed"):
+        if (payment.currency or "UGX").upper() == "UGX":
+            total += payment.amount or Decimal("0")
+    return total
+
+
+def commitment_payment_summary(student: AdmittedStudent) -> dict[str, float | bool]:
+    paid = completed_commitment_paid_ugx(student)
+    threshold = COMMITMENT_FEE_THRESHOLD
+    balance = max(threshold - paid, Decimal("0"))
+    met = paid >= threshold
+    return {
+        "commitment_threshold": float(threshold),
+        "commitment_paid_ugx": float(paid),
+        "commitment_met": met,
+        "commitment_balance": float(balance),
+    }
+
+
+def offer_letter_pdf_url(student: AdmittedStudent, request=None) -> str | None:
+    try:
+        app = student.application
+        if not app or not app.admission_letter_pdf or not app.admission_letter_pdf.name:
+            return None
+        url = app.admission_letter_pdf.url
+        if request is not None:
+            return request.build_absolute_uri(url)
+        return url
+    except Exception:
+        return None
+
+
+def offer_letter_portal_fields(student: AdmittedStudent, request=None) -> dict[str, Any]:
+    summary = commitment_payment_summary(student)
+    eligible = bool(summary["commitment_met"])
+    pdf_url = offer_letter_pdf_url(student, request) if eligible else None
+    return {
+        **summary,
+        "offer_letter_eligible": eligible,
+        "offer_letter_pdf_url": pdf_url,
+    }
+
+
 def other_schedule_rows_and_due_by_currency(student: AdmittedStudent, intl: bool) -> tuple[list[dict[str, Any]], dict[str, Decimal]]:
     """
     Build student-facing rows for scheduled other fees + per-currency amounts still owed
@@ -240,12 +285,13 @@ def _adhoc_charges_for_student(student: AdmittedStudent):
     return list(
         StudentTuitionPayment.objects
         .filter(student=student, source='ad_hoc', is_waived=False)
-        .select_related('fee_head', 'charged_by')
+        .select_related('fee_head', 'charged_by', 'semester')
         .order_by('-created_at')
     )
 
 
-def payment_status_dict(student: AdmittedStudent) -> dict:
+def student_finance_totals(student: AdmittedStudent) -> dict[str, Any]:
+    """Programme billing totals for a student (structure + scheduled fees + ad-hoc)."""
     rules = _rules_for_student(student)
     intl = is_international_student(student)
     req_by = required_by_currency(rules, intl)
@@ -256,11 +302,10 @@ def payment_status_dict(student: AdmittedStudent) -> dict:
     primary_ccy = max(req_by.keys(), key=lambda k: float(req_by[k])) if req_by else ("USD" if intl else "UGX")
     total_required = req_by.get(primary_ccy, Decimal("0")) if req_by else Decimal("0")
 
-    # Add active ad-hoc charges (pending + completed, not waived) to the required total
     adhoc_charges = _adhoc_charges_for_student(student)
     adhoc_required = sum(
         c.amount for c in adhoc_charges
-        if c.status in ('pending', 'completed') and (c.currency or "UGX").upper() == primary_ccy
+        if c.status in ("pending", "completed") and (c.currency or "UGX").upper() == primary_ccy
     )
     total_required_with_adhoc = total_required + adhoc_required
 
@@ -269,6 +314,110 @@ def payment_status_dict(student: AdmittedStudent) -> dict:
     tr = float(total_required_with_adhoc)
     balance = max(tr - total_paid, 0.0)
     pct = (total_paid / tr * 100.0) if tr > 0 else 0.0
+    scheduled_other_fees_due = sum(
+        Decimal(str(row["balance"]))
+        for row in other_fee_rows
+        if row.get("status") == "due" and (row.get("currency") or "").upper() == primary_ccy
+    )
+
+    return {
+        **commitment_payment_summary(student),
+        "total_required": tr,
+        "total_paid": total_paid,
+        "balance": balance,
+        "percentage_paid": round(pct, 1),
+        "display_currency": primary_ccy,
+        "pricing": "international" if intl else "local",
+        "tuition_structure_total": float(total_required),
+        "ad_hoc_total": float(adhoc_required),
+        "scheduled_other_fees_due": float(scheduled_other_fees_due),
+        "required_by_currency": {k: float(v) for k, v in req_by.items()},
+        "paid_by_currency": {k: float(v) for k, v in paid_by.items()},
+    }
+
+
+def student_billing_lines(student: AdmittedStudent) -> list[dict[str, Any]]:
+    """Fee lines from programme structure, scheduled other fees, and ad-hoc charges."""
+    intl = is_international_student(student)
+    lines: list[dict[str, Any]] = []
+
+    for rule in _rules_for_student(student):
+        amt, cur = effective_amount_currency(rule, intl)
+        paid = _completed_amount_for_fee_plan_rule(student, rule, cur)
+        bal = max(amt - paid, Decimal("0"))
+        semester_name = rule.semester.name if rule.semester_id else ""
+        batch_name = rule.program_batch.name if rule.program_batch_id else ""
+        context = " · ".join(part for part in (batch_name, semester_name) if part)
+        lines.append(
+            {
+                "kind": "tuition_structure",
+                "rule_id": rule.id,
+                "fee_head": rule.fee_head.name if rule.fee_head_id else "Tuition",
+                "description": context or "Programme tuition",
+                "amount": float(amt),
+                "paid_amount": float(paid),
+                "balance": float(bal),
+                "currency": cur,
+                "status": "paid" if bal <= 0 else "due",
+            }
+        )
+
+    for row in other_schedule_rows_and_due_by_currency(student, intl)[0]:
+        lines.append(
+            {
+                "kind": "scheduled_other_fee",
+                "rule_id": row["rule_id"],
+                "fee_head": row["fee_head"],
+                "description": (
+                    f"Year {row['payable_year_of_study']}, "
+                    f"Term {row['payable_term_number']}"
+                ),
+                "amount": row["amount"],
+                "paid_amount": row["paid_amount"],
+                "balance": row["balance"],
+                "currency": row["currency"],
+                "status": row["status"],
+            }
+        )
+
+    for charge in _adhoc_charges_for_student(student):
+        cur = (charge.currency or "UGX").upper()
+        paid = float(charge.amount) if charge.status == "completed" else 0.0
+        amount = float(charge.amount)
+        bal = 0.0 if charge.status == "completed" else amount
+        period = ""
+        if charge.semester_id and charge.semester:
+            sem = charge.semester
+            if sem.year_of_study and sem.term_number:
+                period = f"Year {sem.year_of_study}, Term {sem.term_number}"
+            else:
+                period = sem.name
+        base_desc = charge.label or (charge.fee_head.name if charge.fee_head_id else "Charge")
+        description = f"{base_desc} ({period})" if period else base_desc
+        lines.append(
+            {
+                "kind": "ad_hoc",
+                "charge_id": charge.id,
+                "fee_head": charge.fee_head.name if charge.fee_head_id else "Ad-hoc charge",
+                "description": description,
+                "amount": amount,
+                "paid_amount": paid,
+                "balance": bal,
+                "currency": cur,
+                "status": charge.status,
+            }
+        )
+
+    return lines
+
+
+def payment_status_dict(student: AdmittedStudent, request=None) -> dict:
+    totals = student_finance_totals(student)
+    other_fee_rows, _ = other_schedule_rows_and_due_by_currency(
+        student,
+        totals["pricing"] == "international",
+    )
+    adhoc_charges = _adhoc_charges_for_student(student)
 
     history = []
     for p in StudentTuitionPayment.objects.filter(student=student).select_related(
@@ -316,43 +465,13 @@ def payment_status_dict(student: AdmittedStudent) -> dict:
         for c in adhoc_charges
     ]
 
-    # Commitment fee: check cumulative completed UGX payments (or primary currency)
-    completed_ugx = sum(
-        p.amount
-        for p in StudentTuitionPayment.objects.filter(
-            student=student, status="completed"
-        )
-        if (p.currency or "UGX").upper() == "UGX"
-    )
-    commitment_met = completed_ugx >= COMMITMENT_FEE_THRESHOLD
-
-    scheduled_subtotal = sum(
-        Decimal(str(row["balance"]))
-        for row in other_fee_rows
-        if row.get("status") == "due" and (row.get("currency") or "").upper() == primary_ccy
-    )
-
     return {
-        "total_required": tr,
-        "total_paid": total_paid,
-        "balance": balance,
-        "percentage_paid": round(pct, 1),
-        "display_currency": primary_ccy,
-        "pricing": "international" if intl else "local",
-        "required_by_currency": {k: float(v) for k, v in req_by.items()},
-        "paid_by_currency": {k: float(v) for k, v in paid_by.items()},
+        **totals,
         "payment_history": history,
         "ad_hoc_charges": adhoc_list,
-        "ad_hoc_total": float(adhoc_required),
         "scheduled_other_fees": other_fee_rows,
-        "scheduled_other_fees_total_due": float(scheduled_subtotal),
-        # --- tuition payment / SchoolPay fields ---
-        # Official PRN / SchoolPay student reference (stored at admission; defaults to reg_no).
-        "payment_code": (
-            (getattr(student, "schoolpay_code", None) or "").strip()
-            or (student.reg_no or "").strip()
-        ),
-        "commitment_threshold": float(COMMITMENT_FEE_THRESHOLD),
-        "commitment_met": commitment_met,
-        "commitment_paid_ugx": float(completed_ugx),
+        "scheduled_other_fees_total_due": totals["scheduled_other_fees_due"],
+        "billing_lines": student_billing_lines(student),
+        "payment_code": student.effective_schoolpay_code,
+        **offer_letter_portal_fields(student, request),
     }

@@ -4,6 +4,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from .serializers import *
 import json
+import logging
 import uuid
 
 from django.conf import settings
@@ -18,6 +19,12 @@ from django.utils import timezone
 from datetime import timedelta
 from .serializers import ApplicationPaymentSerializer
 from admissions.models import Application
+from payments.utils.school_pay_code import register_student_with_schoolpay
+from accounts.models import User
+from rest_framework.decorators import api_view, permission_classes
+from django.shortcuts import get_object_or_404
+
+logger = logging.getLogger(__name__)
 
 # caching
 from django.core.cache import cache
@@ -81,10 +88,8 @@ class InitiatePayment(APIView):
         amount = request.data.get('amount')
         reason = "Application Fee"
 
-        # Public URL SchoolPay can reach (set BACKEND_URL in .env, e.g. https://your-ngrok.ngrok-free.app)
-        backend = str(getattr(settings, "BACKEND_URL", "") or "").strip().rstrip("/")
-        if backend:
-            callBackUrl = f"{backend}/api/payments/webhook/"
+        if settings.DEBUG:
+          callBackUrl = "https://9f80-41-75-184-19.ngrok-free.app/api/payments/webhook/" 
         else:
             callBackUrl = request.build_absolute_uri("/api/payments/webhook/")
 
@@ -300,6 +305,39 @@ class ListPayments(generics.ListAPIView):
             'application__batch',
             'user'
         ).all()
+    
+# School pay code generation
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def generate_paycode(request, student_id):
+    student = get_object_or_404(AdmittedStudent, id=student_id)
+
+    if student.is_registered_with_schoolpay:
+        return Response({
+            "detail": "Already registered with SchoolPay",
+            "schoolpay_code": student.effective_schoolpay_code,
+            "student_name": student.full_name,
+        })
+
+    result = register_student_with_schoolpay(student)
+    logger.info("SchoolPay registration for admitted student %s: %s", student_id, result.get("success"))
+
+    if not result["success"]:
+        return Response({
+            "error": "SchoolPay registration failed",
+            "details": result.get("error") or result.get("data"),
+            "expected_name": result.get("expected_name"),
+            "gateway_name": result.get("gateway_name"),
+            "payment_code": result.get("payment_code"),
+        }, status=400)
+
+    student.refresh_from_db()
+    return Response({
+        "detail": "Paycode generated successfully",
+        "schoolpay_code": student.effective_schoolpay_code,
+        "student_name": student.full_name,
+        "gateway_name": result.get("gateway_name"),
+    })
 
 
 
