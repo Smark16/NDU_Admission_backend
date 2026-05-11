@@ -12,6 +12,9 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from django.db.utils import ProgrammingError
+from django.shortcuts import get_object_or_404
+
+from .catalog_reference_sync import catalog_code_rename_impact
 from .models import CourseCatalogUnit
 from .serializers import CourseCatalogUnitSerializer
 
@@ -42,9 +45,12 @@ class CourseCatalogUnitListCreateView(generics.ListCreateAPIView):
 
 
 class CourseCatalogUnitDetailView(generics.RetrieveUpdateDestroyAPIView):
-    queryset = CourseCatalogUnit.objects.none()
+    queryset = CourseCatalogUnit.objects.all()
     serializer_class = CourseCatalogUnitSerializer
     permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return CourseCatalogUnit.objects.all()
 
     def retrieve(self, request, *args, **kwargs):
         try:
@@ -52,10 +58,31 @@ class CourseCatalogUnitDetailView(generics.RetrieveUpdateDestroyAPIView):
         except ProgrammingError:
             return Response({'detail': 'Course catalog not available on this server.'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
+    def update(self, request, *args, **kwargs):
+        try:
+            return super().update(request, *args, **kwargs)
+        except ProgrammingError:
+            return Response({'detail': 'Course catalog not available on this server.'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+    def partial_update(self, request, *args, **kwargs):
+        try:
+            return super().partial_update(request, *args, **kwargs)
+        except ProgrammingError:
+            return Response({'detail': 'Course catalog not available on this server.'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
         instance.delete()
         return Response({"detail": "Course catalog unit deleted."}, status=status.HTTP_200_OK)
+
+
+class CourseCatalogUnitRenameImpactView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        catalog_unit = get_object_or_404(CourseCatalogUnit.objects.all(), pk=pk)
+        next_code = request.query_params.get("next_code", "")
+        return Response(catalog_code_rename_impact(catalog_unit, next_code))
 
 
 class BulkUploadCourseCatalogUnitsView(APIView):

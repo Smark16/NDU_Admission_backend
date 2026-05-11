@@ -4,6 +4,7 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError
 from rest_framework import serializers
 
+from .catalog_reference_sync import sync_catalog_unit_references
 from .models import *
 from admissions.models import Faculty
 from accounts.serializers import CampusSerializer
@@ -186,7 +187,7 @@ class CourseCatalogUnitSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "created_at", "updated_at"]
 
     def validate_code(self, value):
-        v = (value or "").strip()
+        v = (value or "").strip().upper()
         if not v:
             raise serializers.ValidationError("Code is required.")
         if len(v) > 50:
@@ -219,6 +220,13 @@ class CourseCatalogUnitSerializer(serializers.ModelSerializer):
                 )
         return attrs
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        notice = getattr(instance, "_rename_notice", None)
+        if notice:
+            data["rename_notice"] = notice
+        return data
+
     def create(self, validated_data):
         try:
             return super().create(validated_data)
@@ -228,12 +236,17 @@ class CourseCatalogUnitSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"code": "A catalog entry with this code already exists."})
 
     def update(self, instance, validated_data):
+        previous_code = instance.code
         try:
-            return super().update(instance, validated_data)
+            updated = super().update(instance, validated_data)
         except DjangoValidationError as e:
             raise serializers.ValidationError(e.message_dict if hasattr(e, "message_dict") else str(e))
         except IntegrityError:
             raise serializers.ValidationError({"code": "A catalog entry with this code already exists."})
+        if previous_code != updated.code:
+            notice = sync_catalog_unit_references(updated, previous_code=previous_code)
+            setattr(updated, "_rename_notice", notice)
+        return updated
 
 
 class ProgramCurriculumLineSerializer(serializers.ModelSerializer):

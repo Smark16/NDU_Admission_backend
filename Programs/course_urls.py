@@ -3,7 +3,8 @@ from django.urls import path
 from .catalog_course_views import (
     CourseCatalogUnitDetailView,
     CourseCatalogUnitListCreateView,
-  BulkUploadCourseCatalogUnitsView,
+    CourseCatalogUnitRenameImpactView,
+    BulkUploadCourseCatalogUnitsView,
     CourseCatalogUnitTemplateDownloadView,
 )
 from .course_api_views import CreateCourseUnitView, ListCourseUnitsView, UpdateCourseUnitView
@@ -14,6 +15,11 @@ urlpatterns = [
     path("catalog_course_units", CourseCatalogUnitListCreateView.as_view(), name="catalog_course_units"),
     path("catalog_course_units/template", CourseCatalogUnitTemplateDownloadView.as_view(), name="catalog_course_units_template"),
     path("catalog_course_units/bulk_upload", BulkUploadCourseCatalogUnitsView.as_view(), name="catalog_course_units_bulk_upload"),
+    path(
+        "catalog_course_units/<int:pk>/rename_impact",
+        CourseCatalogUnitRenameImpactView.as_view(),
+        name="catalog_course_unit_rename_impact",
+    ),
     path(
         "catalog_course_units/<int:pk>",
         CourseCatalogUnitDetailView.as_view(),
