@@ -128,6 +128,8 @@ class InitiateTuitionPayment(APIView):
                 reason="Tuition Payment",
                 callBackUrl=_callback_url(request),
             )
+
+            print("SchoolPay request_payment response:", resp)
         except ValueError as exc:
             logger.error("SchoolPay tuition initiation failed: %s", exc)
             return Response(
@@ -202,6 +204,7 @@ class CheckTuitionPaymentStatus(APIView):
         client = SchoolPayClient()
         try:
             data = client.check_status(payment.payment_reference)
+            print("SchoolPay check_status response:", data)
         except ValueError as exc:
             logger.error("SchoolPay tuition status check failed: %s", exc)
             return Response({"status": payment.status.upper()})
