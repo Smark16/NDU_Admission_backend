@@ -20,6 +20,10 @@ from django.utils import timezone
 from datetime import timedelta
 from .serializers import ApplicationPaymentSerializer
 from admissions.models import Application
+from payments.utils.school_pay_code import register_student_with_schoolpay
+from accounts.models import User
+from rest_framework.decorators import api_view, permission_classes
+from django.shortcuts import get_object_or_404
 
 # caching
 from django.core.cache import cache
