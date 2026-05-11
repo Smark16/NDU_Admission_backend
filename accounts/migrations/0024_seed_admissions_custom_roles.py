@@ -94,9 +94,9 @@ def noop_reverse(apps, schema_editor):
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("accounts", "0023_seed_verify_physical_documents_permission"),
+        ("accounts", "0001_initial"),
         ("auth", "0012_alter_user_first_name_max_length"),
-        ("admissions", "0054_physical_document_verification"),
+        ("admissions", "0015_emailtemplate"),
         ("AdmissionReports", "0001_initial"),
     ]
 
