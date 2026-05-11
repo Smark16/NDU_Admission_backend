@@ -39,7 +39,7 @@ jobs:
           python manage.py migrate admissions 0006 --fake
           python manage.py migrate AdmissionLetter 0002 --fake
           python manage.py migrate admissions 0007 --fake
-          python manage.py migrate admissions 0008 --fake
+          python manage.py migrate admissions 0008_admittedstudent_student_user_and_more --fake
           python manage.py migrate admissions 0009 --fake
           python manage.py migrate Programs 0003 --fake
           python manage.py makemigrations --merge --noinput
