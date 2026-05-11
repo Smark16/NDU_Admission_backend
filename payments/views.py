@@ -306,6 +306,34 @@ class ListPayments(generics.ListAPIView):
         ).all()
     
 # School pay code generation
+# @api_view(['POST'])
+# @permission_classes([IsAuthenticated])
+# def generate_paycode(request, student_id):
+#     student = get_object_or_404(AdmittedStudent, id=student_id)
+
+#     if student.is_registered_with_schoolpay:
+#         return Response({
+#             "detail": "Already registered with SchoolPay",
+#             "schoolpay_code": student.student_id
+#         })
+
+#     result = register_student_with_schoolpay(student)
+
+#     print("RESULT OF SCHOOLPAY REGISTRATION:", result)
+
+#     if not result["success"]:
+#         return Response({
+#             "error": "SchoolPay registration failed",
+#             "details": result.get("error") or result.get("data")
+#         }, status=400)
+
+#     return Response({
+#         "detail": "Paycode generated successfully",
+#         "schoolpay_code": student.student_id
+#     })
+
+
+# School pay code generation
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def generate_paycode(request, student_id):
@@ -314,26 +342,29 @@ def generate_paycode(request, student_id):
     if student.is_registered_with_schoolpay:
         return Response({
             "detail": "Already registered with SchoolPay",
-            "schoolpay_code": student.student_id
+            "schoolpay_code": student.student_id,
+            "student_name": student.full_name,
         })
 
     result = register_student_with_schoolpay(student)
-
-    print("RESULT OF SCHOOLPAY REGISTRATION:", result)
+    logger.info("SchoolPay registration for admitted student %s: %s", student_id, result.get("success"))
 
     if not result["success"]:
         return Response({
             "error": "SchoolPay registration failed",
-            "details": result.get("error") or result.get("data")
+            "details": result.get("error") or result.get("data"),
+            "expected_name": result.get("expected_name"),
+            "gateway_name": result.get("gateway_name"),
+            "payment_code": result.get("payment_code"),
         }, status=400)
 
+    student.refresh_from_db()
     return Response({
         "detail": "Paycode generated successfully",
-        "schoolpay_code": student.student_id
+        "schoolpay_code": student.student_id,
+        "student_name": student.full_name,
+        "gateway_name": result.get("gateway_name"),
     })
-
-
-
 
 
 

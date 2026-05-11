@@ -84,7 +84,7 @@ urlpatterns = [
     path('initiate_payment/', InitiatePayment.as_view()),
     path('webhook/', schoolpay_webhook, name='schoolpay_webhook'),
     path('check_payment_status/<str:payment_ref>/', CheckPaymentStatus.as_view()),
-    path('register_with_schoolpay/<int:admitted_student_id>/', generate_paycode, name='register_with_schoolpay'),
+    path('register_with_schoolpay/<int:student_id>/', generate_paycode, name='register_with_schoolpay'),
 
     # payments
     path('list_payments', ListPayments.as_view()),

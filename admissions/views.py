@@ -20,6 +20,7 @@ from django.db.utils import OperationalError
 # from .utils.validate_photo import validate_passport_photo
 from .tasks import celery_send_application_email, celery_application_notification, celery_admission_email, celery_admission_update, celery_create_student_account
 from accounts.tasks import celery_send_account_email
+from payments.utils.school_pay_code import register_student_with_schoolpay
 from .utils.trigger_background_tasks import trigger_background_tasks
 from payments.models import ApplicationPayment
 from Drafts.models import DraftApplication
@@ -1366,7 +1367,6 @@ class AdmitStudent(generics.CreateAPIView):
                         admission_date=timezone.now(),
                         is_admitted=True,
                     )
-
                 # Fetch application
                 try:
                     application = Application.objects.select_related(
@@ -1382,15 +1382,38 @@ class AdmitStudent(generics.CreateAPIView):
                 # CRITICAL: Update status immediately
                 Application.objects.filter(id=application.id).update(status="Admitted")
 
+                try:
+                    if not admission.is_registered_with_schoolpay:
+
+                        result = register_student_with_schoolpay(admission)
+
+                        logger.info(
+                            "SchoolPay registration for admitted student %s: %s",
+                            admission.id,
+                            result.get("success")
+                        )
+
+                        if not result["success"]:
+                            logger.error(
+                                "SchoolPay registration failed for student %s: %s",
+                                admission.id,
+                                result.get("error") or result.get("data")
+                            )
+
+                except Exception:
+                    logger.exception(
+                        "SchoolPay registration failed during admission"
+                    )
+
                 # Student Account Creation and auto Enrollment
                 transaction.on_commit(
-                    lambda: trigger_background_tasks(admission.id, application.id)
+                    lambda: trigger_background_tasks(admission.id, application.id),
                 )
             
                 return Response(self.serializer_class(admission).data, status=201)
 
         except Exception as e:
-            logger.exception(f"Admission failed: {e}", exc_info=True)
+            logger.exception("Admission failed")
             return Response({"detail": str(e)}, status=400)
 
 # revoke student 
