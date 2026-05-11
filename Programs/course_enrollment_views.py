@@ -2,7 +2,6 @@
 from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
-from decimal import Decimal
 
 from django.db.models import Q
 
@@ -531,24 +530,13 @@ class GetStudentEnrolledCourses(APIView):
             StudentProgrammeEnrollment,
             StudentCurriculumOverride,
         )
-        from admissions.models import AdmittedStudent
-        from payments.models import StudentTuitionPayment
-        from payments.student_portal_finance import COMMITMENT_FEE_THRESHOLD
+        from payments.student_portal_finance import (
+            get_admitted_student_for_user,
+            offer_letter_portal_fields,
+        )
 
-        user = request.user
-
-        try:
-            from django.db.models import Q
-            admitted_student = AdmittedStudent.objects.select_related(
-                'admitted_program',
-                'admitted_campus',
-                'admitted_batch'
-            ).filter(
-                Q(application__applicant=user) | Q(student_user=user) | Q(reg_no=user.username)
-            ).first()
-            if not admitted_student:
-                raise AdmittedStudent.DoesNotExist
-        except AdmittedStudent.DoesNotExist:
+        admitted_student = get_admitted_student_for_user(request.user)
+        if not admitted_student:
             return Response({
                 'detail': 'You are not an admitted student',
                 'enrolled_courses': []
@@ -671,32 +659,10 @@ class GetStudentEnrolledCourses(APIView):
         except Exception:
             pass
 
-        # Offer-letter eligibility gate:
-        # students become eligible when cumulative completed UGX commitment payments
-        # reach the configured threshold (currently 150,000).
-        commitment_paid_ugx = sum(
-            (p.amount or Decimal("0"))
-            for p in StudentTuitionPayment.objects.filter(
-                student=admitted_student,
-                status="completed",
-                is_waived=False,
-                fee_plan_rule__isnull=False,
-            )
-            if (p.currency or "UGX").upper() == "UGX"
-        )
-        offer_letter_eligible = commitment_paid_ugx >= COMMITMENT_FEE_THRESHOLD
-
-        offer_letter_pdf_url = None
-        try:
-            app = admitted_student.application
-            if app and app.admission_letter_pdf:
-                offer_letter_pdf_url = request.build_absolute_uri(app.admission_letter_pdf.url)
-        except Exception:
-            offer_letter_pdf_url = None
-
         return Response({
             'student_id': admitted_student.student_id,
             'reg_no': admitted_student.reg_no,
+            'schoolpay_code': admitted_student.effective_schoolpay_code,
             'student_name': admitted_student.full_name,
             'program': admitted_student.admitted_program.name if admitted_student.admitted_program else None,
             'campus': admitted_student.admitted_campus.name if admitted_student.admitted_campus else None,
@@ -710,10 +676,7 @@ class GetStudentEnrolledCourses(APIView):
             'total_deferred': len(deferred_courses),
             'total_registered': len(registered_courses),
             'total_courses': len(active_courses) + len(deferred_courses),
-            'commitment_threshold': float(COMMITMENT_FEE_THRESHOLD),
-            'commitment_paid_ugx': float(commitment_paid_ugx),
-            'offer_letter_eligible': bool(offer_letter_eligible),
-            'offer_letter_pdf_url': offer_letter_pdf_url,
+            **offer_letter_portal_fields(admitted_student, request),
         }, status=status.HTTP_200_OK)
 
 class CheckLecturerStatus(APIView):
@@ -1397,7 +1360,7 @@ class StudentAcademicTrackerView(APIView):
             )
 
         program = spe.program
-        cal = program.calendar_type   # 'semester' or 'trimester'
+        cal = getattr(program, "calendar_type", None) or "semester"
         term_label = 'Trimester' if cal == 'trimester' else 'Semester'
 
         # ── Deferred courses ─────────────────────────────────────────────────
@@ -1453,9 +1416,9 @@ class StudentAcademicTrackerView(APIView):
             reg_status = 'registered'
             reg_label = 'Fully Registered'
 
-        has_spec = program.has_specialization
-        spec_entry_year = program.specialization_entry_year
-        spec_entry_term = program.specialization_entry_term
+        has_spec = bool(getattr(program, "has_specialization", False))
+        spec_entry_year = getattr(program, "specialization_entry_year", None)
+        spec_entry_term = getattr(program, "specialization_entry_term", None)
 
         # ── Last promotion record ────────────────────────────────────────────
         # StudentSemesterProgression.promotion_date is set by PromoteStudentsToNextSemester.

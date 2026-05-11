@@ -9,15 +9,16 @@ from .adhoc_views import (
     StudentAdHocChargeListCreate,
     StudentAdHocChargeWaiveView,
 )
-from .scheduled_fee_views import (
-    ScheduledOtherFeeRuleClone,
-    ScheduledOtherFeeRuleDetail,
-    ScheduledOtherFeeRuleListCreate,
+from .admin_ledger_views import (
+    AdminTuitionLedgerFiltersView,
+    AdminTuitionLedgerStudentDetailView,
+    AdminTuitionLedgerStudentsView,
+    AdminTuitionLedgerTransactionsView,
 )
 from .tuition_payment_views import (
     InitiateTuitionPayment,
     CheckTuitionPaymentStatus,
-    GenerateTuitionPaymentReference,
+    GenerateTuitionReference,
 )
 from .semester_registration_views import (
     CheckRegistrationEligibility,
@@ -27,6 +28,11 @@ from .semester_registration_views import (
     GetStudentTuitionStructure,
     RegisterForCourses,
     UpdateRegistrationSettings,
+)
+from .other_fee_schedule_views import (
+    OtherFeeScheduleCloneView,
+    OtherFeeScheduleRuleDetailView,
+    OtherFeeScheduleView,
 )
 from .views import *
 
@@ -54,8 +60,16 @@ urlpatterns = [
         GetSemestersForProgramBatch.as_view(),
         name='get_semesters_for_program_batch',
     ),
+    path('admin/tuition_ledger/filters', AdminTuitionLedgerFiltersView.as_view(), name='admin_tuition_ledger_filters'),
+    path('admin/tuition_ledger/students', AdminTuitionLedgerStudentsView.as_view(), name='admin_tuition_ledger_students'),
+    path(
+        'admin/tuition_ledger/students/<int:student_id>',
+        AdminTuitionLedgerStudentDetailView.as_view(),
+        name='admin_tuition_ledger_student_detail',
+    ),
+    path('admin/tuition_ledger/transactions', AdminTuitionLedgerTransactionsView.as_view(), name='admin_tuition_ledger_transactions'),
     path('student/initiate_tuition_payment', InitiateTuitionPayment.as_view(), name='initiate_tuition_payment'),
-    path('student/generate_tuition_reference', GenerateTuitionPaymentReference.as_view(), name='generate_tuition_reference'),
+    path('student/generate_tuition_reference', GenerateTuitionReference.as_view(), name='generate_tuition_reference'),
     path('student/tuition_payment_status/<str:payment_ref>', CheckTuitionPaymentStatus.as_view(), name='check_tuition_payment_status'),
     path('student/tuition_structure', GetStudentTuitionStructure.as_view(), name='get_student_tuition_structure'),
     path('student/payment_status', GetStudentPaymentStatus.as_view(), name='get_student_payment_status'),
@@ -86,27 +100,16 @@ urlpatterns = [
         StudentAdHocChargeWaiveView.as_view(),
         name='adhoc_charge_waive',
     ),
-    path(
-        'other_fee_schedule',
-        ScheduledOtherFeeRuleListCreate.as_view(),
-        name='scheduled_other_fee_list_create',
-    ),
-    path(
-        'other_fee_schedule/<int:pk>',
-        ScheduledOtherFeeRuleDetail.as_view(),
-        name='scheduled_other_fee_detail',
-    ),
-    path(
-        'other_fee_schedule/clone',
-        ScheduledOtherFeeRuleClone.as_view(),
-        name='scheduled_other_fee_clone',
-    ),
+
+    path('other_fee_schedule/clone', OtherFeeScheduleCloneView.as_view()),
+    path('other_fee_schedule/<int:pk>', OtherFeeScheduleRuleDetailView.as_view()),
+    path('other_fee_schedule', OtherFeeScheduleView.as_view()),
 
     # school payment
     path('initiate_payment/', InitiatePayment.as_view()),
     path('webhook/', schoolpay_webhook, name='schoolpay_webhook'),
     path('check_payment_status/<str:payment_ref>/', CheckPaymentStatus.as_view()),
-    path('sync_schoolpay_transactions', SyncSchoolPayTransactions.as_view(), name='sync_schoolpay_transactions'),
+    path('register_with_schoolpay/<int:student_id>/', generate_paycode, name='register_with_schoolpay'),
 
     # payments
     path('list_payments', ListPayments.as_view()),

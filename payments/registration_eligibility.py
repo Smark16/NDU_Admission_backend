@@ -16,7 +16,7 @@ from .student_fee_pricing import (
     paid_by_currency,
     required_by_currency,
 )
-from .student_portal_finance import _rules_for_student
+from .student_portal_finance import _rules_for_student, other_schedule_rows_and_due_by_currency
 
 
 def build_registration_eligibility_payload(student: AdmittedStudent) -> dict:
@@ -64,10 +64,10 @@ def build_registration_eligibility_payload(student: AdmittedStudent) -> dict:
     international = is_international_student(student)
     rules = _rules_for_student(student)
     req_by = required_by_currency(rules, international)
-    paid_by = paid_by_currency(
-        student,
-        allowed_rule_ids={int(r.id) for r in rules if getattr(r, "id", None)},
-    )
+    _, other_due_by_ccy = other_schedule_rows_and_due_by_currency(student, international)
+    for ccy, amt in other_due_by_ccy.items():
+        req_by[ccy] = req_by.get(ccy, Decimal("0")) + amt
+    paid_by = paid_by_currency(student)
     min_pct = Decimal(str(settings.min_tuition_payment_percentage)) / Decimal("100")
 
     if not req_by:

@@ -12,7 +12,7 @@ from admissions.models import (
 campus = Campus.objects.first()
 level  = AcademicLevel.objects.filter(name='Undergraduate').first()
 
-admin_user = User.objects.get(email='admin@ndu.ac.ug')
+admin_user = User.objects.get(email='admin@gmail.com')
 batch, created_batch = Batch.objects.get_or_create(
     name='August Intake 2025',
     defaults={

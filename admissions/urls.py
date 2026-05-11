@@ -25,11 +25,15 @@ urlpatterns = [
     path('create_direct_applications', views.create_direct_applications),
     path('direct_entry_applications', views.ListDirectEntryApplications.as_view()),
     path('all_applications_report', views.AllApplicationsReport.as_view()),
+    path('rejected_applications', views.ListRejectedApplications.as_view()),
     path('reject_application/<int:application_id>', views.RejectStudent.as_view()),
     path('application_detail/<int:application_id>', views.application_detail),
     path('review_application/<int:application_id>', views.ReviewApplication.as_view()),
     path('single_app/<int:application_id>', views.SingleApplication.as_view()),
     path('change_applicatio_status/<int:pk>', views.ChangeApplicationStatus.as_view()),
+    path('edit_application_profile/<int:application_id>', views.EditApplicationProfile.as_view()),
+    path('change_programme/<int:application_id>', views.ChangeApplicationProgramme.as_view()),
+    path('generate-reg-no/', views.generate_reg_no_view, name='generate_reg_no'),
 
     # Subject Urls
 
@@ -72,6 +76,8 @@ urlpatterns = [
     path('create_admissions', views.AdmitStudent.as_view()),
     path('update_admission/<int:pk>/', views.UpdateAdmittedStudent.as_view()),
     path('list_admitted_students',  views.ListAdmittedStudents.as_view()),
+    path('admitted_students/<int:pk>/revoke/', views.RevokeAdmittedStudent.as_view()),
+    path('admitted_students/<int:pk>/restore/', views.RestoreAdmittedStudent.as_view()),
     path(
         'admitted_students/<int:pk>/verify_physical_documents/',
         views.MarkPhysicalDocumentsVerified.as_view(),
@@ -93,6 +99,7 @@ urlpatterns = [
 
     # Admission Change Requests
     path('change_requests/my', views.StudentChangeRequestListCreate.as_view(), name='student_change_requests'),
+    path('change_requests/options', views.StudentChangeRequestOptions.as_view(), name='student_change_request_options'),
     path('change_requests/all', views.AdminChangeRequestList.as_view(), name='admin_change_requests'),
     path('change_requests/<int:pk>/review', views.AdminChangeRequestReview.as_view(), name='review_change_request'),
 

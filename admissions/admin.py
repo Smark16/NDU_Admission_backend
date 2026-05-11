@@ -13,25 +13,28 @@ class FacultyAdmin(admin.ModelAdmin):
 class AdmittedStudentAdmin(admin.ModelAdmin):
     list_display = [
         'id',
+        'application',
         'student_id',
         'reg_no',
         'schoolpay_code',
+        'is_registered_with_schoolpay',
+        'admitted_batch',
         'admitted_program',
-        'admitted_campus',
-        'is_registered',
-        'physical_documents_verified',
-        'physical_documents_verified_at',
-        'physical_documents_verified_by',
+        'admitted_by'
+        # 'physical_documents_verified',
+        # 'physical_documents_verified_at',
+        # 'physical_documents_verified_by',
     ]
     list_filter = [
         'is_registered',
-        'physical_documents_verified',
+        'is_registered_with_schoolpay',
+        # 'physical_documents_verified',
         'admitted_batch',
         'admitted_campus',
         'is_admitted',
     ]
     search_fields = ['student_id', 'reg_no', 'schoolpay_code', 'application__first_name', 'application__last_name']
-    raw_id_fields = ('physical_documents_verified_by',)
+    # raw_id_fields = ('physical_documents_verified_by',)
 
 @admin.register(AcademicLevel)
 class AcademicLevelAdmin(admin.ModelAdmin):
@@ -115,3 +118,4 @@ class EmailTemplateAdmin(admin.ModelAdmin):
     list_filter = ['is_active', 'key']
     search_fields = ['name', 'key', 'subject_template']
     readonly_fields = ['created_at', 'updated_at']
+

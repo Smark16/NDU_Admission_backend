@@ -12,7 +12,7 @@ import os
 from typing import Optional
 
 from django.core.files.base import ContentFile
-from tempfile import NamedTemporaryFile
+# from tempfile import NamedTemporaryFile
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
@@ -22,14 +22,17 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from admissions.models import Application, AdmittedStudent
 from .utils.letters import render_docx_from_template, save_docx_to_field, convert_docx_to_pdf_bytes, save_docx_to_field, fill_pdf_template
+
 from .utils.offer_security import stamp_offer_letter_pdf
 from admissions.utils.notification import create_notification
 from django.core.mail import send_mail
 import threading
 from django.db import close_old_connections
+
 import logging
 import platform
-from .tasks import send_offerletter_email
+from .tasks import send_offerletter_email, convert_and_save_pdf_task
+import base64
 
 logger = logging.getLogger(__name__)
 
@@ -129,115 +132,6 @@ class DeleteTemplate(generics.RetrieveDestroyAPIView):
         return Response({"detail":"template deleted successfully"})
     
 # ================================================Offer letters======================================================
-# The function that runs in the background thread (the heavy lifting)
-def convert_and_save_pdf_task(docx_bytes_local, applicant_id_local, verify_base: Optional[str] = None, user_id=None):
-    # 1. Thread safety: Close old connections from the main thread
-    close_old_connections()
-    
-    tmp_path = None
-    
-    # === CRITICAL FIX: Initialize COM for this specific thread on Windows ===
-    is_windows = platform.system() == "Windows"
-    if is_windows and 'pythoncom' in globals():
-        try:
-            pythoncom.CoInitialize()
-        except Exception as e:
-            logger.warning(f"Failed to initialize COM in thread for {applicant_id_local}: {e}")
-
-    try:
-        # 2. Re-fetch the applicant inside the thread
-        applicant_local = Application.objects.get(id=applicant_id_local)
-
-         # Step 1: DOCX saved → update status
-        applicant_local.offer_letter_status = "docx_generated"
-        applicant_local.offer_letter_progress = 30
-        applicant_local.save(update_fields=['offer_letter_status', 'offer_letter_progress'])
-
-         # Step 2: Start PDF conversion
-        applicant_local.offer_letter_status = "converting_pdf"
-        applicant_local.offer_letter_progress = 50
-        applicant_local.save(update_fields=['offer_letter_status', 'offer_letter_progress'])
-
-        # 3. Save DOCX to a temp file for conversion
-        # Using NamedTemporaryFile within the thread for its lifecycle
-        tmp = NamedTemporaryFile(delete=False, suffix=".docx")
-        tmp.write(docx_bytes_local)
-        tmp.flush()
-        tmp.close()
-        tmp_path = tmp.name
-
-        logger.info(f"Starting PDF conversion for applicant {applicant_id_local}")
-        
-        # 4. Perform the conversion (this is the call that required COM initialization)
-        pdf_bytes = convert_docx_to_pdf_bytes(tmp_path) 
-        
-        logger.info(f"PDF conversion successful for applicant {applicant_id_local}")
-
-         # Step 3: PDF ready
-        applicant_local.offer_letter_status = "pdf_ready"
-        applicant_local.offer_letter_progress = 90
-        applicant_local.save(update_fields=['offer_letter_status', 'offer_letter_progress'])
-
-        # 5. Security footer + QR (uses token + audit fields set before thread started)
-        applicant_local.refresh_from_db()
-        token = applicant_local.offer_letter_verification_token or ""
-        vb = (verify_base or "").strip().rstrip("/")
-        if token and vb:
-            verify_url = f"{vb}/verify-offer/{token}"
-            sys_name = getattr(settings, "OFFER_LETTER_SYSTEM_FOOTER_NAME", "ndu university admissions")
-            gen_at = timezone.localtime(timezone.now()).strftime("%Y-%m-%d %H:%M %Z")
-            printed_by = _printed_by_label(user_id)
-            try:
-                pdf_bytes = stamp_offer_letter_pdf(
-                    pdf_bytes,
-                    verify_url=verify_url,
-                    printed_by=printed_by,
-                    system_name=sys_name,
-                    generated_at=gen_at,
-                )
-            except Exception as stamp_err:
-                logger.warning("Offer letter stamp skipped: %s", stamp_err)
-
-        # 6. Save the resulting PDF bytes
-        pdf_filename = f"OfferLetter_{applicant_id_local}.pdf"
-        applicant_local.admission_letter_pdf.save(
-            pdf_filename, ContentFile(pdf_bytes)
-        )
-        applicant_local.status = "Admitted"
-        applicant_local.save()
-
-        # 7. Handle Email/Notification (detailed version)
-        send_offerletter_email.delay(applicant_local.id)
-
-        try:
-            applicant_local.offer_letter_status = "email_sent"
-            applicant_local.offer_letter_progress = 100
-            applicant_local.save(update_fields=['offer_letter_status', 'offer_letter_progress'])
-
-        except Exception as e:
-            logger.error(f"Failed to send email/notification for {applicant_id_local}: {e}")
-
-    except Application.DoesNotExist:
-        logger.error(f"Applicant with ID {applicant_id_local} not found in background thread.")
-    except Exception as e:
-        # Log the error if PDF conversion fails
-        applicant_local.offer_letter_status = "failed"
-        applicant_local.offer_letter_progress = 0
-        applicant_local.save(update_fields=['offer_letter_status', 'offer_letter_progress'])
-        logger.error(f"PDF failed: {e}")
-        logger.error(f"Critical error during PDF generation for {applicant_id_local}: {e}", exc_info=True)
-    finally:
-        # 8. Cleanup temp file
-        if tmp_path and os.path.exists(tmp_path):
-            os.remove(tmp_path)
-            
-        # === CRITICAL FIX: Uninitialize COM when thread finishes ===
-        if is_windows and 'pythoncom' in globals():
-            try:
-                pythoncom.CoUninitialize()
-            except Exception as e:
-                 logger.warning(f"CoUninitialize failed for thread: {e}")
-
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def send_offer_letter(request, applicant_id):
@@ -272,14 +166,16 @@ def send_offer_letter(request, applicant_id):
     else:
         hall = "To Be Assigned"
 
-    _fn = (applicant.first_name or "").strip()
-    _ln = (applicant.last_name or "").strip()
-    _full = f"{_fn} {_ln}".strip().upper()
-
+    # check title
+    title = (applicant.title or "").strip()
+    if not applicant.title:
+       if applicant.gender and applicant.gender.lower() == "male":
+           title = "MR."
+       elif applicant.gender and applicant.gender.lower() == "female":
+           title = "MS."    
+           
     context = {
-        "full_name": _full,
-        "first_name": _fn.upper(),
-        "last_name": _ln.upper(),
+        "full_name": f"{title} {(applicant.first_name or '').strip()} {(applicant.last_name or '').strip()} {(applicant.middle_name or '').strip()}".upper(),
         "phone_number": applicant.phone or "",
         "phone": applicant.phone or "",
         "student_no": admission.student_id or "TBD",
@@ -346,12 +242,10 @@ def send_offer_letter(request, applicant_id):
     applicant.admission_letter_docx.save(docx_filename, ContentFile(docx_bytes))
     applicant.save()
 
-    uid = getattr(request.user, "id", None) if getattr(request.user, "is_authenticated", False) else None
-    threading.Thread(
-        target=convert_and_save_pdf_task,
-        args=(docx_bytes, applicant.id, verify_base, uid),
-        daemon=True
-    ).start()
+    # 🔥 Encode and send to Celery
+    encoded_docx = base64.b64encode(docx_bytes).decode("utf-8")
+    convert_and_save_pdf_task.delay(encoded_docx, applicant.id)
+
 
     return Response({
         "detail": "Offer letter DOCX saved. PDF generation, status update, and email are starting in the background.",
@@ -360,11 +254,9 @@ def send_offer_letter(request, applicant_id):
         "verify_url": verify_url,
     })
 
-
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def resend_offer_letter(request, applicant_id):
-    """Re-send an already generated offer letter email without regenerating files."""
     applicant = get_object_or_404(Application, pk=applicant_id)
 
     if not applicant.admission_letter_pdf:
@@ -373,12 +265,11 @@ def resend_offer_letter(request, applicant_id):
             status=400,
         )
 
-    send_offerletter_email.delay(applicant.id)
+    # send_offerletter_email.delay(applicant.id)
     return Response(
         {"detail": "Offer letter email queued successfully.", "status": "queued"},
         status=200,
     )
-
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
@@ -487,7 +378,6 @@ def verify_offer_letter_public(request, token: str):
         }
     )
 
-
 # offer letter status
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
@@ -499,7 +389,6 @@ def offer_letter_status(request, applicant_id):
         "docx_url": app.admission_letter_docx.url if app.admission_letter_docx else None,
         "pdf_url": app.admission_letter_pdf.url if app.admission_letter_pdf else None,
     })
-
 
 # ── PDF template: preview first page as base64 PNG ──────────────────────────
 @api_view(['GET'])
@@ -534,7 +423,6 @@ def pdf_template_preview(request, pk):
         'field_positions': template.field_positions,
     })
 
-
 # ── PDF template: save field positions ──────────────────────────────────────
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
@@ -549,4 +437,3 @@ def save_pdf_field_positions(request, pk):
     template.field_positions = positions
     template.save(update_fields=['field_positions'])
     return Response({'detail': 'Field positions saved successfully.'})
-    

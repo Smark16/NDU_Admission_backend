@@ -16,6 +16,7 @@ urlpatterns = [
     path('api-auth/', include('rest_framework.urls')),
 
     path('django_admin/', admin.site.urls),
+    path('admin/', admin.site.urls),
     path('api/accounts/', include('accounts.urls')),
     path('api/admissions/', include('admissions.urls')),
     path('api/drafts/', include('Drafts.urls')),

@@ -16,6 +16,7 @@ class DraftApplication(models.Model):
     middle_name = models.CharField(max_length=100, blank=True, null=True)
     date_of_birth = models.DateField(null=True, blank=True)
     gender = models.CharField(max_length=20, blank=True, null=True)
+    title = models.CharField(max_length=10, null=True, blank=True)
     nationality = models.CharField(max_length=100, blank=True, null=True)
     nin = models.CharField(max_length=20, blank=True, null=True)
     passport_number = models.CharField(max_length=20, blank=True, null=True)
@@ -25,7 +26,7 @@ class DraftApplication(models.Model):
     disabled = models.CharField(max_length=5, blank=True, null=True)
 
     # Next of Kin
-    next_of_kin_name = models.CharField(max_length=200, blank=True, null=True)
+    nextOfKinName = models.CharField(max_length=200, blank=True, null=True)
     next_of_kin_contact = models.CharField(max_length=20, blank=True, null=True)
     next_of_kin_relationship = models.CharField(max_length=20, blank=True, null=True)
 
@@ -35,15 +36,19 @@ class DraftApplication(models.Model):
     academic_level = models.ForeignKey(AcademicLevel, on_delete=models.SET_NULL, null=True, blank=True)
 
     # Academic Results (stored as JSON for flexibility)
+    has_olevel = models.BooleanField(default=False)
+    has_alevel = models.BooleanField(default=False)
     olevel_data = models.JSONField(default=dict)   
     alevel_data = models.JSONField(default=dict)
-    additional_qualifications = models.JSONField(default=list)
-
-    # Uploaded files — saved so the applicant does not need to re-upload on return
-    draft_passport_photo = models.ImageField(upload_to='drafts/passport/', null=True, blank=True)
-    draft_olevel_doc     = models.FileField(upload_to='drafts/documents/', null=True, blank=True)
-    draft_alevel_doc     = models.FileField(upload_to='drafts/documents/', null=True, blank=True)
-    draft_other_doc      = models.FileField(upload_to='drafts/documents/', null=True, blank=True)
+    additional_qualifications = models.JSONField(default=list, null=True, blank=True)
+    application_fee_paid = models.BooleanField(default=False)
+    application_reference = models.CharField(max_length=50, blank=True, null=True)
+    
+    # Draft Documents
+    passport_photo = models.FileField(upload_to='draft_documents/passport/', null=True, blank=True)
+    olevel_document = models.FileField(upload_to='draft_documents/olevel/', null=True, blank=True)
+    alevel_document = models.FileField(upload_to='draft_documents/alevel/', null=True, blank=True)
+    other_documents = models.FileField(upload_to='draft_documents/other/', null=True, blank=True)
 
     # Status
     status = models.CharField(max_length=20, default='draft')
@@ -52,6 +57,12 @@ class DraftApplication(models.Model):
         ordering = ['-updated_at']
         verbose_name = "Draft Application"
         verbose_name_plural = "Draft Applications"
+        constraints = [
+            models.UniqueConstraint(
+                fields=['applicant', 'batch'],
+                name='unique_draft_per_user_batch'
+            )
+        ]
 
     def __str__(self):
         return f"Draft by {self.applicant.get_full_name() or self.applicant.email} - {self.updated_at}"

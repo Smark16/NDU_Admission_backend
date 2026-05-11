@@ -3,25 +3,28 @@ from rest_framework import generics, status
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from .serializers import *
-from django.http import JsonResponse, HttpResponse
-from django.views.decorators.csrf import csrf_exempt
-from django.db import transaction
 import json
+import logging
 import uuid
 
-from .models import ApplicationFee, ApplicationPayment, StudentTuitionPayment
+from django.conf import settings
+from django.db import transaction
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
-from django.db import transaction
-from .models import ApplicationPayment
+
+from .models import ApplicationFee, ApplicationPayment, StudentTuitionPayment
 from .utils.schoolpay import SchoolPayClient
 from django.utils import timezone
 from datetime import timedelta
-from decimal import Decimal, InvalidOperation
 from .serializers import ApplicationPaymentSerializer
 from admissions.models import Application
-from admissions.models import AdmittedStudent
+from payments.utils.school_pay_code import register_student_with_schoolpay
+from accounts.models import User
+from rest_framework.decorators import api_view, permission_classes
+from django.shortcuts import get_object_or_404
+
+logger = logging.getLogger(__name__)
 
 # caching
 from django.core.cache import cache
@@ -84,7 +87,11 @@ class InitiatePayment(APIView):
         last_name = request.data.get('last_name')
         amount = request.data.get('amount')
         reason = "Application Fee"
-        callBackUrl = request.build_absolute_uri('/api/payments/webhook/')
+
+        if settings.DEBUG:
+          callBackUrl = "https://9f80-41-75-184-19.ngrok-free.app/api/payments/webhook/" 
+        else:
+            callBackUrl = request.build_absolute_uri("/api/payments/webhook/")
 
         # EXPIRE OLD PAYMENTS
         ApplicationPayment.objects.filter(
@@ -282,162 +289,9 @@ class CheckPaymentStatus(APIView):
 
         return Response({
             'status': payment.status,
+            "transactionId":payment.transaction_id,
             })
 # ========================================================end schoolpay====================================================
-
-
-# =====================================================schoolpay sync======================================================
-class SyncSchoolPayTransactions(APIView):
-    """
-    Manual reconciliation pull from SchoolPay Sync API.
-    POST body:
-      - date: YYYY-MM-DD                (single-day sync)
-      - OR from_date + to_date          (range sync; max policy handled by provider)
-    """
-    permission_classes = [IsAuthenticated, IsAdminUser]
-
-    def post(self, request):
-        date_value = (request.data.get("date") or "").strip()
-        from_date = (request.data.get("from_date") or "").strip()
-        to_date = (request.data.get("to_date") or "").strip()
-
-        client = SchoolPayClient()
-        try:
-            if date_value:
-                payload = client.sync_transactions_by_date(date_value)
-                scope = {"mode": "single_date", "date": date_value}
-            else:
-                if not from_date or not to_date:
-                    return Response(
-                        {"detail": "Provide either 'date' or both 'from_date' and 'to_date'."},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-                payload = client.sync_transactions_by_range(from_date, to_date)
-                scope = {"mode": "range", "from_date": from_date, "to_date": to_date}
-        except ValueError as exc:
-            return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
-
-        if payload.get("returnCode") != 0:
-            return Response(
-                {
-                    "detail": payload.get("returnMessage", "SchoolPay sync failed."),
-                    "returnCode": payload.get("returnCode"),
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        transactions = list(payload.get("transactions") or [])
-        supplementary = list(payload.get("supplementaryFeePayments") or [])
-        combined = transactions + supplementary
-
-        stats = {
-            "received": len(combined),
-            "matched_by_receipt": 0,
-            "matched_by_txn_id": 0,
-            "matched_by_student_code": 0,
-            "updated_to_completed": 0,
-            "already_completed": 0,
-            "unmatched": 0,
-        }
-        unmatched_samples = []
-
-        def _to_decimal(raw_amount):
-            try:
-                return Decimal(str(raw_amount))
-            except (InvalidOperation, TypeError, ValueError):
-                return None
-
-        def _mark_completed(payment_obj, item):
-            if payment_obj.status in ("PAID", "completed"):
-                stats["already_completed"] += 1
-                return
-            sp_receipt = (item.get("schoolpayReceiptNumber") or "").strip()
-            sp_txn = (item.get("sourceChannelTransactionId") or "").strip()
-            if isinstance(payment_obj, ApplicationPayment):
-                payment_obj.status = "PAID"
-                if sp_receipt:
-                    payment_obj.receipt_number = sp_receipt
-                if sp_txn:
-                    payment_obj.transaction_id = sp_txn
-                payment_obj.save(update_fields=["status", "receipt_number", "transaction_id", "updated_at"])
-            else:
-                payment_obj.status = "completed"
-                if sp_receipt:
-                    payment_obj.receipt_number = sp_receipt
-                payment_obj.paid_at = timezone.now()
-                note = payment_obj.notes or ""
-                if sp_txn and f"SchoolPay transactionId: {sp_txn}" not in note:
-                    payment_obj.notes = (note + f"\nSchoolPay transactionId: {sp_txn}").strip()
-                payment_obj.save(update_fields=["status", "receipt_number", "paid_at", "notes", "updated_at"])
-            stats["updated_to_completed"] += 1
-
-        for item in combined:
-            sp_receipt = (item.get("schoolpayReceiptNumber") or "").strip()
-            sp_txn = (item.get("sourceChannelTransactionId") or "").strip()
-            student_code = (item.get("studentPaymentCode") or "").strip()
-            amount = _to_decimal(item.get("amount"))
-            matched = None
-
-            if sp_receipt:
-                matched = ApplicationPayment.objects.filter(receipt_number=sp_receipt).first()
-                if not matched:
-                    matched = StudentTuitionPayment.objects.filter(receipt_number=sp_receipt).first()
-                if matched:
-                    stats["matched_by_receipt"] += 1
-
-            if not matched and sp_txn:
-                matched = ApplicationPayment.objects.filter(transaction_id=sp_txn).first()
-                if not matched:
-                    matched = StudentTuitionPayment.objects.filter(transaction_id=sp_txn).first()
-                if matched:
-                    stats["matched_by_txn_id"] += 1
-
-            if not matched and student_code and amount is not None:
-                # Match admitted student by configured schoolpay_code, then fallback reg_no.
-                admitted = (
-                    AdmittedStudent.objects.filter(schoolpay_code=student_code).first()
-                    or AdmittedStudent.objects.filter(reg_no=student_code).first()
-                )
-                if admitted:
-                    matched = (
-                        StudentTuitionPayment.objects.filter(
-                            student=admitted,
-                            amount=amount,
-                            status__in=["pending", "failed", "cancelled", "completed"],
-                        )
-                        .order_by("created_at")
-                        .first()
-                    )
-                if matched:
-                    stats["matched_by_student_code"] += 1
-
-            if not matched:
-                stats["unmatched"] += 1
-                if len(unmatched_samples) < 10:
-                    unmatched_samples.append(
-                        {
-                            "studentPaymentCode": student_code,
-                            "amount": str(item.get("amount") or ""),
-                            "schoolpayReceiptNumber": sp_receipt,
-                            "sourceChannelTransactionId": sp_txn,
-                            "transactionCompletionStatus": item.get("transactionCompletionStatus") or "",
-                        }
-                    )
-                continue
-
-            _mark_completed(matched, item)
-
-        return Response(
-            {
-                "detail": "SchoolPay sync completed.",
-                "scope": scope,
-                "provider_message": payload.get("returnMessage", ""),
-                "stats": stats,
-                "unmatched_samples": unmatched_samples,
-            },
-            status=status.HTTP_200_OK,
-        )
-# =====================================================end schoolpay sync==================================================
 
 # ==================================Payments==============================
 
@@ -451,6 +305,39 @@ class ListPayments(generics.ListAPIView):
             'application__batch',
             'user'
         ).all()
+    
+# School pay code generation
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def generate_paycode(request, student_id):
+    student = get_object_or_404(AdmittedStudent, id=student_id)
+
+    if student.is_registered_with_schoolpay:
+        return Response({
+            "detail": "Already registered with SchoolPay",
+            "schoolpay_code": student.effective_schoolpay_code,
+            "student_name": student.full_name,
+        })
+
+    result = register_student_with_schoolpay(student)
+    logger.info("SchoolPay registration for admitted student %s: %s", student_id, result.get("success"))
+
+    if not result["success"]:
+        return Response({
+            "error": "SchoolPay registration failed",
+            "details": result.get("error") or result.get("data"),
+            "expected_name": result.get("expected_name"),
+            "gateway_name": result.get("gateway_name"),
+            "payment_code": result.get("payment_code"),
+        }, status=400)
+
+    student.refresh_from_db()
+    return Response({
+        "detail": "Paycode generated successfully",
+        "schoolpay_code": student.effective_schoolpay_code,
+        "student_name": student.full_name,
+        "gateway_name": result.get("gateway_name"),
+    })
 
 
 

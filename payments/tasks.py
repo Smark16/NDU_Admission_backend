@@ -14,3 +14,15 @@ def auto_process_delayed_payments(self):
     ).update(status='FAILED')
 
     return f"{updated_count} payments marked as FAILED"
+
+# delete failed payments
+@shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=10)
+def auto_delete_failed_payments(self):
+    expired_time = timezone.now() - timedelta(minutes=10)
+
+    updated_count = ApplicationPayment.objects.filter(
+        status='FAILED',
+        created_at__lt=expired_time
+    ).delete()
+
+    return f"{updated_count} payments have been deleted"

@@ -41,6 +41,16 @@ class CudApplicationSerializer(serializers.ModelSerializer):
     class Meta:
         model = Application
         fields = '__all__'
+        extra_kwargs = {
+            # Academic result fields are optional — not all applicants have O/A levels
+            'olevel_year':          {'required': False, 'default': 0},
+            'olevel_index_number':  {'required': False, 'allow_blank': True, 'default': ''},
+            'olevel_school':        {'required': False, 'allow_blank': True, 'default': ''},
+            'alevel_year':          {'required': False, 'default': 0},
+            'alevel_index_number':  {'required': False, 'allow_blank': True, 'default': ''},
+            'alevel_school':        {'required': False, 'allow_blank': True, 'default': ''},
+            'alevel_combination':   {'required': False, 'allow_blank': True, 'default': ''},
+        }
 
 # single application
 class SingleApplicationSerializer(serializers.ModelSerializer):
@@ -186,12 +196,20 @@ class AllApplicationsReportSerializer(serializers.ModelSerializer):
 # detail serializer
 class ApplicationDetailSerializer(serializers.ModelSerializer):
     reviewed_by = serializers.CharField(source='reviewed_by.full_name', read_only=True, allow_null=True)
+    revoked_by = serializers.CharField(source='revoked_by.full_name', read_only=True, allow_null=True)
     batch = serializers.CharField(source='batch.name', read_only=True)
+    programs = serializers.SerializerMethodField()
+
+    def get_programs(self, obj):
+        return [{"id": p.id, "name": p.name} for p in obj.programs.all()]
+
     class Meta:
         model = Application
-        fields = ['id', 'first_name', 'last_name', 'date_of_birth', 'gender', 'nationality', 'phone', 'email',
+        fields = ['id', 'first_name', 'last_name','middle_name', 'date_of_birth', 'gender', 'nationality', 'phone', 'email',
                   'batch',"nin", "passport_number","disabled", 'olevel_school', 'olevel_year', 'alevel_school', 'alevel_year', 'address',
-                  'status', 'application_fee_amount','application_fee_paid', 'created_at', 'reviewed_at', 'passport_photo','reviewed_by']
+                  'middle_name', 'next_of_kin_name', 'next_of_kin_contact', 'next_of_kin_relationship', 'revoked_by', 'is_revoked','revocation_reason',
+                  'status', 'application_fee_amount','application_fee_paid', 'created_at', 'reviewed_at', 'passport_photo','reviewed_by',
+                  'programs']
     
 # o level subject
 class OlevelSubjectSerializer(serializers.ModelSerializer):
@@ -280,12 +298,6 @@ class AdmittedStudentSerializer(serializers.ModelSerializer):
     class Meta:
         model = AdmittedStudent
         fields = '__all__'
-        read_only_fields = (
-            'physical_documents_verified',
-            'physical_documents_verified_at',
-            'physical_documents_verified_by',
-            'physical_documents_notes',
-        )
 
 class AdmittedStudentListSerializer(serializers.ModelSerializer):
     name = serializers.CharField(source='application.applicant.get_full_name', read_only=True)
@@ -299,7 +311,6 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
     is_approved = serializers.SerializerMethodField()
     approved_by_name = serializers.SerializerMethodField()
     approved_at = serializers.SerializerMethodField()
-    physical_documents_verified_by_name = serializers.SerializerMethodField()
 
     class Meta:
         model = AdmittedStudent
@@ -308,6 +319,7 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
             'student_id',
             'reg_no',
             'schoolpay_code',
+            'is_registered_with_schoolpay',
             'name',
             'program',
             'faculty',
@@ -317,15 +329,12 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
             'is_registered',
             'application',
             'is_admitted',
+            'admitted_by',
             'status',
             'admission_letter_pdf',
             'is_approved',
             'approved_by_name',
             'approved_at',
-            'physical_documents_verified',
-            'physical_documents_verified_at',
-            'physical_documents_verified_by_name',
-            'physical_documents_notes',
         ]
 
     def get_faculty(self, obj):
@@ -356,16 +365,8 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
     def get_approved_at(self, obj):
         return getattr(obj, "approved_at", None)
 
-    def get_physical_documents_verified_by_name(self, obj):
-        u = getattr(obj, "physical_documents_verified_by", None)
-        if u is None:
-            return None
-        return u.get_full_name() or getattr(u, "username", None)
-    
 # admission detail serializer
 class AdmissionDetailSerializer(serializers.ModelSerializer):
-    physical_documents_verified_by_name = serializers.SerializerMethodField()
-
     class Meta:
         model = AdmittedStudent
         fields = [
@@ -373,6 +374,7 @@ class AdmissionDetailSerializer(serializers.ModelSerializer):
             'student_id',
             'reg_no',
             'schoolpay_code',
+            'is_registered_with_schoolpay',
             'study_mode',
             'admission_notes',
             'admitted_program',
@@ -380,11 +382,6 @@ class AdmissionDetailSerializer(serializers.ModelSerializer):
             'application',
             'is_registered',
             'registration_date',
-            'physical_documents_verified',
-            'physical_documents_verified_at',
-            'physical_documents_verified_by',
-            'physical_documents_verified_by_name',
-            'physical_documents_notes',
         ]
 
     def to_representation(self, instance):
@@ -392,12 +389,6 @@ class AdmissionDetailSerializer(serializers.ModelSerializer):
         response['admitted_program'] = ProgramSerializer(instance.admitted_program).data
         response['admitted_campus'] = CampusSerializer(instance.admitted_campus).data
         return response
-
-    def get_physical_documents_verified_by_name(self, obj):
-        u = obj.physical_documents_verified_by
-        if u is None:
-            return None
-        return u.get_full_name() or u.username
     
 # notification serializers
 class NotificationSerializer(serializers.ModelSerializer):
@@ -498,7 +489,7 @@ class EmailTemplateSerializer(serializers.ModelSerializer):
         from admissions.email_templates import get_template_definition
 
         definition = get_template_definition(obj.key)
-        return definition.get("placeholders", [])
+        return definition.get("placeholders", []) if definition else []
 
 
 class EmailTemplateUpdateSerializer(serializers.ModelSerializer):

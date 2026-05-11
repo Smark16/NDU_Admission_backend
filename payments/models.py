@@ -91,6 +91,7 @@ class FeePlan(models.Model):
         ('application', 'Application fees'),
         ('tuition', 'Tuition'),
         ('general', 'General / service fees'),
+        ('other_schedule', 'Scheduled other fees (year/term milestones)'),
     ]
     PLAN_SCOPE_CHOICES = [
         ('program', 'Program'),
@@ -214,6 +215,18 @@ class FeePlanRule(models.Model):
         null=True,
         blank=True,
         help_text="Optional: term number when this fee becomes due (used with payable_year_of_study).",
+    )
+
+    # Policy milestone for non-semester-linked fees (internship, dissertation, etc.)
+    payable_year_of_study = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        help_text='When set with payable_term_number, fee is due at this curriculum year/term.',
+    )
+    payable_term_number = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        help_text='Term within payable_year_of_study (1-based).',
     )
 
     is_active = models.BooleanField(default=True)

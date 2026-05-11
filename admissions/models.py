@@ -1,4 +1,5 @@
 from django.db import models
+from django.db.models import Q
 from django.core.validators import MinValueValidator, MaxValueValidator
 from django.utils import timezone
 from accounts.models import User, Campus
@@ -96,6 +97,7 @@ class Application(models.Model):
     academic_level = models.ForeignKey(AcademicLevel, on_delete=models.CASCADE)
     # Personal Information
     first_name = models.CharField(max_length=100)
+    title = models.CharField(max_length=100, null=True, blank=True)
     last_name = models.CharField(max_length=100)
     middle_name = models.CharField(max_length=100, blank=True)
     date_of_birth = models.DateField()
@@ -103,26 +105,28 @@ class Application(models.Model):
     nationality = models.CharField(max_length=100)
     phone = models.CharField(max_length=20)
     email = models.EmailField()
-    address = models.TextField(max_length=40, blank=True, null=True)
+    address = models.TextField(max_length=255, blank=True, null=True)
     nin = models.CharField(max_length=20, blank=True, null=True)
     passport_number = models.CharField(max_length=20, blank=True, null=True)
     disabled = models.CharField(max_length=5, null=True, blank=True)
     
     # Next of Kin Information
     next_of_kin_name = models.CharField(max_length=200)
-    next_of_kin_contact = models.CharField(max_length=20)
+    next_of_kin_contact = models.CharField(max_length=25)
     next_of_kin_relationship = models.CharField(max_length=20)
     
     # O-Level Information
-    olevel_year = models.PositiveIntegerField()
-    olevel_index_number = models.CharField(max_length=50)
-    olevel_school = models.CharField(max_length=200)
+    olevel_year = models.PositiveIntegerField(null=True, blank=True)
+    olevel_index_number = models.CharField(max_length=50, null=True, blank=True)
+    olevel_school = models.CharField(max_length=200, null=True, blank=True)
     
-    # A-Level Information
-    alevel_year = models.PositiveIntegerField()
-    alevel_index_number = models.CharField(max_length=50)
-    alevel_school = models.CharField(max_length=200)
-    alevel_combination = models.CharField(max_length=5)
+    # O-Level / A-Level flags (column exists in DB; must be set explicitly on every INSERT)
+    has_olevel = models.BooleanField(default=False)
+    has_alevel = models.BooleanField(default=False)
+    alevel_year = models.PositiveIntegerField(null=True, blank=True)
+    alevel_index_number = models.CharField(max_length=50, null=True, blank=True)
+    alevel_school = models.CharField(max_length=200, null=True, blank=True)
+    alevel_combination = models.CharField(max_length=10, null=True, blank=True)
     
     # Source / audit tracing (direct entry, legacy migration, portal)
     SOURCE_PORTAL = 'portal'
@@ -152,6 +156,7 @@ class Application(models.Model):
     # Application Status
     status = models.CharField(max_length=20, default='draft')
     application_reference = models.CharField(max_length=50, unique=True, blank=True, null=True)
+    school_pay_reference = models.CharField(max_length=100, blank=True, null=True)
     application_fee_paid = models.BooleanField(default=False)
     application_fee_amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     
@@ -159,6 +164,18 @@ class Application(models.Model):
     reviewed_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='reviewed_applications')
     reviewed_at = models.DateTimeField(null=True, blank=True)
     review_notes = models.TextField(blank=True)
+
+    # revocation
+    is_revoked = models.BooleanField(default=False)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    revoked_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="revoked_admissions",
+    )
+    revocation_reason = models.TextField(blank=True, default="")
 
     admission_letter_docx = models.FileField(upload_to="admission_template/", null=True, blank=True)
     admission_letter_pdf = models.FileField(upload_to="admission_template/", null=True, blank=True)
@@ -256,10 +273,24 @@ class AdditionalQualifications(models.Model):
 
 class AdmittedStudent(models.Model):
     application = models.OneToOneField(Application, on_delete=models.CASCADE, related_name='admission')
-    student_id = models.CharField(max_length=50, unique=True)
+    student_user = models.OneToOneField(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='student_admission')
+    student_id = models.CharField(max_length=50, unique=True, null=True, blank=True)
     study_mode = models.CharField(max_length=30)
     reg_no = models.CharField(max_length=100, unique=True)
-    schoolpay_code = models.CharField(max_length=100, unique=True, null=True, blank=True, db_index=True)
+    schoolpay_code = models.CharField(
+        max_length=100,
+        blank=True,
+        null=True,
+        default='',
+        help_text=(
+            'Official SchoolPay / PRN shown to the student. Left blank at admission to default to reg_no on save; '
+            'finance may set a different value if the gateway uses another number.'
+        ),
+    )
+    is_registered_with_schoolpay = models.BooleanField(
+        default=False,
+        help_text="True after the student has been synced with the SchoolPay gateway.",
+    )
     admitted_program = models.ForeignKey(Program, on_delete=models.CASCADE)
     admitted_batch = models.ForeignKey(Batch, on_delete=models.CASCADE, related_name='admitted_students')
     admitted_campus = models.ForeignKey(Campus, on_delete=models.CASCADE, related_name='admitted_students')
@@ -275,24 +306,23 @@ class AdmittedStudent(models.Model):
     registration_date = models.DateTimeField(null=True, blank=True)
 
     # Physical document verification (original hard-copy check — separate from registration)
-    physical_documents_verified = models.BooleanField(default=False)
-    physical_documents_verified_at = models.DateTimeField(null=True, blank=True)
-    physical_documents_verified_by = models.ForeignKey(
-        User,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="physical_document_verifications",
-    )
-    physical_documents_notes = models.TextField(
-        blank=True,
-        help_text="Staff notes when documents were verified at the desk",
-    )
+    # physical_documents_verified = models.BooleanField(default=False)
+    # physical_documents_verified_at = models.DateTimeField(null=True, blank=True)
+    # physical_documents_verified_by = models.ForeignKey(
+    #     User,
+    #     on_delete=models.SET_NULL,
+    #     null=True,
+    #     blank=True,
+    #     related_name="physical_document_verifications",
+    # )
+    # physical_documents_notes = models.TextField(
+    #     blank=True,
+    #     help_text="Staff notes when documents were verified at the desk",
+    # )
     
     # Notes
     admission_notes = models.TextField(blank=True, help_text="Notes about the admission")
     admitted_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='admitted_students')
-    student_user = models.OneToOneField(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='student_admission')
     
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -303,6 +333,14 @@ class AdmittedStudent(models.Model):
         verbose_name_plural = "Admitted Students"
         permissions = [
             ("verify_physical_documents", "Can verify physical admission documents"),
+            ("revoke_admission", "Can revoke admitted students"),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["schoolpay_code"],
+                condition=Q(schoolpay_code__isnull=False) & ~Q(schoolpay_code=""),
+                name="unique_admittedstudent_schoolpay_code",
+            ),
         ]
  
         indexes = [
@@ -310,11 +348,23 @@ class AdmittedStudent(models.Model):
             models.Index(fields=['is_registered']),
             models.Index(fields=['admitted_batch', 'is_admitted']),
             models.Index(fields=['is_admitted']),
-            models.Index(fields=['physical_documents_verified']),
+            # models.Index(fields=['physical_documents_verified']),
         ]
     
     def __str__(self):
         return f"{self.application.full_name} - {self.student_id}"
+
+    def save(self, *args, **kwargs):
+        if not self.is_registered_with_schoolpay and not (self.schoolpay_code or "").strip():
+            self.schoolpay_code = None
+        super().save(*args, **kwargs)
+
+    @property
+    def effective_schoolpay_code(self):
+        gateway_code = (self.schoolpay_code or "").strip()
+        if self.is_registered_with_schoolpay and gateway_code:
+            return gateway_code
+        return (self.reg_no or "").strip()
     
     @property
     def full_name(self):
@@ -453,8 +503,6 @@ class EmailTemplate(models.Model):
 
     def __str__(self):
         return f"{self.name} ({self.key})"
-
-
 
 
 

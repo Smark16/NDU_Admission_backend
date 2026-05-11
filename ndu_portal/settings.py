@@ -20,7 +20,7 @@ ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=[
     'applications.ndu.ac.ug',
     'applications-admin.ndu.ac.ug',
     '.ndu.ac.ug',           
-    '7e39-41-75-175-21.ngrok-free.app'
+    '794e-41-75-173-12.ngrok-free.app'
 ])
 # Application definition
 DJANGO_APPS = [
@@ -55,9 +55,9 @@ LOCAL_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    "corsheaders.middleware.CorsMiddleware",
     'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
-    "corsheaders.middleware.CorsMiddleware",
     'django.middleware.common.CommonMiddleware',
     # 'django.middleware.csrf.CsrfViewMiddleware',
     'easyaudit.middleware.easyaudit.EasyAuditMiddleware',
@@ -208,7 +208,11 @@ CELERY_BEAT_SCHEDULE = {
     },
     "process-removing-of-drafts" : {
         "task": "Drafts.tasks.auto_process_drafts_deletion",
-        "schedule": crontab(minute="*/1"),
+        "schedule": crontab(minute="*/5"),
+    },
+    "process_failed_payments" : {
+       "task": "payments.tasks.auto_delete_failed_payments",
+       "schedule": crontab(minute="*/5"),
     }
 }
 
@@ -222,6 +226,9 @@ SENDGRID_API_KEY=env('SENDGRID_API_KEY')
 # login url
 LOGIN_URL=env('LOGIN_URL')
 
+# erp frontend url
+ERP_FRONTEND_URL=env('ERP_FRONTEND_URL')
+
 # backend url
 BACKEND_URL=env('BACKEND_URL')
 
@@ -234,24 +241,24 @@ CSRF_TRUSTED_ORIGINS = [
     'https://applications.ndu.ac.ug',
     'https://applications-admin.ndu.ac.ug',
     'http://172.17.31.147',
-    "https://admissions.ndu.ac.ug"
+    "https://admissions.ndu.ac.ug",
+    "https://erp.ndejje.ndu.ac.ug",
 ]
+
+# CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOW_CREDENTIALS = True
 
 CORS_ALLOWED_ORIGINS = [
-   'http://localhost:5173',
-   'http://localhost:5174',
-   'http://localhost:3000',
-   'http://localhost:3001',
-   'http://127.0.0.1:3000',
-   'http://127.0.0.1:3001',
-   'https://applications.ndu.ac.ug',
-   'https://applications-admin.ndu.ac.ug',
-   'https://admissions.ndu.ac.ug',
-   'http://137.63.139.78',
+    "https://applications.ndu.ac.ug",
+    "https://applications-admin.ndu.ac.ug",
+    "http://applications.ndu.ac.ug",
+    "http://applications-admin.ndu.ac.ug",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "https://admissions.ndu.ac.ug",
+    "http://localhost:3001",
+    "https://erp.ndejje.ndu.ac.ug",
 ]
-
-CORS_ALLOW_CREDENTIALS = True
-CORS_ALLOW_ALL_ORIGINS = False
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [

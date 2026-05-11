@@ -1,4 +1,5 @@
 from accounts.models import Campus
+from accounts.erp_drf_permissions import CanViewAdmissionQueues
 from .models import *
 from rest_framework.views import APIView
 from django.shortcuts import get_object_or_404
@@ -17,22 +18,24 @@ from django.db import transaction
 from django.db.models.deletion import ProtectedError
 from django.db.utils import OperationalError
 # from .utils.validate_photo import validate_passport_photo
-from .tasks import celery_send_application_email, celery_application_notification, celery_admission_email, celery_admission_update
+from .tasks import celery_send_application_email, celery_application_notification, celery_admission_email, celery_admission_update, celery_create_student_account
 from accounts.tasks import celery_send_account_email
+from .utils.trigger_background_tasks import trigger_background_tasks
 from payments.models import ApplicationPayment
+from Drafts.models import DraftApplication
 from django.db.models import Q
 import time
 
 import logging
 import json
-import uuid
 
-# WeasyPrint is imported lazily inside DownloadAdmissionPDF.get — a top-level import
-# fails on Windows without GTK/Pango (libgobject), which breaks the whole URLconf.
 from django.shortcuts import get_object_or_404
 from django.http import HttpResponse
 from django.template.loader import render_to_string
 from datetime import date
+
+from urllib.parse import quote
+from .utils.reg_no import generate_reg_no
 
 # caching
 from django.core.cache import cache
@@ -44,153 +47,212 @@ logger = logging.getLogger(__name__)
 @permission_classes([IsAuthenticated])
 def create_applications(request):
     MAX_FILE_SIZE = settings.FILE_UPLOAD_MAX_MEMORY_SIZE
-    
+
+    # === File size validation ===
     for file_obj in request.FILES.getlist('documents', []):
         if file_obj.size > MAX_FILE_SIZE:
             return Response(
-                {"detail": f"Each document must be ≤ 10 MB. '{file_obj.name}' is too large ({file_obj.size / (1024*1024):.1f} MB)."},
-                    status=400
-                ) 
-                      
+                {"detail": f"Each document must be ≤ 50 MB. '{file_obj.name}' is too large ({file_obj.size / (1024*1024):.1f} MB)."},
+                status=400
+            )
+
     if 'passport_photo' in request.FILES:
-            photo = request.FILES['passport_photo']
-            if photo.size > MAX_FILE_SIZE:
-                return Response(
-                    {"detail": f"Passport photo must be ≤ 10 MB. '{photo.name}' is too large ({photo.size / (1024*1024):.1f} MB)."},
-                        status=400
-                )          
-            
-    # SQLite can throw "database is locked" under concurrent writes (e.g., autosave draft + submit).
-    # Retry briefly to avoid blocking applicants.
-    for attempt in range(4):
+        photo = request.FILES['passport_photo']
+        if photo.size > MAX_FILE_SIZE:   # Note: You may want a smaller limit for photos (e.g. 10MB)
+            return Response(
+                {"detail": f"Passport photo must be ≤ 10 MB. '{photo.name}' is too large ({photo.size / (1024*1024):.1f} MB)."},
+                status=400
+            )
+
+    # === Validate serializer ===
+    serializer = CudApplicationSerializer(data=request.data, context={"request": request}, partial=True)
+    serializer.is_valid(raise_exception=True)
+    programs_data = serializer.validated_data.pop('programs', None)
+
+    # === Parse & Validate O-Level and A-Level ONCE ===
+    olevel_validated = []
+    if request.data.get('has_olevel'):
         try:
-            with transaction.atomic():
-                data = request.data.copy()
-                files = request.FILES
+            results = json.loads(request.data.get("olevel_results", "[]"))
+            _seen = set()
+            for item in results:
+                sid = int(item["subject"])
+                if sid in _seen:
+                    return Response({"detail": "Duplicate O-Level subject"}, status=400)
+                _seen.add(sid)
+                subject = OLevelSubject.objects.get(id=sid)
+                olevel_validated.append({"subject": subject, "grade": item["grade"].upper()})
+        except (ValueError, TypeError, KeyError, json.JSONDecodeError):
+            return Response({"detail": "Invalid O-Level results format"}, status=400)
+        except OLevelSubject.DoesNotExist:
+            return Response({"detail": "Invalid O-Level subject ID"}, status=400)
 
-                # If frontend doesn't send batch (intake removed), default to active batch.
-                # This keeps submissions working while still associating the application to an intake.
-                if not data.get("batch") or str(data.get("batch")).lower() in ("", "none", "null", "undefined"):
-                    active_batch = Batch.objects.filter(is_active=True).order_by("-created_at").first()
-                    if not active_batch:
-                        return Response({"detail": "No active application batch found"}, status=400)
-                    data["batch"] = active_batch.id
+    alevel_validated = []
+    if request.data.get('has_alevel'):
+        try:
+            results = json.loads(request.data.get("alevel_results", "[]"))
+            _seen = set()
+            for item in results:
+                sid = int(item["subject"])
+                if sid in _seen:
+                    return Response({"detail": "Duplicate A-Level subject"}, status=400)
+                _seen.add(sid)
+                subject = ALevelSubject.objects.get(id=sid)
+                alevel_validated.append({"subject": subject, "grade": item["grade"].upper()})
+        except (ValueError, TypeError, KeyError, json.JSONDecodeError):
+            return Response({"detail": "Invalid A-Level results format"}, status=400)
+        except ALevelSubject.DoesNotExist:
+            return Response({"detail": "Invalid A-Level subject ID"}, status=400)
 
-            # ext_ref = request.data.get("external_reference")
+    # === Additional qualifications ===
+    additional_qualifications = []
+    try:
+        additional_qual_str = request.data.get("additional_qualifications", "[]")
+        if additional_qual_str:
+            additional_qualifications = json.loads(additional_qual_str)
+    except (json.JSONDecodeError, TypeError):
+        additional_qualifications = []
 
-            # if not ext_ref:
-            #     return Response(
-            #         {"detail": "Payment reference is required"},
-            #         status=400
-            #     )
+    with transaction.atomic():
+        try:
+            files = request.FILES
+            ext_ref = request.data.get("external_reference")
+            payment = None
 
-            # try:
-            #     payment = ApplicationPayment.objects.select_for_update().get(
-            #         external_reference=ext_ref,
-            #         user=request.user,
-            #         status="PAID",
-            #         application__isnull=True 
-            #     )
-            # except ApplicationPayment.DoesNotExist:
-            #     return Response(
-            #         {"detail": "Invalid, unpaid, or already used payment reference"},
-            #         status=400
-            #     )
+            # === Idempotency check for payment ===
+            if ext_ref:
+                try:
+                    payment = ApplicationPayment.objects.select_for_update().get(
+                        external_reference=ext_ref,
+                        user=request.user,
+                        status="PAID",
+                    )
+                except ApplicationPayment.DoesNotExist:
+                    return Response({"detail": "Invalid or unpaid payment reference"}, status=400)
 
-            # additional qualifications
-            additional_qualifications = []
-            try:
-                additional_qual_str = request.data.get("additional_qualifications", "[]")
-                if additional_qual_str:
-                    additional_qualifications = json.loads(additional_qual_str)
-            except (json.JSONDecodeError, TypeError):
-                additional_qualifications = []
+                if payment.application_id is not None:
+                    logger.info(
+                        "Idempotent submit replay accepted for user=%s ext_ref=%s app_id=%s",
+                        request.user.id, ext_ref, payment.application_id
+                    )
+                    return Response({
+                        "detail": "Application already submitted successfully.",
+                        "application_id": payment.application_id,
+                        "idempotent_replay": True
+                    }, status=status.HTTP_200_OK)
 
-            # Extract everything
-            doc_files = files.getlist("documents")
-            doc_types = request.data.getlist("document_types", [])
-            passport_photo = files.get("passport_photo")
-            olevel_results = json.loads(request.data.get("olevel_results", "[]"))
-            alevel_results = json.loads(request.data.get("alevel_results", "[]"))
-
-            # Validate main application data
-            serializer = CudApplicationSerializer(data=data, context={"request": request})
-            serializer.is_valid(raise_exception=True)
-
-            # remove M-2-M data
-            programs_data = serializer.validated_data.pop('programs', None)
-
+            # === Create Application object ===
             application = Application(**serializer.validated_data)
             application.applicant = request.user
             application.status = "submitted"
-            # application.application_fee_paid = True
-            # application.application_fee_amount = payment.amount
-            # application.application_reference = payment.external_reference
+            application.has_olevel = str(request.data.get('has_olevel', '')).lower() in ('true', '1', 'yes')
+            application.has_alevel = str(request.data.get('has_alevel', '')).lower() in ('true', '1', 'yes')
 
-            if passport_photo:
-                # validate_passport_photo(passport_photo)
-                application.passport_photo = passport_photo
+            if payment:
+                application.application_fee_paid = True
+                application.application_fee_amount = payment.amount
+                application.application_reference = payment.external_reference
 
-            # Validate & prepare all child objects
+            # if passport_photo := files.get("passport_photo"):
+            #      application.passport_photo = passport_photo
 
-            # === O-LEVEL ===
-            olevel_results = json.loads(request.data.get("olevel_results", "[]"))
-            olevel_bulk = []
-            seen = set()
+            # if 'passport_photo' in request.FILES:
+            #     application.passport_photo = request.FILES['passport_photo']
+            
+            draft = None
+            try:
+                draft = DraftApplication.objects.get(
+                    applicant=request.user,
+                    batch_id=request.data.get('batch')
+                )
+            except DraftApplication.DoesNotExist:
+                draft = None
 
-            for item in olevel_results:
+            
+            if draft and draft.passport_photo:
                 try:
-                    sid = int(item["subject"])          # ← Convert to integer
-                except (ValueError, TypeError, KeyError):
-                    return Response({"detail": f"Invalid O-Level subject ID: {item.get('subject')}"}, status=400)
+                    original_name = draft.passport_photo.name.split('/')[-1]
+                    application.passport_photo.save(
+                        original_name,
+                        draft.passport_photo.file,
+                        save=False
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to copy passport photo from draft: {e}")
+                    return Response({"detail": "Failed to process passport photo"}, status=400)
 
-                if sid in seen:
-                    return Response({"detail": "Duplicate O-Level subject"}, status=400)
-                seen.add(sid)
+            elif 'passport_photo' in request.FILES:
+                application.passport_photo = request.FILES['passport_photo']
 
-                # Get subject by ID
+            else:
+                return Response({"detail": "Passport photo is required"}, status=400)
+
+            # Save the main application first (so it gets an ID)
+            application.save()
+
+            # Link payment to application
+            if payment:
+                payment.application = application
+                payment.save(update_fields=["application"])
+
+            # === Programs (Many-to-Many) ===
+            if programs_data:
+                application.programs.set(programs_data)
+            
+            # manage draft documents
+            if not request.FILES.getlist('documents') and draft:
                 try:
-                    subject = OLevelSubject.objects.get(id=sid)
-                except OLevelSubject.DoesNotExist:
-                    return Response({"detail": f"Invalid O-Level subject ID: {sid}"}, status=400)
+                    if draft.olevel_document:
+                        ApplicationDocument.objects.create(
+                            application=application,
+                            file=draft.olevel_document,
+                            name=draft.olevel_document.name.split('/')[-1],
+                            document_type="OLevel"
+                        )
 
-                olevel_bulk.append(
+                    if draft.alevel_document:
+                        ApplicationDocument.objects.create(
+                            application=application,
+                            file=draft.alevel_document,
+                            name=draft.alevel_document.name.split('/')[-1],
+                            document_type="ALevel"
+                        )
+
+                    if draft.other_documents:
+                        ApplicationDocument.objects.create(
+                            application=application,
+                            file=draft.other_documents,
+                            name=draft.other_documents.name.split('/')[-1],
+                            document_type="Others"
+                        )
+
+                except Exception as copy_error:
+                    logger.warning(f"Failed to copy some documents from draft: {copy_error}")
+                    # Do not fail the whole submission, just log
+
+            # === Bulk create O-Level results ===
+            if olevel_validated:
+                OLevelResult.objects.bulk_create([
                     OLevelResult(
-                        application=application, 
-                        subject=subject, 
-                        grade=item["grade"].upper()
-                    )
-                )
+                        application=application,
+                        subject=d["subject"],
+                        grade=d["grade"]
+                    ) for d in olevel_validated
+                ], batch_size=50)
 
-            # === A-LEVEL ===
-            alevel_results = json.loads(request.data.get("alevel_results", "[]"))
-            alevel_bulk = []
-            seen = set()
-
-            for item in alevel_results:
-                try:
-                    sid = int(item["subject"])          # ← Convert to integer
-                except (ValueError, TypeError, KeyError):
-                    return Response({"detail": f"Invalid A-Level subject ID: {item.get('subject')}"}, status=400)
-
-                if sid in seen:
-                    return Response({"detail": "Duplicate A-Level subject"}, status=400)
-                seen.add(sid)
-
-                try:
-                    subject = ALevelSubject.objects.get(id=sid)
-                except ALevelSubject.DoesNotExist:
-                    return Response({"detail": f"Invalid A-Level subject ID: {sid}"}, status=400)
-
-                alevel_bulk.append(
+            # === Bulk create A-Level results ===
+            if alevel_validated:
+                ALevelResult.objects.bulk_create([
                     ALevelResult(
-                        application=application, 
-                        subject=subject, 
-                        grade=item["grade"].upper()
-                    )
-                )
+                        application=application,
+                        subject=d["subject"],
+                        grade=d["grade"]
+                    ) for d in alevel_validated
+                ], batch_size=50)
 
             # === Documents ===
+            doc_files = files.getlist("documents")
+            doc_types = request.data.getlist("document_types", [])
             document_objs = []
             for i, file in enumerate(doc_files):
                 doc_type = doc_types[i] if i < len(doc_types) else "Others"
@@ -201,24 +263,14 @@ def create_applications(request):
                     document_type=doc_type,
                 ))
 
-            # NOW SAVE EVERYTHING
-            application.save() 
-            # payment.application = application
-            # payment.save(update_fields=["application"]) 
+            if document_objs:
+                ApplicationDocument.objects.bulk_create(document_objs, batch_size=50)
 
-            # save M-2-M field
-            if programs_data:
-               application.programs.set(programs_data) 
-
-            OLevelResult.objects.bulk_create(olevel_bulk, batch_size=50)
-            ALevelResult.objects.bulk_create(alevel_bulk, batch_size=50)
-            ApplicationDocument.objects.bulk_create(document_objs, batch_size=50)
-
-            # === NEW: Save Multiple Additional Qualifications ===
+            # === Additional Qualifications ===
             if additional_qualifications:
                 qual_bulk = []
                 for qual in additional_qualifications:
-                    if qual.get('institution'):  # Only save if institution is provided
+                    if qual.get('institution'):
                         qual_bulk.append(AdditionalQualifications(
                             application=application,
                             additional_qualification_institution=qual.get('institution', ''),
@@ -229,96 +281,53 @@ def create_applications(request):
                 if qual_bulk:
                     AdditionalQualifications.objects.bulk_create(qual_bulk, batch_size=20)
 
-            # === Success: Send email & notification ===
-            # Best-effort: don't block submission if broker/Redis is down
-            try:
-                celery_send_application_email.delay(application.id)
-            except Exception as e:
-                # Some broker exceptions can have a cyclic exception chain; log a safe string.
-                logger.warning(
-                    "Failed to queue application email task: %s",
-                    f"{e.__class__.__name__}: {e}",
-                )
-            try:
-                celery_application_notification.delay(
-                    request.user.id,
-                    "Application Submitted",
-                    "Your application was successfully submitted",
-                )
-            except Exception as e:
-                logger.warning(
-                    "Failed to queue application notification task: %s",
-                    f"{e.__class__.__name__}: {e}",
-                )
+            # === Queue background tasks after successful commit ===
+            def _queue_submission_tasks():
+                try:
+                    celery_send_application_email.delay(application.id)
+                    celery_application_notification.delay(
+                        request.user.id,
+                        "Application Submitted",
+                        "Your application was successfully submitted"
+                    )
+                except Exception as task_error:
+                    logger.exception(
+                        "Application %s saved but post-submit tasks failed: %s",
+                        application.id,
+                        task_error
+                    )
+
+            transaction.on_commit(_queue_submission_tasks)
 
             return Response({
-                "message": "Application submitted successfully!",
+                "detail": "Application submitted successfully!",
                 "application_id": application.id,
             }, status=status.HTTP_201_CREATED)
 
-        except ValueError as e:
-            return Response({"detail": str(e)}, status=400)
-        except OperationalError as e:
-            if "database is locked" in str(e).lower() and attempt < 3:
-                time.sleep(0.4 * (attempt + 1))
-                continue
-            return Response({"detail": str(e)}, status=500)
         except Exception as e:
-            return Response({"detail": str(e)}, status=500)
-        
-# list applications
-class ListApplications(generics.ListAPIView):
-    """
-    Returns all applications except drafts, ordered newest first.
-    Includes submitted, under_review, accepted, rejected, admitted — everything
-    an admin needs to act on.  Drafts are excluded because they have no
-    submitted data worth reviewing yet.
-    """
-    serializer_class = ListApplicationsSerializer
-    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+            logger.error("Application creation failed: %s", str(e), exc_info=True)
+            return Response({"detail": "An error occurred while processing your application."}, status=500)
 
-    def get_queryset(self):
-        qs = (
-            Application.objects.exclude(status="draft")
-            .filter(is_direct_entry=False)
-            .order_by("-created_at")
-        )
-        # Optional query-param filters so the frontend can narrow server-side
-        status_filter = self.request.query_params.get('status')
-        fee_paid = self.request.query_params.get('fee_paid')
-        batch_id = self.request.query_params.get('batch')
-        if status_filter:
-            qs = qs.filter(status=status_filter)
-        if fee_paid is not None:
-            qs = qs.filter(application_fee_paid=(fee_paid.lower() == 'true'))
-        if batch_id:
-            qs = qs.filter(batch_id=batch_id)
-        return qs
-
-
-@api_view(["POST"])
+# ===============================Direct entry applications===========================================
+@api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def create_direct_applications(request):
-    """Multi-step admin direct application (matches admission portal v2)."""
     MAX_FILE_SIZE = settings.FILE_UPLOAD_MAX_MEMORY_SIZE
 
-    for file_obj in request.FILES.getlist("documents", []):
+    # === FILE SIZE VALIDATION ===
+    for file_obj in request.FILES.getlist('documents', []):
         if file_obj.size > MAX_FILE_SIZE:
             return Response(
-                {
-                    "detail": f"Each document must be ≤ 50 MB. '{file_obj.name}' is too large ({file_obj.size / (1024*1024):.1f} MB)."
-                },
-                status=400,
+                {"detail": f"Each document must be ≤ 50 MB. '{file_obj.name}' is too large ({file_obj.size / (1024*1024):.1f} MB)."},
+                status=400
             )
 
-    if "passport_photo" in request.FILES:
-        photo = request.FILES["passport_photo"]
-        if photo.size > MAX_FILE_SIZE:
+    if 'passport_photo' in request.FILES:
+        photo = request.FILES['passport_photo']
+        if photo.size > MAX_FILE_SIZE:  # You can make this smaller (e.g. 10MB) if needed
             return Response(
-                {
-                    "detail": f"Passport photo must be ≤ 10 MB. '{photo.name}' is too large ({photo.size / (1024*1024):.1f} MB)."
-                },
-                status=400,
+                {"detail": f"Passport photo must be ≤ 10 MB. '{photo.name}' is too large ({photo.size / (1024*1024):.1f} MB)."},
+                status=400
             )
 
     with transaction.atomic():
@@ -326,6 +335,7 @@ def create_direct_applications(request):
             data = request.data.copy()
             files = request.FILES
 
+            # === PARSE ADDITIONAL QUALIFICATIONS ===
             additional_qualifications = []
             try:
                 additional_qual_str = request.data.get("additional_qualifications", "[]")
@@ -334,95 +344,96 @@ def create_direct_applications(request):
             except (json.JSONDecodeError, TypeError):
                 additional_qualifications = []
 
+            # === PARSE RESULTS ONCE ===
             olevel_results = json.loads(request.data.get("olevel_results", "[]"))
             alevel_results = json.loads(request.data.get("alevel_results", "[]"))
 
-            data.pop("applicant", None)
-
+            # === VALIDATE MAIN APPLICATION DATA ===
             serializer = CudApplicationSerializer(data=data, context={"request": request})
             serializer.is_valid(raise_exception=True)
 
-            fee_paid = serializer.validated_data.get("application_fee_paid", False)
-            school_pay_ref = (serializer.validated_data.get("school_pay_reference") or "").strip()
+            # Direct-entry fallback: if no school pay reference is supplied,
+            # proceed as unpaid so admins can capture applicants quickly.
+            fee_paid = bool(serializer.validated_data.get('application_fee_paid', False))
+            school_pay_ref = (serializer.validated_data.get('school_pay_reference') or '').strip()
             if fee_paid and not school_pay_ref:
-                return Response(
-                    {"detail": "school_pay_reference is required when application_fee_paid is true."},
-                    status=400,
-                )
+                fee_paid = False
 
-            programs_data = serializer.validated_data.pop("programs", None)
-            serializer.validated_data.pop("entered_by", None)
+            # Remove fields we don't want the client to control
+            programs_data = serializer.validated_data.pop('programs', None)
+            serializer.validated_data.pop('entered_by', None)
 
-            email = data.get("email", "").strip().lower()
+            # === HANDLE USER ACCOUNT (Prevent duplicate applications) ===
+            email = data.get('email', '').strip().lower()
             if not email:
                 return Response({"detail": "Email is required"}, status=400)
 
+            # Check if user already has an application for this batch
             existing_application = Application.objects.filter(
                 applicant__email=email,
-                batch=serializer.validated_data.get("batch"),
+                batch=serializer.validated_data.get('batch')
             ).first()
 
             if existing_application:
-                return Response(
-                    {
-                        "detail": "An application for this email and batch already exists.",
-                        "application_id": existing_application.id,
-                    },
-                    status=400,
-                )
+                return Response({
+                    "detail": "An application for this email and batch already exists.",
+                    "application_id": existing_application.id
+                }, status=400)
 
-            account_password = "applicant@12345"
+            # Get or create user
+            account_password = 'applicant@12345'
             is_new_account = False
 
-            user = User.objects.filter(email=email).first()
+            # Reuse existing account by either email or username to avoid unique collisions.
+            user = User.objects.filter(
+                Q(email__iexact=email) | Q(username__iexact=email)
+            ).first()
             if not user:
-                base_username = email.split("@")[0]
-                username = base_username
-                counter = 1
-                while User.objects.filter(username=username).exists():
-                    username = f"{base_username}_{counter}"
-                    counter += 1
-
-                user = User.objects.create_user(
-                    username=username,
+                # Create new user
+                user = User.objects.create(
                     email=email,
-                    password=account_password,
-                    first_name=data.get("first_name", ""),
-                    last_name=data.get("last_name", ""),
-                    phone=data.get("phone", ""),
+                    first_name=data.get('first_name', ''),
+                    last_name=data.get('last_name', ''),
+                    phone=data.get('phone', ''),
+                    username=email,
                     is_applicant=True,
-                    must_change_password=True,
                 )
-                is_new_account = True
 
+                user.set_password(account_password)
+                user.save()
+                is_new_account = True
+            else:
+                return Response({
+                    "detail": "An account with this email already exists.",  
+                }, status=400)
+
+            # === CREATE APPLICATION ===
             application = Application(**serializer.validated_data)
             application.applicant = user
             application.status = "submitted"
             application.entered_by = request.user
             application.application_fee_paid = True
             application.is_direct_entry = True
-            application.source = Application.SOURCE_DIRECT
 
             if passport_photo := files.get("passport_photo"):
                 application.passport_photo = passport_photo
 
             application.save()
 
+            # === SAVE PROGRAMS (M2M) ===
             if programs_data:
                 application.programs.set(programs_data)
 
+            # === BUILD AND SAVE O-LEVEL RESULTS ===
             olevel_bulk = []
-            has_olevel = str(request.data.get("has_olevel", "")).lower() in ("true", "1", "yes")
+            has_olevel = str(request.data.get('has_olevel', '')).lower() in ('true', '1', 'yes')
             if has_olevel:
                 seen = set()
                 for item in olevel_results:
                     try:
                         sid = int(item["subject"])
                     except (ValueError, TypeError, KeyError):
-                        return Response(
-                            {"detail": f"Invalid O-Level subject ID: {item.get('subject')}"},
-                            status=400,
-                        )
+                        return Response({"detail": f"Invalid O-Level subject ID: {item.get('subject')}"}, status=400)
 
                     if sid in seen:
                         return Response({"detail": "Duplicate O-Level subject"}, status=400)
@@ -437,22 +448,20 @@ def create_direct_applications(request):
                         OLevelResult(
                             application=application,
                             subject=subject,
-                            grade=item["grade"].upper(),
+                            grade=item["grade"].upper()
                         )
                     )
 
+            # === BUILD AND SAVE A-LEVEL RESULTS ===
             alevel_bulk = []
-            has_alevel = str(request.data.get("has_alevel", "")).lower() in ("true", "1", "yes")
+            has_alevel = str(request.data.get('has_alevel', '')).lower() in ('true', '1', 'yes')
             if has_alevel:
                 seen = set()
                 for item in alevel_results:
                     try:
                         sid = int(item["subject"])
                     except (ValueError, TypeError, KeyError):
-                        return Response(
-                            {"detail": f"Invalid A-Level subject ID: {item.get('subject')}"},
-                            status=400,
-                        )
+                        return Response({"detail": f"Invalid A-Level subject ID: {item.get('subject')}"}, status=400)
 
                     if sid in seen:
                         return Response({"detail": "Duplicate A-Level subject"}, status=400)
@@ -467,24 +476,24 @@ def create_direct_applications(request):
                         ALevelResult(
                             application=application,
                             subject=subject,
-                            grade=item["grade"].upper(),
+                            grade=item["grade"].upper()
                         )
                     )
 
+            # === SAVE DOCUMENTS ===
             doc_files = files.getlist("documents")
             doc_types = request.data.getlist("document_types", [])
             document_objs = []
             for i, file in enumerate(doc_files):
                 doc_type = doc_types[i] if i < len(doc_types) else "Others"
-                document_objs.append(
-                    ApplicationDocument(
-                        application=application,
-                        file=file,
-                        name=(file.name.split(".")[0] or "document")[:25],
-                        document_type=doc_type,
-                    )
-                )
+                document_objs.append(ApplicationDocument(
+                    application=application,
+                    file=file,
+                    name=file.name.split('.')[0][:50],
+                    document_type=doc_type,
+                ))
 
+            # Bulk create everything
             if olevel_bulk:
                 OLevelResult.objects.bulk_create(olevel_bulk, batch_size=50)
             if alevel_bulk:
@@ -492,32 +501,29 @@ def create_direct_applications(request):
             if document_objs:
                 ApplicationDocument.objects.bulk_create(document_objs, batch_size=50)
 
+            # === SAVE ADDITIONAL QUALIFICATIONS ===
             if additional_qualifications:
                 qual_bulk = []
                 for qual in additional_qualifications:
-                    if qual.get("institution"):
-                        qual_bulk.append(
-                            AdditionalQualifications(
-                                application=application,
-                                additional_qualification_institution=qual.get("institution", ""),
-                                additional_qualification_type=qual.get("type", ""),
-                                additional_qualification_year=qual.get("year", ""),
-                                class_of_award=qual.get("class_of_award", ""),
-                            )
-                        )
+                    if qual.get('institution'):
+                        qual_bulk.append(AdditionalQualifications(
+                            application=application,
+                            additional_qualification_institution=qual.get('institution', ''),
+                            additional_qualification_type=qual.get('type', ''),
+                            additional_qualification_year=qual.get('year', ''),
+                            class_of_award=qual.get('class_of_award', '')
+                        ))
                 if qual_bulk:
                     AdditionalQualifications.objects.bulk_create(qual_bulk, batch_size=20)
 
+            # === SEND WELCOME EMAIL FOR NEW ACCOUNTS ===
             if is_new_account:
                 celery_send_account_email.delay(user.id, account_password)
 
-            return Response(
-                {
-                    "message": "Application submitted successfully!",
-                    "application_id": application.id,
-                },
-                status=status.HTTP_201_CREATED,
-            )
+            return Response({
+                "message": "Application submitted successfully!",
+                "application_id": application.id,
+            }, status=status.HTTP_201_CREATED)
 
         except DRFValidationError as e:
             return Response({"detail": e.detail}, status=400)
@@ -525,34 +531,53 @@ def create_direct_applications(request):
             return Response({"detail": str(e)}, status=400)
         except Exception as e:
             logger.error("Direct application creation failed: %s", str(e), exc_info=True)
-            return Response(
-                {"detail": "An error occurred while processing your application."},
-                status=500,
-            )
+            return Response({"detail": "An error occurred while processing your application."}, status=500)
+        
+# list applications
+class ListApplications(generics.ListAPIView):
+    serializer_class = ListApplicationsSerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
+    def get_queryset(self):
+        qs = Application.objects.filter(
+            ~Q(status__in=['draft', 'admitted', 'Admitted', 'rejected']),
+            is_direct_entry=False
+        ).order_by('created_at')
+
+        # Optional query-param filters so the frontend can narrow server-side
+        status_filter = self.request.query_params.get('status')
+        fee_paid = self.request.query_params.get('fee_paid')
+        batch_id = self.request.query_params.get('batch')
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+        if fee_paid is not None:
+            qs = qs.filter(application_fee_paid=(fee_paid.lower() == 'true'))
+        if batch_id:
+            qs = qs.filter(batch_id=batch_id)
+        return qs
 
 class AllApplicationsReport(generics.ListAPIView):
     serializer_class = AllApplicationsReportSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
     def get_queryset(self):
-        return (
-            Application.objects.select_related("academic_level", "batch", "campus", "entered_by")
-            .prefetch_related("programs", "programs__faculty")
-            .order_by("-created_at")
-        )
 
+        return Application.objects.select_related(
+            'academic_level', 'batch', 'campus', 'entered_by'
+        ).prefetch_related('programs', 'programs__faculty').filter(
+            ~Q(status__in=['draft', 'Admitted', 'rejected']),
+        ).order_by('created_at')
 
 class ListDirectEntryApplications(generics.ListAPIView):
     queryset = (
         Application.objects.filter(is_direct_entry=True)
         .select_related("academic_level", "batch", "campus", "entered_by")
         .prefetch_related("programs", "programs__faculty")
+        .filter(~Q(status__in=["draft", "Admitted", "rejected"]))
         .order_by("-created_at")
     )
     serializer_class = AllApplicationsReportSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
-
 
 class RejectStudent(APIView):
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
@@ -577,7 +602,6 @@ class RejectStudent(APIView):
             return Response({"detail": "Application not found"}, status=404)
         except Exception as e:
             return Response({"detail": str(e)}, status=400)
-
 
 # delete application
 class DeleteApplication(generics.RetrieveDestroyAPIView):
@@ -627,12 +651,119 @@ class ChangeApplicationStatus(APIView):
 
                     return Response({"detail":"status changed successfully"})
                 except Application.DoesNotExist:
-                    return Response({"detail":"student Application does not exist"})
-                    
+                    return Response({"detail":"student Application does not exist"})        
         except Exception as e:
-            return Response({"detail":str(e)})
+            return Response({"detail":str(e)}) 
 
-    
+class EditApplicationProfile(APIView):
+    permission_classes = [IsAuthenticated, CanViewAdmissionQueues]
+
+    def patch(self, request, application_id):
+        application = get_object_or_404(Application, pk=application_id)
+        allowed_fields = {
+            "first_name",
+            "last_name",
+            "middle_name",
+            "date_of_birth",
+            "gender",
+            "nationality",
+            "phone",
+            "email",
+            "address",
+            "disabled",
+            "next_of_kin_name",
+            "next_of_kin_contact",
+            "next_of_kin_relationship",
+            "nin",
+            "passport_number",
+        }
+        payload = {k: v for k, v in request.data.items() if k in allowed_fields}
+        required_non_blank_fields = {
+            "first_name",
+            "last_name",
+            "date_of_birth",
+            "gender",
+            "nationality",
+            "phone",
+            "email",
+            "next_of_kin_name",
+            "next_of_kin_contact",
+            "next_of_kin_relationship",
+        }
+        # Avoid failing partial updates when frontend sends empty strings
+        # for required fields it did not actually intend to clear.
+        payload = {
+            key: value
+            for key, value in payload.items()
+            if not (key in required_non_blank_fields and str(value).strip() == "")
+        }
+        if not payload:
+            return Response({"detail": "No valid profile fields provided."}, status=status.HTTP_400_BAD_REQUEST)
+
+        serializer = CudApplicationSerializer(application, data=payload, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+
+        return Response(
+            {
+                "detail": "Profile updated successfully.",
+                "application": ApplicationDetailSerializer(application).data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class ChangeApplicationProgramme(APIView):
+    permission_classes = [IsAuthenticated, CanViewAdmissionQueues]
+
+    def patch(self, request, application_id):
+        application = get_object_or_404(
+            Application.objects.prefetch_related("programs").select_related("campus"),
+            pk=application_id,
+        )
+        raw_program_ids = request.data.get("program_ids", [])
+        if not isinstance(raw_program_ids, list) or not raw_program_ids:
+            return Response({"detail": "program_ids must be a non-empty list."}, status=400)
+
+        try:
+            program_ids = [int(pid) for pid in raw_program_ids]
+        except (TypeError, ValueError):
+            return Response({"detail": "program_ids must contain valid integers."}, status=400)
+
+        program_qs = Program.objects.filter(id__in=program_ids)
+        if program_qs.count() != len(set(program_ids)):
+            return Response({"detail": "One or more selected programmes are invalid."}, status=400)
+
+        campus_id = request.data.get("campus_id")
+        campus_changed = False
+        if campus_id not in (None, "", "null"):
+            try:
+                application.campus = Campus.objects.get(pk=int(campus_id))
+                campus_changed = True
+            except (TypeError, ValueError, Campus.DoesNotExist):
+                return Response({"detail": "Invalid campus_id."}, status=400)
+
+        application.programs.set(program_qs)
+        if campus_changed:
+            application.save(update_fields=["campus", "updated_at"])
+        else:
+            application.save(update_fields=["updated_at"])
+
+        return Response(
+            {
+                "detail": "Programme choices updated successfully.",
+                "programs": [{"id": p.id, "name": p.name} for p in application.programs.all()],
+                "campus": application.campus.name if application.campus else None,
+            },
+            status=200,
+        )
+
+# list rejected students
+class ListRejectedApplications(generics.ListAPIView):
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    serializer_class = ListApplicationsSerializer
+    queryset = Application.objects.filter(status='rejected')
+
 # ================================subjects================================================
 
 # create O subjects
@@ -787,7 +918,7 @@ class DeleteBatch(generics.RetrieveDestroyAPIView):
     
 # get active batch
 class GetActiveApplicationBatch(generics.ListAPIView):
-    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    permission_classes = [IsAuthenticated]
     queryset = Batch.objects.all()
     serializer_class = BatchSerializer
 
@@ -907,10 +1038,7 @@ class CheckStudentStatus(APIView):
                     "application",
                 )
                 .filter(
-                    Q(application__applicant=user)
-                    | Q(student_user=user)
-                    | Q(reg_no=user.username)
-                    | Q(reg_no=str(user.username).replace("_", "/")),
+                    Q(application__applicant=user) | Q(student_user=user) | Q(reg_no=user.username),
                     is_admitted=True,
                 )
                 .first()
@@ -921,7 +1049,6 @@ class CheckStudentStatus(APIView):
                         "is_admitted_student": True,
                         "student_id": admitted_student.student_id,
                         "reg_no": admitted_student.reg_no,
-                        "schoolpay_code": admitted_student.schoolpay_code or admitted_student.reg_no,
                         "program": admitted_student.admitted_program.name
                         if admitted_student.admitted_program
                         else None,
@@ -943,7 +1070,6 @@ class CheckStudentStatus(APIView):
                 {"is_admitted_student": False, "error": str(e)},
                 status=status.HTTP_200_OK,
             )
-
 
 # =========================================================Applicant Dashboard===============================
 class ApplicantDashboard(APIView):
@@ -988,10 +1114,12 @@ class ApplicantDashboard(APIView):
             )
 
         # Base data from application
+        selected_programs = list(application.programs.values_list("name", flat=True))
         base_data = {
             "id":application.id,
             "batch": application.batch.name if application.batch else None,
-            "campus": application.campus.name,
+            "campus": application.campus.name if application.campus else None,
+            "programs": selected_programs,
             "applied_date": application.created_at,
             "application_status": application.status,
             "admission_letter_pdf": application.admission_letter_pdf.url if application.admission_letter_pdf else None
@@ -1013,6 +1141,7 @@ class ApplicantDashboard(APIView):
             **base_data,
             "program": admission.admitted_program.name,
             "campus": admission.admitted_campus.name,  
+            "programs": [admission.admitted_program.name] if admission.admitted_program else base_data.get("programs", []),
             "student_id": admission.student_id,
             "has_admission": True,
             "is_admitted": admission.is_admitted,  
@@ -1049,16 +1178,6 @@ class ReviewApplication(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, application_id):
-
-        Application.objects.filter(
-            pk=application_id,
-            status__in=['pending', 'submitted', 'in_progress']  
-        ).update(
-            status='under_review',
-            reviewed_by=request.user,
-            reviewed_at=timezone.now()
-        )
-
         # Fetch optimized object AFTER update
         application = Application.objects.select_related(
             'applicant', 'batch', 'campus', 'academic_level', 'reviewed_by'
@@ -1217,130 +1336,157 @@ class AdmitStudent(generics.CreateAPIView):
     def create(self, request, *args, **kwargs):
         try:
             with transaction.atomic():
+                application_id = request.data.get("application")
+                application_obj = get_object_or_404(Application, pk=application_id)
+                existing_admission = (
+                    AdmittedStudent.objects.select_for_update()
+                    .filter(application=application_obj)
+                    .first()
+                )
 
-                # Validate and save admission
-                serializer = self.get_serializer(data=request.data)
-                serializer.is_valid(raise_exception=True)
-                admission = serializer.save()
+                if existing_admission:
+                    if existing_admission.is_admitted:
+                        return Response(
+                            {"detail": "This application is already in admitted list."},
+                            status=400,
+                        )
 
-                # Fetch related application
-                try:
-                    application = Application.objects.select_related(
-                        "applicant", "batch", "campus"
-                    ).get(pk=admission.application_id)
-                except Application.DoesNotExist:
-                    return Response({"detail": "Student application doesn't exist"}, status=400)
-
-                # Update status
-                Application.objects.filter(id=application.id).update(status="accepted")
-
-                try:
-                    celery_admission_email.delay(application.id, admission.id)
-                    celery_application_notification.delay(request.user.id, "Admission Successful", "Congratulations! You have been admitted to Ndejje University")
-                except Exception:
-                    pass
-
-                # ── Create student portal account ──────────────────────────────
-                try:
-                    from accounts.models import User as UserModel
-                    applicant = application.applicant
-                    student_reg_no = str(admission.reg_no).strip()
-                    student_username = student_reg_no
-                    legacy_username = student_reg_no.replace("/", "_")
-
-                    # Avoid duplicates if re-admitting
-                    if not admission.student_user_id:
-                        existing = UserModel.objects.filter(
-                            Q(username=student_username) | Q(username=legacy_username)
-                        ).first()
-                        if existing:
-                            student_user = existing
-                        else:
-                            student_user = UserModel.objects.create_user(
-                                username=student_username,
-                                first_name=applicant.first_name,
-                                last_name=applicant.last_name,
-                                email=applicant.email,
-                                password=student_reg_no,
-                                is_staff=False,
-                                is_applicant=False,
-                                is_student=True,
-                                must_change_password=True,
-                            )
-                        admission.student_user = student_user
-                        admission.save(update_fields=['student_user'])
-                except Exception as e:
-                    logger.warning(
-                        "Student account creation failed: %s",
-                        f"{e.__class__.__name__}: {e}",
-                    )  # Never block admission due to account creation failure
-                # ──────────────────────────────────────────────────────────────
-
-                # ── Academic programme enrollment (commitment-fee gate) ───────
-                # If admin enabled auto-enroll, create/activate SPE immediately.
-                # Otherwise create SPE in 'pending' so student must pay commitment fee first.
-                try:
-                    from django.utils import timezone
-                    from payments.models import RegistrationSettings
-                    from Programs.models import StudentProgrammeEnrollment, ProgramBatch
-
-                    reg_settings = RegistrationSettings.get_settings()
-
-                    # Pick a sensible ProgramBatch for the admitted program.
-                    # Preference: active batch with name containing "Year 1", else any active, else first.
-                    pb_qs = ProgramBatch.objects.filter(program=admission.admitted_program).order_by("-is_active", "-start_date", "name")
-                    program_batch = (
-                        pb_qs.filter(is_active=True, name__icontains="year 1").first()
-                        or pb_qs.filter(is_active=True).first()
-                        or pb_qs.first()
+                    serializer = self.get_serializer(existing_admission, data=request.data, partial=True)
+                    serializer.is_valid(raise_exception=True)
+                    admission = serializer.save(
+                        admission_date=timezone.now(),
+                        is_admitted=True,
+                        admitted_by=request.user,
+                    )
+                else:
+                    serializer = self.get_serializer(data=request.data)
+                    serializer.is_valid(raise_exception=True)
+                    admission = serializer.save(
+                        admitted_by=request.user,
+                        admission_date=timezone.now(),
+                        is_admitted=True,
                     )
 
-                    # If the programme has no academic batches configured yet, create a default.
-                    # Without a ProgramBatch we cannot create StudentProgrammeEnrollment.
-                    if not program_batch:
-                        program_batch, _ = ProgramBatch.objects.get_or_create(
-                            program=admission.admitted_program,
-                            name="Year 1",
-                            defaults=dict(
-                                start_date=timezone.now().date(),
-                                is_active=True,
-                                academic_year=getattr(admission.admitted_batch, "academic_year", "") or "",
-                            ),
-                        )
+                # Fetch application
+                try:
+                    application = Application.objects.select_related(
+                        "applicant",
+                        "batch",
+                        "campus"
+                    ).get(pk=admission.application_id)
+                    
+                except Application.DoesNotExist:
+                    logger.warning(f"Application {admission.application_id} not found")
+                    return
 
-                    if program_batch:
-                        spe, created = StudentProgrammeEnrollment.objects.get_or_create(
-                            student=admission,
-                            defaults=dict(
-                                program=admission.admitted_program,
-                                program_batch=program_batch,
-                                current_year_of_study=1,
-                                current_term_number=1,
-                                status="enrolled" if reg_settings.auto_enroll_on_admission else "pending",
-                                enrolled_by=request.user if reg_settings.auto_enroll_on_admission else None,
-                                enrolled_at=timezone.now() if reg_settings.auto_enroll_on_admission else None,
-                                notes=(
-                                    "Auto-enrolled on admission (commitment fee skipped)."
-                                    if reg_settings.auto_enroll_on_admission
-                                    else "Pending commitment fee confirmation."
-                                ),
-                            ),
-                        )
+                # CRITICAL: Update status immediately
+                Application.objects.filter(id=application.id).update(status="Admitted")
 
-                        # If SPE already exists, promote if auto-enroll is now enabled.
-                        if (not created) and reg_settings.auto_enroll_on_admission and spe.status != "enrolled":
-                            spe.status = "enrolled"
-                            spe.enrolled_by = request.user
-                            spe.enrolled_at = timezone.now()
-                            spe.save(update_fields=["status", "enrolled_by", "enrolled_at"])
-                except Exception as e:
-                    logger.warning("Auto-enrollment step failed: %s", f"{e.__class__.__name__}: {e}")
-                # ──────────────────────────────────────────────────────────────
-
+                # Student Account Creation and auto Enrollment
+                transaction.on_commit(
+                    lambda: trigger_background_tasks(admission.id, application.id)
+                )
+            
                 return Response(self.serializer_class(admission).data, status=201)
 
         except Exception as e:
+            logger.exception(f"Admission failed: {e}", exc_info=True)
             return Response({"detail": str(e)}, status=400)
+
+# revoke student 
+class RevokeAdmittedStudent(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        if not (
+            request.user.has_perm("admissions.revoke_admission")
+            or request.user.has_perm("admissions.change_admittedstudent")
+        ):
+            return Response({"detail": "You do not have permission to revoke admissions."}, status=403)
+
+        admission = get_object_or_404(AdmittedStudent, pk=pk)
+        application = get_object_or_404(Application, pk=admission.application_id)
+
+        reason = str(request.data.get("reason", "")).strip()
+        if not reason:
+            return Response({"detail": "Revocation reason is required."}, status=400)
+
+        with transaction.atomic():
+            # Delete actual files from storage
+            if application.admission_letter_pdf:
+                application.admission_letter_pdf.delete(save=False)
+
+            if application.admission_letter_docx:
+                application.admission_letter_docx.delete(save=False)
+
+            application.is_revoked = True
+            application.revoked_at = timezone.now()
+            application.revoked_by = request.user
+            application.revocation_reason = reason
+            application.status = "revoked"
+            # Clear database fields
+            application.admission_letter_pdf = None
+            application.admission_letter_docx = None
+
+            application.save(
+                update_fields=[
+                    "is_revoked",
+                    "revoked_at",
+                    "revoked_by",
+                    "revocation_reason",
+                    "admission_letter_pdf",
+                    "admission_letter_docx",
+                    "status"
+                ]
+            )
+           
+        User.objects.filter(username=admission.reg_no).delete()
+        admission.delete()
+
+        return Response({"detail":"Candidate has been removed from Admitted Students"}, status=200)
+
+# restore student 
+class RestoreAdmittedStudent(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        if not (
+            request.user.has_perm("admissions.revoke_admission")
+            or request.user.has_perm("admissions.change_admittedstudent")
+        ):
+            return Response({"detail": "You do not have permission to restore admissions."}, status=403)
+
+        admission = get_object_or_404(AdmittedStudent, pk=pk)
+
+        with transaction.atomic():
+            admission.is_revoked = False
+            admission.is_admitted = True
+            admission.revoked_at = None
+            admission.revoked_by = None
+            admission.revocation_reason = ""
+            admission.save(
+                update_fields=[
+                    "is_revoked",
+                    "is_admitted",
+                    # "revoked_at",
+                    # "revoked_by",
+                    # "revocation_reason",
+                    "updated_at",
+                ]
+            )
+            Application.objects.filter(id=admission.application_id).update(status="Admitted")
+
+        refreshed = (
+            AdmittedStudent.objects.select_related(
+                "application__applicant",
+                "admitted_program__faculty",
+                "admitted_batch",
+                "admitted_campus",
+                # "revoked_by",
+            )
+            .get(pk=admission.pk)
+        )
+        return Response(AdmittedStudentListSerializer(refreshed).data, status=200)
  
 # list Admitted students
 class ListAdmittedStudents(generics.ListAPIView):
@@ -1348,9 +1494,8 @@ class ListAdmittedStudents(generics.ListAPIView):
         'admitted_program__faculty',
         'admitted_batch',
         'admitted_campus',
-        'admitted_by',
         'application__applicant',
-        'physical_documents_verified_by',
+        'programme_enrollment'
     ).all()
 
     serializer_class = AdmittedStudentListSerializer
@@ -1386,7 +1531,6 @@ class ListAdmittedStudents(generics.ListAPIView):
         elif reg in ("0", "false", "no"):
             qs = qs.filter(is_registered=False)
         return qs
-
 
 class MarkPhysicalDocumentsVerified(APIView):
     """Record that original hard-copy documents were checked (does not register the student)."""
@@ -1496,7 +1640,7 @@ class CandidateAdmission(generics.RetrieveAPIView):
         'admitted_batch',
         'admitted_campus',
         'admitted_by',
-        'physical_documents_verified_by',
+        # 'physical_documents_verified_by',
     ).prefetch_related('admitted_program__campuses')
     serializer_class = AdmissionDetailSerializer
     lookup_field = "id"
@@ -1509,20 +1653,34 @@ class DeleteAdmittedStudent(generics.DestroyAPIView):
     queryset = AdmittedStudent.objects.all()
     serializer_class = AdmittedStudentSerializer
 
+    def destroy(self, request, *args, **kwargs):
+        admission = self.get_object()
+        application_id = admission.application_id
+        with transaction.atomic():
+            admission.delete()
+            # Keep application available in queue for fresh admission.
+            Application.objects.filter(id=application_id).update(status="accepted")
+        return Response({"detail": "Admission deleted successfully."}, status=200)
+
 # Admin dashboard stats
 class AdminDashboardStats(APIView):
     permission_classes = [IsAuthenticated]
-    
     def get(self, request):
         total_applications = Application.objects.all().count()
+        online_applications = Application.objects.filter(is_direct_entry=False).count()
+        direct_applications = Application.objects.filter(is_direct_entry=True).count()
         pending_applications = Application.objects.filter(status='submitted').count()
-        admitted_students = AdmittedStudent.objects.filter(is_registered=True).count()
+        admitted_students = AdmittedStudent.objects.filter(
+            is_admitted=True,
+        ).count()
         rejected_students = Application.objects.filter(status='rejected').count()
         total_batches = Batch.objects.all().count()
         active_batches = Batch.objects.filter(is_active=True).count()
 
         return Response({
             "totalApplication":total_applications,
+            "onlineApplications":online_applications,
+            "directApplications":direct_applications,
             "pendingApplications":pending_applications,
             "admittedStudents":admitted_students,
             "rejectedStudents":rejected_students,
@@ -1556,7 +1714,6 @@ class DownloadAdmissionPDF(APIView):
         application = get_object_or_404(
             Application,
             id=application_id,
-            # applicant=request.user  # ← uncomment if only applicant can download own letter
         )
 
         # Fetch related data
@@ -1637,6 +1794,15 @@ class DownloadAdmissionPDF(APIView):
         )
         response.write(pdf_buffer.read())
 
+        Application.objects.filter(
+            pk=application_id,
+            status__in=['pending', 'submitted', 'in_progress', 'draft']  
+        ).update(
+            reviewed_by=request.user,
+            reviewed_at=timezone.now(),
+            status='under_review'
+        )
+
         return response
 
 
@@ -1653,10 +1819,7 @@ class StudentChangeRequestListCreate(APIView):
             return AdmittedStudent.objects.select_related(
                 'admitted_program', 'admitted_campus'
             ).filter(
-                Q(application__applicant=user)
-                | Q(student_user=user)
-                | Q(reg_no=user.username)
-                | Q(reg_no=str(user.username).replace("_", "/")),
+                Q(application__applicant=user) | Q(student_user=user) | Q(reg_no=user.username),
                 is_admitted=True,
             ).first()
         except Exception:
@@ -1669,8 +1832,8 @@ class StudentChangeRequestListCreate(APIView):
         qs = AdmissionChangeRequest.objects.filter(
             admitted_student=admission
         ).select_related('new_program', 'new_campus', 'reviewed_by')
-        return Response(AdmissionChangeRequestSerializer(qs, many=True).data)
 
+        return Response(AdmissionChangeRequestSerializer(qs, many=True).data)
     def post(self, request):
         admission = self._get_admission(request.user)
         if not admission:
@@ -1696,6 +1859,44 @@ class StudentChangeRequestListCreate(APIView):
             current_study_mode=admission.study_mode,
         )
         return Response(AdmissionChangeRequestSerializer(obj).data, status=201)
+
+
+class StudentChangeRequestOptions(APIView):
+    """Student: fetch available program/campus options for change requests."""
+    permission_classes = [IsAuthenticated]
+
+    def _get_admission(self, user):
+        try:
+            return AdmittedStudent.objects.select_related(
+                'admitted_program', 'admitted_campus'
+            ).filter(
+                Q(application__applicant=user) | Q(student_user=user) | Q(reg_no=user.username),
+                is_admitted=True,
+            ).first()
+        except Exception:
+            return None
+
+    def get(self, request):
+        admission = self._get_admission(request.user)
+        if not admission:
+            return Response({'detail': 'No active admission found.'}, status=404)
+
+        base_program_qs = Program.objects.all().order_by("name")
+        try:
+            # Prefer same academic level options for safer programme transitions.
+            if admission.admitted_program and admission.admitted_program.academic_level_id:
+                base_program_qs = base_program_qs.filter(
+                    academic_level_id=admission.admitted_program.academic_level_id
+                )
+        except Exception:
+            pass
+
+        programs = [
+            {"id": p.id, "name": p.name, "code": p.code}
+            for p in base_program_qs
+        ]
+        campuses = [{"id": c.id, "name": c.name} for c in Campus.objects.all().order_by("name")]
+        return Response({"programs": programs, "campuses": campuses}, status=200)
 
 
 class AdminChangeRequestList(APIView):
@@ -1742,9 +1943,8 @@ class AdminChangeRequestReview(APIView):
         with transaction.atomic():
             req_obj.status = 'approved' if action == 'approve' else 'rejected'
             req_obj.reviewed_by = request.user
-            req_obj.reviewed_at = timezone.now()
+            req_obj.reviewed_at = timezone.now()  
             req_obj.review_notes = review_notes
-
             if action == 'approve':
                 admission = req_obj.admitted_student
                 if req_obj.change_type == 'program' and req_obj.new_program:
@@ -1759,11 +1959,44 @@ class AdminChangeRequestReview(APIView):
 
         return Response(AdmissionChangeRequestSerializer(req_obj).data)
 
+# Generate reg no
+@api_view(['POST'])
+def generate_reg_no_view(request):
+    try:
+        campus_id = request.data.get("campus")
+        program_id = request.data.get("program")
+        study_mode = request.data.get("study_mode")
 
+        if not campus_id or not program_id or not study_mode:
+            return Response(
+                {"error": "campus, program and study_mode are required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        campus = Campus.objects.get(id=campus_id)
+        program = Program.objects.get(id=program_id)
+
+        reg_no = generate_reg_no(
+            campus=campus,
+            program=program,
+            study_mode=study_mode
+        )
+
+        return Response({"reg_no": reg_no}, status=status.HTTP_200_OK)
+
+    except Campus.DoesNotExist:
+        return Response({"error": "Invalid campus"}, status=404)
+
+    except Program.DoesNotExist:
+        return Response({"error": "Invalid program"}, status=404)
+
+    except Exception as e:
+        return Response(
+            {"error": str(e)},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
 # ══════════════════════════════════════════════════════════════════════════════
 # DIRECT APPLICATION ENTRY  (admin-side manual / legacy entry)
-# ══════════════════════════════════════════════════════════════════════════════
-
 def _generate_student_id():
     """Return a unique 10-digit student ID string."""
     import random
@@ -1775,55 +2008,12 @@ def _generate_student_id():
             return sid
     raise ValueError('Could not generate a unique student_id after 20 attempts.')
 
-
-def _generate_reg_no(campus, program, study_mode):
-    """Return a unique reg_no in the format YY/CAMPUS_CODE/PROG_CODE/STUDY_MODE/NNNN."""
-    import random
-    import datetime
-    yr = str(datetime.datetime.now().year)[-2:]
-    campus_code = '2' if 'kampala' in campus.name.lower() else '1'
-    prog_code = (program.short_form or program.code or 'UNK').upper()
-    sm = (study_mode or 'FT').upper()
-    for _ in range(20):
-        rand = str(random.randint(1, 9999)).zfill(4)
-        reg_no = f'{yr}/{campus_code}/{prog_code}/{sm}/{rand}'
-        if not AdmittedStudent.objects.filter(reg_no=reg_no).exists():
-            return reg_no
-    raise ValueError('Could not generate a unique reg_no after 20 attempts.')
-
-
 def _run_post_admission_setup(request, admission, application):
-    """Shared post-save logic: student user account + SPE creation.
-    Mirrors AdmitStudent.create exactly so both flows stay consistent.
-    Non-fatal errors are logged rather than raised.
-    """
     # ── Student portal account ────────────────────────────────────────────────
     try:
-        from accounts.models import User as UserModel
-        applicant = application.applicant
-        student_reg_no = str(admission.reg_no).strip()
-        student_username = student_reg_no
-        legacy_username = student_reg_no.replace('/', '_')
-        if not admission.student_user_id:
-            existing = UserModel.objects.filter(
-                Q(username=student_username) | Q(username=legacy_username)
-            ).first()
-            if existing:
-                student_user = existing
-            else:
-                student_user = UserModel.objects.create_user(
-                    username=student_username,
-                    first_name=applicant.first_name,
-                    last_name=applicant.last_name,
-                    email=applicant.email,
-                    password=student_reg_no,
-                    is_staff=False,
-                    is_applicant=False,
-                    is_student=True,
-                    must_change_password=True,
-                )
-            admission.student_user = student_user
-            admission.save(update_fields=['student_user'])
+        from .student_accounts import ensure_student_portal_account
+
+        ensure_student_portal_account(admission)
     except Exception as e:
         logger.warning('DirectEntry: student account creation failed: %s', f'{e.__class__.__name__}: {e}')
 
@@ -1876,14 +2066,6 @@ def _run_post_admission_setup(request, admission, application):
 
 
 class DirectApplicationEntryView(APIView):
-    """
-    Admin-side: create an Application record directly without going through
-    the applicant portal.  A User account (is_applicant=True) is created or
-    reused for the applicant.  The application enters the normal review flow
-    at status='submitted'.
-
-    POST /api/admissions/direct_application_entry
-    """
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
@@ -2006,92 +2188,26 @@ class DirectAdmissionEntryView(APIView):
 
         d = request.data
 
-        full_name = (d.get('full_name') or '').strip()
-        first_name = (d.get('first_name') or '').strip()
-        last_name = (d.get('last_name') or '').strip()
-        if full_name and (not first_name or not last_name):
-            parts = [p for p in full_name.split() if p]
-            if len(parts) == 1:
-                first_name = parts[0]
-                last_name = 'N/A'
-            elif len(parts) > 1:
-                first_name = parts[0]
-                last_name = " ".join(parts[1:])
-
-        # ── Validate required fields (simple direct-entry flow) ──────────────
-        required_fields = ['campus', 'program']
+        # ── Validate required fields ──────────────────────────────────────────
+        required_fields = [
+            'first_name', 'last_name', 'date_of_birth', 'gender', 'nationality',
+            'phone', 'email', 'next_of_kin_name', 'next_of_kin_contact',
+            'next_of_kin_relationship', 'batch', 'campus', 'program',
+            'academic_level', 'study_mode',
+        ]
         errors = {f: 'This field is required.' for f in required_fields if not d.get(f)}
-        if not first_name:
-            errors['full_name'] = 'Student name is required.'
-        direct_reason = (d.get('direct_admission_reason') or '').strip()
-        if not direct_reason:
-            errors['direct_admission_reason'] = 'Reason for direct admission is required.'
         if errors:
             return Response(errors, status=400)
 
         try:
             with transaction.atomic():
+                email = d['email'].strip().lower()
+                batch = Batch.objects.get(id=d['batch'])
                 campus = Campus.objects.get(id=d['campus'])
                 from Programs.models import Program as ProgramModel
                 program = ProgramModel.objects.get(id=d['program'])
-                academic_level = program.academic_level
-                study_mode = (d.get('study_mode') or 'DAY').strip().upper()
-
-                batch_id = d.get('batch')
-                if batch_id:
-                    batch = Batch.objects.get(id=batch_id)
-                else:
-                    batch = (
-                        Batch.objects.filter(is_active=True, programs=program).order_by('-created_at').first()
-                        or Batch.objects.filter(programs=program).order_by('-created_at').first()
-                    )
-                    if not batch:
-                        return Response(
-                            {
-                                'detail': (
-                                    'No intake found for this programme. '
-                                    'Create or activate an intake, then try again.'
-                                )
-                            },
-                            status=400,
-                        )
-
-                supplied_email = (d.get('email') or '').strip().lower()
-                provided_schoolpay_code = (d.get('schoolpay_code') or '').strip()
-                fallback_email = (
-                    f"direct.{first_name}.{last_name}.{uuid.uuid4().hex[:8]}@ndu.local"
-                    .replace(" ", "")
-                    .replace("..", ".")
-                    .lower()
-                )
-                email = supplied_email or fallback_email
-                phone = (d.get('phone') or '').strip() or 'N/A'
-                gender = (d.get('gender') or '').strip() or 'NOT SPECIFIED'
-                nationality = (d.get('nationality') or '').strip() or 'Ugandan'
-                today = timezone.now().date()
-                date_of_birth_raw = d.get('date_of_birth')
-                if date_of_birth_raw:
-                    if isinstance(date_of_birth_raw, date):
-                        date_of_birth = date_of_birth_raw
-                    else:
-                        try:
-                            date_of_birth = date.fromisoformat(str(date_of_birth_raw))
-                        except ValueError:
-                            return Response(
-                                {'detail': 'Invalid date_of_birth format. Use YYYY-MM-DD.'},
-                                status=400,
-                            )
-                else:
-                    date_of_birth = date(2000, 1, 1)
-                next_of_kin_name = (d.get('next_of_kin_name') or '').strip() or f"{first_name} {last_name}".strip()
-                next_of_kin_contact = (d.get('next_of_kin_contact') or '').strip() or phone
-                next_of_kin_relationship = (d.get('next_of_kin_relationship') or '').strip() or 'Self'
-                admission_notes = (d.get('admission_notes') or '').strip()
-                reason_note = f"Direct admission reason: {direct_reason}"
-                if admission_notes:
-                    admission_notes = f"{reason_note}\n{admission_notes}"
-                else:
-                    admission_notes = reason_note
+                academic_level = AcademicLevel.objects.get(id=d['academic_level'])
+                study_mode = d['study_mode'].strip().upper()
 
                 # ── Applicant user ────────────────────────────────────────────
                 from accounts.models import User as UserModel
@@ -2104,8 +2220,8 @@ class DirectAdmissionEntryView(APIView):
                         username = f'{base_username}_{suffix}'
                     applicant_user = UserModel.objects.create_user(
                         username=username,
-                        first_name=first_name,
-                        last_name=last_name,
+                        first_name=d['first_name'],
+                        last_name=d['last_name'],
                         email=email,
                         password='NDU@1234',
                         is_applicant=True,
@@ -2119,27 +2235,25 @@ class DirectAdmissionEntryView(APIView):
                     campus=campus,
                     academic_level=academic_level,
                     source=Application.SOURCE_DIRECT,
-                    is_direct_entry=True,
-                    entered_by=request.user,
                     legacy_application_number=d.get('legacy_application_number') or '',
-                    first_name=first_name,
-                    last_name=last_name,
+                    first_name=d['first_name'],
+                    last_name=d['last_name'],
                     middle_name=d.get('middle_name', ''),
-                    date_of_birth=date_of_birth,
-                    gender=gender,
-                    nationality=nationality,
-                    phone=phone,
+                    date_of_birth=d['date_of_birth'],
+                    gender=d['gender'],
+                    nationality=d['nationality'],
+                    phone=d['phone'],
                     email=email,
                     address=d.get('address', ''),
                     nin=d.get('nin', ''),
                     passport_number=d.get('passport_number', ''),
-                    next_of_kin_name=next_of_kin_name,
-                    next_of_kin_contact=next_of_kin_contact,
-                    next_of_kin_relationship=next_of_kin_relationship,
-                    olevel_year=int(d.get('olevel_year') or today.year),
+                    next_of_kin_name=d['next_of_kin_name'],
+                    next_of_kin_contact=d['next_of_kin_contact'],
+                    next_of_kin_relationship=d['next_of_kin_relationship'],
+                    olevel_year=int(d.get('olevel_year') or 0),
                     olevel_index_number=d.get('olevel_index_number') or 'N/A',
                     olevel_school=d.get('olevel_school') or 'N/A',
-                    alevel_year=int(d.get('alevel_year') or today.year),
+                    alevel_year=int(d.get('alevel_year') or 0),
                     alevel_index_number=d.get('alevel_index_number') or 'N/A',
                     alevel_school=d.get('alevel_school') or 'N/A',
                     alevel_combination=d.get('alevel_combination') or 'N/A',
@@ -2158,35 +2272,27 @@ class DirectAdmissionEntryView(APIView):
                         raise ValueError(f'reg_no "{provided_reg_no}" is already in use.')
                     reg_no = provided_reg_no
                 else:
-                    reg_no = _generate_reg_no(campus, program, study_mode)
-
+                    reg_no = generate_reg_no(campus, program, study_mode)
+    
                 if provided_student_id:
                     if AdmittedStudent.objects.filter(student_id=provided_student_id).exists():
                         raise ValueError(f'student_id "{provided_student_id}" is already in use.')
                     student_id = provided_student_id
                 else:
                     student_id = _generate_student_id()
-                if provided_schoolpay_code:
-                    if AdmittedStudent.objects.filter(schoolpay_code=provided_schoolpay_code).exists():
-                        raise ValueError(f'schoolpay_code "{provided_schoolpay_code}" is already in use.')
-                    schoolpay_code = provided_schoolpay_code
-                else:
-                    schoolpay_code = reg_no
 
                 # ── AdmittedStudent ───────────────────────────────────────────
                 admission = AdmittedStudent.objects.create(
                     application=app,
                     student_id=student_id,
                     reg_no=reg_no,
-                    schoolpay_code=schoolpay_code,
                     admitted_program=program,
                     admitted_batch=batch,
                     admitted_campus=campus,
                     study_mode=study_mode,
                     admission_date=timezone.now(),
                     is_admitted=True,
-                    admitted_by=request.user,
-                    admission_notes=admission_notes,
+                    admission_notes=d.get('admission_notes', ''),
                 )
 
                 # ── Shared post-admission setup (account + SPE) ───────────────
@@ -2198,7 +2304,7 @@ class DirectAdmissionEntryView(APIView):
                     celery_application_notification.delay(
                         request.user.id,
                         'Direct Admission Completed',
-                        f'Student {first_name} {last_name} admitted directly as {reg_no}.',
+                        f'Student {d["first_name"]} {d["last_name"]} admitted directly as {reg_no}.',
                     )
                 except Exception:
                     pass
@@ -2207,10 +2313,8 @@ class DirectAdmissionEntryView(APIView):
                     'admission_id': admission.id,
                     'student_id': admission.student_id,
                     'reg_no': admission.reg_no,
-                    'schoolpay_code': admission.schoolpay_code or admission.reg_no,
                     'application_id': app.id,
                     'application_reference': app.application_reference,
-                    'direct_admission_reason': direct_reason,
                     'message': (
                         f'Student admitted successfully. '
                         f'Reg No: {admission.reg_no} | Student ID: {admission.student_id}'
