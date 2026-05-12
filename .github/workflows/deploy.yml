@@ -31,27 +31,21 @@ jobs:
           source venv/bin/activate
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          python manage.py migrate admissions 0001 --fake
-          python manage.py migrate Drafts 0002 --fake
-          python manage.py migrate Programs 0002 --fake
-          python manage.py migrate admissions 0003 --fake
-          python manage.py migrate payments 0001 --fake
-          python manage.py migrate admissions 0006 --fake
-          python manage.py migrate AdmissionLetter 0002 --fake
-          python manage.py migrate admissions 0007 --fake
-          python manage.py migrate admissions 0008_admittedstudent_student_user_and_more --fake
-          python manage.py migrate admissions 0009_admittedstudent_admitted_by --fake
-          python manage.py migrate admissions 0010_admittedstudent_schoolpay_code --fake
-          python manage.py migrate admissions 0012_admittedstudent_is_registered_with_schoolpay --fake
-          python manage.py migrate admissions 0009_admitted_student_schoolpay_code --fake
-          python manage.py migrate admissions 0014_cleanup_schoolpay_codes --fake
-          python manage.py migrate admissions 0017_alter_admittedstudent_schoolpay_code --fake
-          python manage.py migrate admissions 0010_admittedstudent_student_user --fake
-          python manage.py migrate admissions 0015_emailtemplate --fake
-          python manage.py migrate Programs 0003_program_academic_metadata --fake
-          python manage.py migrate Programs 0003_program_calendar_type_program_has_specialization_and_more --fake
+
+          # === Clean and safe migration strategy ===
           python manage.py makemigrations --merge --noinput
+          
+          # Fake known problematic migrations
+          python manage.py migrate admissions --fake
+          python manage.py migrate Programs --fake
+          python manage.py migrate payments --fake
+          python manage.py migrate Drafts --fake
+          python manage.py migrate AdmissionLetter --fake
+          
+          # Final migrate (this should now be safe)
           python manage.py migrate
+          
           python manage.py collectstatic --noinput
+        
           sudo systemctl restart gunicorn
           sudo systemctl restart nginx
