@@ -2,6 +2,7 @@ import logging
 
 import requests
 from django.conf import settings
+import re
 
 from admissions.models import AdmittedStudent
 from .schoolpay_auth import build_schoolpay_hash, schoolpay_api_root
@@ -17,13 +18,23 @@ def _schoolpay_gender(value: str) -> str:
         return "F"
     return ""
 
-
 def _schoolpay_phone(value: str) -> str:
-    phone = str(value or "").strip()
-    if phone.startswith("+256"):
-        phone = "0" + phone[4:]
-    elif phone.startswith("256") and len(phone) > 3:
-        phone = "0" + phone[3:]
+    # Remove spaces, dashes, brackets etc.
+    phone = re.sub(r"[^\d+]", "", str(value or "")).strip()
+
+    # If already international with +
+    if phone.startswith("+"):
+        return phone[1:]  # remove only +
+
+    # Uganda local numbers starting with 0
+    if phone.startswith("0") and len(phone) == 10:
+        return "256" + phone[1:]
+
+    # Uganda numbers already without +
+    if phone.startswith("256"):
+        return phone
+
+    # Other international numbers without +
     return phone
 
 

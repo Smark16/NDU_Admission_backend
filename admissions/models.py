@@ -274,7 +274,7 @@ class AdditionalQualifications(models.Model):
 class AdmittedStudent(models.Model):
     application = models.OneToOneField(Application, on_delete=models.CASCADE, related_name='admission')
     student_user = models.OneToOneField(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='student_admission')
-    student_id = models.CharField(max_length=50, unique=True, null=True, blank=True)
+    student_id = models.CharField(max_length=255, unique=True, null=True, blank=True)
     study_mode = models.CharField(max_length=30)
     reg_no = models.CharField(max_length=100, unique=True)
     admitted_program = models.ForeignKey(Program, on_delete=models.CASCADE)
