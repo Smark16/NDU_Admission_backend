@@ -258,6 +258,7 @@ CORS_ALLOWED_ORIGINS = [
     "https://admissions.ndu.ac.ug",
     "http://localhost:3001",
     "https://erp.ndejje.ndu.ac.ug",
+    "https://www.schoolpay.co.ug"
 ]
 
 REST_FRAMEWORK = {
