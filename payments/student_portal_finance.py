@@ -5,9 +5,6 @@ from collections import defaultdict
 from decimal import Decimal
 from typing import Any
 
-# Commitment fee threshold: once total valid tuition payments reach this amount,
-# the student's academic enrollment can be activated.  Hardcoded for now;
-# can be surfaced into RegistrationSettings later.
 COMMITMENT_FEE_THRESHOLD = Decimal("150000")
 
 from django.db.models import Q
@@ -472,6 +469,6 @@ def payment_status_dict(student: AdmittedStudent, request=None) -> dict:
         "scheduled_other_fees": other_fee_rows,
         "scheduled_other_fees_total_due": totals["scheduled_other_fees_due"],
         "billing_lines": student_billing_lines(student),
-        "payment_code": student.effective_schoolpay_code,
+        "payment_code": student.student_id,
         **offer_letter_portal_fields(student, request),
     }
