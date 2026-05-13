@@ -45,7 +45,7 @@ i) Paying a non-refundable fee of {confirmation_fee} using your School Pay Code 
 ii) NOTE: This amount shall be credited towards your tuition fees.
 
 iii) Sending the Bank Deposit Slip and payment confirmation receipt to:
-confirmation@ndejje.ac.ug
+confirmation@ndu.ac.ug
 
 iv) Pick your admission letter from any of our campuses or receive it through your portal.
 
@@ -96,3 +96,18 @@ def send_student_login_credentials(user, password, subject="Account Created Succ
     )
 
     return success
+
+# rejection email
+def send_rejection_email(application, msg, subject="Application Update: Admission Decision"):
+    body = (
+        f"Dear {application.first_name} {application.last_name},\n\n"
+        f"We regret to inform you that your application for admission to Ndejje University has been unsuccessful.\n\n"
+        f"Application ID: {application.id}\n"
+        f"Submitted on: {application.created_at.strftime('%d %B %Y')}\n\n"
+        f"Reason for Rejection: {msg}\n\n"
+        f"We encourage you to apply again in the future and wish you the best in your academic pursuits.\n\n"
+        f"Thank you for considering Ndejje University.\n"
+        f"Admissions Team"
+    )
+
+    return send_configurable_email(application.email, subject, body)

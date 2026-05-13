@@ -4,7 +4,7 @@ from django.utils import timezone
 from payments.models import RegistrationSettings
 from Programs.models import StudentProgrammeEnrollment, ProgramBatch
 
-from .utils.email import send_application_email, send_admission_email, send_admission_update, send_student_login_credentials
+from .utils.email import send_application_email, send_admission_email, send_admission_update, send_student_login_credentials, send_rejection_email
 from .utils.notification import create_notification
 from django.db import transaction
 # from django.db import close_old_connections
@@ -21,7 +21,6 @@ def celery_send_application_email(application_id):
 
     send_application_email(application)
 
-
 @shared_task
 def celery_application_notification(user_id, title, msg):
     User = apps.get_model('accounts', 'User')
@@ -29,6 +28,13 @@ def celery_application_notification(user_id, title, msg):
 
     create_notification(user, title, msg)
 
+@shared_task
+def celery_send_rejection_email(application_id, msg):
+    Application = apps.get_model('admissions', 'Application')
+    application = Application.objects.get(id=application_id)
+
+    send_rejection_email(application, msg)
+    
 @shared_task(bind=True, max_retries=5)
 def celery_send_student_credentials_email(self, user_id, password):
     User = apps.get_model('accounts', 'User')

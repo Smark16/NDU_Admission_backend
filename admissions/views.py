@@ -18,7 +18,7 @@ from django.db import transaction
 from django.db.models.deletion import ProtectedError
 from django.db.utils import OperationalError
 # from .utils.validate_photo import validate_passport_photo
-from .tasks import celery_send_application_email, celery_application_notification, celery_admission_email, celery_admission_update, celery_create_student_account
+from .tasks import celery_send_application_email, celery_application_notification, celery_admission_email, celery_admission_update, celery_create_student_account, celery_send_rejection_email
 from accounts.tasks import celery_send_account_email
 from payments.utils.school_pay_code import register_student_with_schoolpay
 from .utils.trigger_background_tasks import trigger_background_tasks
@@ -582,6 +582,7 @@ class ListDirectEntryApplications(generics.ListAPIView):
 
 class RejectStudent(APIView):
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    queryset = Application.objects.all()
 
     def patch(self, request, application_id):
         _rejection_reason = request.data.get("rejection_reason", "No reason provided")
@@ -591,10 +592,9 @@ class RejectStudent(APIView):
                 application.status = "rejected"
                 application.save()
                 try:
-                    celery_application_notification.delay(
-                        application.applicant_id,
-                        "Application Rejected",
-                        "We regret to inform you that your application has been rejected.",
+                    celery_send_rejection_email.delay(
+                        application.id,
+                        _rejection_reason
                     )
                 except Exception as exc:
                     logger.warning("Reject notification task failed: %s", exc)
@@ -1556,8 +1556,6 @@ class ListAdmittedStudents(generics.ListAPIView):
         return qs
 
 class MarkPhysicalDocumentsVerified(APIView):
-    """Record that original hard-copy documents were checked (does not register the student)."""
-
     permission_classes = [IsAuthenticated, VerifyPhysicalDocumentsPermission]
 
     def post(self, request, pk):
@@ -2034,9 +2032,27 @@ def _generate_student_id():
 def _run_post_admission_setup(request, admission, application):
     # ── Student portal account ────────────────────────────────────────────────
     try:
-        from .student_accounts import ensure_student_portal_account
-
-        ensure_student_portal_account(admission)
+        from accounts.models import User as UserModel
+        applicant = application.applicant
+        student_username = str(admission.reg_no).strip().replace('/', '_')
+        if not admission.student_user_id:
+            existing = UserModel.objects.filter(username=student_username).first()
+            if existing:
+                student_user = existing
+            else:
+                student_user = UserModel.objects.create_user(
+                    username=student_username,
+                    first_name=applicant.first_name,
+                    last_name=applicant.last_name,
+                    email=applicant.email,
+                    password='NDU@1234',
+                    is_staff=False,
+                    is_applicant=False,
+                    is_student=True,
+                    must_change_password=True,
+                )
+            admission.student_user = student_user
+            admission.save(update_fields=['student_user'])
     except Exception as e:
         logger.warning('DirectEntry: student account creation failed: %s', f'{e.__class__.__name__}: {e}')
 
@@ -2315,6 +2331,7 @@ class DirectAdmissionEntryView(APIView):
                     study_mode=study_mode,
                     admission_date=timezone.now(),
                     is_admitted=True,
+                    admitted_by=request.user,
                     admission_notes=d.get('admission_notes', ''),
                 )
 

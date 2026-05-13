@@ -211,22 +211,6 @@ class FeePlanRule(models.Model):
 
 # --- Semester tuition billing: recorded payments + registration policy (singleton settings) ---
 
-# tution Leder
-class TuitionLedger(models.Model):
-    user = models.ForeignKey(User, on_delete=models.CASCADE)
-    student = models.ForeignKey('admissions.AdmittedStudent', on_delete=models.CASCADE, related_name='tuition_ledgers')
-    amount = models.DecimalField(max_digits=10, decimal_places=2)
-    paymentDateAndTime = models.DateTimeField()
-    schoolpayReceiptNumber = models.CharField(max_length=100)
-    settlementBankCode = models.CharField(max_length=20)
-    sourceChannelTransDetail = models.CharField(max_length=200)
-    sourceChannelTransactionId = models.CharField(max_length=100)
-    sourcePaymentChannel = models.CharField(max_length=100)
-    studentName = models.CharField(max_length=200)
-    studentPaymentCode = models.CharField(max_length=100)
-    studentRegistrationNumber = models.CharField(max_length=100)
-    transactionCompletionStatus = models.CharField(max_length=20)
-
 #student tution payment records (one per payment attempt, including failed/waived)  
 class StudentTuitionPayment(models.Model):
     PAYMENT_STATUS_CHOICES = [
