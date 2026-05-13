@@ -36,11 +36,11 @@ jobs:
           python manage.py makemigrations --merge --noinput
           
           # Fake known problematic migrations
-          #python manage.py migrate admissions --fake
-          #python manage.py migrate Programs --fake
-          #python manage.py migrate payments --fake
-          #python manage.py migrate Drafts --fake
-          #python manage.py migrate AdmissionLetter --fake
+          python manage.py migrate admissions --fake
+          python manage.py migrate Programs --fake
+          python manage.py migrate payments --fake
+          python manage.py migrate Drafts --fake
+          python manage.py migrate AdmissionLetter --fake
           
           # Final migrate (this should now be safe)
           python manage.py migrate
