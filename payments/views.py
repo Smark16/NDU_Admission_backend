@@ -81,7 +81,7 @@ class DeleteFeePlan(generics.DestroyAPIView):
 class CancelPayment(APIView):
     permission_classes = [IsAuthenticated]
 
-    def get(self, request):
+    def post(self, request):
         try:
             ApplicationPayment.objects.filter(
                 user=request.user,
