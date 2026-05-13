@@ -8,7 +8,6 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('admissions', '0021_merge_20260514_0211'),
         ('payments', '0002_other_fee_schedule_milestone_fields'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
