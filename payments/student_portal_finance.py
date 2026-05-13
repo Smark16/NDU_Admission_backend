@@ -30,8 +30,10 @@ def get_admitted_student_for_user(user):
             "admitted_campus",
             "admitted_batch",
             "application",
-            "programme_enrollment",
-            "programme_enrollment__program_batch",
+            "admitted_by",
+            "student_user"
+            # "programme_enrollment",
+            # "programme_enrollment__program_batch",
         )
         .filter(
             Q(application__applicant=user)
@@ -172,10 +174,6 @@ def offer_letter_portal_fields(student: AdmittedStudent, request=None) -> dict[s
 
 
 def other_schedule_rows_and_due_by_currency(student: AdmittedStudent, intl: bool) -> tuple[list[dict[str, Any]], dict[str, Decimal]]:
-    """
-    Build student-facing rows for scheduled other fees + per-currency amounts still owed
-    (milestones reached, balance > 0). Used by payment status and registration eligibility.
-    """
     cy, ct = _student_curriculum_year_term(student)
     rows: list[dict[str, Any]] = []
     due_by_ccy: dict[str, Decimal] = defaultdict(Decimal)
@@ -406,7 +404,6 @@ def student_billing_lines(student: AdmittedStudent) -> list[dict[str, Any]]:
         )
 
     return lines
-
 
 def payment_status_dict(student: AdmittedStudent, request=None) -> dict:
     totals = student_finance_totals(student)

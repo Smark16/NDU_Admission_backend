@@ -290,8 +290,12 @@ class AdmittedStudent(models.Model):
     is_admitted= models.BooleanField(default=False)
     
     # Registration information (official registration only — do not conflate with document checks)
+    admission_fee_paid = models.BooleanField(default=False)
+    admission_fee_paid_at = models.DateTimeField(
+        null=True,
+        blank=True
+    )
     is_registered = models.BooleanField(default=False)
-    admission_fee_paid = models.BooleanField(default=False) 
     registration_date = models.DateTimeField(null=True, blank=True)
 
     # Physical document verification (original hard-copy check — separate from registration)
@@ -334,6 +338,7 @@ class AdmittedStudent(models.Model):
  
         indexes = [
             models.Index(fields=['application', 'created_at']),
+            models.Index(fields=['student_id']),
             models.Index(fields=['is_registered']),
             models.Index(fields=['admitted_batch', 'is_admitted']),
             models.Index(fields=['is_admitted']),
