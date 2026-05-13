@@ -553,12 +553,6 @@ class GetStudentEnrolledCourses(APIView):
         except StudentProgrammeEnrollment.DoesNotExist:
             pass
 
-        # ── Deferred courses: sourced directly from StudentCurriculumOverride ──
-        # Do NOT attempt to match against StudentCourseUnitEnrollment — deferred
-        # overrides exist at the blueprint (ProgramCurriculumLine) level and may
-        # have no corresponding CourseUnit enrollment at all. Even when a CourseUnit
-        # exists, CourseUnit.curriculum_line is SET_NULL/nullable so matching by
-        # curriculum_line_id against enrollment rows is unreliable.
         deferred_courses = []
         deferred_cl_ids = set()  # used below to exclude these from active list
 
@@ -667,6 +661,7 @@ class GetStudentEnrolledCourses(APIView):
             'program': admitted_student.admitted_program.name if admitted_student.admitted_program else None,
             'campus': admitted_student.admitted_campus.name if admitted_student.admitted_campus else None,
             'passport_photo': photo_url,
+            'admission_fee_paid': admitted_student.admission_fee_paid,
             'current_year_of_study': current_year,
             'current_term_number': current_term,
             'enrolled_courses': active_courses,

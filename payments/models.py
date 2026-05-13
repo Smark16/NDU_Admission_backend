@@ -284,6 +284,10 @@ class TuitionLedger(models.Model):
 
     class Meta:
         ordering = ['-payment_date_time']
+        indexes = [
+            models.Index(fields=['student_payment_code']),
+            models.Index(fields=['schoolpay_receipt_number']),
+        ]
 
     def __str__(self):
         return f"{self.student_name} - {self.amount}"

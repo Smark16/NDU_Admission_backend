@@ -338,6 +338,7 @@ class AdmittedStudent(models.Model):
  
         indexes = [
             models.Index(fields=['application', 'created_at']),
+            models.Index(fields=['student_id']),
             models.Index(fields=['is_registered']),
             models.Index(fields=['admitted_batch', 'is_admitted']),
             models.Index(fields=['is_admitted']),
