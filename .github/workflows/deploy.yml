@@ -36,6 +36,8 @@ jobs:
           python manage.py makemigrations --merge --noinput
           
           # Fake known problematic migrations
+          python manage.py migrate admissions 0021_merge_20260514_0211 --fake
+          python manage.py migrate payments 0003_remove_feeplanrule_payable_term_number_and_more --fake
         
           # Final migrate (this should now be safe)
           python manage.py migrate
