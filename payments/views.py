@@ -81,14 +81,19 @@ class DeleteFeePlan(generics.DestroyAPIView):
 class CancelPayment(APIView):
     permission_classes = [IsAuthenticated]
 
-    def post(self, request):
+    def get(self, request):
         try:
             ApplicationPayment.objects.filter(
                 user=request.user,
                 status='PENDING',
             ).update(status='FAILED')
+
+            return Response({
+                'detail': "Pending payment cancelled successfully"
+            })
+        
         except Exception as e:
-            logger.exception("Error cancelling payment for user %s: %s", request.user.id, str(e))
+            logger.exception("Error cancelling payment for user")
             return Response({
             'detail': "canceling pending payment failed"
         }, status=400)
@@ -105,9 +110,9 @@ class InitiatePayment(APIView):
         reason = "Application Fee"
 
         if settings.DEBUG:
-          callBackUrl = "https://b2dd-196-43-131-1.ngrok-free.app/api/payments/webhook/" 
+          callBackUrl = "https://2b53-41-75-181-57.ngrok-free.app/api/payments/webhook/" 
         else:
-            callBackUrl = request.build_absolute_uri("/api/payments/webhook/")
+          callBackUrl = request.build_absolute_uri("/api/payments/webhook/")
 
         # EXPIRE OLD PAYMENTS
         ApplicationPayment.objects.filter(

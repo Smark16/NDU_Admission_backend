@@ -2,8 +2,9 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from django.conf import settings
+import hashlib
 
-from .schoolpay_auth import build_schoolpay_hash, schoolpay_api_root
+from .schoolpay_auth import schoolpay_api_root
 
 class SchoolPayClient:
     def __init__(self):
@@ -18,7 +19,8 @@ class SchoolPayClient:
         self.session.mount('https://', adapter)
 
     def generate_hash(self, reference):
-        return build_schoolpay_hash(self.school_code, reference, self.password)
+        raw_string = f"{self.school_code}{reference}{self.password}"
+        return hashlib.md5(raw_string.encode()).hexdigest().upper() 
 
     def request_payment(self, amount, phone, ext_ref, first_name, last_name, reason, callBackUrl):
         hash_val = self.generate_hash(ext_ref)

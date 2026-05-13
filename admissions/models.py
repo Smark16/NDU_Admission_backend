@@ -291,6 +291,7 @@ class AdmittedStudent(models.Model):
     
     # Registration information (official registration only — do not conflate with document checks)
     is_registered = models.BooleanField(default=False)
+    admission_fee_paid = models.BooleanField(default=False) 
     registration_date = models.DateTimeField(null=True, blank=True)
 
     # Physical document verification (original hard-copy check — separate from registration)
