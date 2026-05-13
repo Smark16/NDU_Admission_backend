@@ -213,19 +213,80 @@ class FeePlanRule(models.Model):
 
 # tution Leder
 class TuitionLedger(models.Model):
-    user = models.ForeignKey(User, on_delete=models.CASCADE)
-    student = models.ForeignKey('admissions.AdmittedStudent', on_delete=models.CASCADE, related_name='tuition_ledgers')
-    amount = models.DecimalField(max_digits=10, decimal_places=2)
-    paymentDateAndTime = models.DateTimeField()
-    schoolpayReceiptNumber = models.CharField(max_length=100)
-    settlementBankCode = models.CharField(max_length=20)
-    sourceChannelTransDetail = models.CharField(max_length=200)
-    sourceChannelTransactionId = models.CharField(max_length=100)
-    sourcePaymentChannel = models.CharField(max_length=100)
-    studentName = models.CharField(max_length=200)
-    studentPaymentCode = models.CharField(max_length=100)
-    studentRegistrationNumber = models.CharField(max_length=100)
-    transactionCompletionStatus = models.CharField(max_length=20)
+
+    STATUS_CHOICES = (
+        ("Completed", "Completed"),
+        ("Pending", "Pending"),
+        ("Failed", "Failed"),
+        ("Reversed", "Reversed"),
+    )
+
+    user = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True
+    )
+
+    student = models.ForeignKey(
+        'admissions.AdmittedStudent',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='tuition_ledgers'
+    )
+
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+
+    payment_date_time = models.DateTimeField()
+
+    schoolpay_receipt_number = models.CharField(
+        max_length=100,
+        unique=True,
+        db_index=True
+    )
+
+    settlement_bank_code = models.CharField(max_length=50)
+
+    source_channel_trans_detail = models.TextField(blank=True)
+
+    source_channel_transaction_id = models.CharField(
+        max_length=100,
+        db_index=True
+    )
+
+    source_payment_channel = models.CharField(max_length=100)
+
+    student_name = models.CharField(max_length=255)
+
+    student_payment_code = models.CharField(
+        max_length=100,
+        db_index=True
+    )
+
+    student_registration_number = models.CharField(
+        max_length=100,
+        blank=True
+    )
+
+    transaction_completion_status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES
+    )
+
+    raw_response = models.JSONField(default=dict)
+
+    synced_at = models.DateTimeField(auto_now_add=True)
+
+    reconciled = models.BooleanField(default=False)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-payment_date_time']
+
+    def __str__(self):
+        return f"{self.student_name} - {self.amount}"
 
 #student tution payment records (one per payment attempt, including failed/waived)  
 class StudentTuitionPayment(models.Model):
