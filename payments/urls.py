@@ -110,6 +110,7 @@ urlpatterns = [
     path('webhook/', schoolpay_webhook, name='schoolpay_webhook'),
     path('check_payment_status/<str:payment_ref>/', CheckPaymentStatus.as_view()),
     path('register_with_schoolpay/<int:student_id>/', generate_paycode, name='register_with_schoolpay'),
+    path('cancel_pending_payment/', CancelPayment.as_view(), name='cancel_payment'),
 
     # payments
     path('list_payments', ListPayments.as_view()),

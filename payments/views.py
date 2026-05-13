@@ -76,7 +76,23 @@ class DeleteFeePlan(generics.DestroyAPIView):
     serializer_class = ApplicationFeeSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
-# ========================================================schoolpay====================================================
+# ========================================================schoolpay====================================================   
+# Cancel Payment
+class CancelPayment(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        try:
+            ApplicationPayment.objects.filter(
+                user=request.user,
+                status='PENDING',
+            ).update(status='FAILED')
+        except Exception as e:
+            logger.exception("Error cancelling payment for user %s: %s", request.user.id, str(e))
+            return Response({
+            'detail': "canceling pending payment failed"
+        }, status=400)
+     
 # Initiate Payment
 class InitiatePayment(APIView):
     permission_classes = [IsAuthenticated]
@@ -89,7 +105,7 @@ class InitiatePayment(APIView):
         reason = "Application Fee"
 
         if settings.DEBUG:
-          callBackUrl = "https://4ddf-196-43-131-1.ngrok-free.app/api/payments/webhook/" 
+          callBackUrl = "https://b2dd-196-43-131-1.ngrok-free.app/api/payments/webhook/" 
         else:
             callBackUrl = request.build_absolute_uri("/api/payments/webhook/")
 
@@ -306,34 +322,6 @@ class ListPayments(generics.ListAPIView):
             'user'
         ).all()
     
-# School pay code generation
-# @api_view(['POST'])
-# @permission_classes([IsAuthenticated])
-# def generate_paycode(request, student_id):
-#     student = get_object_or_404(AdmittedStudent, id=student_id)
-
-#     if student.is_registered_with_schoolpay:
-#         return Response({
-#             "detail": "Already registered with SchoolPay",
-#             "schoolpay_code": student.student_id
-#         })
-
-#     result = register_student_with_schoolpay(student)
-
-#     print("RESULT OF SCHOOLPAY REGISTRATION:", result)
-
-#     if not result["success"]:
-#         return Response({
-#             "error": "SchoolPay registration failed",
-#             "details": result.get("error") or result.get("data")
-#         }, status=400)
-
-#     return Response({
-#         "detail": "Paycode generated successfully",
-#         "schoolpay_code": student.student_id
-#     })
-
-
 # School pay code generation
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])

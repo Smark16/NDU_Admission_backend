@@ -5,7 +5,6 @@ from django.conf import settings
 
 from .schoolpay_auth import build_schoolpay_hash, schoolpay_api_root
 
-
 class SchoolPayClient:
     def __init__(self):
         self.school_code = settings.SCHOOL_PAY_CODE
