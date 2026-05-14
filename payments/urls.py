@@ -31,7 +31,8 @@ from .other_fee_schedule_views import (
     OtherFeeScheduleView,
 )
 from payments.tuition_payment_views import (
-    TuitionLedgerListView
+    TuitionLedgerListView,
+    ManualHistoricalReconciliationView
 )
 
 from .views import *
@@ -114,4 +115,5 @@ urlpatterns = [
 
     # transaction sync
     path("transactions/", TuitionLedgerListView.as_view(), name="transactions-list"),
+    path("manual-reconcile/", ManualHistoricalReconciliationView.as_view(), name="manual-reconcile"),
 ]

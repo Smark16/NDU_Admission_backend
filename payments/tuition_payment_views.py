@@ -8,10 +8,25 @@ from rest_framework.permissions import (
 )
 
 from payments.models import TuitionLedger
+from datetime import datetime
+from datetime import timedelta
+
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework.permissions import (
+    IsAuthenticated,
+    IsAdminUser
+)
+
+from payments.utils.Transaction_sync import (
+    fetch_transactions_by_range, reconcile_transactions
+)
+
 from payments.serializers import (
     TuitionLedgerSerializer
 )
 
+# fetch all transactions with filters and search
 class TuitionLedgerListView(APIView):
     queryset = TuitionLedger.objects.all()
 
@@ -104,3 +119,96 @@ class TuitionLedgerListView(APIView):
         )
 
         return Response(serializer.data)
+
+# manual transaction sync
+class ManualHistoricalReconciliationView(
+    APIView
+):
+
+    permission_classes = [
+        IsAuthenticated,
+        IsAdminUser
+    ]
+
+    def get(self, request):
+
+        from_date = request.GET.get(
+            "from_date"
+        )
+
+        to_date = request.GET.get(
+            "to_date"
+        )
+
+        # VALIDATION
+        if not from_date or not to_date:
+
+            return Response({
+                "error":
+                    "from_date and to_date are required"
+            }, status=400)
+
+        try:
+
+            start_date = datetime.strptime(
+                from_date,
+                "%Y-%m-%d"
+            ).date()
+
+            end_date = datetime.strptime(
+                to_date,
+                "%Y-%m-%d"
+            ).date()
+
+        except ValueError:
+
+            return Response({
+                "error":
+                    "Invalid date format. Use YYYY-MM-DD"
+            }, status=400)
+
+        total_synced = 0
+
+        current_start = start_date
+
+        # SCHOOLPAY MAX = 31 DAYS
+        while current_start <= end_date:
+
+            current_end = min(
+                current_start + timedelta(days=30),
+                end_date
+            )
+
+            data = fetch_transactions_by_range(
+                from_date=current_start.strftime(
+                    "%Y-%m-%d"
+                ),
+                to_date=current_end.strftime(
+                    "%Y-%m-%d"
+                )
+            )
+
+            synced = reconcile_transactions(
+                data
+            )
+
+            total_synced += synced
+
+            current_start = (
+                current_end + timedelta(days=1)
+            )
+
+        return Response({
+
+            "message":
+                "Historical reconciliation completed successfully",
+
+            "from_date":
+                from_date,
+
+            "to_date":
+                to_date,
+
+            "total_transactions_synced":
+                total_synced
+        })
