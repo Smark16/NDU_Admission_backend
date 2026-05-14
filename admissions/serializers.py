@@ -139,20 +139,12 @@ class AllApplicationsReportSerializer(serializers.ModelSerializer):
         except Exception:
             return ""
 
-    # def get_programs(self, obj):
-    #     try:
-    #         return ", ".join([
-    #             choice.program.name
-    #             for choice in obj.program_choices.select_related("program").order_by("choice_order")
-    #         ])
-    #     except Exception:
-    #         return ""
-        
     def get_programs(self, obj):
         try:
             return ", ".join([
-            p.name for p in obj.programs.all()
-        ])
+                choice.program.name
+                for choice in obj.program_choices.select_related("program").order_by("choice_order")
+            ])
         except Exception:
             return ""
     

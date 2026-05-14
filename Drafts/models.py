@@ -32,7 +32,6 @@ class DraftApplication(models.Model):
 
     # Program & Campus
     campus = models.ForeignKey(Campus, on_delete=models.SET_NULL, null=True, blank=True)
-    programs = models.ManyToManyField(Program, blank=True)
     academic_level = models.ForeignKey(AcademicLevel, on_delete=models.SET_NULL, null=True, blank=True)
 
     # Academic Results (stored as JSON for flexibility)

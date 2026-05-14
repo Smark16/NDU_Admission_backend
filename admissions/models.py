@@ -93,7 +93,6 @@ class Application(models.Model):
     applicant = models.ForeignKey(User, on_delete=models.CASCADE, related_name='applications')
     batch = models.ForeignKey(Batch, on_delete=models.CASCADE, related_name='applications')
     campus = models.ForeignKey(Campus, on_delete=models.CASCADE, related_name='applications')
-    programs = models.ManyToManyField(Program, blank=True, related_name='application_programs')
     academic_level = models.ForeignKey(AcademicLevel, on_delete=models.CASCADE)
     # Personal Information
     first_name = models.CharField(max_length=100)
