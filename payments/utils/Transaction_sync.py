@@ -89,7 +89,8 @@ def reconcile_transactions(data):
         # FIND STUDENT
         student = (
             AdmittedStudent.objects
-            .select_related("user")
+            .select_related("student_user", "application", 
+                 "admitted_program", "admitted_batch", "admitted_campus", "admitted_by")
             .filter(
                 student_id=payment_code
             )
