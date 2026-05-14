@@ -3,7 +3,7 @@ from decimal import Decimal, InvalidOperation
 
 from django.db import IntegrityError
 from rest_framework import status
-from rest_framework.permissions import IsAuthenticated
+from .permissions import ProgramSchedulingAPIPermission
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -23,7 +23,7 @@ def serialize_course_unit(cu: CourseUnit) -> dict:
 
 
 class ListCourseUnitsView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [ProgramSchedulingAPIPermission]
 
     def get(self, request):
         qs = CourseUnit.objects.all().order_by("code", "name")
@@ -34,7 +34,7 @@ class ListCourseUnitsView(APIView):
 
 
 class CreateCourseUnitView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [ProgramSchedulingAPIPermission]
 
     def post(self, request):
         name = (request.data.get("name") or "").strip()
@@ -63,7 +63,7 @@ class CreateCourseUnitView(APIView):
 
 
 class UpdateCourseUnitView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [ProgramSchedulingAPIPermission]
 
     def put(self, request, pk):
         try:

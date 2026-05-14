@@ -15,7 +15,7 @@ from django.db.utils import ProgrammingError
 from django.http import HttpResponse
 from rest_framework import status
 from rest_framework.parsers import FormParser, MultiPartParser
-from rest_framework.permissions import IsAuthenticated
+from .permissions import ProgramSchedulingAPIPermission
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -45,7 +45,7 @@ class _BatchUnavailableMixin:
 
 class CreateBatchView(_BatchUnavailableMixin, APIView):
     """Create a program batch (academic year level)."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [ProgramSchedulingAPIPermission]
 
     def post(self, request, program_id):
         try:
@@ -168,7 +168,7 @@ class CreateBatchView(_BatchUnavailableMixin, APIView):
 
 class CreateSemesterView(_BatchUnavailableMixin, APIView):
     """Create a semester for a program batch."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [ProgramSchedulingAPIPermission]
 
     def post(self, request, batch_id):
         try:
@@ -309,7 +309,7 @@ class CreateSemesterView(_BatchUnavailableMixin, APIView):
 
 class CreateSubjectView(_BatchUnavailableMixin, APIView):
     """Create a course unit for a program batch/semester."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [ProgramSchedulingAPIPermission]
 
     def post(self, request, batch_id):
         try:
@@ -408,7 +408,7 @@ class CreateSubjectView(_BatchUnavailableMixin, APIView):
 
 class ListProgramBatchesView(_BatchUnavailableMixin, APIView):
     """List all program batches for a program."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [ProgramSchedulingAPIPermission]
 
     def get(self, request, program_id):
         try:
@@ -480,7 +480,7 @@ class ListProgramBatchesView(_BatchUnavailableMixin, APIView):
 
 class UpdateProgramBatchView(_BatchUnavailableMixin, APIView):
     """Update a program batch."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [ProgramSchedulingAPIPermission]
 
     def put(self, request, batch_id):
         try:
@@ -578,7 +578,7 @@ class UpdateProgramBatchView(_BatchUnavailableMixin, APIView):
 
 class DeleteProgramBatchView(_BatchUnavailableMixin, APIView):
     """Delete a program batch (only if no semesters or course units)."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [ProgramSchedulingAPIPermission]
 
     def delete(self, request, batch_id):
         try:
@@ -705,7 +705,7 @@ class BatchTemplateDownloadView(_BatchUnavailableMixin, APIView):
         the workbook contains one sample row (and dropdown options) only for
         those programmes. When omitted, all programmes are included (legacy).
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [ProgramSchedulingAPIPermission]
 
     def get(self, request):
         raw_ids = (request.GET.get("program_ids") or "").strip()
@@ -809,7 +809,7 @@ class BatchTemplateDownloadView(_BatchUnavailableMixin, APIView):
 
 class BatchBulkUploadView(_BatchUnavailableMixin, APIView):
     """POST /api/program/batches/bulk_upload — create ProgramBatch rows from file."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [ProgramSchedulingAPIPermission]
     parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request):
@@ -1087,7 +1087,7 @@ class AutoCreateSemestersView(_BatchUnavailableMixin, APIView):
         "errors": [...]
       }
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [ProgramSchedulingAPIPermission]
 
     def post(self, request):
         program_id = request.data.get("program_id")

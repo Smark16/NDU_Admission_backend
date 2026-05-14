@@ -9,6 +9,11 @@ class AuditLog(models.Model):
         ('register', 'register'),
         ('phys_verify', 'Physical documents verified'),
         ('phys_clear', 'Physical documents verification cleared'),
+        ('id_card_generate', 'ID card generated'),
+        ('id_card_revoke', 'ID card revoked'),
+        ('id_card_reissue', 'ID card reissued'),
+        ('passport_photo_update', 'Passport / ID photo updated at desk'),
+        ('passport_photo_delete', 'Passport / ID photo removed at desk'),
     ]
     
     user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)

@@ -3,8 +3,9 @@ Semester tuition billing (student portal) + course registration + registration s
 """
 from django.utils.dateparse import parse_datetime
 
+from Programs.permissions import FeePlanConfigurationPermission
 from rest_framework import status
-from rest_framework.permissions import IsAdminUser, IsAuthenticated
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -218,7 +219,7 @@ class GetRegistrationSettings(APIView):
 class UpdateRegistrationSettings(APIView):
     """Update registration policy (typically staff)."""
 
-    permission_classes = [IsAdminUser]
+    permission_classes = [FeePlanConfigurationPermission]
 
     def post(self, request):
         try:

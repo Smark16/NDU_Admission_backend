@@ -1,6 +1,6 @@
 """DELETE semester within a batch (used by Batch Management UI)."""
 from rest_framework import status
-from rest_framework.permissions import IsAuthenticated
+from .permissions import ProgramSchedulingAPIPermission
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -8,7 +8,7 @@ from .models import ProgramBatch, Semester
 
 
 class DeleteSemesterForBatchView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [ProgramSchedulingAPIPermission]
 
     def delete(self, request, batch_id, semester_id):
         try:

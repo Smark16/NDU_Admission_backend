@@ -189,15 +189,24 @@ class RoleSerializer(serializers.ModelSerializer):
 
 # create role
 class GroupSerializer(serializers.ModelSerializer):
+    permissions = serializers.PrimaryKeyRelatedField(
+        queryset=Permission.objects.all(),
+        many=True,
+        required=False,
+    )
+
     class Meta:
         model = Group
-        fields = '__all__'
+        fields = ("id", "name", "permissions")
 
-#permissions
+
+# permissions (for role matrix UI)
 class PermissionSerializer(serializers.ModelSerializer):
+    app_label = serializers.CharField(source="content_type.app_label", read_only=True)
+
     class Meta:
         model = Permission
-        fields = '__all__'
+        fields = ("id", "name", "codename", "content_type", "app_label")
 
 # profile
 class ProfileSerializer(serializers.ModelSerializer):
@@ -211,4 +220,11 @@ class SystemSettingsSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = SystemSettings
-        fields = ['student_session_timeout', 'admin_session_timeout', 'updated_by_name', 'updated_at']
+        fields = [
+            'student_session_timeout',
+            'admin_session_timeout',
+            'id_card_templates',
+            'active_id_card_template',
+            'updated_by_name',
+            'updated_at',
+        ]

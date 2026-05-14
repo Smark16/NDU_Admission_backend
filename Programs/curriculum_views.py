@@ -29,7 +29,7 @@ from collections import defaultdict
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from rest_framework import status
-from rest_framework.permissions import IsAuthenticated
+from .permissions import CurriculumAPIPermission
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -43,20 +43,27 @@ from .models import (
     ensure_program_default_curriculum_version,
     resolve_program_default_curriculum_version,
 )
+from .curriculum_inheritance import (
+    curriculum_context_payload,
+    curriculum_owner_program,
+    curriculum_versions_queryset,
+    program_allows_curriculum_writes,
+)
 from .serializers import ProgramCurriculumLineSerializer, ProgramCurriculumVersionSerializer
 
 
 class ListCreateCurriculumView(APIView):
     """List or create curriculum lines for a specific programme."""
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CurriculumAPIPermission]
 
     @staticmethod
     def _resolve_version(program, request):
+        owner = curriculum_owner_program(program)
         version_id = request.query_params.get('curriculum_version') or request.data.get('curriculum_version')
         if version_id:
             try:
-                version = ProgramCurriculumVersion.objects.get(pk=int(version_id), program=program)
+                version = ProgramCurriculumVersion.objects.get(pk=int(version_id), program=owner)
             except (ValueError, ProgramCurriculumVersion.DoesNotExist):
                 return None, Response(
                     {'detail': 'Invalid curriculum_version for this programme.'},
@@ -74,6 +81,7 @@ class ListCreateCurriculumView(APIView):
 
     def get(self, request, program_id):
         program = get_object_or_404(Program, pk=program_id)
+        owner = curriculum_owner_program(program)
         curriculum_version, error = self._resolve_version(program, request)
         if error:
             return error
@@ -82,7 +90,7 @@ class ListCreateCurriculumView(APIView):
             'catalog_course',
             'curriculum_version',
         ).filter(
-            program=program,
+            program=owner,
             curriculum_version=curriculum_version,
         )
 
@@ -129,12 +137,14 @@ class ListCreateCurriculumView(APIView):
         flat_data = serializer.data
 
         # credit summary is always included (single aggregation query)
-        credit_summary = program.credit_summary(curriculum_version=curriculum_version)
+        credit_summary = owner.credit_summary(curriculum_version=curriculum_version)
 
         # --- grouped response ---
         grouped = request.query_params.get('grouped', 'false').lower() == 'true'
         if grouped:
-            return Response(self._build_grouped(program, curriculum_version, flat_data, credit_summary))
+            payload = self._build_grouped(program, curriculum_version, flat_data, credit_summary)
+            payload['inheritance'] = curriculum_context_payload(program)
+            return Response(payload)
 
         return Response({
             'program_id': program.id,
@@ -145,10 +155,16 @@ class ListCreateCurriculumView(APIView):
             'credit_summary': credit_summary,
             'count': len(flat_data),
             'results': flat_data,
+            'inheritance': curriculum_context_payload(program),
         })
 
     def post(self, request, program_id):
         program = get_object_or_404(Program, pk=program_id)
+        if not program_allows_curriculum_writes(program):
+            return Response(
+                {'detail': 'This programme inherits its curriculum. Fork it before making local changes.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         curriculum_version, error = self._resolve_version(program, request)
         if error:
             return error
@@ -222,32 +238,35 @@ class ListCreateCurriculumView(APIView):
 class CurriculumSummaryView(APIView):
     """Return only the credit completeness summary for a programme's curriculum."""
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CurriculumAPIPermission]
 
     def get(self, request, program_id):
         program = get_object_or_404(Program, pk=program_id)
         curriculum_version, error = ListCreateCurriculumView._resolve_version(program, request)
         if error:
             return error
+        owner = curriculum_owner_program(program)
         return Response({
             'program_id': program.id,
             'program_name': program.name,
             'program_short_form': program.short_form,
             'curriculum_version': ProgramCurriculumVersionSerializer(curriculum_version).data,
             'calendar_type': program.calendar_type,
-            'credit_summary': program.credit_summary(curriculum_version=curriculum_version),
+            'credit_summary': owner.credit_summary(curriculum_version=curriculum_version),
+            'inheritance': curriculum_context_payload(program),
         })
 
 
 class CurriculumVersionListCreateView(APIView):
     """List/create curriculum versions for a programme."""
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CurriculumAPIPermission]
 
     def get(self, request, program_id):
         program = get_object_or_404(Program, pk=program_id)
-        ensure_program_default_curriculum_version(program)
-        qs = ProgramCurriculumVersion.objects.filter(program=program).order_by('-is_default', 'name')
+        if program.curriculum_allows_writes:
+            ensure_program_default_curriculum_version(program)
+        qs = curriculum_versions_queryset(program).order_by('-is_default', 'name')
         active_only = request.query_params.get('active_only', 'false').lower() == 'true'
         if active_only:
             qs = qs.filter(is_active=True)
@@ -255,10 +274,16 @@ class CurriculumVersionListCreateView(APIView):
             'program_id': program.id,
             'count': qs.count(),
             'versions': ProgramCurriculumVersionSerializer(qs, many=True).data,
+            'inheritance': curriculum_context_payload(program),
         })
 
     def post(self, request, program_id):
         program = get_object_or_404(Program, pk=program_id)
+        if not program_allows_curriculum_writes(program):
+            return Response(
+                {'detail': 'This programme inherits its curriculum and cannot create versions until forked.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         data = request.data.copy()
         data['program'] = program.id
         clone_from_id = data.pop('clone_from_version_id', None) or request.data.get('clone_from_version_id')
@@ -309,13 +334,18 @@ class CurriculumVersionListCreateView(APIView):
 
 
 class CurriculumVersionDetailView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CurriculumAPIPermission]
 
     def _get(self, pk):
         return get_object_or_404(ProgramCurriculumVersion, pk=pk)
 
     def patch(self, request, pk):
         version = self._get(pk)
+        if not program_allows_curriculum_writes(version.program):
+            return Response(
+                {'detail': 'This curriculum version is read-only for inherited programmes.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         serializer = ProgramCurriculumVersionSerializer(version, data=request.data, partial=True)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -338,6 +368,11 @@ class CurriculumVersionDetailView(APIView):
 
     def delete(self, request, pk):
         version = self._get(pk)
+        if not program_allows_curriculum_writes(version.program):
+            return Response(
+                {'detail': 'This curriculum version is read-only for inherited programmes.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         if version.program_batches.exists() or version.student_enrollments.exists():
             return Response(
                 {'detail': 'Cannot delete version mapped to program batches or student enrollments.'},
@@ -366,7 +401,7 @@ class CurriculumSuggestionsForSemesterView(APIView):
     Returns HTTP 400 if the semester has no curriculum position.
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CurriculumAPIPermission]
 
     def get(self, request, semester_id):
         semester = get_object_or_404(
@@ -386,6 +421,7 @@ class CurriculumSuggestionsForSemesterView(APIView):
             )
 
         program = semester.program_batch.program
+        owner = curriculum_owner_program(program)
         curriculum_version = (
             semester.program_batch.curriculum_version
             or resolve_program_default_curriculum_version(program)
@@ -400,7 +436,7 @@ class CurriculumSuggestionsForSemesterView(APIView):
         curriculum_lines = (
             ProgramCurriculumLine.objects
             .filter(
-                program=program,
+                program=owner,
                 curriculum_version=curriculum_version,
                 year_of_study=semester.year_of_study,
                 term_number=semester.term_number,
@@ -466,7 +502,7 @@ class CurriculumSuggestionsForSemesterView(APIView):
 class CurriculumLineDetailView(APIView):
     """Retrieve, partially update, or delete a single curriculum line."""
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CurriculumAPIPermission]
 
     def _get_object(self, pk):
         return get_object_or_404(ProgramCurriculumLine, pk=pk)
@@ -477,6 +513,11 @@ class CurriculumLineDetailView(APIView):
 
     def patch(self, request, pk):
         line = self._get_object(pk)
+        if not program_allows_curriculum_writes(line.program):
+            return Response(
+                {'detail': 'This programme inherits its curriculum. Fork it before making local changes.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         serializer = ProgramCurriculumLineSerializer(
             line, data=request.data, partial=True
         )
@@ -487,6 +528,11 @@ class CurriculumLineDetailView(APIView):
 
     def delete(self, request, pk):
         line = self._get_object(pk)
+        if not program_allows_curriculum_writes(line.program):
+            return Response(
+                {'detail': 'This programme inherits its curriculum. Fork it before making local changes.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         # ── Operational-use guard ─────────────────────────────────────────────
         # Check whether any live academic work already depends on this line.
@@ -572,7 +618,7 @@ class BulkUploadCurriculumView(APIView):
       }
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CurriculumAPIPermission]
 
     REQUIRED_COLS = {'course_code', 'year_of_study', 'term_number', 'course_type'}
 
@@ -582,6 +628,11 @@ class BulkUploadCurriculumView(APIView):
         from django.db import transaction as db_transaction
 
         program = get_object_or_404(Program, pk=program_id)
+        if not program_allows_curriculum_writes(program):
+            return Response(
+                {'detail': 'This programme inherits its curriculum. Fork it before making local changes.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         uploaded = request.FILES.get('file')
         if not uploaded:

@@ -6,14 +6,14 @@ from django.db.utils import ProgrammingError
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-from rest_framework.permissions import IsAuthenticated
+from .permissions import ProgramSchedulingAPIPermission
 from django.db.models import Prefetch
 from .models import Program, ProgramBatch, Semester, CourseUnit
 
 
 class ProgramStructureView(APIView):
     """Get program structure with batches, semesters, and course units"""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [ProgramSchedulingAPIPermission]
 
     def get(self, request, program_id):
         try:

@@ -18,23 +18,21 @@ class AdmittedStudentAdmin(admin.ModelAdmin):
         'reg_no',
         'schoolpay_code',
         'is_registered_with_schoolpay',
+        'physical_documents_verified',
         'admitted_batch',
         'admitted_program',
-        'admitted_by'
-        # 'physical_documents_verified',
-        # 'physical_documents_verified_at',
-        # 'physical_documents_verified_by',
+        'admitted_by',
     ]
     list_filter = [
         'is_registered',
         'is_registered_with_schoolpay',
-        # 'physical_documents_verified',
+        'physical_documents_verified',
         'admitted_batch',
         'admitted_campus',
         'is_admitted',
     ]
     search_fields = ['student_id', 'reg_no', 'schoolpay_code', 'application__first_name', 'application__last_name']
-    # raw_id_fields = ('physical_documents_verified_by',)
+    raw_id_fields = ('physical_documents_verified_by',)
 
 @admin.register(AcademicLevel)
 class AcademicLevelAdmin(admin.ModelAdmin):
@@ -110,6 +108,36 @@ class NotificationAdmin(admin.ModelAdmin):
     list_display = ['recipient', 'title', 'message']
     list_filter = ['created_at']
     ordering = ['-created_at']
+
+
+@admin.register(IdCardPdfTemplate)
+class IdCardPdfTemplateAdmin(admin.ModelAdmin):
+    list_display = ["name", "key", "updated_at"]
+    search_fields = ["name", "key"]
+
+
+@admin.register(StudentIdCard)
+class StudentIdCardAdmin(admin.ModelAdmin):
+    list_display = [
+        "card_number",
+        "admitted_student",
+        "status",
+        "is_active",
+        "issue_date",
+        "expiry_date",
+        "issued_by",
+        "created_at",
+    ]
+    list_filter = ["status", "is_active", "issue_date"]
+    search_fields = [
+        "card_number",
+        "admitted_student__student_id",
+        "admitted_student__reg_no",
+        "admitted_student__application__first_name",
+        "admitted_student__application__last_name",
+    ]
+    raw_id_fields = ("admitted_student", "issued_by", "replaced_by")
+    readonly_fields = ["created_at", "updated_at"]
 
 
 @admin.register(EmailTemplate)

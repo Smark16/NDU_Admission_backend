@@ -63,8 +63,11 @@ def _lines_for_term(
     year_of_study: int,
     term_number: int,
 ):
+    from .curriculum_inheritance import curriculum_owner_program
+
+    owner = curriculum_owner_program(program)
     qs = ProgramCurriculumLine.objects.filter(
-        program=program,
+        program=owner,
         year_of_study=year_of_study,
         term_number=term_number,
         is_active=True,
@@ -109,8 +112,11 @@ def authoritative_track_names(program: Program) -> list[str]:
     )
     if explicit:
         return explicit
+    from .curriculum_inheritance import curriculum_owner_program
+
+    owner = curriculum_owner_program(program)
     values = (
-        ProgramCurriculumLine.objects.filter(program=program, is_active=True)
+        ProgramCurriculumLine.objects.filter(program=owner, is_active=True)
         .exclude(Q(specialization__isnull=True) | Q(specialization=""))
         .values_list("specialization", flat=True)
     )

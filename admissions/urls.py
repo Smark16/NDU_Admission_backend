@@ -1,5 +1,7 @@
 from django.urls import path
 from admissions import views
+from admissions import id_card_views
+from admissions import id_card_template_views
 from admissions.analytics_views import AnalyticsDashboardView
 from admissions.email_template_views import (
     EmailTemplateDetailView,
@@ -74,6 +76,10 @@ urlpatterns = [
     
     # Admission Management URLs
     path('create_admissions', views.AdmitStudent.as_view()),
+    path(
+        'program_batches_options/<int:program_id>/',
+        views.ListProgramBatchOptionsForAdmission.as_view(),
+    ),
     path('update_admission/<int:pk>/', views.UpdateAdmittedStudent.as_view()),
     path('list_admitted_students',  views.ListAdmittedStudents.as_view()),
     path('admitted_students/<int:pk>/revoke/', views.RevokeAdmittedStudent.as_view()),
@@ -106,6 +112,33 @@ urlpatterns = [
     # Direct entry (admin / manual / legacy migration)
     path('direct_application_entry', views.DirectApplicationEntryView.as_view(), name='direct_application_entry'),
     path('direct_admission_entry', views.DirectAdmissionEntryView.as_view(), name='direct_admission_entry'),
+
+    # Student ID cards (admin)
+    path('id_cards/eligible', id_card_views.IdCardEligibleListView.as_view(), name='id_cards_eligible'),
+    path('id_cards/filter-options', id_card_views.IdCardFilterOptionsView.as_view(), name='id_cards_filter_options'),
+    path(
+        'id_cards/admitted/<int:admitted_student_id>/passport_photo',
+        id_card_views.IdCardAdmittedPassportPhotoView.as_view(),
+        name='id_cards_admitted_passport_photo',
+    ),
+    path('id_cards/generate', id_card_views.IdCardGenerateView.as_view(), name='id_cards_generate'),
+    path('id_cards/<int:card_id>/preview-data', id_card_views.IdCardPreviewDataView.as_view(), name='id_cards_preview'),
+    path('id_cards/<int:card_id>/revoke', id_card_views.IdCardRevokeView.as_view(), name='id_cards_revoke'),
+    path('id_cards/<int:card_id>/reissue', id_card_views.IdCardReissueView.as_view(), name='id_cards_reissue'),
+    path('id_cards', id_card_views.IdCardListView.as_view(), name='id_cards_list'),
+    # ID card PDF templates (map fields like offer letter)
+    path('id_card_templates', id_card_template_views.IdCardPdfTemplateListCreateView.as_view(), name='id_card_templates_list'),
+    path('id_card_templates/<int:pk>', id_card_template_views.IdCardPdfTemplateDetailView.as_view(), name='id_card_templates_detail'),
+    path(
+        'id_card_templates/<int:pk>/pdf_preview',
+        id_card_template_views.IdCardPdfTemplatePreviewView.as_view(),
+        name='id_card_templates_pdf_preview',
+    ),
+    path(
+        'id_card_templates/<int:pk>/save_field_positions',
+        id_card_template_views.IdCardPdfTemplateSavePositionsView.as_view(),
+        name='id_card_templates_save_positions',
+    ),
 ]
 
 

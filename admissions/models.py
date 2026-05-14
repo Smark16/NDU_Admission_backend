@@ -199,6 +199,22 @@ class Application(models.Model):
 
     class Meta:
         ordering = ['-created_at']
+        default_permissions = ('add', 'change', 'delete', 'view')
+        permissions = [
+            (
+                'approve_application',
+                'Can approve applications (mark accepted for admission processing)',
+            ),
+            ('reject_application', 'Can reject applications'),
+            (
+                'admit_applicant',
+                'Can admit applicants (create or finalize admission records)',
+            ),
+            (
+                'edit_application_registration',
+                'Can edit applicant registration data and programme choices (admin)',
+            ),
+        ]
 
         indexes = [
             models.Index(fields=['status', 'created_at']),
@@ -294,7 +310,17 @@ class AdmittedStudent(models.Model):
     admitted_program = models.ForeignKey(Program, on_delete=models.CASCADE)
     admitted_batch = models.ForeignKey(Batch, on_delete=models.CASCADE, related_name='admitted_students')
     admitted_campus = models.ForeignKey(Campus, on_delete=models.CASCADE, related_name='admitted_students')
-    
+    intended_program_batch = models.ForeignKey(
+        'Programs.ProgramBatch',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='intended_admissions',
+        help_text=(
+            'The academic cohort this student should be placed in. Set at time of admission.'
+        ),
+    )
+
     # Admission information
     admission_date = models.DateTimeField(default=timezone.now)
     admission_letter_sent = models.BooleanField(default=False)
@@ -306,20 +332,20 @@ class AdmittedStudent(models.Model):
     registration_date = models.DateTimeField(null=True, blank=True)
 
     # Physical document verification (original hard-copy check — separate from registration)
-    # physical_documents_verified = models.BooleanField(default=False)
-    # physical_documents_verified_at = models.DateTimeField(null=True, blank=True)
-    # physical_documents_verified_by = models.ForeignKey(
-    #     User,
-    #     on_delete=models.SET_NULL,
-    #     null=True,
-    #     blank=True,
-    #     related_name="physical_document_verifications",
-    # )
-    # physical_documents_notes = models.TextField(
-    #     blank=True,
-    #     help_text="Staff notes when documents were verified at the desk",
-    # )
-    
+    physical_documents_verified = models.BooleanField(default=False)
+    physical_documents_verified_at = models.DateTimeField(null=True, blank=True)
+    physical_documents_verified_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="physical_document_verifications",
+    )
+    physical_documents_notes = models.TextField(
+        blank=True,
+        help_text="Staff notes when documents were verified at the desk",
+    )
+
     # Notes
     admission_notes = models.TextField(blank=True, help_text="Notes about the admission")
     admitted_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='admitted_students')
@@ -334,6 +360,7 @@ class AdmittedStudent(models.Model):
         permissions = [
             ("verify_physical_documents", "Can verify physical admission documents"),
             ("revoke_admission", "Can revoke admitted students"),
+            ("restore_revoked_admission", "Can restore revoked admissions"),
         ]
         constraints = [
             models.UniqueConstraint(
@@ -348,7 +375,7 @@ class AdmittedStudent(models.Model):
             models.Index(fields=['is_registered']),
             models.Index(fields=['admitted_batch', 'is_admitted']),
             models.Index(fields=['is_admitted']),
-            # models.Index(fields=['physical_documents_verified']),
+            models.Index(fields=['physical_documents_verified']),
         ]
     
     def __str__(self):
@@ -377,6 +404,110 @@ class AdmittedStudent(models.Model):
     @property
     def phone(self):
         return self.application.phone
+
+
+class StudentIdCard(models.Model):
+    """Physical / digital student ID card issuance tied to an admission record."""
+
+    STATUS_GENERATED = "generated"
+    STATUS_PRINTED = "printed"
+    STATUS_ACTIVE = "active"
+    STATUS_REVOKED = "revoked"
+    STATUS_REISSUED = "reissued"
+    STATUS_CHOICES = [
+        (STATUS_GENERATED, "Generated"),
+        (STATUS_PRINTED, "Printed"),
+        (STATUS_ACTIVE, "Active"),
+        (STATUS_REVOKED, "Revoked"),
+        (STATUS_REISSUED, "Reissued"),
+    ]
+
+    admitted_student = models.ForeignKey(
+        AdmittedStudent,
+        on_delete=models.CASCADE,
+        related_name="id_cards",
+    )
+    card_number = models.CharField(max_length=48, unique=True, db_index=True)
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_GENERATED,
+    )
+    is_active = models.BooleanField(
+        default=True,
+        help_text="False when revoked or superseded by a reissue.",
+    )
+    issue_date = models.DateField(default=timezone.now)
+    expiry_date = models.DateField(null=True, blank=True)
+    print_count = models.PositiveIntegerField(default=0)
+    revoke_reason = models.TextField(blank=True, default="")
+    reissue_reason = models.TextField(blank=True, default="")
+    replaced_by = models.ForeignKey(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="supersedes",
+    )
+    issued_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="issued_id_cards",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "Student ID card"
+        verbose_name_plural = "Student ID cards"
+        permissions = [
+            (
+                "manage_id_cards",
+                "Issue, revoke, and reissue student ID cards",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["admitted_student", "is_active"]),
+            models.Index(fields=["status"]),
+        ]
+
+    def __str__(self):
+        return f"{self.card_number} ({self.admitted_student_id})"
+
+
+class IdCardPdfTemplate(models.Model):
+    """PDF ID card blank: map merge fields to coordinates (same idea as offer letter PDF templates)."""
+
+    key = models.SlugField(
+        max_length=80,
+        unique=True,
+        db_index=True,
+        help_text="Stable key; must match SystemSettings.active_id_card_template when this layout is active.",
+    )
+    name = models.CharField(max_length=120)
+    template_pdf = models.FileField(upload_to="id_card_templates/", help_text="PDF artwork (e.g. card front)")
+    field_positions = models.JSONField(default=dict, blank=True)
+    front_title = models.CharField(max_length=200, blank=True, default="")
+    institution = models.CharField(max_length=200, blank=True, default="")
+    issuer_title = models.CharField(max_length=120, blank=True, default="")
+    issuer_signatory = models.CharField(max_length=120, blank=True, default="")
+    return_to = models.TextField(blank=True, default="")
+    tel = models.CharField(max_length=80, blank=True, default="")
+    email = models.EmailField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name"]
+        verbose_name = "ID card PDF template"
+        verbose_name_plural = "ID card PDF templates"
+
+    def __str__(self):
+        return f"{self.name} ({self.key})"
+
 
 class AdmissionChangeRequest(models.Model):
     CHANGE_TYPE_CHOICES = [
@@ -444,6 +575,13 @@ class AdmissionChangeRequest(models.Model):
         ordering = ['-created_at']
         verbose_name = "Admission Change Request"
         verbose_name_plural = "Admission Change Requests"
+        default_permissions = ('add', 'change', 'delete', 'view')
+        permissions = [
+            (
+                'manage_admission_change_requests',
+                'Can approve or reject admission change requests (programme, campus, etc.)',
+            ),
+        ]
 
     def __str__(self):
         return f"{self.admitted_student.student_id} — {self.get_change_type_display()} [{self.status}]"

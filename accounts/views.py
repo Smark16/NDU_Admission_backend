@@ -1,14 +1,14 @@
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework import generics, permissions, status
+from rest_framework.parsers import JSONParser, FormParser, MultiPartParser
 from rest_framework.views import APIView
 from django.utils import timezone
-from django.db.models import Q
+from django.db.models import Q, Count
 from django.shortcuts import get_object_or_404
 from django.conf import settings
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework.permissions import *
-from django.contrib.auth.models import Group
 from django.contrib.auth.models import Group, Permission
 from django.contrib.auth import authenticate
 from .serializers import *
@@ -127,10 +127,26 @@ class getUser(generics.RetrieveAPIView):
     
 # list admin users
 class ListUsers(generics.ListAPIView):
-    queryset = User.objects.filter(is_applicant=False).prefetch_related('groups', 'user_permissions', 'campuses')
     serializer_class = UserSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
+    def get_queryset(self):
+        qs = User.objects.filter(is_applicant=False).prefetch_related(
+            "groups", "user_permissions", "campuses"
+        )
+        no_group = (self.request.query_params.get("no_group") or "").lower()
+        if no_group in ("1", "true", "yes"):
+            qs = qs.annotate(_group_count=Count("groups", distinct=True)).filter(_group_count=0)
+        search = (self.request.query_params.get("search") or "").strip()
+        if search:
+            qs = qs.filter(
+                Q(first_name__icontains=search)
+                | Q(last_name__icontains=search)
+                | Q(email__icontains=search)
+                | Q(username__icontains=search)
+                | Q(staff_id__icontains=search)
+            )
+        return qs.order_by("-date_joined", "last_name", "first_name")
 
 class ListStaff(generics.ListAPIView):
     """Staff users for assigning as course-unit lecturers."""
@@ -222,25 +238,100 @@ class ListDetailedRoles(generics.ListAPIView):
 
 # list permissions
 class ListPermissions(generics.ListAPIView):
-    queryset = Permission.objects.all()
     serializer_class = PermissionSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+    def get_queryset(self):
+        qs = Permission.objects.select_related("content_type").order_by(
+            "content_type__app_label", "codename"
+        )
+        app_label = (self.request.query_params.get("app_label") or "").strip()
+        if app_label:
+            qs = qs.filter(content_type__app_label__iexact=app_label)
+        wf = (self.request.query_params.get("workflow_only") or "").lower()
+        if wf in ("1", "true", "yes"):
+            admissions_codes = (
+                "approve_application",
+                "reject_application",
+                "admit_applicant",
+                "manage_admission_change_requests",
+                "revoke_admission",
+                "verify_physical_documents",
+                "edit_application_registration",
+                "restore_revoked_admission",
+            )
+            accounts_codes = (
+                "approve_admissions",
+                "access_admissions",
+                "access_academics",
+                "access_finance",
+                "manage_curriculum",
+                "manage_program_scheduling",
+                "manage_course_catalog",
+                "manage_academic_enrollment",
+                "configure_fee_plans",
+                "manage_communication_templates",
+            )
+            qs = qs.filter(
+                Q(content_type__app_label="admissions", codename__in=admissions_codes)
+                | Q(content_type__app_label="accounts", codename__in=accounts_codes)
+            )
+        return qs
+
+
+def _permission_ids_from_request(request):
+    """Parse permission PKs from JSON or multipart form (duplicate keys)."""
+    raw = request.data.get("permissions")
+    if isinstance(raw, list):
+        ids = raw
+    elif hasattr(request.data, "getlist"):
+        ids = request.data.getlist("permissions")
+    else:
+        ids = []
+    out = []
+    for x in ids:
+        try:
+            out.append(int(x))
+        except (TypeError, ValueError):
+            continue
+    return out
+
 
 # create roles
 class CreateRoles(generics.CreateAPIView):
     queryset = Group.objects.all()
     serializer_class = GroupSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    parser_classes = [JSONParser, MultiPartParser, FormParser]
+
+    def create(self, request, *args, **kwargs):
+        name = (request.data.get("name") or "").strip()
+        if not name:
+            return Response({"detail": "name is required."}, status=status.HTTP_400_BAD_REQUEST)
+        perm_ids = _permission_ids_from_request(request)
+        serializer = self.get_serializer(
+            data={"name": name, "permissions": perm_ids},
+        )
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
 
 # edit roles
 class EditRoles(generics.UpdateAPIView):
     queryset = Group.objects.all()
     serializer_class = GroupSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    parser_classes = [JSONParser, MultiPartParser, FormParser]
 
     def put(self, request, *args, **kwargs):
         instance = self.get_object()
-        serializer = self.serializer_class(instance, data=request.data)
+        name = (request.data.get("name") or "").strip() or instance.name
+        perm_ids = _permission_ids_from_request(request)
+        serializer = self.serializer_class(
+            instance,
+            data={"name": name, "permissions": perm_ids},
+        )
         serializer.is_valid(raise_exception=True)
         serializer.save()
 

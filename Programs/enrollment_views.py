@@ -21,12 +21,14 @@ STUDENT endpoints (require IsAuthenticated; must be the enrolled student):
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from rest_framework import status
-from rest_framework.permissions import IsAdminUser, IsAuthenticated
+from Programs.permissions import AcademicEnrollmentAdminPermission
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from admissions.models import AdmittedStudent
 
+from .curriculum_inheritance import curriculum_owner_program
 from .models import (
     CourseUnit,
     Program,
@@ -64,7 +66,7 @@ class AdminCreateEnrollmentView(APIView):
     Idempotent: if a record already exists, its status + position are updated
     rather than raising an error.
     """
-    permission_classes = [IsAdminUser]
+    permission_classes = [AcademicEnrollmentAdminPermission]
 
     def post(self, request, student_id):
         try:
@@ -221,7 +223,7 @@ class AdminCreateEnrollmentView(APIView):
 
 class AdminListEnrollmentsView(APIView):
     """List all student programme enrollments with optional filters."""
-    permission_classes = [IsAdminUser]
+    permission_classes = [AcademicEnrollmentAdminPermission]
 
     def get(self, request):
         qs = StudentProgrammeEnrollment.objects.select_related(
@@ -252,7 +254,7 @@ class AdminListEnrollmentsView(APIView):
 
 class AdminEnrollmentDetailView(APIView):
     """Retrieve, partially update, or delete an enrollment record."""
-    permission_classes = [IsAdminUser]
+    permission_classes = [AcademicEnrollmentAdminPermission]
 
     def _get(self, pk):
         return get_object_or_404(
@@ -595,7 +597,7 @@ class MyExpectedCoursesView(APIView):
         lines = (
             ProgramCurriculumLine.objects
             .filter(
-                program=enrollment.program,
+                program=curriculum_owner_program(enrollment.program),
                 curriculum_version=enrollment.curriculum_version,
                 year_of_study=enrollment.current_year_of_study,
                 term_number=enrollment.current_term_number,

@@ -48,6 +48,7 @@ class ProgramCurriculumVersionSerializer(serializers.ModelSerializer):
     lines_count = serializers.IntegerField(source="lines.count", read_only=True)
     effective_minimum_graduation_load = serializers.SerializerMethodField(read_only=True)
     graduation_load_inherits_from_programme = serializers.SerializerMethodField(read_only=True)
+    origin_version_name = serializers.CharField(source="origin_version.name", read_only=True, default=None)
 
     class Meta:
         model = ProgramCurriculumVersion
@@ -63,6 +64,9 @@ class ProgramCurriculumVersionSerializer(serializers.ModelSerializer):
             "minimum_graduation_load",
             "effective_minimum_graduation_load",
             "graduation_load_inherits_from_programme",
+            "origin_version",
+            "origin_version_name",
+            "is_local_fork",
             "lines_count",
             "created_at",
             "updated_at",
@@ -74,6 +78,9 @@ class ProgramCurriculumVersionSerializer(serializers.ModelSerializer):
             "lines_count",
             "effective_minimum_graduation_load",
             "graduation_load_inherits_from_programme",
+            "origin_version",
+            "origin_version_name",
+            "is_local_fork",
         ]
 
     def get_effective_minimum_graduation_load(self, obj):
@@ -104,6 +111,10 @@ class ProgramCurriculumVersionSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     {"name": f"A curriculum version named '{name}' already exists for this programme."}
                 )
+        if program and not program.curriculum_allows_writes:
+            raise serializers.ValidationError(
+                "This programme inherits its curriculum and cannot create or edit versions until forked."
+            )
         return attrs
 
 
@@ -150,6 +161,7 @@ class ListProgramsSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'name', 'code', 'short_form', 'faculty', 'academic_level',
             'campuses', 'min_years', 'max_years',
+            'curriculum_mode', 'curriculum_source_program',
             'is_active', 'created_at', 'updated_at',
         ]
 
@@ -298,9 +310,17 @@ class ProgramCurriculumLineSerializer(serializers.ModelSerializer):
         term_number = attrs.get('term_number', getattr(self.instance, 'term_number', None))
         curriculum_version = attrs.get('curriculum_version', getattr(self.instance, 'curriculum_version', None))
 
-        if program and curriculum_version and curriculum_version.program_id != program.id:
+        if program and curriculum_version:
+            from .curriculum_inheritance import curriculum_version_matches_program
+
+            if not curriculum_version_matches_program(program, curriculum_version):
+                raise serializers.ValidationError(
+                    {'curriculum_version': 'Selected curriculum version does not belong to this programme.'}
+                )
+
+        if program and not program.curriculum_allows_writes:
             raise serializers.ValidationError(
-                {'curriculum_version': 'Selected curriculum version does not belong to this programme.'}
+                'This programme inherits its curriculum and cannot be edited until forked.'
             )
 
         # year must not exceed programme duration
@@ -495,10 +515,13 @@ class StudentProgrammeEnrollmentSerializer(serializers.ModelSerializer):
                     attrs['curriculum_version'] = default_version
                     curriculum_version = default_version
 
-        if curriculum_version and program and curriculum_version.program_id != program.id:
-            raise serializers.ValidationError(
-                {'curriculum_version': 'This curriculum version does not belong to the selected programme.'}
-            )
+        if curriculum_version and program:
+            from .curriculum_inheritance import curriculum_version_matches_program
+
+            if not curriculum_version_matches_program(program, curriculum_version):
+                raise serializers.ValidationError(
+                    {'curriculum_version': 'This curriculum version does not belong to the selected programme.'}
+                )
 
         return attrs
 

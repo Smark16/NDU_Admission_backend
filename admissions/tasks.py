@@ -107,10 +107,12 @@ def celery_auto_enroll_students(self, admission_id, user_id):
     try:
         reg_settings = RegistrationSettings.get_settings()
 
-        # Get or create ProgramBatch
-        program_batch = ProgramBatch.objects.filter(
-            program=admission.admitted_program
-        ).order_by('-is_active', '-start_date').first()
+        program_batch = (
+            admission.intended_program_batch
+            or ProgramBatch.objects.filter(
+                program=admission.admitted_program
+            ).order_by('-is_active', '-start_date').first()
+        )
 
         if program_batch:
             StudentProgrammeEnrollment.objects.get_or_create(

@@ -299,6 +299,27 @@ class AdmittedStudentSerializer(serializers.ModelSerializer):
         model = AdmittedStudent
         fields = '__all__'
 
+    def validate(self, attrs):
+        if 'intended_program_batch' in attrs:
+            intended = attrs['intended_program_batch']
+        elif self.instance is not None:
+            intended = self.instance.intended_program_batch
+        else:
+            intended = None
+
+        program = attrs.get('admitted_program')
+        if program is None and self.instance is not None:
+            program = self.instance.admitted_program
+
+        if intended is not None and program is not None:
+            if intended.program_id != program.id:
+                raise serializers.ValidationError({
+                    'intended_program_batch': (
+                        'Selected academic batch must belong to the admitted programme.'
+                    ),
+                })
+        return attrs
+
 class AdmittedStudentListSerializer(serializers.ModelSerializer):
     name = serializers.CharField(source='application.applicant.get_full_name', read_only=True)
     program = serializers.CharField(source='admitted_program.name', read_only=True)

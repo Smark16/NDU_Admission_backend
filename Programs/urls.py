@@ -28,6 +28,7 @@ from .curriculum_views import (
     CurriculumSummaryView,
     ListCreateCurriculumView,
 )
+from .curriculum_source_views import ProgramCurriculumForkView, ProgramCurriculumSourceView
 from .enrollment_views import (
     AdminCreateEnrollmentView,
     AdminEnrollmentDetailView,
@@ -113,6 +114,16 @@ urlpatterns = [
         'program/<int:program_id>/curriculum_versions',
         CurriculumVersionListCreateView.as_view(),
         name='program_curriculum_versions',
+    ),
+    path(
+        'program/<int:program_id>/curriculum_source',
+        ProgramCurriculumSourceView.as_view(),
+        name='program_curriculum_source',
+    ),
+    path(
+        'program/<int:program_id>/curriculum_fork',
+        ProgramCurriculumForkView.as_view(),
+        name='program_curriculum_fork',
     ),
     path(
         'curriculum_version/<int:pk>',

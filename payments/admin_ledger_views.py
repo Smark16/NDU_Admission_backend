@@ -7,7 +7,7 @@ from django.db.models import Count, DecimalField, Max, Q, Sum, Value
 from django.db.models.functions import Coalesce
 from django.shortcuts import get_object_or_404
 from django.utils.dateparse import parse_date
-from rest_framework.permissions import IsAdminUser
+from accounts.erp_drf_permissions import FinanceModuleAdminPermission
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -264,7 +264,7 @@ def _transaction_row(payment: StudentTuitionPayment) -> dict:
 class AdminTuitionLedgerFiltersView(APIView):
     """GET /api/payments/admin/tuition_ledger/filters"""
 
-    permission_classes = [IsAdminUser]
+    permission_classes = [FinanceModuleAdminPermission]
 
     def get(self, request):
         admitted = AdmittedStudent.objects.filter(is_admitted=True)
@@ -326,7 +326,7 @@ class AdminTuitionLedgerFiltersView(APIView):
 class AdminTuitionLedgerStudentsView(APIView):
     """GET /api/payments/admin/tuition_ledger/students"""
 
-    permission_classes = [IsAdminUser]
+    permission_classes = [FinanceModuleAdminPermission]
 
     def get(self, request):
         page = _parse_page(request.query_params.get("page"))
@@ -445,7 +445,7 @@ class AdminTuitionLedgerStudentsView(APIView):
 class AdminTuitionLedgerStudentDetailView(APIView):
     """GET /api/payments/admin/tuition_ledger/students/<student_id>"""
 
-    permission_classes = [IsAdminUser]
+    permission_classes = [FinanceModuleAdminPermission]
 
     def get(self, request, student_id):
         student = get_object_or_404(
@@ -472,7 +472,7 @@ class AdminTuitionLedgerStudentDetailView(APIView):
 class AdminTuitionLedgerTransactionsView(APIView):
     """GET /api/payments/admin/tuition_ledger/transactions"""
 
-    permission_classes = [IsAdminUser]
+    permission_classes = [FinanceModuleAdminPermission]
 
     def get(self, request):
         page = _parse_page(request.query_params.get("page"))
