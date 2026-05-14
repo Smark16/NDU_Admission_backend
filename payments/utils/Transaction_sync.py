@@ -53,7 +53,7 @@ def fetch_transactions_by_range(
 
     url = (
         f"{schoolpay_api_root()}/"
-        f"SyncSchoolTransactions/"
+        f"SchoolRangeTransactions/"
         f"{settings.SCHOOL_PAY_CODE}/"
         f"{from_date}/"
         f"{to_date}/"
