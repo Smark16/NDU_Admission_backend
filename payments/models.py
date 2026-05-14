@@ -246,7 +246,7 @@ class TuitionLedger(models.Model):
         db_index=True
     )
 
-    settlement_bank_code = models.CharField(max_length=50)
+    settlement_bank_code = models.CharField(max_length=50, null=True, blank=True)
 
     source_channel_trans_detail = models.TextField(blank=True)
 
