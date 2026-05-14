@@ -84,7 +84,7 @@ class ApplicationSerializer(serializers.ModelSerializer):
         response['batch'] = BatchSerializer(instance.batch).data
         response['campus'] = CampusSerializer(instance.campus).data
         response['applicant'] = UserSerializer(instance.applicant).data
-        response['programs'] = ProgramSerializer(instance.programs.all(), many=True).data
+        # response['programs'] = ProgramSerializer(instance.programs.all(), many=True).data
         return response
 
 # list serializer (main application queue — excludes staff wizard direct entries)
@@ -115,7 +115,6 @@ class ListApplicationsSerializer(serializers.ModelSerializer):
 
 
 class AllApplicationsReportSerializer(serializers.ModelSerializer):
-    """Used by /all_applications_report — tolerate missing/legacy FK rows without 500."""
     academic_level = serializers.SerializerMethodField()
     batch = serializers.SerializerMethodField()
     campus = serializers.SerializerMethodField()
@@ -142,22 +141,37 @@ class AllApplicationsReportSerializer(serializers.ModelSerializer):
 
     def get_programs(self, obj):
         try:
-            return ", ".join([p.name for p in obj.programs.all()])
+            return ", ".join([
+                choice.program.name
+                for choice in obj.program_choices.select_related("program").order_by("choice_order")
+            ])
+        except Exception:
+            return ""
+        
+    # def get_programs(self, obj):
+    #     try:
+    #         return ", ".join([
+    #         p.name for p in obj.programs.all()
+    #     ])
+    #     except Exception:
+    #         return ""
+    
+    def get_faculty(self, obj):
+        names = []
+
+        try:
+            for choice in obj.program_choices.select_related(
+                "program__faculty"
+            ).order_by("choice_order"):
+
+                fac = getattr(choice.program, "faculty", None)
+
+                if fac:
+                    names.append(fac.name)
+
         except Exception:
             return ""
 
-    def get_faculty(self, obj):
-        names = []
-        try:
-            for p in obj.programs.all():
-                fac = getattr(p, "faculty", None)
-                if fac is not None:
-                    try:
-                        names.append(fac.name)
-                    except Exception:
-                        continue
-        except Exception:
-            return ""
         return ", ".join(dict.fromkeys(names))
 
     def get_entered_by(self, obj):
@@ -198,18 +212,13 @@ class ApplicationDetailSerializer(serializers.ModelSerializer):
     reviewed_by = serializers.CharField(source='reviewed_by.full_name', read_only=True, allow_null=True)
     revoked_by = serializers.CharField(source='revoked_by.full_name', read_only=True, allow_null=True)
     batch = serializers.CharField(source='batch.name', read_only=True)
-    programs = serializers.SerializerMethodField()
-
-    def get_programs(self, obj):
-        return [{"id": p.id, "name": p.name} for p in obj.programs.all()]
-
+    
     class Meta:
         model = Application
         fields = ['id', 'first_name', 'last_name','middle_name', 'date_of_birth', 'gender', 'nationality', 'phone', 'email',
                   'batch',"nin", "passport_number","disabled", 'olevel_school', 'olevel_year', 'alevel_school', 'alevel_year', 'address',
                   'middle_name', 'next_of_kin_name', 'next_of_kin_contact', 'next_of_kin_relationship', 'revoked_by', 'is_revoked','revocation_reason',
-                  'status', 'application_fee_amount','application_fee_paid', 'created_at', 'reviewed_at', 'passport_photo','reviewed_by',
-                  'programs']
+                  'status', 'application_fee_amount','application_fee_paid', 'created_at', 'reviewed_at', 'passport_photo','reviewed_by']
     
 # o level subject
 class OlevelSubjectSerializer(serializers.ModelSerializer):
@@ -496,3 +505,13 @@ class EmailTemplateUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = EmailTemplate
         fields = ["subject_template", "body_template_html", "is_active"]
+
+# ============================Program choices========================================
+class ApplicationProgramChoiceSerializer(serializers.ModelSerializer):
+    program_name = serializers.CharField(source='program.name', read_only=True)
+    code = serializers.CharField(source='program.code', read_only=True)
+    program_id = serializers.IntegerField(source='program.id')
+
+    class Meta:
+        model = ApplicationProgramChoice
+        fields = ['id', 'application', 'choice_order', 'program_name', 'code', 'program_id']

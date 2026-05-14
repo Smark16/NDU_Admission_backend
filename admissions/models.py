@@ -93,7 +93,7 @@ class Application(models.Model):
     applicant = models.ForeignKey(User, on_delete=models.CASCADE, related_name='applications')
     batch = models.ForeignKey(Batch, on_delete=models.CASCADE, related_name='applications')
     campus = models.ForeignKey(Campus, on_delete=models.CASCADE, related_name='applications')
-    programs = models.ManyToManyField(Program, related_name='application_programs')
+    programs = models.ManyToManyField(Program, blank=True, related_name='application_programs')
     academic_level = models.ForeignKey(AcademicLevel, on_delete=models.CASCADE)
     # Personal Information
     first_name = models.CharField(max_length=100)
@@ -212,6 +212,26 @@ class Application(models.Model):
     @property
     def full_name(self):
         return f"{self.first_name} {self.middle_name} {self.last_name}".strip()
+
+# program choices
+class ApplicationProgramChoice(models.Model):
+    application = models.ForeignKey("Application", on_delete=models.CASCADE, related_name="program_choices" )
+
+    program = models.ForeignKey("Programs.Program", on_delete=models.CASCADE)
+
+    choice_order = models.PositiveIntegerField()
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+
+        ordering = ["choice_order"]
+
+        unique_together = ( "application", "choice_order")
+
+    def __str__(self):
+
+        return (f"{self.application.id} - "f"Choice {self.choice_order} - "f"{self.program.name}")
 
 class OLevelResult(models.Model):
     application = models.ForeignKey(Application, on_delete=models.CASCADE, related_name='olevel_results')

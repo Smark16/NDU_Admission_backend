@@ -124,7 +124,6 @@ class TuitionLedgerListView(APIView):
 class ManualHistoricalReconciliationView(
     APIView
 ):
-
     permission_classes = [
         IsAuthenticated,
         IsAdminUser
@@ -212,3 +211,31 @@ class ManualHistoricalReconciliationView(
             "total_transactions_synced":
                 total_synced
         })
+
+# individual student transactions
+class StudentTransactions(APIView):
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+
+        transactions = (
+            TuitionLedger.objects
+            .filter(
+                user=request.user
+            )
+            .select_related(
+                "student",
+                "user"
+            )
+            .order_by(
+                "-payment_date_time"
+            )
+        )
+
+        serializer = TuitionLedgerSerializer(
+            transactions,
+            many=True
+        )
+
+        return Response(serializer.data)

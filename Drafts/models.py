@@ -69,4 +69,25 @@ class DraftApplication(models.Model):
 
     @property
     def is_empty(self):
-        return not any([self.first_name, self.last_name, self.programs.exists()])
+        return not any([self.first_name, self.last_name, self.program_choices.exists()])
+    
+class DraftProgramChoice(models.Model):
+    draft = models.ForeignKey(
+        DraftApplication,
+        on_delete=models.CASCADE,
+        related_name="program_choices"
+    )
+
+    program = models.ForeignKey(
+        Program,
+        on_delete=models.CASCADE
+    )
+
+    choice_order = models.PositiveIntegerField()
+
+    class Meta:
+        ordering = ["choice_order"]
+        unique_together = ["draft", "choice_order"]
+
+    def __str__(self):
+        return f"{self.draft.id} - Choice {self.choice_order}"

@@ -34,6 +34,7 @@ urlpatterns = [
     path('edit_application_profile/<int:application_id>', views.EditApplicationProfile.as_view()),
     path('change_programme/<int:application_id>', views.ChangeApplicationProgramme.as_view()),
     path('generate-reg-no/', views.generate_reg_no_view, name='generate_reg_no'),
+    path('list_selected_programs/<int:application_id>', views.ListSelectedPrograms.as_view(), name='list_selected_programs'),
 
     # Subject Urls
 
