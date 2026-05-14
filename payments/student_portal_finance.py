@@ -5,9 +5,6 @@ from collections import defaultdict
 from decimal import Decimal
 from typing import Any
 
-# Commitment fee threshold: once total valid tuition payments reach this amount,
-# the student's academic enrollment can be activated.  Hardcoded for now;
-# can be surfaced into RegistrationSettings later.
 COMMITMENT_FEE_THRESHOLD = Decimal("150000")
 
 from django.db.models import Q
@@ -33,8 +30,10 @@ def get_admitted_student_for_user(user):
             "admitted_campus",
             "admitted_batch",
             "application",
-            "programme_enrollment",
-            "programme_enrollment__program_batch",
+            "admitted_by",
+            "student_user"
+            # "programme_enrollment",
+            # "programme_enrollment__program_batch",
         )
         .filter(
             Q(application__applicant=user)
@@ -165,20 +164,25 @@ def offer_letter_pdf_url(student: AdmittedStudent, request=None) -> str | None:
 
 def offer_letter_portal_fields(student: AdmittedStudent, request=None) -> dict[str, Any]:
     summary = commitment_payment_summary(student)
-    eligible = bool(summary["commitment_met"])
-    pdf_url = offer_letter_pdf_url(student, request) if eligible else None
+    commitment_met = bool(summary["commitment_met"])
+    admission_paid = bool(getattr(student, "admission_fee_paid", False))
+    eligible = commitment_met or admission_paid
+    app = getattr(student, "application", None)
+    has_pdf = bool(
+        app
+        and getattr(app, "admission_letter_pdf", None)
+        and getattr(app.admission_letter_pdf, "name", None)
+    )
+    pdf_url = offer_letter_pdf_url(student, request) if eligible and has_pdf else None
     return {
         **summary,
         "offer_letter_eligible": eligible,
         "offer_letter_pdf_url": pdf_url,
+        "offer_letter_can_download": bool(eligible and has_pdf),
     }
 
 
 def other_schedule_rows_and_due_by_currency(student: AdmittedStudent, intl: bool) -> tuple[list[dict[str, Any]], dict[str, Decimal]]:
-    """
-    Build student-facing rows for scheduled other fees + per-currency amounts still owed
-    (milestones reached, balance > 0). Used by payment status and registration eligibility.
-    """
     cy, ct = _student_curriculum_year_term(student)
     rows: list[dict[str, Any]] = []
     due_by_ccy: dict[str, Decimal] = defaultdict(Decimal)
@@ -410,7 +414,6 @@ def student_billing_lines(student: AdmittedStudent) -> list[dict[str, Any]]:
 
     return lines
 
-
 def payment_status_dict(student: AdmittedStudent, request=None) -> dict:
     totals = student_finance_totals(student)
     other_fee_rows, _ = other_schedule_rows_and_due_by_currency(
@@ -472,6 +475,6 @@ def payment_status_dict(student: AdmittedStudent, request=None) -> dict:
         "scheduled_other_fees": other_fee_rows,
         "scheduled_other_fees_total_due": totals["scheduled_other_fees_due"],
         "billing_lines": student_billing_lines(student),
-        "payment_code": student.effective_schoolpay_code,
+        "payment_code": student.student_id,
         **offer_letter_portal_fields(student, request),
     }

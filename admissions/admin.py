@@ -17,6 +17,8 @@ class AdmittedStudentAdmin(admin.ModelAdmin):
         'student_id',
         'reg_no',
         'schoolpay_code',
+        'admission_fee_paid',
+        'is_registered',
         'is_registered_with_schoolpay',
         'physical_documents_verified',
         'admitted_batch',

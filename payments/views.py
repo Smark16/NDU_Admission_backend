@@ -76,7 +76,28 @@ class DeleteFeePlan(generics.DestroyAPIView):
     serializer_class = ApplicationFeeSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
-# ========================================================schoolpay====================================================
+# ========================================================schoolpay====================================================   
+# Cancel Payment
+class CancelPayment(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        try:
+            ApplicationPayment.objects.filter(
+                user=request.user,
+                status='PENDING',
+            ).update(status='FAILED')
+
+            return Response({
+                'detail': "Pending payment cancelled successfully"
+            })
+        
+        except Exception as e:
+            logger.exception("Error cancelling payment for user")
+            return Response({
+            'detail': "canceling pending payment failed"
+        }, status=400)
+     
 # Initiate Payment
 class InitiatePayment(APIView):
     permission_classes = [IsAuthenticated]
@@ -89,9 +110,9 @@ class InitiatePayment(APIView):
         reason = "Application Fee"
 
         if settings.DEBUG:
-          callBackUrl = "https://9f80-41-75-184-19.ngrok-free.app/api/payments/webhook/" 
+          callBackUrl = "https://2b53-41-75-181-57.ngrok-free.app/api/payments/webhook/" 
         else:
-            callBackUrl = request.build_absolute_uri("/api/payments/webhook/")
+          callBackUrl = request.build_absolute_uri("/api/payments/webhook/")
 
         # EXPIRE OLD PAYMENTS
         ApplicationPayment.objects.filter(
@@ -315,7 +336,7 @@ def generate_paycode(request, student_id):
     if student.is_registered_with_schoolpay:
         return Response({
             "detail": "Already registered with SchoolPay",
-            "schoolpay_code": student.effective_schoolpay_code,
+            "schoolpay_code": student.student_id,
             "student_name": student.full_name,
         })
 
@@ -334,13 +355,10 @@ def generate_paycode(request, student_id):
     student.refresh_from_db()
     return Response({
         "detail": "Paycode generated successfully",
-        "schoolpay_code": student.effective_schoolpay_code,
+        "schoolpay_code": student.student_id,
         "student_name": student.full_name,
         "gateway_name": result.get("gateway_name"),
     })
-
-
-
 
 
 

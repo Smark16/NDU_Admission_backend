@@ -41,17 +41,6 @@ class ApplicationFee(models.Model):
     def __str__(self):
         return f"{self.nationality_type} - {self.academic_level}: {self.amount}"
 
-
-# =============================================================================
-# NEW MODULE: Semester tuition & functional fees (finance layer)
-# -----------------------------------------------------------------------------
-# FeeHead / FeePlan / FeePlanRule: catalog + plan + per-semester amounts.
-# Amounts per Programs.ProgramBatch × Programs.Semester are stored in FeePlanRule
-# (see payments/batch_semester_fee_views.py — matrix GET/POST).
-# Distinct from ApplicationFee (application-period fees linked to admissions.Batch).
-# =============================================================================
-
-
 class FeeHead(models.Model):
     """Catalog entry for a fee type (e.g. TUITION_FEE, FUNCTIONAL_FEE). NEW MODULE."""
     CATEGORY_CHOICES = [
@@ -91,7 +80,6 @@ class FeePlan(models.Model):
         ('application', 'Application fees'),
         ('tuition', 'Tuition'),
         ('general', 'General / service fees'),
-        ('other_schedule', 'Scheduled other fees (year/term milestones)'),
     ]
     PLAN_SCOPE_CHOICES = [
         ('program', 'Program'),
@@ -206,28 +194,6 @@ class FeePlanRule(models.Model):
 
     installment_number = models.PositiveIntegerField(null=True, blank=True)
     due_date_days = models.IntegerField(null=True, blank=True)
-    payable_year_of_study = models.PositiveSmallIntegerField(
-        null=True,
-        blank=True,
-        help_text="Optional: year-of-study when this fee becomes due (for scheduled other fees).",
-    )
-    payable_term_number = models.PositiveSmallIntegerField(
-        null=True,
-        blank=True,
-        help_text="Optional: term number when this fee becomes due (used with payable_year_of_study).",
-    )
-
-    # Policy milestone for non-semester-linked fees (internship, dissertation, etc.)
-    payable_year_of_study = models.PositiveSmallIntegerField(
-        null=True,
-        blank=True,
-        help_text='When set with payable_term_number, fee is due at this curriculum year/term.',
-    )
-    payable_term_number = models.PositiveSmallIntegerField(
-        null=True,
-        blank=True,
-        help_text='Term within payable_year_of_study (1-based).',
-    )
 
     is_active = models.BooleanField(default=True)
     order = models.PositiveIntegerField(default=1)
@@ -245,14 +211,89 @@ class FeePlanRule(models.Model):
 
 # --- Semester tuition billing: recorded payments + registration policy (singleton settings) ---
 
+# tution Leder
+class TuitionLedger(models.Model):
 
+    STATUS_CHOICES = (
+        ("Completed", "Completed"),
+        ("Pending", "Pending"),
+        ("Failed", "Failed"),
+        ("Reversed", "Reversed"),
+    )
+
+    user = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True
+    )
+
+    student = models.ForeignKey(
+        'admissions.AdmittedStudent',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='tuition_ledgers'
+    )
+
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+
+    payment_date_time = models.DateTimeField()
+
+    schoolpay_receipt_number = models.CharField(
+        max_length=100,
+        unique=True,
+        db_index=True
+    )
+
+    settlement_bank_code = models.CharField(max_length=50, null=True, blank=True)
+
+    source_channel_trans_detail = models.TextField(blank=True)
+
+    source_channel_transaction_id = models.CharField(
+        max_length=100,
+        db_index=True
+    )
+
+    source_payment_channel = models.CharField(max_length=100)
+
+    student_name = models.CharField(max_length=255)
+
+    student_payment_code = models.CharField(
+        max_length=100,
+        db_index=True
+    )
+
+    student_registration_number = models.CharField(
+        max_length=100,
+        blank=True
+    )
+
+    transaction_completion_status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES
+    )
+
+    raw_response = models.JSONField(default=dict)
+
+    synced_at = models.DateTimeField(auto_now_add=True)
+
+    reconciled = models.BooleanField(default=False)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-payment_date_time']
+        indexes = [
+            models.Index(fields=['student_payment_code']),
+            models.Index(fields=['schoolpay_receipt_number']),
+        ]
+
+    def __str__(self):
+        return f"{self.student_name} - {self.amount}"
+
+#student tution payment records (one per payment attempt, including failed/waived)  
 class StudentTuitionPayment(models.Model):
-    """Recorded tuition payments and ad-hoc charges for admitted students.
-
-    source='scheduled' — generated from a FeePlanRule (cohort-level semester fee).
-    source='ad_hoc'    — manually billed to an individual student by staff.
-                         fee_plan_rule will be NULL; fee_head + label describe the charge.
-    """
     PAYMENT_STATUS_CHOICES = [
         ('pending', 'Pending'),
         ('completed', 'Completed'),

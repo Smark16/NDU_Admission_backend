@@ -27,13 +27,14 @@ from django.db import transaction
 from django.db.models.deletion import ProtectedError
 from django.db.utils import OperationalError
 # from .utils.validate_photo import validate_passport_photo
-from .tasks import celery_send_application_email, celery_application_notification, celery_admission_email, celery_admission_update, celery_create_student_account
+from .tasks import celery_send_application_email, celery_application_notification, celery_admission_email, celery_admission_update, celery_create_student_account, celery_send_rejection_email
 from accounts.tasks import celery_send_account_email
+from payments.utils.school_pay_code import register_student_with_schoolpay
 from .utils.trigger_background_tasks import trigger_background_tasks
 from payments.models import ApplicationPayment
 from Drafts.models import DraftApplication
 from django.db.models import Q
-import time
+from datetime import datetime
 
 import logging
 import json
@@ -590,7 +591,7 @@ class ListDirectEntryApplications(generics.ListAPIView):
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
 class RejectStudent(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
     def patch(self, request, application_id):
         if not user_can_reject_application(request.user):
@@ -605,10 +606,9 @@ class RejectStudent(APIView):
                 application.status = "rejected"
                 application.save()
                 try:
-                    celery_application_notification.delay(
-                        application.applicant_id,
-                        "Application Rejected",
-                        "We regret to inform you that your application has been rejected.",
+                    celery_send_rejection_email.delay(
+                        application.id,
+                        _rejection_reason
                     )
                 except Exception as exc:
                     logger.warning("Reject notification task failed: %s", exc)
@@ -1443,7 +1443,6 @@ class AdmitStudent(generics.CreateAPIView):
                         admission_date=timezone.now(),
                         is_admitted=True,
                     )
-
                 # Fetch application
                 try:
                     application = Application.objects.select_related(
@@ -1459,15 +1458,38 @@ class AdmitStudent(generics.CreateAPIView):
                 # CRITICAL: Update status immediately
                 Application.objects.filter(id=application.id).update(status="Admitted")
 
+                try:
+                    if not admission.is_registered_with_schoolpay:
+
+                        result = register_student_with_schoolpay(admission)
+
+                        logger.info(
+                            "SchoolPay registration for admitted student %s: %s",
+                            admission.id,
+                            result.get("success")
+                        )
+
+                        if not result["success"]:
+                            logger.error(
+                                "SchoolPay registration failed for student %s: %s",
+                                admission.id,
+                                result.get("error") or result.get("data")
+                            )
+
+                except Exception:
+                    logger.exception(
+                        "SchoolPay registration failed during admission"
+                    )
+
                 # Student Account Creation and auto Enrollment
                 transaction.on_commit(
-                    lambda: trigger_background_tasks(admission.id, application.id)
+                    lambda: trigger_background_tasks(admission.id, application.id),
                 )
             
                 return Response(self.serializer_class(admission).data, status=201)
 
         except Exception as e:
-            logger.exception(f"Admission failed: {e}", exc_info=True)
+            logger.exception("Admission failed")
             return Response({"detail": str(e)}, status=400)
 
 # revoke student 
@@ -1607,8 +1629,6 @@ class ListAdmittedStudents(generics.ListAPIView):
         return qs
 
 class MarkPhysicalDocumentsVerified(APIView):
-    """Record that original hard-copy documents were checked (does not register the student)."""
-
     permission_classes = [IsAuthenticated, VerifyPhysicalDocumentsPermission]
 
     def post(self, request, pk):
@@ -2083,67 +2103,6 @@ def _generate_student_id():
             return sid
     raise ValueError('Could not generate a unique student_id after 20 attempts.')
 
-def _run_post_admission_setup(request, admission, application):
-    # ── Student portal account ────────────────────────────────────────────────
-    try:
-        from .student_accounts import ensure_student_portal_account
-
-        ensure_student_portal_account(admission)
-    except Exception as e:
-        logger.warning('DirectEntry: student account creation failed: %s', f'{e.__class__.__name__}: {e}')
-
-    # ── Academic programme enrollment ─────────────────────────────────────────
-    try:
-        from payments.models import RegistrationSettings
-        from Programs.models import StudentProgrammeEnrollment, ProgramBatch
-
-        reg_settings = RegistrationSettings.get_settings()
-        pb_qs = ProgramBatch.objects.filter(program=admission.admitted_program).order_by(
-            '-is_active', '-start_date', 'name'
-        )
-        program_batch = (
-            admission.intended_program_batch
-            or (
-                pb_qs.filter(is_active=True, name__icontains='year 1').first()
-                or pb_qs.filter(is_active=True).first()
-                or pb_qs.first()
-            )
-        )
-        if not program_batch:
-            program_batch, _ = ProgramBatch.objects.get_or_create(
-                program=admission.admitted_program,
-                name='Year 1',
-                defaults=dict(
-                    start_date=timezone.now().date(),
-                    is_active=True,
-                    academic_year=getattr(admission.admitted_batch, 'academic_year', '') or '',
-                ),
-            )
-        spe, created = StudentProgrammeEnrollment.objects.get_or_create(
-            student=admission,
-            defaults=dict(
-                program=admission.admitted_program,
-                program_batch=program_batch,
-                current_year_of_study=1,
-                current_term_number=1,
-                status='enrolled' if reg_settings.auto_enroll_on_admission else 'pending',
-                enrolled_by=request.user if reg_settings.auto_enroll_on_admission else None,
-                enrolled_at=timezone.now() if reg_settings.auto_enroll_on_admission else None,
-                notes=(
-                    'Auto-enrolled on direct admission.'
-                    if reg_settings.auto_enroll_on_admission
-                    else 'Pending commitment fee confirmation.'
-                ),
-            ),
-        )
-        if (not created) and reg_settings.auto_enroll_on_admission and spe.status != 'enrolled':
-            spe.status = 'enrolled'
-            spe.enrolled_by = request.user
-            spe.enrolled_at = timezone.now()
-            spe.save(update_fields=['status', 'enrolled_by', 'enrolled_at'])
-    except Exception as e:
-        logger.warning('DirectEntry: SPE creation failed: %s', f'{e.__class__.__name__}: {e}')
-
 
 class DirectApplicationEntryView(APIView):
     permission_classes = [IsAuthenticated]
@@ -2258,15 +2217,7 @@ class DirectApplicationEntryView(APIView):
             logger.exception('DirectApplicationEntryView error')
             return Response({'detail': str(e)}, status=500)
 
-
 class DirectAdmissionEntryView(APIView):
-    """
-    Admin-side: create a fully admitted student record directly, bypassing
-    the applicant portal.  Creates User (applicant) + Application +
-    AdmittedStudent + student portal account + SPE in one transaction.
-
-    POST /api/admissions/direct_admission_entry
-    """
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
@@ -2278,143 +2229,136 @@ class DirectAdmissionEntryView(APIView):
 
         d = request.data
 
-        # ── Validate required fields ──────────────────────────────────────────
+        # ====================== 1. VALIDATION ======================
         required_fields = [
             'first_name', 'last_name', 'date_of_birth', 'gender', 'nationality',
-            'phone', 'email', 'next_of_kin_name', 'next_of_kin_contact',
-            'next_of_kin_relationship', 'batch', 'campus', 'program',
-            'academic_level', 'study_mode',
+            'phone', 'email'
         ]
-        errors = {f: 'This field is required.' for f in required_fields if not d.get(f)}
-        if errors:
-            return Response(errors, status=400)
 
+        errors = {field: 'This field is required.' for field in required_fields if not d.get(field)}
+        
+        if errors:
+            return Response(errors, status=status.HTTP_400_BAD_REQUEST)
+
+        # ====================== 2. FETCH RELATED OBJECTS ======================
+        try:
+            campus = Campus.objects.get(id=d['campus'])
+            program = Program.objects.get(id=d['program'])
+            academic_level = AcademicLevel.objects.get(id=d['academic_level'])
+            batch = Batch.objects.get(id=d.get('batch')) 
+        except (Campus.DoesNotExist, Program.DoesNotExist, AcademicLevel.DoesNotExist, Batch.DoesNotExist) as e:
+            return Response({'detail': f'Invalid reference: {str(e)}'}, status=400)
+
+        email = d['email'].strip().lower()
+
+        # ====================== 3. MAIN TRANSACTION ======================
         try:
             with transaction.atomic():
-                email = d['email'].strip().lower()
-                batch = Batch.objects.get(id=d['batch'])
-                campus = Campus.objects.get(id=d['campus'])
-                from Programs.models import Program as ProgramModel
-                program = ProgramModel.objects.get(id=d['program'])
-                academic_level = AcademicLevel.objects.get(id=d['academic_level'])
-                study_mode = d['study_mode'].strip().upper()
+                # --- 3.1 Create or Get Applicant User ---
+                applicant_user = User.objects.filter(email=email, is_applicant=True).first()
 
-                # ── Applicant user ────────────────────────────────────────────
-                from accounts.models import User as UserModel
-                applicant_user = UserModel.objects.filter(email=email, is_applicant=True).first()
                 if not applicant_user:
-                    base_username = email
+                    base_username = email.split('@')[0]
                     username = base_username
-                    if UserModel.objects.filter(username=username).exists():
-                        suffix = generate_reference().replace('APP-', '')
-                        username = f'{base_username}_{suffix}'
-                    applicant_user = UserModel.objects.create_user(
+                    counter = 1
+                    while User.objects.filter(username=username).exists():
+                        username = f"{base_username}_{counter}"
+                        counter += 1
+
+                    applicant_user = User.objects.create_user(
                         username=username,
-                        first_name=d['first_name'],
-                        last_name=d['last_name'],
+                        first_name=d['first_name'].strip(),
+                        last_name=d['last_name'].strip(),
                         email=email,
-                        password='NDU@1234',
-                        is_applicant=True,
-                        must_change_password=True,
+                        password='NDU@1234',          
+                        is_applicant=True
                     )
 
-                # ── Application ───────────────────────────────────────────────
-                app = Application.objects.create(
+                # 2. Safe Date Parsing
+                date_str = d.get('date_of_birth') or d.get('dateOfBirth')
+                if not date_str:
+                    return Response({'date_of_birth': 'Date of birth is required'}, status=400)
+
+                try:
+                    dob_date = datetime.strptime(str(date_str).strip(), "%Y-%m-%d").date()
+                except ValueError:
+                    return Response({'date_of_birth': 'Invalid date format. Use YYYY-MM-DD'}, status=400)
+
+                # --- 3.2 Create Application ---
+                application = Application.objects.create(
                     applicant=applicant_user,
-                    batch=batch,
+                    batch=batch if 'batch' in d else None,
                     campus=campus,
                     academic_level=academic_level,
                     source=Application.SOURCE_DIRECT,
-                    legacy_application_number=d.get('legacy_application_number') or '',
-                    first_name=d['first_name'],
-                    last_name=d['last_name'],
-                    middle_name=d.get('middle_name', ''),
-                    date_of_birth=d['date_of_birth'],
+                    status='Admitted',                   
+                    application_reference=generate_reference(),
+                    first_name=d['first_name'].strip(),
+                    last_name=d['last_name'].strip(),
+                    middle_name=d.get('middle_name', '').strip(),
+                    date_of_birth=dob_date,
                     gender=d['gender'],
                     nationality=d['nationality'],
-                    phone=d['phone'],
+                    phone=d['phone'].strip(),
                     email=email,
-                    address=d.get('address', ''),
-                    nin=d.get('nin', ''),
-                    passport_number=d.get('passport_number', ''),
-                    next_of_kin_name=d['next_of_kin_name'],
-                    next_of_kin_contact=d['next_of_kin_contact'],
-                    next_of_kin_relationship=d['next_of_kin_relationship'],
-                    olevel_year=int(d.get('olevel_year') or 0),
-                    olevel_index_number=d.get('olevel_index_number') or 'N/A',
-                    olevel_school=d.get('olevel_school') or 'N/A',
-                    alevel_year=int(d.get('alevel_year') or 0),
-                    alevel_index_number=d.get('alevel_index_number') or 'N/A',
-                    alevel_school=d.get('alevel_school') or 'N/A',
-                    alevel_combination=d.get('alevel_combination') or 'N/A',
-                    status='accepted',
-                    application_reference=generate_reference(),
+                    address=d.get('address', '').strip(),
+                    nin=d.get('nin', '').strip(),
+                    passport_number=d.get('passport_number', '').strip(),
+                    next_of_kin_name=d.get('next_of_kin_name', '').strip(),
+                    next_of_kin_contact=d.get('next_of_kin_contact', '').strip(),
+                    next_of_kin_relationship=d.get('next_of_kin_relationship', '').strip(),
                 )
-                app.programs.set([program])
 
-                # ── Generate IDs server-side ──────────────────────────────────
-                # Allow override from request (e.g. legacy migration with known IDs)
+                # Many-to-Many Programs
+                application.programs.set([program])
+
+                # --- 3.3 Create AdmittedStudent ---
                 provided_reg_no = d.get('reg_no', '').strip()
                 provided_student_id = d.get('student_id', '').strip()
+                provided_study_mode = d.get('study_mode', '').strip()
 
-                if provided_reg_no:
-                    if AdmittedStudent.objects.filter(reg_no=provided_reg_no).exists():
-                        raise ValueError(f'reg_no "{provided_reg_no}" is already in use.')
-                    reg_no = provided_reg_no
-                else:
-                    reg_no = generate_reg_no(campus, program, study_mode)
-    
-                if provided_student_id:
-                    if AdmittedStudent.objects.filter(student_id=provided_student_id).exists():
-                        raise ValueError(f'student_id "{provided_student_id}" is already in use.')
-                    student_id = provided_student_id
-                else:
-                    student_id = _generate_student_id()
+                # Uniqueness checks
+                if AdmittedStudent.objects.filter(reg_no=provided_reg_no).exists():
+                    raise ValueError(f"Reg No '{provided_reg_no}' is already in use.")
+                if AdmittedStudent.objects.filter(student_id=provided_student_id).exists():
+                    raise ValueError(f"Student ID '{provided_student_id}' is already in use.")
 
-                # ── AdmittedStudent ───────────────────────────────────────────
-                admission = AdmittedStudent.objects.create(
-                    application=app,
-                    student_id=student_id,
-                    reg_no=reg_no,
+                admitted_student = AdmittedStudent.objects.create(
+                    application=application,
+                    student_id=provided_student_id,
+                    reg_no=provided_reg_no,
                     admitted_program=program,
                     admitted_batch=batch,
                     admitted_campus=campus,
-                    study_mode=study_mode,
-                    admission_date=timezone.now(),
+                    study_mode=provided_study_mode.upper(),
                     is_admitted=True,
-                    admission_notes=d.get('admission_notes', ''),
+                    # admission_fee_paid=False, 
+                    admission_date=timezone.now(),
+                    admitted_by=request.user,
                 )
 
-                # ── Shared post-admission setup (account + SPE) ───────────────
-                _run_post_admission_setup(request, admission, app)
+                # ====================== POST SUCCESS ACTIONS ======================
+                # Run post-admission setup (create student_user, StudentProgrammeEnrollment, etc.)
+                # _run_post_admission_setup(request, admitted_student, application)
 
-                # Async email / notification (best-effort)
-                try:
-                    celery_admission_email.delay(app.id, admission.id)
-                    celery_application_notification.delay(
-                        request.user.id,
-                        'Direct Admission Completed',
-                        f'Student {d["first_name"]} {d["last_name"]} admitted directly as {reg_no}.',
-                    )
-                except Exception:
-                    pass
+                # Queue background tasks AFTER successful commit
+                transaction.on_commit(
+                    lambda: trigger_background_tasks(admitted_student.id, application.id)
+                )
 
                 return Response({
-                    'admission_id': admission.id,
-                    'student_id': admission.student_id,
-                    'reg_no': admission.reg_no,
-                    'application_id': app.id,
-                    'application_reference': app.application_reference,
-                    'message': (
-                        f'Student admitted successfully. '
-                        f'Reg No: {admission.reg_no} | Student ID: {admission.student_id}'
-                    ),
-                }, status=201)
+                    'message': 'Direct admission completed successfully.',
+                    'application_id': application.id,
+                    'admitted_student_id': admitted_student.id,
+                    'reg_no': admitted_student.reg_no,
+                    'student_id': admitted_student.student_id,
+                    'schoolpay_code': admitted_student.schoolpay_code,
+                }, status=status.HTTP_201_CREATED)
 
-        except (Batch.DoesNotExist, Campus.DoesNotExist, AcademicLevel.DoesNotExist) as e:
-            return Response({'detail': f'Invalid reference: {e}'}, status=400)
-        except ValueError as e:
-            return Response({'detail': str(e)}, status=400)
+        except ValueError as ve:
+            return Response({'detail': str(ve)}, status=400)
         except Exception as e:
-            logger.exception('DirectAdmissionEntryView error')
-            return Response({'detail': str(e)}, status=500)
+            logger.exception("Direct Admission Error")
+            return Response({
+                'detail': 'An unexpected error occurred while processing direct admission.'
+            }, status=500)

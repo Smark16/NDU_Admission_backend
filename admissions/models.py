@@ -314,23 +314,9 @@ class AdditionalQualifications(models.Model):
 class AdmittedStudent(models.Model):
     application = models.OneToOneField(Application, on_delete=models.CASCADE, related_name='admission')
     student_user = models.OneToOneField(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='student_admission')
-    student_id = models.CharField(max_length=50, unique=True, null=True, blank=True)
+    student_id = models.CharField(max_length=255, unique=True, null=True, blank=True)
     study_mode = models.CharField(max_length=30)
     reg_no = models.CharField(max_length=100, unique=True)
-    schoolpay_code = models.CharField(
-        max_length=100,
-        blank=True,
-        null=True,
-        default='',
-        help_text=(
-            'Official SchoolPay / PRN shown to the student. Left blank at admission to default to reg_no on save; '
-            'finance may set a different value if the gateway uses another number.'
-        ),
-    )
-    is_registered_with_schoolpay = models.BooleanField(
-        default=False,
-        help_text="True after the student has been synced with the SchoolPay gateway.",
-    )
     admitted_program = models.ForeignKey(Program, on_delete=models.CASCADE)
     admitted_batch = models.ForeignKey(Batch, on_delete=models.CASCADE, related_name='admitted_students')
     admitted_campus = models.ForeignKey(Campus, on_delete=models.CASCADE, related_name='admitted_students')
@@ -344,6 +330,8 @@ class AdmittedStudent(models.Model):
             'The academic cohort this student should be placed in. Set at time of admission.'
         ),
     )
+    schoolpay_code = models.CharField(max_length=100, unique=True, null=True, blank=True)
+    is_registered_with_schoolpay = models.BooleanField(default=False)
 
     # Admission information
     admission_date = models.DateTimeField(default=timezone.now)
@@ -352,6 +340,11 @@ class AdmittedStudent(models.Model):
     is_admitted= models.BooleanField(default=False)
     
     # Registration information (official registration only — do not conflate with document checks)
+    admission_fee_paid = models.BooleanField(default=False)
+    admission_fee_paid_at = models.DateTimeField(
+        null=True,
+        blank=True
+    )
     is_registered = models.BooleanField(default=False)
     registration_date = models.DateTimeField(null=True, blank=True)
 
@@ -396,6 +389,7 @@ class AdmittedStudent(models.Model):
  
         indexes = [
             models.Index(fields=['application', 'created_at']),
+            models.Index(fields=['student_id']),
             models.Index(fields=['is_registered']),
             models.Index(fields=['admitted_batch', 'is_admitted']),
             models.Index(fields=['is_admitted']),

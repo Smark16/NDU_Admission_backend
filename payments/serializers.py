@@ -1,6 +1,9 @@
 from rest_framework import serializers
 from .models import *
 from admissions.serializers import *
+from rest_framework import serializers
+
+from payments.models import TuitionLedger
 
 # application serilazer
 class ApplicationFeeSerializer(serializers.ModelSerializer):
@@ -80,3 +83,33 @@ class ApplicationPaymentSerializer(serializers.ModelSerializer):
                 return 'local'
             return 'international'
         return 'unknown'
+    
+# transaction sync serializer
+class TuitionLedgerSerializer(serializers.ModelSerializer):
+    student_full_name = serializers.SerializerMethodField()
+    class Meta:
+        model = TuitionLedger
+
+        fields = [
+            "id",
+            "student_full_name",
+            "student_name",
+            "student_payment_code",
+            "amount",
+            "payment_date_time",
+            "schoolpay_receipt_number",
+            "settlement_bank_code",
+            "source_payment_channel",
+            "transaction_completion_status",
+            "reconciled",
+            "created_at",
+        ]
+
+    def get_student_full_name(self, obj):
+        if obj.student and obj.student.student_user:
+            return (
+                f"{obj.student.student_user.first_name} "
+                f"{obj.student.student_user.last_name}"
+            )
+
+        return None

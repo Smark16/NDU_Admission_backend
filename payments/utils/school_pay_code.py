@@ -18,7 +18,6 @@ def _schoolpay_gender(value: str) -> str:
         return "F"
     return ""
 
-
 def _schoolpay_phone(value: str) -> str:
     """Normalize applicant phone for SchoolPay guardianPhone (local 0XXXXXXXXX)."""
     phone = re.sub(r"\s+", "", str(value or "").strip())
@@ -178,10 +177,10 @@ def register_student_with_schoolpay(admitted_student):
                 "data": data,
             }
 
-        admitted_student.schoolpay_code = paycode
+        admitted_student.student_id = paycode
         admitted_student.is_registered_with_schoolpay = True
         admitted_student.save(
-            update_fields=["schoolpay_code", "is_registered_with_schoolpay", "updated_at"]
+            update_fields=["student_id", "is_registered_with_schoolpay", "updated_at"]
         )
 
         return {

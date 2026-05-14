@@ -17,16 +17,16 @@ class CourseCatalogUnitAdmin(admin.ModelAdmin):
     ordering = ["code", "title"]
 
 
-# @admin.register(Program)
-# class ProgramAdmin(admin.ModelAdmin):
-#     list_display = [
-#         'id', 'name', 'short_form', 'academic_level',
-#         'calendar_type', 'min_years', 'max_years',
-#         'minimum_graduation_load', 'is_active',
-#     ]
-#     list_filter = ['academic_level', 'calendar_type', 'is_active', 'campuses']
-#     search_fields = ['name', 'code', 'short_form']
-#     filter_horizontal = ['campuses']
+@admin.register(Program)
+class ProgramAdmin(admin.ModelAdmin):
+    list_display = [
+        'id', 'name', 'short_form', 'academic_level',
+        'calendar_type', 'min_years', 'max_years',
+        'minimum_graduation_load', 'is_active',
+    ]
+    list_filter = ['academic_level', 'calendar_type', 'is_active', 'campuses']
+    search_fields = ['name', 'code', 'short_form']
+    filter_horizontal = ['campuses']
 
 
 class SemesterInline(admin.TabularInline):

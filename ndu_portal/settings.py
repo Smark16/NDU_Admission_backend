@@ -213,6 +213,10 @@ CELERY_BEAT_SCHEDULE = {
     "process_failed_payments" : {
        "task": "payments.tasks.auto_delete_failed_payments",
        "schedule": crontab(minute="*/5"),
+    },
+    "sync-schoolpay-transactions-everyday": {
+        "task": "payments.tasks.celery_sync_schoolpay_transactions",
+        "schedule": crontab(minute="*/1")
     }
 }
 
@@ -251,13 +255,12 @@ CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOWED_ORIGINS = [
     "https://applications.ndu.ac.ug",
     "https://applications-admin.ndu.ac.ug",
-    "http://applications.ndu.ac.ug",
-    "http://applications-admin.ndu.ac.ug",
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     "https://admissions.ndu.ac.ug",
     "http://localhost:3001",
     "https://erp.ndejje.ndu.ac.ug",
+    "https://www.schoolpay.co.ug"
 ]
 
 REST_FRAMEWORK = {
