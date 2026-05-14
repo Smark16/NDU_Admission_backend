@@ -1,8 +1,8 @@
 import logging
+import re
 
 import requests
 from django.conf import settings
-import re
 
 from admissions.models import AdmittedStudent
 from .schoolpay_auth import build_schoolpay_hash, schoolpay_api_root
@@ -19,22 +19,27 @@ def _schoolpay_gender(value: str) -> str:
     return ""
 
 def _schoolpay_phone(value: str) -> str:
-    # Remove spaces, dashes, brackets etc.
-    phone = re.sub(r"[^\d+]", "", str(value or "")).strip()
+    """Normalize applicant phone for SchoolPay guardianPhone (local 0XXXXXXXXX)."""
+    phone = re.sub(r"\s+", "", str(value or "").strip())
+    if not phone:
+        return ""
 
-    # If already international with +
-    if phone.startswith("+"):
-        return phone[1:]  # remove only +
+    # Common data-entry typo: letter O instead of zero at the start.
+    if phone[0] in "Oo" and len(phone) > 1 and phone[1:].isdigit():
+        phone = "0" + phone[1:]
 
-    # Uganda local numbers starting with 0
-    if phone.startswith("0") and len(phone) == 10:
-        return "256" + phone[1:]
+    if phone.startswith("+256"):
+        phone = "0" + phone[4:]
+    elif phone.startswith("256") and len(phone) > 3:
+        phone = "0" + phone[3:]
 
-    # Uganda numbers already without +
-    if phone.startswith("256"):
-        return phone
-
-    # Other international numbers without +
+    digits = re.sub(r"\D", "", phone)
+    if digits.startswith("256") and len(digits) >= 12:
+        digits = "0" + digits[3:]
+    if len(digits) == 9 and digits.startswith("7"):
+        return "0" + digits
+    if digits.startswith("0") and len(digits) == 10:
+        return digits
     return phone
 
 
@@ -118,6 +123,12 @@ def register_student_with_schoolpay(admitted_student):
 
         if data.get("returnCode") != 0:
             message = data.get("returnMessage") or "SchoolPay registration failed"
+            logger.warning(
+                "SchoolPay registration failed for student %s: %s (guardianPhone=%s)",
+                admitted_student.pk,
+                message,
+                payload.get("guardianPhone"),
+            )
             if data.get("returnCode") == 899:
                 message = (
                     f"{message}. SchoolPay rejected the registration number format "

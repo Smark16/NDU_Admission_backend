@@ -2,8 +2,8 @@ from decimal import Decimal, InvalidOperation
 
 from django.db import DatabaseError
 from django.db.models import Q
+from Programs.permissions import FeePlanConfigurationPermission
 from rest_framework import status
-from rest_framework.permissions import IsAdminUser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -37,7 +37,7 @@ class ScheduledOtherFeeRuleListCreate(APIView):
     GET/POST scheduled other-fee rules due by year/term.
     """
 
-    permission_classes = [IsAdminUser]
+    permission_classes = [FeePlanConfigurationPermission]
 
     def get(self, request):
         try:
@@ -221,7 +221,7 @@ class ScheduledOtherFeeRuleListCreate(APIView):
 
 
 class ScheduledOtherFeeRuleDetail(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [FeePlanConfigurationPermission]
 
     def delete(self, request, pk):
         try:
@@ -238,7 +238,7 @@ class ScheduledOtherFeeRuleClone(APIView):
     Clone all active scheduled other-fee rules from one program to many programs.
     """
 
-    permission_classes = [IsAdminUser]
+    permission_classes = [FeePlanConfigurationPermission]
 
     def post(self, request):
         try:

@@ -1,4 +1,8 @@
-"""Coarse ERP module checks for DRF (uses auth.Permission on accounts.ErpAccessPolicy)."""
+"""Coarse ERP module checks for DRF (uses auth.Permission on accounts.ErpAccessPolicy).
+
+Superusers bypass checks. Everyone else must have the relevant permission codename(s)
+assigned via Django Groups (or user_permissions); being ``is_staff`` alone is not enough.
+"""
 from rest_framework.permissions import BasePermission
 
 
@@ -21,16 +25,32 @@ class CanViewAdmissionsAnalytics(BasePermission):
             return True
         if u.has_perm("admissions.view_application"):
             return True
-        if getattr(u, "is_staff", False) and not getattr(u, "is_applicant", False):
-            return True
         return False
+
+
+class FinanceModuleAdminPermission(BasePermission):
+    """Ledger, exports, and finance tools — not applicant self-service."""
+
+    message = "You do not have permission to access finance administration."
+
+    def has_permission(self, request, view):
+        u = request.user
+        if not u.is_authenticated:
+            return False
+        if u.is_superuser:
+            return True
+        return user_has_any_erp_perm(
+            u,
+            "access_finance",
+            "manage_payment_reconciliation",
+            "configure_fee_plans",
+        )
 
 
 class CanViewAdmissionQueues(BasePermission):
     """
     Application list / queue endpoints (all applications, direct entry, rejected).
-    Broader than DjangoModelPermissions: any ERP admissions workflow role, model view,
-    or non-applicant staff (covers legacy accounts where groups were not fully synced).
+    Requires an assigned admissions/report/view permission — not granted solely because the user is staff.
     """
 
     _ERP_QUEUE = (
@@ -50,7 +70,5 @@ class CanViewAdmissionQueues(BasePermission):
         if user_has_any_erp_perm(u, *self._ERP_QUEUE):
             return True
         if u.has_perm("admissions.view_application"):
-            return True
-        if getattr(u, "is_staff", False) and not getattr(u, "is_applicant", False):
             return True
         return False

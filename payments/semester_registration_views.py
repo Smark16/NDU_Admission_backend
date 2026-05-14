@@ -3,8 +3,9 @@ Semester tuition billing (student portal) + course registration + registration s
 """
 from django.utils.dateparse import parse_datetime
 
+from Programs.permissions import FeePlanConfigurationPermission
 from rest_framework import status
-from rest_framework.permissions import IsAdminUser, IsAuthenticated
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -103,6 +104,48 @@ class GetStudentPaymentStatus(APIView):
 
     def post(self, request):
         return self.get(request)
+
+
+class DownloadStudentOfferLetterPdf(APIView):
+    """Stream the application offer/admission letter PDF for the logged-in admitted student (JWT)."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from django.http import FileResponse
+
+        from .student_portal_finance import commitment_payment_summary, get_admitted_student_for_user
+
+        student = get_admitted_student_for_user(request.user)
+        if not student:
+            return Response(
+                {"detail": "Admitted student profile not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        summary = commitment_payment_summary(student)
+        commitment_met = bool(summary["commitment_met"])
+        admission_paid = bool(getattr(student, "admission_fee_paid", False))
+        if not (commitment_met or admission_paid):
+            return Response(
+                {"detail": "Offer letter download is available after the commitment or admission fee requirement is met."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        app = student.application
+        if not app or not app.admission_letter_pdf or not app.admission_letter_pdf.name:
+            return Response(
+                {"detail": "No offer letter PDF has been published for your application yet."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        try:
+            fh = app.admission_letter_pdf.open("rb")
+        except OSError:
+            return Response(
+                {"detail": "The offer letter file could not be read. Contact admissions."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        safe_name = f"Offer_Letter_{(student.reg_no or student.student_id or student.pk)}.pdf"
+        safe_name = safe_name.replace("/", "_").replace("\\", "_")
+        return FileResponse(fh, as_attachment=True, filename=safe_name, content_type="application/pdf")
 
 
 class CheckRegistrationEligibility(APIView):
@@ -218,7 +261,7 @@ class GetRegistrationSettings(APIView):
 class UpdateRegistrationSettings(APIView):
     """Update registration policy (typically staff)."""
 
-    permission_classes = [IsAdminUser]
+    permission_classes = [FeePlanConfigurationPermission]
 
     def post(self, request):
         try:

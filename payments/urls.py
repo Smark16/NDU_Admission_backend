@@ -18,6 +18,7 @@ from .admin_ledger_views import (
 
 from .semester_registration_views import (
     CheckRegistrationEligibility,
+    DownloadStudentOfferLetterPdf,
     GetRegistrationSettings,
     GetSemestersForProgramBatch,
     GetStudentPaymentStatus,
@@ -72,6 +73,11 @@ urlpatterns = [
     path('admin/tuition_ledger/transactions', AdminTuitionLedgerTransactionsView.as_view(), name='admin_tuition_ledger_transactions'),
     path('student/tuition_structure', GetStudentTuitionStructure.as_view(), name='get_student_tuition_structure'),
     path('student/payment_status', GetStudentPaymentStatus.as_view(), name='get_student_payment_status'),
+    path(
+        'student/offer_letter_pdf',
+        DownloadStudentOfferLetterPdf.as_view(),
+        name='student_offer_letter_pdf',
+    ),
     path(
         'student/check_registration_eligibility',
         CheckRegistrationEligibility.as_view(),

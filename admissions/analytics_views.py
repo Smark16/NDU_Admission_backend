@@ -15,6 +15,7 @@ from rest_framework.permissions import IsAuthenticated
 from accounts.erp_drf_permissions import CanViewAdmissionsAnalytics
 
 from .models import Application, AdmittedStudent, Batch, AcademicLevel
+from .utils.batch_offer_filters import batch_offer_window_q
 from accounts.models import Campus
 from payments.models import ApplicationPayment
 from django.db.utils import ProgrammingError
@@ -136,7 +137,7 @@ class AnalyticsDashboardView(APIView):
         fees_pending   = pay_qs.filter(status="PENDING").aggregate(
             total=Sum("amount"))["total"] or 0
 
-        active_batches = Batch.objects.filter(is_active=True).count()
+        active_batches = Batch.objects.filter(is_active=True).filter(batch_offer_window_q()).count()
 
         # ── Application Pipeline (funnel) ─────────────────────────────────────
         pipeline = [

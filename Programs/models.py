@@ -53,6 +53,31 @@ class Program(models.Model):
         ),
     )
     is_active = models.BooleanField(default=True)
+    CURRICULUM_MODE_MASTER = 'master'
+    CURRICULUM_MODE_INHERITED = 'inherited'
+    CURRICULUM_MODE_FORKED = 'forked'
+    CURRICULUM_MODE_CHOICES = [
+        (CURRICULUM_MODE_MASTER, 'Curriculum master'),
+        (CURRICULUM_MODE_INHERITED, 'Inherited curriculum'),
+        (CURRICULUM_MODE_FORKED, 'Forked curriculum'),
+    ]
+    curriculum_mode = models.CharField(
+        max_length=20,
+        choices=CURRICULUM_MODE_CHOICES,
+        default=CURRICULUM_MODE_MASTER,
+        help_text=(
+            "master: owns curriculum; inherited: reads versions from curriculum_source_program; "
+            "forked: local copy after fork."
+        ),
+    )
+    curriculum_source_program = models.ForeignKey(
+        'self',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='curriculum_dependent_programs',
+        help_text="Master programme row when curriculum_mode is inherited.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -66,6 +91,20 @@ class Program(models.Model):
 
     def __str__(self):
         return f"{self.name}"
+
+    @property
+    def curriculum_is_inherited(self) -> bool:
+        return (
+            self.curriculum_mode == self.CURRICULUM_MODE_INHERITED
+            and self.curriculum_source_program_id is not None
+        )
+
+    @property
+    def curriculum_allows_writes(self) -> bool:
+        return self.curriculum_mode in (
+            self.CURRICULUM_MODE_MASTER,
+            self.CURRICULUM_MODE_FORKED,
+        )
 
     @property
     def max_terms_per_year(self):
@@ -156,6 +195,18 @@ class ProgramCurriculumVersion(models.Model):
             "Leave blank to use the programme's minimum_graduation_load."
         ),
     )
+    origin_version = models.ForeignKey(
+        'self',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='derived_versions',
+        help_text="Source curriculum version when this row was forked from a master.",
+    )
+    is_local_fork = models.BooleanField(
+        default=False,
+        help_text="True when this version is a campus-local fork of an inherited version.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -181,10 +232,15 @@ def resolve_program_default_curriculum_version(program: Program):
     """Best-effort default curriculum version resolver for backward compatibility."""
     if not program:
         return None
-    default_version = program.curriculum_versions.filter(is_default=True).first()
+    from .curriculum_inheritance import curriculum_owner_program
+
+    owner = curriculum_owner_program(program)
+    if not owner:
+        return None
+    default_version = owner.curriculum_versions.filter(is_default=True).first()
     if default_version:
         return default_version
-    return program.curriculum_versions.order_by('id').first()
+    return owner.curriculum_versions.order_by('id').first()
 
 
 def ensure_program_default_curriculum_version(program: Program):
@@ -195,6 +251,8 @@ def ensure_program_default_curriculum_version(program: Program):
     """
     if not program:
         return None
+    if program.curriculum_is_inherited:
+        return resolve_program_default_curriculum_version(program)
     existing = resolve_program_default_curriculum_version(program)
     if existing:
         return existing
@@ -475,8 +533,11 @@ class ProgramBatch(models.Model):
 
     def clean(self):
         from django.core.exceptions import ValidationError
-        if self.curriculum_version_id and self.curriculum_version.program_id != self.program_id:
-            raise ValidationError("curriculum_version does not belong to the selected program.")
+        if self.curriculum_version_id and self.program_id:
+            from .curriculum_inheritance import curriculum_version_matches_program
+
+            if not curriculum_version_matches_program(self.program, self.curriculum_version):
+                raise ValidationError("curriculum_version does not belong to the selected program.")
 
 
 class Semester(models.Model):
@@ -864,7 +925,9 @@ class StudentProgrammeEnrollment(models.Model):
                     "program_batch does not belong to the selected program."
                 )
         if self.curriculum_version_id and self.program_id:
-            if self.curriculum_version.program_id != self.program_id:
+            from .curriculum_inheritance import curriculum_version_matches_program
+
+            if not curriculum_version_matches_program(self.program, self.curriculum_version):
                 raise ValidationError(
                     "curriculum_version does not belong to the selected program."
                 )

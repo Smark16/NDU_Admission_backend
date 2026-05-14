@@ -15,7 +15,7 @@ lives in enrollment_views.py (my_enrollment/select_specialization).
 """
 from django.shortcuts import get_object_or_404
 from rest_framework import status
-from rest_framework.permissions import IsAuthenticated
+from .permissions import ProgramSchedulingAPIPermission
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -25,7 +25,7 @@ from .serializers import ProgramSpecializationSerializer
 
 class ProgramSpecializationListCreateView(APIView):
     """List or add specialization tracks for a programme."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [ProgramSchedulingAPIPermission]
 
     def get(self, request, program_id):
         program = get_object_or_404(Program, pk=program_id)
@@ -56,7 +56,7 @@ class ProgramSpecializationListCreateView(APIView):
 
 class ProgramSpecializationDetailView(APIView):
     """Rename, toggle, or delete a single specialization track."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [ProgramSchedulingAPIPermission]
 
     def _get(self, pk):
         return get_object_or_404(ProgramSpecialization, pk=pk)

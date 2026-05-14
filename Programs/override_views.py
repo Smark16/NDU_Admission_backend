@@ -11,11 +11,12 @@ Endpoints:
 """
 from django.shortcuts import get_object_or_404
 from rest_framework import status
-from rest_framework.permissions import IsAuthenticated
+from .permissions import CurriculumOverrideAPIPermission
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from admissions.models import AdmittedStudent
+from .curriculum_inheritance import curriculum_owner_program
 from .models import (
     ProgramCurriculumLine,
     StudentCurriculumOverride,
@@ -74,7 +75,7 @@ class StudentCurriculumView(APIView):
 
     URL: GET /api/program/admin/student/<student_id>/curriculum
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CurriculumOverrideAPIPermission]
 
     def get(self, request, student_id):
         student = get_object_or_404(AdmittedStudent, pk=student_id)
@@ -101,7 +102,7 @@ class StudentCurriculumView(APIView):
         lines = (
             ProgramCurriculumLine.objects
             .filter(
-                program=enrollment.program,
+                program=curriculum_owner_program(enrollment.program),
                 curriculum_version=enrollment.curriculum_version,
                 is_active=True,
             )
@@ -141,7 +142,7 @@ class EnrollmentOverrideListCreate(APIView):
 
     URL: GET/POST /api/program/admin/enrollment/<enrollment_id>/overrides
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CurriculumOverrideAPIPermission]
 
     def get(self, request, enrollment_id):
         enrollment = get_object_or_404(StudentProgrammeEnrollment, pk=enrollment_id)
@@ -243,7 +244,7 @@ class OverrideDetailView(APIView):
 
     URL: GET/PATCH/DELETE /api/program/admin/override/<pk>
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CurriculumOverrideAPIPermission]
 
     def _get(self, pk):
         return get_object_or_404(

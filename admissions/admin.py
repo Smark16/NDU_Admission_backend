@@ -20,23 +20,21 @@ class AdmittedStudentAdmin(admin.ModelAdmin):
         'admission_fee_paid',
         'is_registered',
         'is_registered_with_schoolpay',
+        'physical_documents_verified',
         'admitted_batch',
         'admitted_program',
-        'admitted_by'
-        # 'physical_documents_verified',
-        # 'physical_documents_verified_at',
-        # 'physical_documents_verified_by',
+        'admitted_by',
     ]
     list_filter = [
         'is_registered',
         'is_registered_with_schoolpay',
-        # 'physical_documents_verified',
+        'physical_documents_verified',
         'admitted_batch',
         'admitted_campus',
         'is_admitted',
     ]
     search_fields = ['student_id', 'reg_no', 'schoolpay_code', 'application__first_name', 'application__last_name']
-    # raw_id_fields = ('physical_documents_verified_by',)
+    raw_id_fields = ('physical_documents_verified_by',)
 
 @admin.register(AcademicLevel)
 class AcademicLevelAdmin(admin.ModelAdmin):
@@ -46,10 +44,44 @@ class AcademicLevelAdmin(admin.ModelAdmin):
 
 @admin.register(Batch)
 class BatchAdmin(admin.ModelAdmin):
-    list_display = ['name', 'code', 'application_start_date', 'application_end_date', 'is_active', 'created_by']
+    list_display = [
+        'name',
+        'code',
+        'application_start_date',
+        'application_end_date',
+        'admission_start_date',
+        'admission_end_date',
+        'offer_start_date',
+        'offer_end_date',
+        'is_active',
+        'created_by',
+    ]
     list_filter = ['is_active', 'created_at']
     search_fields = ['name', 'code']
     filter_horizontal = ['programs']
+    fieldsets = (
+        (None, {'fields': ('name', 'code', 'programs', 'academic_year', 'is_active')}),
+        (
+            'Application window',
+            {'fields': ('application_start_date', 'application_end_date')},
+        ),
+        (
+            'Admission window',
+            {'fields': ('admission_start_date', 'admission_end_date')},
+        ),
+        (
+            'Offer validity (optional)',
+            {
+                'description': (
+                    'If set, active batch resolution excludes this intake outside these dates. '
+                    'Leave both blank to ignore offer dates.'
+                ),
+                'fields': ('offer_start_date', 'offer_end_date'),
+            },
+        ),
+        ('Meta', {'fields': ('created_by', 'created_at', 'updated_at')}),
+    )
+    readonly_fields = ['created_at', 'updated_at']
 
 @admin.register(Application)
 class ApplicationAdmin(admin.ModelAdmin):
@@ -116,6 +148,36 @@ class NotificationAdmin(admin.ModelAdmin):
     list_display = ['recipient', 'title', 'message']
     list_filter = ['created_at']
     ordering = ['-created_at']
+
+
+@admin.register(IdCardPdfTemplate)
+class IdCardPdfTemplateAdmin(admin.ModelAdmin):
+    list_display = ["name", "key", "updated_at"]
+    search_fields = ["name", "key"]
+
+
+@admin.register(StudentIdCard)
+class StudentIdCardAdmin(admin.ModelAdmin):
+    list_display = [
+        "card_number",
+        "admitted_student",
+        "status",
+        "is_active",
+        "issue_date",
+        "expiry_date",
+        "issued_by",
+        "created_at",
+    ]
+    list_filter = ["status", "is_active", "issue_date"]
+    search_fields = [
+        "card_number",
+        "admitted_student__student_id",
+        "admitted_student__reg_no",
+        "admitted_student__application__first_name",
+        "admitted_student__application__last_name",
+    ]
+    raw_id_fields = ("admitted_student", "issued_by", "replaced_by")
+    readonly_fields = ["created_at", "updated_at"]
 
 
 @admin.register(EmailTemplate)

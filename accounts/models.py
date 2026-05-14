@@ -119,6 +119,17 @@ class SystemSettings(models.Model):
         related_name="settings_updates",
     )
     updated_at = models.DateTimeField(auto_now=True)
+    id_card_templates = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="List of {key, name, front_title, back_text, institution, issuer_title, issuer_signatory, return_to, tel, email} for ID card preview.",
+    )
+    active_id_card_template = models.CharField(
+        max_length=80,
+        blank=True,
+        default="",
+        help_text="Template key matching id_card_templates[].key",
+    )
 
     class Meta:
         verbose_name = "System Settings"
@@ -154,6 +165,21 @@ class ErpAccessPolicy(models.Model):
             ("manage_batches", "Manage admission intakes and batches"),
             ("assign_roles", "Assign Django groups to staff users"),
             ("manage_payment_reconciliation", "Manage payment reconciliation tools"),
+            ("manage_curriculum", "Manage programme curriculum (versions, mappings, inheritance)"),
+            (
+                "manage_program_scheduling",
+                "Manage cohort batches, semesters, and scheduled course offerings",
+            ),
+            ("manage_course_catalog", "Manage shared course catalog entries"),
+            (
+                "manage_academic_enrollment",
+                "Manage student programme enrollment and curriculum overrides",
+            ),
+            (
+                "configure_fee_plans",
+                "Configure fee plans, tuition matrices, and billing schedules",
+            ),
+            ("manage_communication_templates", "Manage system email templates and communications"),
         ]
 
     def __str__(self):

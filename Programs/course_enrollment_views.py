@@ -6,14 +6,15 @@ from django.utils import timezone
 from django.db.models import Q
 
 from rest_framework import generics, status
-from rest_framework.permissions import IsAdminUser, IsAuthenticated
+from Programs.permissions import AcademicEnrollmentAdminPermission
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 # ====================================Course Unit Enrollment==================================================================
 
 class ListCourseUnitEnrollments(generics.ListAPIView):
     """List all students enrolled in a specific course unit"""
-    permission_classes = [IsAdminUser]
+    permission_classes = [AcademicEnrollmentAdminPermission]
     
     def get_queryset(self):
         course_unit_id = self.kwargs.get('course_unit_id')
@@ -40,7 +41,7 @@ class ListCourseUnitEnrollments(generics.ListAPIView):
 
 class GetAvailableStudentsForCourseUnit(APIView):
     """Get list of students available for enrollment in a course unit"""
-    permission_classes = [IsAdminUser]
+    permission_classes = [AcademicEnrollmentAdminPermission]
     
     def get(self, request, course_unit_id):
         from .models import CourseUnit, StudentCourseUnitEnrollment
@@ -84,7 +85,7 @@ class GetAvailableStudentsForCourseUnit(APIView):
 
 class EnrollStudentsInCourseUnit(APIView):
     """Enroll one or more students in a course unit"""
-    permission_classes = [IsAdminUser]
+    permission_classes = [AcademicEnrollmentAdminPermission]
     
     def post(self, request, course_unit_id):
         from .models import CourseUnit, StudentCourseUnitEnrollment
@@ -137,7 +138,7 @@ class EnrollStudentsInCourseUnit(APIView):
 
 class AssignLecturersToCourseUnit(APIView):
     """Assign lecturers (staff) to a course unit"""
-    permission_classes = [IsAdminUser]
+    permission_classes = [AcademicEnrollmentAdminPermission]
     
     def post(self, request, course_unit_id):
         from .models import CourseUnit
@@ -182,7 +183,7 @@ class AssignLecturersToCourseUnit(APIView):
 
 class RemoveLecturerFromCourseUnit(APIView):
     """Remove a lecturer from a course unit"""
-    permission_classes = [IsAdminUser]
+    permission_classes = [AcademicEnrollmentAdminPermission]
     
     def post(self, request, course_unit_id):
         from .models import CourseUnit
@@ -281,6 +282,7 @@ class GetAvailableCoursesForRegistration(APIView):
             return Response({'detail': 'You are not an admitted student'}, status=status.HTTP_403_FORBIDDEN)
 
         from .models import StudentCurriculumOverride, ProgramCurriculumLine
+        from .curriculum_inheritance import curriculum_owner_program
 
         # ── Resolve StudentProgrammeEnrollment ────────────────────────────────
         spe = None
@@ -363,7 +365,7 @@ class GetAvailableCoursesForRegistration(APIView):
             # ── Step 2: Standard courses (blueprint year/term = current) ──────
             # Curriculum lines at current position with no blocking override
             standard_lines = ProgramCurriculumLine.objects.filter(
-                program=spe.program,
+                program=curriculum_owner_program(spe.program),
                 curriculum_version=curriculum_version,
                 year_of_study=curr_year,
                 term_number=curr_term,
@@ -786,7 +788,7 @@ class GetLecturerCourses(APIView):
 
 class AdminRegisterStudentForCourses(APIView):
     """Admin endpoint to register a student for courses"""
-    permission_classes = [IsAdminUser]
+    permission_classes = [AcademicEnrollmentAdminPermission]
     
     def post(self, request, student_id):
         from .models import CourseUnit, StudentCourseUnitEnrollment
@@ -855,7 +857,7 @@ class AdminRegisterStudentForCourses(APIView):
 
 class AdminDeregisterStudentFromCourses(APIView):
     """Admin endpoint to deregister a student from courses"""
-    permission_classes = [IsAdminUser]
+    permission_classes = [AcademicEnrollmentAdminPermission]
     
     def post(self, request, student_id):
         from .models import CourseUnit, StudentCourseUnitEnrollment
@@ -926,7 +928,7 @@ class AdminDeregisterStudentFromCourses(APIView):
 
 class RemoveStudentFromCourseUnit(APIView):
     """Remove a student from a course unit"""
-    permission_classes = [IsAdminUser]
+    permission_classes = [AcademicEnrollmentAdminPermission]
     
     def delete(self, request, enrollment_id):
         from .models import StudentCourseUnitEnrollment
@@ -945,7 +947,7 @@ class RemoveStudentFromCourseUnit(APIView):
 
 class ListStudentsInSemester(APIView):
     """List all students in a specific semester (including those enrolled in course units)"""
-    permission_classes = [IsAdminUser]
+    permission_classes = [AcademicEnrollmentAdminPermission]
     
     def get(self, request, semester_id):
         from .models import Semester, StudentSemesterProgression, StudentCourseUnitEnrollment, CourseUnit
@@ -1020,7 +1022,7 @@ class ListStudentsInSemester(APIView):
 
 class PromoteStudentsToNextSemester(APIView):
     """Promote selected students to the next semester"""
-    permission_classes = [IsAdminUser]
+    permission_classes = [AcademicEnrollmentAdminPermission]
     
     def post(self, request, semester_id):
         from .models import Semester, StudentSemesterProgression
@@ -1211,7 +1213,7 @@ class PromoteStudentsToNextSemester(APIView):
 
 class DetainStudentsInSemester(APIView):
     """Detain selected students in the current semester (prevent promotion)"""
-    permission_classes = [IsAdminUser]
+    permission_classes = [AcademicEnrollmentAdminPermission]
     
     def post(self, request, semester_id):
         from .models import Semester, StudentSemesterProgression

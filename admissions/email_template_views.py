@@ -1,6 +1,6 @@
 from django.conf import settings
 from rest_framework import status
-from rest_framework.permissions import IsAdminUser
+from Programs.permissions import CommunicationTemplatesPermission
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -13,7 +13,7 @@ from admissions.serializers import EmailTemplateSerializer, EmailTemplateUpdateS
 
 
 class EmailTemplateListView(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [CommunicationTemplatesPermission]
 
     def get(self, request):
         templates = EmailTemplate.objects.all().order_by("name")
@@ -21,7 +21,7 @@ class EmailTemplateListView(APIView):
 
 
 class EmailTemplateDetailView(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [CommunicationTemplatesPermission]
 
     def get(self, request, key):
         template = EmailTemplate.objects.filter(key=key).first()
@@ -40,7 +40,7 @@ class EmailTemplateDetailView(APIView):
 
 
 class EmailTemplatePreviewView(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [CommunicationTemplatesPermission]
 
     def post(self, request, key):
         if key not in EMAIL_TEMPLATE_DEFINITIONS:
@@ -77,7 +77,7 @@ class EmailTemplatePreviewView(APIView):
 
 
 class EmailTemplateResetDefaultView(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [CommunicationTemplatesPermission]
 
     def post(self, request, key):
         definition = EMAIL_TEMPLATE_DEFINITIONS.get(key)

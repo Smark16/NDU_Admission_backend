@@ -19,12 +19,16 @@ def _default_program_batch(student: AdmittedStudent):
     if not student.admitted_program_id:
         return None
 
+    ipb = getattr(student, "intended_program_batch", None)
+    if ipb is not None and ipb.program_id != student.admitted_program_id:
+        ipb = None
+
     batches = ProgramBatch.objects.filter(program_id=student.admitted_program_id).order_by(
         "-is_active",
         "-start_date",
         "name",
     )
-    return (
+    return ipb or (
         batches.filter(is_active=True, name__icontains="year 1").first()
         or batches.filter(is_active=True).first()
         or batches.first()

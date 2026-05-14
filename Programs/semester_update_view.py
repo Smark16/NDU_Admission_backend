@@ -7,7 +7,7 @@ Paired with CreateSemesterView in batch_views.py; route in Programs/urls.py:
 from datetime import datetime
 
 from rest_framework import status
-from rest_framework.permissions import IsAuthenticated
+from .permissions import ProgramSchedulingAPIPermission
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -17,7 +17,7 @@ from .models import ProgramBatch, Semester
 class UpdateSemesterView(APIView):
     """NEW MODULE — PUT to update name, dates, order, is_active for a Semester."""
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [ProgramSchedulingAPIPermission]
 
     def put(self, request, batch_id, semester_id):
         try:

@@ -164,12 +164,21 @@ def offer_letter_pdf_url(student: AdmittedStudent, request=None) -> str | None:
 
 def offer_letter_portal_fields(student: AdmittedStudent, request=None) -> dict[str, Any]:
     summary = commitment_payment_summary(student)
-    eligible = bool(summary["commitment_met"])
-    pdf_url = offer_letter_pdf_url(student, request) if eligible else None
+    commitment_met = bool(summary["commitment_met"])
+    admission_paid = bool(getattr(student, "admission_fee_paid", False))
+    eligible = commitment_met or admission_paid
+    app = getattr(student, "application", None)
+    has_pdf = bool(
+        app
+        and getattr(app, "admission_letter_pdf", None)
+        and getattr(app.admission_letter_pdf, "name", None)
+    )
+    pdf_url = offer_letter_pdf_url(student, request) if eligible and has_pdf else None
     return {
         **summary,
         "offer_letter_eligible": eligible,
         "offer_letter_pdf_url": pdf_url,
+        "offer_letter_can_download": bool(eligible and has_pdf),
     }
 
 

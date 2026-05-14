@@ -7,7 +7,7 @@ from decimal import Decimal
 from django.db.models import Q
 from rest_framework import generics, status
 from rest_framework.parsers import FormParser, MultiPartParser
-from rest_framework.permissions import IsAuthenticated
+from .permissions import CatalogAPIPermission
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -22,7 +22,7 @@ from .serializers import CourseCatalogUnitSerializer
 class CourseCatalogUnitListCreateView(generics.ListCreateAPIView):
     queryset = CourseCatalogUnit.objects.none()
     serializer_class = CourseCatalogUnitSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CatalogAPIPermission]
 
     def get_queryset(self):
         qs = CourseCatalogUnit.objects.all().order_by("code", "title")
@@ -47,7 +47,7 @@ class CourseCatalogUnitListCreateView(generics.ListCreateAPIView):
 class CourseCatalogUnitDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = CourseCatalogUnit.objects.all()
     serializer_class = CourseCatalogUnitSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CatalogAPIPermission]
 
     def get_queryset(self):
         return CourseCatalogUnit.objects.all()
@@ -77,7 +77,7 @@ class CourseCatalogUnitDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 
 class CourseCatalogUnitRenameImpactView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CatalogAPIPermission]
 
     def get(self, request, pk):
         catalog_unit = get_object_or_404(CourseCatalogUnit.objects.all(), pk=pk)
@@ -104,7 +104,7 @@ class BulkUploadCourseCatalogUnitsView(APIView):
       - update_existing: true/false (default false)
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CatalogAPIPermission]
     parser_classes = [MultiPartParser, FormParser]
 
     @staticmethod
@@ -276,7 +276,7 @@ class BulkUploadCourseCatalogUnitsView(APIView):
 class CourseCatalogUnitTemplateDownloadView(APIView):
     """Download an Excel template for bulk uploading catalog course units."""
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CatalogAPIPermission]
 
     def get(self, request):
         try:

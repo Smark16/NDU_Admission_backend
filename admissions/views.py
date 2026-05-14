@@ -1,5 +1,5 @@
 from accounts.models import Campus
-from accounts.erp_drf_permissions import CanViewAdmissionQueues
+from accounts.erp_drf_permissions import CanViewAdmissionQueues, user_has_any_erp_perm
 from .models import *
 from rest_framework.views import APIView
 from django.shortcuts import get_object_or_404
@@ -8,7 +8,16 @@ from rest_framework.permissions import *
 from rest_framework.response import Response
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from .serializers import *
-from .permissions import VerifyPhysicalDocumentsPermission
+from .permissions import (
+    VerifyPhysicalDocumentsPermission,
+    EditApplicationRegistrationPermission,
+    user_can_approve_application,
+    user_can_reject_application,
+    user_can_admit_applicant,
+    user_can_restore_revoked_admission,
+    CanAdmitApplicant,
+    CanManageAdmissionChangeRequests,
+)
 from audit.utils import log_audit_event
 from rest_framework.parsers import MultiPartParser, FormParser
 from django.utils import timezone
@@ -37,6 +46,7 @@ from datetime import date
 
 from urllib.parse import quote
 from .utils.reg_no import generate_reg_no
+from .utils.batch_offer_filters import batch_offer_window_q
 
 # caching
 from django.core.cache import cache
@@ -585,9 +595,13 @@ class ListDirectEntryApplications(generics.ListAPIView):
 
 class RejectStudent(APIView):
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
-    queryset = Application.objects.all()
 
     def patch(self, request, application_id):
+        if not user_can_reject_application(request.user):
+            return Response(
+                {"detail": "You do not have permission to reject applications."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         _rejection_reason = request.data.get("rejection_reason", "No reason provided")
         try:
             with transaction.atomic():
@@ -639,13 +653,44 @@ class SingleApplication(generics.RetrieveAPIView):
 class ChangeApplicationStatus(APIView):
     queryset = Application.objects.all()
     serializer_class = ApplicationSerializer
-    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    permission_classes = [IsAuthenticated]
 
     def patch(self, request, *args, **kwargs):
         try:
             with transaction.atomic():
                 app_id = self.kwargs['pk']
                 newStatus = request.data.get('status')
+                ns = str(newStatus or '').strip().lower()
+                user = request.user
+                if not user.is_superuser:
+                    if ns == 'accepted':
+                        if not user_can_approve_application(user):
+                            return Response(
+                                {
+                                    'detail': (
+                                        'You do not have permission to approve applications '
+                                        '(admissions.approve_application or ERP approve_admissions).'
+                                    ),
+                                },
+                                status=status.HTTP_403_FORBIDDEN,
+                            )
+                    elif ns == 'rejected':
+                        if not user_can_reject_application(user):
+                            return Response(
+                                {
+                                    'detail': (
+                                        'You do not have permission to reject applications '
+                                        '(admissions.reject_application or ERP approve_admissions).'
+                                    ),
+                                },
+                                status=status.HTTP_403_FORBIDDEN,
+                            )
+                    else:
+                        if not user.has_perm('admissions.change_application'):
+                            return Response(
+                                {'detail': 'You do not have permission to change application status.'},
+                                status=status.HTTP_403_FORBIDDEN,
+                            )
 
                 try:
                     application = Application.objects.select_related(
@@ -660,7 +705,7 @@ class ChangeApplicationStatus(APIView):
             return Response({"detail":str(e)}) 
 
 class EditApplicationProfile(APIView):
-    permission_classes = [IsAuthenticated, CanViewAdmissionQueues]
+    permission_classes = [IsAuthenticated, EditApplicationRegistrationPermission]
 
     def patch(self, request, application_id):
         application = get_object_or_404(Application, pk=application_id)
@@ -718,7 +763,7 @@ class EditApplicationProfile(APIView):
 
 # change application programme choices and campus
 class ChangeApplicationProgramme(APIView):
-    permission_classes = [IsAuthenticated, CanViewAdmissionQueues]
+    permission_classes = [IsAuthenticated, EditApplicationRegistrationPermission]
 
     def patch(self, request, application_id):
 
@@ -1042,6 +1087,7 @@ class GetActiveApplicationBatch(generics.ListAPIView):
                 Batch.objects
                 .select_related('created_by')
                 .prefetch_related('programs', 'programs__campuses')
+                .filter(batch_offer_window_q())
                 .get(
                     application_start_date__lte=now,
                     application_end_date__gte=now,
@@ -1087,6 +1133,7 @@ class GetActiveAdmissionBatch(generics.RetrieveAPIView):
                 .select_related('created_by')
                 .prefetch_related('programs', 'programs__campuses')
                 .filter(is_active=True)
+                .filter(batch_offer_window_q())
                 .filter(
                     Q(application_start_date__lte=now, application_end_date__gte=now) |
                     Q(admission_start_date__lte=now, admission_end_date__gte=now)
@@ -1431,11 +1478,40 @@ class ChangeFacultyStatus(APIView):
         
 # ===========================================================Admissions=======================================================
 
+class ListProgramBatchOptionsForAdmission(APIView):
+    """
+    Active ProgramBatch rows for a programme — minimal fields for admit-officer UI.
+    """
+    permission_classes = [IsAuthenticated, CanAdmitApplicant]
+
+    def get(self, request, program_id):
+        from Programs.models import ProgramBatch
+
+        qs = (
+            ProgramBatch.objects.filter(program_id=program_id, is_active=True)
+            .order_by('-start_date', 'name')
+            .only('id', 'name', 'start_date', 'academic_year', 'is_active')
+        )
+        return Response(
+            [
+                {
+                    'id': b.id,
+                    'name': b.name,
+                    'start_date': b.start_date.isoformat() if b.start_date else None,
+                    'academic_year': b.academic_year or '',
+                    'is_active': b.is_active,
+                }
+                for b in qs
+            ],
+            status=status.HTTP_200_OK,
+        )
+
+
 # create admission
 class AdmitStudent(generics.CreateAPIView):
     queryset = AdmittedStudent.objects.all()
     serializer_class = AdmittedStudentSerializer
-    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    permission_classes = [IsAuthenticated, CanAdmitApplicant]
 
     def create(self, request, *args, **kwargs):
         try:
@@ -1576,10 +1652,7 @@ class RestoreAdmittedStudent(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
-        if not (
-            request.user.has_perm("admissions.revoke_admission")
-            or request.user.has_perm("admissions.change_admittedstudent")
-        ):
+        if not user_can_restore_revoked_admission(request.user):
             return Response({"detail": "You do not have permission to restore admissions."}, status=403)
 
         admission = get_object_or_404(AdmittedStudent, pk=pk)
@@ -1788,7 +1861,8 @@ class DeleteAdmittedStudent(generics.DestroyAPIView):
 
 # Admin dashboard stats
 class AdminDashboardStats(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CanViewAdmissionQueues]
+
     def get(self, request):
         total_applications = Application.objects.all().count()
         online_applications = Application.objects.filter(is_direct_entry=False).count()
@@ -1799,7 +1873,7 @@ class AdminDashboardStats(APIView):
         ).count()
         rejected_students = Application.objects.filter(status='rejected').count()
         total_batches = Batch.objects.all().count()
-        active_batches = Batch.objects.filter(is_active=True).count()
+        active_batches = Batch.objects.filter(is_active=True).filter(batch_offer_window_q()).count()
 
         return Response({
             "totalApplication":total_applications,
@@ -2022,7 +2096,7 @@ class StudentChangeRequestOptions(APIView):
 
 class AdminChangeRequestList(APIView):
     """Admin: list all requests with optional status filter."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, CanViewAdmissionQueues]
 
     def get(self, request):
         qs = AdmissionChangeRequest.objects.select_related(
@@ -2047,7 +2121,7 @@ class AdminChangeRequestList(APIView):
 
 class AdminChangeRequestReview(APIView):
     """Admin: approve or reject a specific request."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, CanManageAdmissionChangeRequests]
 
     def post(self, request, pk):
         req_obj = get_object_or_404(AdmissionChangeRequest, pk=pk)
@@ -2122,8 +2196,15 @@ class DirectApplicationEntryView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        if not request.user.is_staff:
-            return Response({'detail': 'Only staff members can use direct entry.'}, status=403)
+        if not (
+            request.user.is_superuser
+            or user_has_any_erp_perm(request.user, "manage_direct_applications")
+            or request.user.has_perm("admissions.add_application")
+        ):
+            return Response(
+                {"detail": "You do not have permission for direct application entry."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         d = request.data
 
@@ -2131,7 +2212,7 @@ class DirectApplicationEntryView(APIView):
         required_fields = [
             'first_name', 'last_name', 'date_of_birth', 'gender', 'nationality',
             'phone', 'email', 'next_of_kin_name', 'next_of_kin_contact',
-            'next_of_kin_relationship', 'batch', 'campus', 'program', 'academic_level',
+            'next_of_kin_relationship', 'batch', 'campus', 'academic_level',
         ]
         errors = {f: 'This field is required.' for f in required_fields if not d.get(f)}
         if errors:
@@ -2228,8 +2309,11 @@ class DirectAdmissionEntryView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        if not request.user.is_staff:
-            return Response({'detail': 'Only staff members can perform direct admission.'}, status=403)
+        if not user_can_admit_applicant(request.user):
+            return Response(
+                {'detail': 'You do not have permission to use direct admission entry.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         d = request.data
 

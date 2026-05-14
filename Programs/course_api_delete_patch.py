@@ -1,5 +1,5 @@
 from rest_framework import status
-from rest_framework.permissions import IsAuthenticated
+from .permissions import ProgramSchedulingAPIPermission
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -8,7 +8,7 @@ from .models import CourseUnit
 
 
 class DeleteCourseUnitView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [ProgramSchedulingAPIPermission]
 
     def delete(self, request, pk):
         try:
@@ -20,7 +20,7 @@ class DeleteCourseUnitView(APIView):
 
 
 class PatchCourseUnitStatusView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [ProgramSchedulingAPIPermission]
 
     def patch(self, request, pk):
         try:
