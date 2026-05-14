@@ -42,10 +42,44 @@ class AcademicLevelAdmin(admin.ModelAdmin):
 
 @admin.register(Batch)
 class BatchAdmin(admin.ModelAdmin):
-    list_display = ['name', 'code', 'application_start_date', 'application_end_date', 'is_active', 'created_by']
+    list_display = [
+        'name',
+        'code',
+        'application_start_date',
+        'application_end_date',
+        'admission_start_date',
+        'admission_end_date',
+        'offer_start_date',
+        'offer_end_date',
+        'is_active',
+        'created_by',
+    ]
     list_filter = ['is_active', 'created_at']
     search_fields = ['name', 'code']
     filter_horizontal = ['programs']
+    fieldsets = (
+        (None, {'fields': ('name', 'code', 'programs', 'academic_year', 'is_active')}),
+        (
+            'Application window',
+            {'fields': ('application_start_date', 'application_end_date')},
+        ),
+        (
+            'Admission window',
+            {'fields': ('admission_start_date', 'admission_end_date')},
+        ),
+        (
+            'Offer validity (optional)',
+            {
+                'description': (
+                    'If set, active batch resolution excludes this intake outside these dates. '
+                    'Leave both blank to ignore offer dates.'
+                ),
+                'fields': ('offer_start_date', 'offer_end_date'),
+            },
+        ),
+        ('Meta', {'fields': ('created_by', 'created_at', 'updated_at')}),
+    )
+    readonly_fields = ['created_at', 'updated_at']
 
 @admin.register(Application)
 class ApplicationAdmin(admin.ModelAdmin):

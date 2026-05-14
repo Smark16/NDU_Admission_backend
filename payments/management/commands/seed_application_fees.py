@@ -14,6 +14,7 @@ from decimal import Decimal
 from django.core.management.base import BaseCommand
 
 from admissions.models import AcademicLevel, Batch
+from admissions.utils.batch_offer_filters import batch_offer_window_q
 from payments.models import ApplicationFee
 
 
@@ -56,7 +57,7 @@ class Command(BaseCommand):
 
         qs = Batch.objects.all().order_by("-is_active", "-created_at")
         if active_only:
-            qs = qs.filter(is_active=True)
+            qs = qs.filter(is_active=True).filter(batch_offer_window_q())
 
         batches = list(qs)
         if not batches:

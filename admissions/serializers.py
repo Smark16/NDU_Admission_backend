@@ -13,6 +13,7 @@ class BatchSerializer(serializers.ModelSerializer):
         queryset=Program.objects.all(),
         allow_empty=True,
     )
+    is_offer_active = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = Batch
@@ -22,6 +23,16 @@ class BatchSerializer(serializers.ModelSerializer):
         super().__init__(*args, **kwargs)
         if self.instance is not None:
             self.fields['created_by'].read_only = True
+
+    def validate(self, attrs):
+        inst = self.instance
+        start = attrs.get('offer_start_date', inst.offer_start_date if inst else None)
+        end = attrs.get('offer_end_date', inst.offer_end_date if inst else None)
+        if start and end and end < start:
+            raise serializers.ValidationError({
+                'offer_end_date': 'Offer end date cannot be before offer start date.',
+            })
+        return attrs
 
     def to_representation(self, instance):
         response = super().to_representation(instance)

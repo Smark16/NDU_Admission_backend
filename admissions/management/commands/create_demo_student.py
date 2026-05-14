@@ -13,6 +13,7 @@ from django.utils import timezone
 
 from accounts.models import User, Campus
 from admissions.models import AcademicLevel, AdmittedStudent, Application, Batch
+from admissions.utils.batch_offer_filters import batch_offer_window_q
 from admissions.student_accounts import ensure_student_portal_account
 from Programs.models import Program, ProgramBatch
 
@@ -46,7 +47,10 @@ class Command(BaseCommand):
         skip_portal = options["skip_portal_account"]
 
         batch = (
-            Batch.objects.filter(is_active=True).order_by("-id").first()
+            Batch.objects.filter(is_active=True)
+            .filter(batch_offer_window_q())
+            .order_by("-id")
+            .first()
             or Batch.objects.order_by("-id").first()
         )
         if not batch:

@@ -45,6 +45,7 @@ from datetime import date
 
 from urllib.parse import quote
 from .utils.reg_no import generate_reg_no
+from .utils.batch_offer_filters import batch_offer_window_q
 
 # caching
 from django.core.cache import cache
@@ -987,6 +988,7 @@ class GetActiveApplicationBatch(generics.ListAPIView):
                 Batch.objects
                 .select_related('created_by')
                 .prefetch_related('programs', 'programs__campuses')
+                .filter(batch_offer_window_q())
                 .get(
                     application_start_date__lte=now,
                     application_end_date__gte=now,
@@ -1032,6 +1034,7 @@ class GetActiveAdmissionBatch(generics.RetrieveAPIView):
                 .select_related('created_by')
                 .prefetch_related('programs', 'programs__campuses')
                 .filter(is_active=True)
+                .filter(batch_offer_window_q())
                 .filter(
                     Q(application_start_date__lte=now, application_end_date__gte=now) |
                     Q(admission_start_date__lte=now, admission_end_date__gte=now)
@@ -1747,7 +1750,7 @@ class AdminDashboardStats(APIView):
         ).count()
         rejected_students = Application.objects.filter(status='rejected').count()
         total_batches = Batch.objects.all().count()
-        active_batches = Batch.objects.filter(is_active=True).count()
+        active_batches = Batch.objects.filter(is_active=True).filter(batch_offer_window_q()).count()
 
         return Response({
             "totalApplication":total_applications,

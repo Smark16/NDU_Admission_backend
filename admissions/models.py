@@ -42,6 +42,19 @@ class Batch(models.Model):
     application_end_date = models.DateField()
     admission_start_date = models.DateField()
     admission_end_date = models.DateField()
+    offer_start_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Date from which admission offers become active for this batch.",
+    )
+    offer_end_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text=(
+            "Date after which admission offers for this batch expire and the batch "
+            "is no longer shown as active."
+        ),
+    )
     is_active = models.BooleanField(default=False)
     created_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name='created_batches')
     created_at = models.DateTimeField(auto_now_add=True)
@@ -64,6 +77,17 @@ class Batch(models.Model):
         from django.utils import timezone
         now = timezone.now()
         return self.application_start_date <= now <= self.application_end_date
+
+    @property
+    def is_offer_active(self):
+        from django.utils import timezone
+
+        today = timezone.now().date()
+        if self.offer_start_date and today < self.offer_start_date:
+            return False
+        if self.offer_end_date and today > self.offer_end_date:
+            return False
+        return True
 
 class OLevelSubject(models.Model):
     name = models.CharField(max_length=100)
