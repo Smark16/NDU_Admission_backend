@@ -106,10 +106,10 @@ class TuitionLedgerSerializer(serializers.ModelSerializer):
         ]
 
     def get_student_full_name(self, obj):
-        if obj.student and obj.student.user:
+        if obj.student and obj.student.student_user:
             return (
-                f"{obj.student.user.first_name} "
-                f"{obj.student.user.last_name}"
+                f"{obj.student.student_user.first_name} "
+                f"{obj.student.student_user.last_name}"
             )
 
         return None
