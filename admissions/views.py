@@ -673,7 +673,7 @@ class SingleApplication(generics.RetrieveAPIView):
 class ChangeApplicationStatus(APIView):
     queryset = Application.objects.all()
     serializer_class = ApplicationSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
     def patch(self, request, *args, **kwargs):
         try:
@@ -681,37 +681,6 @@ class ChangeApplicationStatus(APIView):
                 app_id = self.kwargs['pk']
                 newStatus = request.data.get('status')
                 ns = str(newStatus or '').strip().lower()
-                user = request.user
-                if not user.is_superuser:
-                    if ns == 'accepted':
-                        if not user_can_approve_application(user):
-                            return Response(
-                                {
-                                    'detail': (
-                                        'You do not have permission to approve applications '
-                                        '(admissions.approve_application or ERP approve_admissions).'
-                                    ),
-                                },
-                                status=status.HTTP_403_FORBIDDEN,
-                            )
-                    elif ns == 'rejected':
-                        if not user_can_reject_application(user):
-                            return Response(
-                                {
-                                    'detail': (
-                                        'You do not have permission to reject applications '
-                                        '(admissions.reject_application or ERP approve_admissions).'
-                                    ),
-                                },
-                                status=status.HTTP_403_FORBIDDEN,
-                            )
-                    else:
-                        if not user.has_perm('admissions.change_application'):
-                            return Response(
-                                {'detail': 'You do not have permission to change application status.'},
-                                status=status.HTTP_403_FORBIDDEN,
-                            )
-
                 try:
                     application = Application.objects.select_related(
                       'applicant', 'batch', 'campus', 'academic_level', 'reviewed_by').get(pk=app_id)
@@ -725,7 +694,7 @@ class ChangeApplicationStatus(APIView):
             return Response({"detail":str(e)}) 
 
 class EditApplicationProfile(APIView):
-    permission_classes = [IsAuthenticated, EditApplicationRegistrationPermission]
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
     def patch(self, request, application_id):
         application = get_object_or_404(Application, pk=application_id)
@@ -783,7 +752,7 @@ class EditApplicationProfile(APIView):
 
 # change application programme choices and campus
 class ChangeApplicationProgramme(APIView):
-    permission_classes = [IsAuthenticated, EditApplicationRegistrationPermission]
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
     def patch(self, request, application_id):
 
@@ -874,8 +843,6 @@ class ChangeApplicationProgramme(APIView):
 
 
 class ApplicantProgramChoicesView(APIView):
-    """Applicant: review, update, and confirm programme choices on a submitted application."""
-
     permission_classes = [IsAuthenticated]
 
     def _get_owned_application(self, request, application_id):

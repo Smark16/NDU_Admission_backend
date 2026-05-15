@@ -90,20 +90,17 @@ class SingleApplicationSerializer(serializers.ModelSerializer):
         ]
 
 class ApplicationSerializer(serializers.ModelSerializer):
+    campus = serializers.CharField(source='campus.name', read_only=True)
+    batch = serializers.CharField(source='batch.name', read_only=True)
+    reviewed_by = serializers.CharField(source='reviewed_by.full_name', read_only=True, allow_null=True)
     class Meta:
         model = Application
-        fields = '__all__'
-
-    def to_representation(self, instance):
-        response = super().to_representation(instance)
-        response['reviewed_by'] = UserSerializer(instance.reviewed_by).data
-        response['batch'] = BatchSerializer(instance.batch).data
-        response['campus'] = CampusSerializer(instance.campus).data
-        response['applicant'] = UserSerializer(instance.applicant).data
-        response['programs'] = ProgramSerializer(
-            ordered_programs_for_application(instance), many=True
-        ).data
-        return response
+        fields = ['id', 'first_name', 'last_name','middle_name', 'date_of_birth', 'gender', 'nationality', 'phone', 'email',
+                  'batch', 'campus', "nin", "passport_number","disabled", 'olevel_school', 'olevel_year', 'alevel_school', 'alevel_year', 'address',
+                  'middle_name', 'next_of_kin_name', 'next_of_kin_contact', 'next_of_kin_relationship', 'reviewed_by', 'applicant', 'status',
+                  'title', 'alevel_combination', 'alevel_index_number', 'olevel_index_number','application_fee_amount', 'created_at', 'address', 'passport_photo',
+                  'has_olevel', 'has_alevel']
+        
 
 # list serializer (main application queue — excludes staff wizard direct entries)
 class ListApplicationsSerializer(serializers.ModelSerializer):
