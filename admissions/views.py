@@ -595,7 +595,7 @@ class AllApplicationsReport(generics.ListAPIView):
             'program_choices__program',
             'program_choices__program__faculty',
         ).filter(
-            ~Q(status__in=['draft', 'Admitted', 'admitted', 'rejected']),
+            ~Q(status__in=['draft', 'Admitted', 'admitted']),
         ).order_by('created_at')
     
 class ListDirectEntryApplications(generics.ListAPIView):
@@ -715,7 +715,7 @@ class ChangeApplicationStatus(APIView):
                 try:
                     application = Application.objects.select_related(
                       'applicant', 'batch', 'campus', 'academic_level', 'reviewed_by').get(pk=app_id)
-                    application.status = newStatus
+                    application.status = ns
                     application.save()
 
                     return Response({"detail":"status changed successfully"})
@@ -1132,9 +1132,15 @@ class ListSelectedPrograms(generics.ListAPIView):
 
 # list rejected students
 class ListRejectedApplications(generics.ListAPIView):
-    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    permission_classes = [IsAuthenticated, CanViewAdmissionQueues]
     serializer_class = ListApplicationsSerializer
-    queryset = Application.objects.filter(status='rejected')
+
+    def get_queryset(self):
+        return (
+            Application.objects.filter(status__iexact="rejected")
+            .select_related("academic_level", "batch", "campus")
+            .order_by("-updated_at", "-created_at")
+        )
 
 # ================================subjects================================================
 
@@ -2121,7 +2127,7 @@ class AdminDashboardStats(APIView):
         admitted_students = AdmittedStudent.objects.filter(
             is_admitted=True,
         ).count()
-        rejected_students = Application.objects.filter(status='rejected').count()
+        rejected_students = Application.objects.filter(status__iexact="rejected").count()
         total_batches = Batch.objects.all().count()
         active_batches = Batch.objects.filter(is_active=True).filter(batch_offer_window_q()).count()
 
