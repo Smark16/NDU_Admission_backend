@@ -51,8 +51,6 @@ class BatchAdmin(admin.ModelAdmin):
         'application_end_date',
         'admission_start_date',
         'admission_end_date',
-        'offer_start_date',
-        'offer_end_date',
         'is_active',
         'created_by',
     ]
@@ -68,16 +66,6 @@ class BatchAdmin(admin.ModelAdmin):
         (
             'Admission window',
             {'fields': ('admission_start_date', 'admission_end_date')},
-        ),
-        (
-            'Offer validity (optional)',
-            {
-                'description': (
-                    'If set, active batch resolution excludes this intake outside these dates. '
-                    'Leave both blank to ignore offer dates.'
-                ),
-                'fields': ('offer_start_date', 'offer_end_date'),
-            },
         ),
         ('Meta', {'fields': ('created_by', 'created_at', 'updated_at')}),
     )

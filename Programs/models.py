@@ -518,6 +518,19 @@ class ProgramBatch(models.Model):
     )
     start_date = models.DateField()
     end_date = models.DateField(null=True, blank=True)
+    offer_start_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text=(
+            "First day this academic cohort is open for admission/placement offers "
+            "(same idea as admissions intake offer_start_date)."
+        ),
+    )
+    offer_end_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Last day offers stay active for this cohort; null means no fixed end.",
+    )
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -531,6 +544,18 @@ class ProgramBatch(models.Model):
     def __str__(self):
         return f"{self.program.short_form} - {self.name}"
 
+    @property
+    def is_offer_active(self):
+        """True when today is inside [offer_start_date, offer_end_date] if those bounds are set."""
+        from django.utils import timezone
+
+        today = timezone.now().date()
+        if self.offer_start_date and today < self.offer_start_date:
+            return False
+        if self.offer_end_date and today > self.offer_end_date:
+            return False
+        return True
+
     def clean(self):
         from django.core.exceptions import ValidationError
         if self.curriculum_version_id and self.program_id:
@@ -538,6 +563,8 @@ class ProgramBatch(models.Model):
 
             if not curriculum_version_matches_program(self.program, self.curriculum_version):
                 raise ValidationError("curriculum_version does not belong to the selected program.")
+        if self.offer_start_date and self.offer_end_date and self.offer_end_date < self.offer_start_date:
+            raise ValidationError("Offer end date cannot be before offer start date.")
 
 
 class Semester(models.Model):

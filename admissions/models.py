@@ -80,13 +80,7 @@ class Batch(models.Model):
 
     @property
     def is_offer_active(self):
-        from django.utils import timezone
-
-        today = timezone.now().date()
-        if self.offer_start_date and today < self.offer_start_date:
-            return False
-        if self.offer_end_date and today > self.offer_end_date:
-            return False
+        """Intakes no longer use offer_start/offer_end; cohort offer control is on ``Programs.ProgramBatch``."""
         return True
 
 class OLevelSubject(models.Model):
@@ -252,6 +246,46 @@ class Application(models.Model):
     @property
     def full_name(self):
         return f"{self.first_name} {self.middle_name} {self.last_name}".strip()
+
+
+class ApplicationProgramChoice(models.Model):
+    """Ordered programme choices for an application (replaces relying on M2M ordering alone)."""
+
+    application = models.ForeignKey(
+        Application,
+        on_delete=models.CASCADE,
+        related_name="program_choices",
+    )
+    program = models.ForeignKey(
+        Program,
+        on_delete=models.CASCADE,
+        related_name="application_choices",
+    )
+    preference = models.PositiveSmallIntegerField(
+        default=1,
+        validators=[MinValueValidator(1), MaxValueValidator(50)],
+        help_text="1 = first choice; higher numbers = lower priority.",
+    )
+
+    class Meta:
+        ordering = ["preference", "pk"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=("application", "program"),
+                name="admissions_appprogchoice_application_program_uniq",
+            ),
+            models.UniqueConstraint(
+                fields=("application", "preference"),
+                name="admissions_appprogchoice_application_preference_uniq",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["application", "preference"]),
+        ]
+
+    def __str__(self):
+        return f"{self.application_id}→{self.program_id} (pref {self.preference})"
+
 
 class OLevelResult(models.Model):
     application = models.ForeignKey(Application, on_delete=models.CASCADE, related_name='olevel_results')
