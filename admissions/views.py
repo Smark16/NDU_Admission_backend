@@ -2683,7 +2683,6 @@ class DirectAdmissionEntryView(APIView):
 
                 admission_payload = {
                     "application": application.pk,
-                    "student_id": provided_student_id,
                     "reg_no": provided_reg_no,
                     "admitted_program": program.pk,
                     "admitted_batch": batch.pk,
