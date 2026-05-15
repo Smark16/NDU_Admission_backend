@@ -6,7 +6,6 @@ from django.db import migrations
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("Drafts", "0003_alter_draftapplication_applicant"),
         ("Drafts", "0007_merge_20260514_0333"),
     ]
 
