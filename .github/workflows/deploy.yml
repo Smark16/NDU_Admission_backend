@@ -36,6 +36,7 @@ jobs:
           python manage.py makemigrations --merge --noinput
           
           # Fake known problematic migrations
+          python manage.py migrate Programs 0006 --fake
         
           # Final migrate (this should now be safe)
           python manage.py migrate
