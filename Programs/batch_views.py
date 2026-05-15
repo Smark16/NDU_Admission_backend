@@ -803,14 +803,76 @@ def _auto_create_semesters(batch: "ProgramBatch", program: "Program") -> int:
 
 # Template columns
 _BATCH_TEMPLATE_HEADERS = [
+    "batch_id",         # filled for existing cohorts — do not change when updating
     "program_code",
-    "program_name",   # reference only — ignored on upload
+    "program_name",     # reference only — ignored on upload
     "batch_name",
     "academic_year",
     "start_date",
     "end_date",
+    "offer_start_date",
+    "offer_end_date",
     "is_active",
 ]
+
+
+def _batch_template_date_str(value) -> str:
+    if not value:
+        return ""
+    return value.isoformat() if hasattr(value, "isoformat") else str(value)
+
+
+def _batch_row_from_model(batch: ProgramBatch) -> list:
+    prog = batch.program
+    return [
+        str(batch.id),
+        prog.code or "",
+        prog.name or "",
+        batch.name,
+        batch.academic_year or "",
+        _batch_template_date_str(batch.start_date),
+        _batch_template_date_str(batch.end_date),
+        _batch_template_date_str(batch.offer_start_date),
+        _batch_template_date_str(batch.offer_end_date),
+        "TRUE" if batch.is_active else "FALSE",
+    ]
+
+
+def _empty_batch_template_row(prog: Program) -> list:
+    return [
+        "",
+        prog.code or "",
+        prog.name or "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "TRUE",
+    ]
+
+
+def _resolve_existing_program_batch(program, batch_name: str, batch_id_cell: str):
+    """Match cohort by batch_id (preferred) or batch_name (case-insensitive)."""
+    bid = (batch_id_cell or "").strip()
+    if bid:
+        try:
+            pk = int(float(bid))
+        except (TypeError, ValueError):
+            return None, "invalid_batch_id"
+        batch = ProgramBatch.objects.filter(pk=pk, program=program).first()
+        if batch:
+            return batch, None
+        return None, "batch_id_not_found"
+
+    name = (batch_name or "").strip()
+    if not name:
+        return None, "missing_batch_name"
+    batch = ProgramBatch.objects.filter(program=program, name__iexact=name).first()
+    if batch:
+        return batch, None
+    return None, "not_found"
 
 
 class BatchTemplateDownloadView(_BatchUnavailableMixin, APIView):
@@ -857,20 +919,28 @@ class BatchTemplateDownloadView(_BatchUnavailableMixin, APIView):
                 )
 
         program_codes = [p.code for p in all_programs if p.code]
+        program_ids = [p.id for p in all_programs]
 
-        # One sample row per program so staff can see every program with its name
-        sample_rows = [
-            [
-                prog.code or "",
-                prog.name or "",
-                "",   # batch_name — staff fills this in
-                "",   # academic_year
-                "",   # start_date
-                "",   # end_date
-                "TRUE",
-            ]
-            for prog in all_programs
-        ]
+        existing_batches = list(
+            ProgramBatch.objects.filter(program_id__in=program_ids)
+            .select_related("program")
+            .order_by("program__code", "name")
+        )
+
+        if existing_batches:
+            sample_rows = [_batch_row_from_model(b) for b in existing_batches]
+            instructions = (
+                "Existing cohorts are listed below — change dates or offer window only. "
+                "Keep batch_id and batch_name unchanged when using Update batches. "
+                "Use Upload batches only to add new cohorts (leave batch_id blank)."
+            )
+        else:
+            sample_rows = [_empty_batch_template_row(prog) for prog in all_programs]
+            instructions = (
+                "No cohorts exist yet for the selected programme(s). "
+                "Fill batch_name and dates, then use Upload batches. "
+                "program_code must match exactly. Dates: YYYY-MM-DD."
+            )
 
         wb = create_workbook(
             headers=_BATCH_TEMPLATE_HEADERS,
@@ -878,15 +948,10 @@ class BatchTemplateDownloadView(_BatchUnavailableMixin, APIView):
             sheet_name="Batch Upload",
             header_bg="3E397B",
             dropdowns={
-                1: program_codes,   # col 1 = program_code
-                7: ["TRUE", "FALSE"],  # col 7 = is_active (shifted by new program_name col)
+                2: program_codes,       # col 2 = program_code
+                10: ["TRUE", "FALSE"],  # col 10 = is_active
             },
-            instructions=(
-                "Fill each row with batch details. "
-                "program_code must match an existing program code exactly. "
-                "Dates must be YYYY-MM-DD. "
-                "Delete sample rows before uploading."
-            ),
+            instructions=instructions,
         )
 
         # Add a second sheet: full program reference list (code + name + short_form)
@@ -984,7 +1049,10 @@ class BatchBulkUploadView(_BatchUnavailableMixin, APIView):
             if p.short_form
         }
 
-        update_existing = str(request.data.get("update_existing", "false")).lower() == "true"
+        raw_update = request.data.get("update_existing")
+        if raw_update is None:
+            raw_update = request.POST.get("update_existing", "false")
+        update_existing = str(raw_update).lower() in ("true", "1", "yes")
 
         errors: list = []
         created_count = 0
@@ -1067,6 +1135,7 @@ class BatchBulkUploadView(_BatchUnavailableMixin, APIView):
                     pass
                 return val
 
+            batch_id_cell = cell("batch_id")
             prog_code   = cell("program_code")
             batch_name  = cell("batch_name")
             acad_year   = cell("academic_year")
@@ -1075,8 +1144,10 @@ class BatchBulkUploadView(_BatchUnavailableMixin, APIView):
             if not prog_code:
                 errors.append(f"Row {row_num}: program_code is required.")
                 continue
-            if not batch_name:
-                errors.append(f"Row {row_num}: batch_name is required.")
+            if not batch_name and not batch_id_cell:
+                errors.append(
+                    f"Row {row_num}: batch_name or batch_id is required."
+                )
                 continue
 
             start_raw = raw_val("start_date")
@@ -1148,13 +1219,34 @@ class BatchBulkUploadView(_BatchUnavailableMixin, APIView):
 
             is_active = is_active_s not in ("FALSE", "0", "NO", "F")
 
-            existing = ProgramBatch.objects.filter(program=program, name=batch_name).first()
+            existing, match_err = _resolve_existing_program_batch(
+                program, batch_name, batch_id_cell,
+            )
 
             if update_existing:
-                if not existing:
+                if match_err == "invalid_batch_id":
+                    errors.append(f"Row {row_num}: batch_id '{batch_id_cell}' is not a valid number.")
+                    continue
+                if match_err == "batch_id_not_found":
                     errors.append(
-                        f"Row {row_num}: No batch '{batch_name}' for program '{program.code}'. "
-                        f"Update mode only overwrites existing batches — use Upload (create) to add new ones."
+                        f"Row {row_num}: batch_id '{batch_id_cell}' not found for program "
+                        f"'{program.code}'."
+                    )
+                    continue
+                if not existing:
+                    available = list(
+                        ProgramBatch.objects.filter(program=program)
+                        .order_by("name")
+                        .values_list("name", flat=True)[:10]
+                    )
+                    hint = ""
+                    if available:
+                        hint = f" Existing batch_name values: {', '.join(repr(n) for n in available)}."
+                    errors.append(
+                        f"Row {row_num}: No cohort matched for program '{program.code}' "
+                        f"(batch_name={batch_name!r}, batch_id={batch_id_cell or '—'}). "
+                        f"Download Batch template again and edit dates only — do not rename the cohort."
+                        f"{hint}"
                     )
                     continue
                 # ── Update mode: patch the existing batch (never create) ──
@@ -1175,11 +1267,18 @@ class BatchBulkUploadView(_BatchUnavailableMixin, APIView):
                     errors.append(f"Row {row_num}: Could not update batch '{batch_name}' — {exc}")
                 continue  # no semester re-creation on update
 
+            if update_existing:
+                errors.append(
+                    f"Row {row_num}: Update mode — row was not applied (internal). "
+                    f"Contact support if this persists."
+                )
+                continue
+
             if existing:
                 errors.append(
-                    f"Row {row_num}: Batch '{batch_name}' already exists for "
-                    f"program '{program.code}'. Skipped. "
-                    f"Use 'Update batches' to overwrite, or change batch_name."
+                    f"Row {row_num}: Batch '{existing.name}' already exists for "
+                    f"program '{program.code}' (id={existing.id}). Skipped. "
+                    f"Use 'Update batches' to change dates, not Upload batches."
                 )
                 continue
 
