@@ -881,14 +881,46 @@ class BatchTemplateDownloadView(_BatchUnavailableMixin, APIView):
     Query params:
       program_ids — optional comma-separated programme primary keys. When set,
         the workbook contains one sample row (and dropdown options) only for
-        those programmes. When omitted, all programmes are included (legacy).
+        those programmes.
+      campus_id — optional campus primary key. When set (and program_ids omitted),
+        includes all active programmes offered at that campus (e.g. Main Campus).
+      When both are omitted, all programmes are included (legacy).
     """
     permission_classes = [ProgramSchedulingAPIPermission]
 
     def get(self, request):
         raw_ids = (request.GET.get("program_ids") or "").strip()
+        raw_campus_id = (request.GET.get("campus_id") or "").strip()
+        campus_scope_label = ""
+
         if not raw_ids:
-            all_programs = list(Program.objects.order_by('code'))
+            if raw_campus_id:
+                try:
+                    campus_pk = int(raw_campus_id)
+                except ValueError:
+                    return Response(
+                        {'detail': f'Invalid campus_id: {raw_campus_id!r}.'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                from accounts.models import Campus
+
+                campus = Campus.objects.filter(pk=campus_pk).first()
+                if not campus:
+                    return Response(
+                        {'detail': f'Campus id {campus_pk} not found.'},
+                        status=status.HTTP_404_NOT_FOUND,
+                    )
+                campus_scope_label = campus.name
+                all_programs = list(
+                    Program.objects.filter(
+                        campuses__id=campus_pk,
+                        is_active=True,
+                    )
+                    .distinct()
+                    .order_by('code')
+                )
+            else:
+                all_programs = list(Program.objects.order_by('code'))
         else:
             id_list: list[int] = []
             for part in raw_ids.split(","):
@@ -927,17 +959,19 @@ class BatchTemplateDownloadView(_BatchUnavailableMixin, APIView):
             .order_by("program__code", "name")
         )
 
+        scope_prefix = f"{campus_scope_label}: " if campus_scope_label else ""
+
         if existing_batches:
             sample_rows = [_batch_row_from_model(b) for b in existing_batches]
             instructions = (
-                "Existing cohorts are listed below — change dates or offer window only. "
+                f"{scope_prefix}Existing cohorts are listed below — change dates or offer window only. "
                 "Keep batch_id and batch_name unchanged when using Update batches. "
                 "Use Upload batches only to add new cohorts (leave batch_id blank)."
             )
         else:
             sample_rows = [_empty_batch_template_row(prog) for prog in all_programs]
             instructions = (
-                "No cohorts exist yet for the selected programme(s). "
+                f"{scope_prefix}No cohorts exist yet for the selected programme(s). "
                 "Fill batch_name and dates, then use Upload batches. "
                 "program_code must match exactly. Dates: YYYY-MM-DD."
             )
