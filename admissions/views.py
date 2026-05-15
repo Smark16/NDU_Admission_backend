@@ -590,6 +590,10 @@ class AllApplicationsReport(generics.ListAPIView):
         return Application.objects.select_related(
             'academic_level', 'batch', 'campus', 'entered_by', 'applicant',
             'reviewed_by', 'revoked_by', 'offer_letter_generated_by',
+        ).prefetch_related(
+            'program_choices',
+            'program_choices__program',
+            'program_choices__program__faculty',
         ).filter(
             ~Q(status__in=['draft', 'Admitted', 'admitted', 'rejected']),
         ).order_by('created_at')
@@ -598,6 +602,11 @@ class ListDirectEntryApplications(generics.ListAPIView):
     queryset = (
         Application.objects.filter(is_direct_entry=True)
         .select_related("academic_level", "batch", "campus", "entered_by")
+        .prefetch_related(
+            "program_choices",
+            "program_choices__program",
+            "program_choices__program__faculty",
+        )
         .filter(~Q(status__in=["draft", "Admitted", "rejected"]))
         .order_by("-created_at")
     )
@@ -873,7 +882,7 @@ class ApplicantProgramChoicesView(APIView):
         return get_object_or_404(
             Application.objects.select_related(
                 "batch", "campus", "academic_level", "applicant"
-            ).prefetch_related("program_choices__program", "programs"),
+            ).prefetch_related("program_choices__program"),
             pk=application_id,
             applicant=request.user,
         )
@@ -2520,7 +2529,7 @@ class DirectApplicationEntryView(APIView):
                     status='submitted',
                     application_reference=generate_reference(),
                 )
-                app.programs.set([program])
+                sync_application_program_choices(app, [program.id])
 
                 # Async notification (best-effort)
                 try:

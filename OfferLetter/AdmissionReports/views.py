@@ -67,7 +67,7 @@ class GeneralOverview(APIView):
         for batch in batches:
             apps = Application.objects.select_related(
                 'batch', 'campus', 'academic_level', 'reviewed_by'
-                ).prefetch_related('programs').filter(batch=batch).aggregate(
+                ).filter(batch=batch).aggregate(
                    total_applications=Count('id'),
                    pending = Count('id', filter=Q(status="submitted")),
                    rejected = Count('id', filter=Q(status="rejected"))
