@@ -9,6 +9,7 @@ from admissions.email_template_views import (
     EmailTemplatePreviewView,
     EmailTemplateResetDefaultView,
 )
+from admissions.announcement_views import SendAnnouncementView, TestAnnouncementView
 
 app_name = 'admissions'
 
@@ -27,6 +28,8 @@ urlpatterns = [
     path('create_direct_applications', views.create_direct_applications),
     path('direct_entry_applications', views.ListDirectEntryApplications.as_view()),
     path('all_applications_report', views.AllApplicationsReport.as_view()),
+    path('test_announcement', TestAnnouncementView.as_view()),
+    path('send_announcement', SendAnnouncementView.as_view()),
     path('rejected_applications', views.ListRejectedApplications.as_view()),
     path('reject_application/<int:application_id>', views.RejectStudent.as_view()),
     path('application_detail/<int:application_id>', views.application_detail),

@@ -595,7 +595,7 @@ class AllApplicationsReport(generics.ListAPIView):
             'program_choices__program',
             'program_choices__program__faculty',
         ).filter(
-            ~Q(status__in=['draft', 'Admitted', 'admitted', 'rejected']),
+            ~Q(status__in=['draft', 'Admitted', 'admitted']),
         ).order_by('created_at')
     
 class ListDirectEntryApplications(generics.ListAPIView):
@@ -684,7 +684,7 @@ class ChangeApplicationStatus(APIView):
                 try:
                     application = Application.objects.select_related(
                       'applicant', 'batch', 'campus', 'academic_level', 'reviewed_by').get(pk=app_id)
-                    application.status = newStatus
+                    application.status = ns
                     application.save()
 
                     return Response({"detail":"status changed successfully"})
@@ -1099,9 +1099,15 @@ class ListSelectedPrograms(generics.ListAPIView):
 
 # list rejected students
 class ListRejectedApplications(generics.ListAPIView):
-    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    permission_classes = [IsAuthenticated, CanViewAdmissionQueues]
     serializer_class = ListApplicationsSerializer
-    queryset = Application.objects.filter(status='rejected')
+
+    def get_queryset(self):
+        return (
+            Application.objects.filter(status__iexact="rejected")
+            .select_related("academic_level", "batch", "campus")
+            .order_by("-updated_at", "-created_at")
+        )
 
 # ================================subjects================================================
 
@@ -1684,10 +1690,36 @@ class ListProgramBatchOptionsForAdmission(APIView):
     permission_classes = [IsAuthenticated, CanAdmitApplicant]
 
     def get(self, request, program_id):
-        from Programs.program_batch_resolution import admission_program_batch_options_qs
+        from Programs.program_batch_resolution import (
+            admission_program_batch_options_qs,
+            program_batch_offer_api_fields,
+        )
+
+        admission_batch = None
+        application_id = request.query_params.get("application_id")
+        admission_batch_id = request.query_params.get("admission_batch_id")
+        if application_id:
+            application = Application.objects.select_related("batch").filter(
+                pk=application_id
+            ).first()
+            if application is None:
+                return Response(
+                    {"detail": "Application not found."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+            admission_batch = application.batch
+        elif admission_batch_id:
+            admission_batch = Batch.objects.filter(pk=admission_batch_id).first()
+            if admission_batch is None:
+                return Response(
+                    {"detail": "Admission batch (intake) not found."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
 
         today = timezone.now().date()
-        qs = admission_program_batch_options_qs(program_id, today=today).only(
+        qs = admission_program_batch_options_qs(
+            program_id, today=today, admission_batch=admission_batch
+        ).only(
             'id',
             'name',
             'start_date',
@@ -1705,9 +1737,9 @@ class ListProgramBatchOptionsForAdmission(APIView):
                 'start_date': b.start_date.isoformat() if b.start_date else None,
                 'academic_year': b.academic_year or '',
                 'is_active': b.is_active,
-                'offer_start_date': b.offer_start_date.isoformat() if b.offer_start_date else None,
-                'offer_end_date': b.offer_end_date.isoformat() if b.offer_end_date else None,
-                'is_offer_active': b.is_offer_active,
+                **program_batch_offer_api_fields(
+                    b, today=today, admission_batch=admission_batch
+                ),
             }
             for b in qs
         ]
@@ -2088,7 +2120,7 @@ class AdminDashboardStats(APIView):
         admitted_students = AdmittedStudent.objects.filter(
             is_admitted=True,
         ).count()
-        rejected_students = Application.objects.filter(status='rejected').count()
+        rejected_students = Application.objects.filter(status__iexact="rejected").count()
         total_batches = Batch.objects.all().count()
         active_batches = Batch.objects.filter(is_active=True).filter(batch_offer_window_q()).count()
 
@@ -2385,13 +2417,31 @@ def generate_reg_no_view(request):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        from admissions.utils.reg_no import resolve_intake_month_from_batch
+
         campus = Campus.objects.get(id=campus_id)
         program = Program.objects.get(id=program_id)
+
+        intake_month = (request.data.get("intake_month") or "").strip().upper()
+        if not intake_month:
+            application_id = request.data.get("application_id")
+            admission_batch_id = request.data.get("admission_batch_id")
+            if application_id:
+                app = Application.objects.select_related("batch").filter(pk=application_id).first()
+                if app:
+                    intake_month = resolve_intake_month_from_batch(app.batch)
+            elif admission_batch_id:
+                intake_batch = Batch.objects.filter(pk=admission_batch_id).first()
+                if intake_batch:
+                    intake_month = resolve_intake_month_from_batch(intake_batch)
+        if not intake_month:
+            intake_month = "APR"
 
         reg_no = generate_reg_no(
             campus=campus,
             program=program,
-            study_mode=study_mode
+            study_mode=study_mode,
+            intake_month=intake_month,
         )
 
         return Response({"reg_no": reg_no}, status=status.HTTP_200_OK)

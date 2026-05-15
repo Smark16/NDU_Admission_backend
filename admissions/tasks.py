@@ -118,6 +118,7 @@ def celery_auto_enroll_students(self, admission_id, user_id):
         program_batch = admission.intended_program_batch or resolve_default_program_batch_for_program(
             admission.admitted_program,
             today=today,
+            admission_batch=admission.admitted_batch,
         )
 
         if program_batch:

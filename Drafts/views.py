@@ -15,6 +15,22 @@ import json
 
 logger = logging.getLogger(__name__)
 
+
+def _optional_fk_id(value):
+    """Coerce request values to a positive int FK id, or None (never empty string)."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return None
+    try:
+        pk = int(value)
+    except (TypeError, ValueError):
+        return None
+    return pk if pk > 0 else None
+
+
 # Create your views here.
 # save draft application
 @api_view(['POST'])
@@ -24,16 +40,18 @@ def save_draft_applications(request):
         data = request.data
         user = request.user
 
+        batch_id = _optional_fk_id(data.get('batch'))
+
         # Get or create draft
         draft = DraftApplication.objects.filter(
             applicant=user,
-            batch_id=data.get('batch')
+            batch_id=batch_id,
         ).order_by('-updated_at').first()
 
         if not draft:
             draft = DraftApplication.objects.create(
                 applicant=user,
-                batch_id=data.get('batch')
+                batch_id=batch_id,
             )
 
         # ====================== BASIC FIELDS ======================
@@ -54,8 +72,8 @@ def save_draft_applications(request):
         draft.next_of_kin_contact = data.get('nextOfKinContact', '')
         draft.next_of_kin_relationship = data.get('nextOfKinRelationship', '')
 
-        draft.campus_id = data.get('campus') or None
-        draft.academic_level_id = data.get('academic_level') or None
+        draft.campus_id = _optional_fk_id(data.get('campus'))
+        draft.academic_level_id = _optional_fk_id(data.get('academic_level'))
 
         # ====================== JSON FIELDS (Most Important) ======================
         draft.has_olevel = str(data.get('hasOlevel', 'false')).lower() == 'true'
@@ -162,7 +180,7 @@ def upload_draft_document(request):
 
     doc_type = request.data.get('document_type')
     file = request.FILES.get('file')
-    batch_id = request.data.get('batch') or None
+    batch_id = _optional_fk_id(request.data.get('batch'))
 
     if not file:
         return Response({'detail': 'No file provided.'}, status=status.HTTP_400_BAD_REQUEST)

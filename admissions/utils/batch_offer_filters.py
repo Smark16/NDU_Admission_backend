@@ -10,10 +10,22 @@ from django.db.models import Q
 from django.utils import timezone
 
 
+def dates_in_offer_window(start, end, *, today=None) -> bool:
+    """True when *today* is inside [start, end], treating null bounds as open."""
+    if today is None:
+        today = timezone.now().date()
+    if start is None and end is None:
+        return True
+    if start is not None and today < start:
+        return False
+    if end is not None and today > end:
+        return False
+    return True
+
+
 def batch_offer_window_q():
     """
-    Intake offer-window filter: same date logic as ``program_batch_in_active_offer_window_q``
-    in ``Programs.program_batch_resolution`` (field names match ``admissions.Batch``).
+    Intake offer-window filter: same date logic as cohort resolution.
 
     - Both dates null → row matches (always visible for offer purposes).
     - Otherwise → today must be on or after start (if set) and on or before end (if set).

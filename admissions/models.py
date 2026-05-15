@@ -80,8 +80,10 @@ class Batch(models.Model):
 
     @property
     def is_offer_active(self):
-        """Intakes no longer use offer_start/offer_end; cohort offer control is on ``Programs.ProgramBatch``."""
-        return True
+        """True when today falls inside this intake's offer window (null bounds = always active)."""
+        from admissions.utils.batch_offer_filters import dates_in_offer_window
+
+        return dates_in_offer_window(self.offer_start_date, self.offer_end_date)
 
 class OLevelSubject(models.Model):
     name = models.CharField(max_length=100)

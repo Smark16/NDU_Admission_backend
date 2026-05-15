@@ -11,7 +11,8 @@ from datetime import date, datetime, timedelta
 import io
 
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Count, Q
+from django.db.models.deletion import ProtectedError
 from django.db.utils import ProgrammingError
 from django.http import HttpResponse
 from rest_framework import status
@@ -92,29 +93,32 @@ class CreateBatchView(_BatchUnavailableMixin, APIView):
 
             offer_start_s = (request.data.get('offer_start_date') or '').strip()
             offer_end_s = (request.data.get('offer_end_date') or '').strip()
-            if not offer_start_s or not offer_end_s:
-                return Response(
-                    {
-                        'detail': (
-                            'offer_start_date and offer_end_date are required '
-                            '(admission offer window for this academic cohort).'
-                        )
-                    },
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-            try:
-                offer_start = datetime.strptime(offer_start_s, '%Y-%m-%d').date()
-                offer_end = datetime.strptime(offer_end_s, '%Y-%m-%d').date()
-                if offer_end < offer_start:
+            offer_start = None
+            offer_end = None
+            if offer_start_s or offer_end_s:
+                if not offer_start_s or not offer_end_s:
                     return Response(
-                        {'detail': 'Offer end date must be on or after offer start date'},
+                        {
+                            'detail': (
+                                'offer_start_date and offer_end_date must both be set, '
+                                'or both left empty to use the admission intake offer window.'
+                            )
+                        },
                         status=status.HTTP_400_BAD_REQUEST,
                     )
-            except ValueError as e:
-                return Response(
-                    {'detail': f'Invalid offer date format: {str(e)}. Use YYYY-MM-DD format.'},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+                try:
+                    offer_start = datetime.strptime(offer_start_s, '%Y-%m-%d').date()
+                    offer_end = datetime.strptime(offer_end_s, '%Y-%m-%d').date()
+                    if offer_end < offer_start:
+                        return Response(
+                            {'detail': 'Offer end date must be on or after offer start date'},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+                except ValueError as e:
+                    return Response(
+                        {'detail': f'Invalid offer date format: {str(e)}. Use YYYY-MM-DD format.'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
 
             if ProgramBatch.objects.filter(program=program, name=name).exists():
                 return Response(
@@ -583,31 +587,36 @@ class UpdateProgramBatchView(_BatchUnavailableMixin, APIView):
                             status=status.HTTP_400_BAD_REQUEST,
                         )
 
-            if 'offer_start_date' in request.data and 'offer_end_date' in request.data:
+            if 'offer_start_date' in request.data or 'offer_end_date' in request.data:
                 offer_start_s = (request.data.get('offer_start_date') or '').strip()
                 offer_end_s = (request.data.get('offer_end_date') or '').strip()
-                if not offer_start_s or not offer_end_s:
+                if not offer_start_s and not offer_end_s:
+                    batch.offer_start_date = None
+                    batch.offer_end_date = None
+                elif not offer_start_s or not offer_end_s:
                     return Response(
                         {
                             'detail': (
-                                'offer_start_date and offer_end_date are required when updating the offer window.'
+                                'offer_start_date and offer_end_date must both be set, '
+                                'or both cleared to inherit from the admission intake.'
                             )
                         },
                         status=status.HTTP_400_BAD_REQUEST,
                     )
-                try:
-                    batch.offer_start_date = datetime.strptime(offer_start_s, '%Y-%m-%d').date()
-                    batch.offer_end_date = datetime.strptime(offer_end_s, '%Y-%m-%d').date()
-                    if batch.offer_end_date < batch.offer_start_date:
+                else:
+                    try:
+                        batch.offer_start_date = datetime.strptime(offer_start_s, '%Y-%m-%d').date()
+                        batch.offer_end_date = datetime.strptime(offer_end_s, '%Y-%m-%d').date()
+                        if batch.offer_end_date < batch.offer_start_date:
+                            return Response(
+                                {'detail': 'Offer end date must be on or after offer start date'},
+                                status=status.HTTP_400_BAD_REQUEST,
+                            )
+                    except ValueError:
                         return Response(
-                            {'detail': 'Offer end date must be on or after offer start date'},
+                            {'detail': 'Invalid offer date format. Use YYYY-MM-DD format.'},
                             status=status.HTTP_400_BAD_REQUEST,
                         )
-                except ValueError:
-                    return Response(
-                        {'detail': 'Invalid offer date format. Use YYYY-MM-DD format.'},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
 
             batch.save()
 
@@ -641,39 +650,90 @@ class UpdateProgramBatchView(_BatchUnavailableMixin, APIView):
 
 
 class DeleteProgramBatchView(_BatchUnavailableMixin, APIView):
-    """Delete a program batch (only if no semesters or course units)."""
+    """Delete a program batch when no students are actively enrolled in that cohort.
+
+    Auto-generated semesters and course units are removed with the batch (CASCADE).
+    Pending/withdrawn programme enrollments on this cohort are removed automatically.
+    Blocks when any enrollment has status enrolled, suspended, or completed (PROTECT).
+    """
     permission_classes = [ProgramSchedulingAPIPermission]
+
+    _BLOCKING_ENROLLMENT_STATUSES = ('enrolled', 'suspended', 'completed')
 
     def delete(self, request, batch_id):
         try:
+            from Programs.models import StudentProgrammeEnrollment
+
             try:
                 batch = ProgramBatch.objects.select_related('program').get(id=batch_id)
             except ProgramBatch.DoesNotExist:
                 return Response({'detail': 'Batch not found'}, status=status.HTTP_404_NOT_FOUND)
 
-            semester_count = batch.semesters.count()
-            course_unit_count = batch.course_units.count()
+            status_rows = (
+                StudentProgrammeEnrollment.objects.filter(program_batch=batch)
+                .values('status')
+                .annotate(count=Count('id'))
+            )
+            status_breakdown = {row['status']: row['count'] for row in status_rows}
 
-            if semester_count > 0 or course_unit_count > 0:
+            blocking_count = sum(
+                status_breakdown.get(s, 0) for s in self._BLOCKING_ENROLLMENT_STATUSES
+            )
+            if blocking_count > 0:
+                enrolled_only = status_breakdown.get('enrolled', 0)
                 return Response(
                     {
                         'detail': (
-                            f'Cannot delete batch. It has {semester_count} semester(s) and '
-                            f'{course_unit_count} course unit(s). Delete them first or deactivate the batch.'
+                            f'Cannot delete batch "{batch.name}": {blocking_count} student '
+                            f'placement record(s) still use this cohort '
+                            f'({enrolled_only} fully enrolled). Move or withdraw them first, '
+                            f'or set is_active=false instead of deleting.'
                         ),
-                        'semester_count': semester_count,
-                        'course_unit_count': course_unit_count,
+                        'enrolled_student_count': enrolled_only,
+                        'blocking_placement_count': blocking_count,
+                        'enrollment_status_breakdown': status_breakdown,
                     },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
             batch_name = batch.name
             program_name = batch.program.name
-            batch.delete()
+            semester_count = batch.semesters.count()
+            course_unit_count = batch.course_units.count()
+            intended_count = batch.intended_admissions.count()
+
+            with transaction.atomic():
+                cleared, _ = (
+                    StudentProgrammeEnrollment.objects.filter(program_batch=batch)
+                    .exclude(status__in=self._BLOCKING_ENROLLMENT_STATUSES)
+                    .delete()
+                )
+                try:
+                    batch.delete()
+                except ProtectedError:
+                    remaining = list(
+                        StudentProgrammeEnrollment.objects.filter(program_batch=batch)
+                        .values_list('status', flat=True)
+                    )
+                    return Response(
+                        {
+                            'detail': (
+                                f'Cannot delete batch "{batch_name}": linked student records '
+                                f'still reference this cohort.'
+                            ),
+                            'remaining_enrollment_statuses': remaining,
+                            'enrollment_status_breakdown': status_breakdown,
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
 
             return Response(
                 {
                     'message': f'Batch "{batch_name}" for program "{program_name}" deleted successfully',
+                    'semesters_removed': semester_count,
+                    'course_units_removed': course_unit_count,
+                    'pending_enrollments_cleared': cleared,
+                    'intended_admissions_cleared': intended_count,
                 },
                 status=status.HTTP_200_OK,
             )
@@ -751,14 +811,76 @@ def _auto_create_semesters(batch: "ProgramBatch", program: "Program") -> int:
 
 # Template columns
 _BATCH_TEMPLATE_HEADERS = [
+    "batch_id",         # filled for existing cohorts — do not change when updating
     "program_code",
-    "program_name",   # reference only — ignored on upload
+    "program_name",     # reference only — ignored on upload
     "batch_name",
     "academic_year",
     "start_date",
     "end_date",
+    "offer_start_date",
+    "offer_end_date",
     "is_active",
 ]
+
+
+def _batch_template_date_str(value) -> str:
+    if not value:
+        return ""
+    return value.isoformat() if hasattr(value, "isoformat") else str(value)
+
+
+def _batch_row_from_model(batch: ProgramBatch) -> list:
+    prog = batch.program
+    return [
+        str(batch.id),
+        prog.code or "",
+        prog.name or "",
+        batch.name,
+        batch.academic_year or "",
+        _batch_template_date_str(batch.start_date),
+        _batch_template_date_str(batch.end_date),
+        _batch_template_date_str(batch.offer_start_date),
+        _batch_template_date_str(batch.offer_end_date),
+        "TRUE" if batch.is_active else "FALSE",
+    ]
+
+
+def _empty_batch_template_row(prog: Program) -> list:
+    return [
+        "",
+        prog.code or "",
+        prog.name or "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "TRUE",
+    ]
+
+
+def _resolve_existing_program_batch(program, batch_name: str, batch_id_cell: str):
+    """Match cohort by batch_id (preferred) or batch_name (case-insensitive)."""
+    bid = (batch_id_cell or "").strip()
+    if bid:
+        try:
+            pk = int(float(bid))
+        except (TypeError, ValueError):
+            return None, "invalid_batch_id"
+        batch = ProgramBatch.objects.filter(pk=pk, program=program).first()
+        if batch:
+            return batch, None
+        return None, "batch_id_not_found"
+
+    name = (batch_name or "").strip()
+    if not name:
+        return None, "missing_batch_name"
+    batch = ProgramBatch.objects.filter(program=program, name__iexact=name).first()
+    if batch:
+        return batch, None
+    return None, "not_found"
 
 
 class BatchTemplateDownloadView(_BatchUnavailableMixin, APIView):
@@ -767,14 +889,46 @@ class BatchTemplateDownloadView(_BatchUnavailableMixin, APIView):
     Query params:
       program_ids — optional comma-separated programme primary keys. When set,
         the workbook contains one sample row (and dropdown options) only for
-        those programmes. When omitted, all programmes are included (legacy).
+        those programmes.
+      campus_id — optional campus primary key. When set (and program_ids omitted),
+        includes all active programmes offered at that campus (e.g. Main Campus).
+      When both are omitted, all programmes are included (legacy).
     """
     permission_classes = [ProgramSchedulingAPIPermission]
 
     def get(self, request):
         raw_ids = (request.GET.get("program_ids") or "").strip()
+        raw_campus_id = (request.GET.get("campus_id") or "").strip()
+        campus_scope_label = ""
+
         if not raw_ids:
-            all_programs = list(Program.objects.order_by('code'))
+            if raw_campus_id:
+                try:
+                    campus_pk = int(raw_campus_id)
+                except ValueError:
+                    return Response(
+                        {'detail': f'Invalid campus_id: {raw_campus_id!r}.'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                from accounts.models import Campus
+
+                campus = Campus.objects.filter(pk=campus_pk).first()
+                if not campus:
+                    return Response(
+                        {'detail': f'Campus id {campus_pk} not found.'},
+                        status=status.HTTP_404_NOT_FOUND,
+                    )
+                campus_scope_label = campus.name
+                all_programs = list(
+                    Program.objects.filter(
+                        campuses__id=campus_pk,
+                        is_active=True,
+                    )
+                    .distinct()
+                    .order_by('code')
+                )
+            else:
+                all_programs = list(Program.objects.order_by('code'))
         else:
             id_list: list[int] = []
             for part in raw_ids.split(","):
@@ -805,20 +959,40 @@ class BatchTemplateDownloadView(_BatchUnavailableMixin, APIView):
                 )
 
         program_codes = [p.code for p in all_programs if p.code]
+        program_ids = [p.id for p in all_programs]
 
-        # One sample row per program so staff can see every program with its name
-        sample_rows = [
-            [
-                prog.code or "",
-                prog.name or "",
-                "",   # batch_name — staff fills this in
-                "",   # academic_year
-                "",   # start_date
-                "",   # end_date
-                "TRUE",
-            ]
-            for prog in all_programs
-        ]
+        existing_batches = list(
+            ProgramBatch.objects.filter(program_id__in=program_ids)
+            .select_related("program")
+            .order_by("program__code", "name")
+        )
+        batches_by_program: dict[int, list] = {}
+        for batch in existing_batches:
+            batches_by_program.setdefault(batch.program_id, []).append(batch)
+
+        # Every programme in scope gets at least one row: all existing cohorts, or one blank row to create.
+        sample_rows: list = []
+        for prog in sorted(all_programs, key=lambda p: ((p.code or "").lower(), (p.name or "").lower())):
+            prog_batches = batches_by_program.get(prog.id) or []
+            if prog_batches:
+                for batch in sorted(prog_batches, key=lambda b: b.name.lower()):
+                    sample_rows.append(_batch_row_from_model(batch))
+            else:
+                sample_rows.append(_empty_batch_template_row(prog))
+
+        scope_prefix = f"{campus_scope_label}: " if campus_scope_label else ""
+        cohort_count = len(existing_batches)
+        program_count = len(all_programs)
+        blank_count = program_count - len(batches_by_program)
+
+        instructions = (
+            f"{scope_prefix}{program_count} programme(s): {cohort_count} existing cohort row(s) "
+            f"and {blank_count} blank row(s) for programmes without a cohort yet. "
+            "Leave offer_start_date and offer_end_date blank to use each applicant's admission intake offer window. "
+            "Fill both offer columns on a row only to override the intake for that cohort. "
+            "Update batches: edit dates on rows that have batch_id; keep batch_id and batch_name unchanged. "
+            "Upload batches: fill blank rows (no batch_id) to create new cohorts."
+        )
 
         wb = create_workbook(
             headers=_BATCH_TEMPLATE_HEADERS,
@@ -826,15 +1000,10 @@ class BatchTemplateDownloadView(_BatchUnavailableMixin, APIView):
             sheet_name="Batch Upload",
             header_bg="3E397B",
             dropdowns={
-                1: program_codes,   # col 1 = program_code
-                7: ["TRUE", "FALSE"],  # col 7 = is_active (shifted by new program_name col)
+                2: program_codes,       # col 2 = program_code
+                10: ["TRUE", "FALSE"],  # col 10 = is_active
             },
-            instructions=(
-                "Fill each row with batch details. "
-                "program_code must match an existing program code exactly. "
-                "Dates must be YYYY-MM-DD. "
-                "Delete sample rows before uploading."
-            ),
+            instructions=instructions,
         )
 
         # Add a second sheet: full program reference list (code + name + short_form)
@@ -932,7 +1101,10 @@ class BatchBulkUploadView(_BatchUnavailableMixin, APIView):
             if p.short_form
         }
 
-        update_existing = str(request.data.get("update_existing", "false")).lower() == "true"
+        raw_update = request.data.get("update_existing")
+        if raw_update is None:
+            raw_update = request.POST.get("update_existing", "false")
+        update_existing = str(raw_update).lower() in ("true", "1", "yes")
 
         errors: list = []
         created_count = 0
@@ -1015,6 +1187,7 @@ class BatchBulkUploadView(_BatchUnavailableMixin, APIView):
                     pass
                 return val
 
+            batch_id_cell = cell("batch_id")
             prog_code   = cell("program_code")
             batch_name  = cell("batch_name")
             acad_year   = cell("academic_year")
@@ -1023,8 +1196,10 @@ class BatchBulkUploadView(_BatchUnavailableMixin, APIView):
             if not prog_code:
                 errors.append(f"Row {row_num}: program_code is required.")
                 continue
-            if not batch_name:
-                errors.append(f"Row {row_num}: batch_name is required.")
+            if not batch_name and not batch_id_cell:
+                errors.append(
+                    f"Row {row_num}: batch_name or batch_id is required."
+                )
                 continue
 
             start_raw = raw_val("start_date")
@@ -1096,24 +1271,43 @@ class BatchBulkUploadView(_BatchUnavailableMixin, APIView):
 
             is_active = is_active_s not in ("FALSE", "0", "NO", "F")
 
-            existing = ProgramBatch.objects.filter(program=program, name=batch_name).first()
+            existing, match_err = _resolve_existing_program_batch(
+                program, batch_name, batch_id_cell,
+            )
 
-            if existing:
-                if not update_existing:
+            if update_existing:
+                if match_err == "invalid_batch_id":
+                    errors.append(f"Row {row_num}: batch_id '{batch_id_cell}' is not a valid number.")
+                    continue
+                if match_err == "batch_id_not_found":
                     errors.append(
-                        f"Row {row_num}: Batch '{batch_name}' already exists for "
-                        f"program '{program.code}'. Skipped. "
-                        f"Enable 'Update existing' to overwrite."
+                        f"Row {row_num}: batch_id '{batch_id_cell}' not found for program "
+                        f"'{program.code}'."
                     )
                     continue
-
-                # ── Update mode: patch the existing batch ──
+                if not existing:
+                    available = list(
+                        ProgramBatch.objects.filter(program=program)
+                        .order_by("name")
+                        .values_list("name", flat=True)[:10]
+                    )
+                    hint = ""
+                    if available:
+                        hint = f" Existing batch_name values: {', '.join(repr(n) for n in available)}."
+                    errors.append(
+                        f"Row {row_num}: No cohort matched for program '{program.code}' "
+                        f"(batch_name={batch_name!r}, batch_id={batch_id_cell or '—'}). "
+                        f"Download Batch template again and edit dates only — do not rename the cohort."
+                        f"{hint}"
+                    )
+                    continue
+                # ── Update mode: patch the existing batch (never create) ──
                 try:
                     with transaction.atomic():
-                        existing.start_date   = start_date
-                        existing.end_date     = end_date
+                        existing.start_date = start_date
+                        existing.end_date = end_date
                         existing.academic_year = acad_year
-                        existing.is_active    = is_active
+                        existing.is_active = is_active
                         existing.offer_start_date = offer_start_date
                         existing.offer_end_date = offer_end_date
                         existing.save(update_fields=[
@@ -1125,7 +1319,22 @@ class BatchBulkUploadView(_BatchUnavailableMixin, APIView):
                     errors.append(f"Row {row_num}: Could not update batch '{batch_name}' — {exc}")
                 continue  # no semester re-creation on update
 
-            # ── Step 1: create the batch (own committed transaction) ──
+            if update_existing:
+                errors.append(
+                    f"Row {row_num}: Update mode — row was not applied (internal). "
+                    f"Contact support if this persists."
+                )
+                continue
+
+            if existing:
+                errors.append(
+                    f"Row {row_num}: Batch '{existing.name}' already exists for "
+                    f"program '{program.code}' (id={existing.id}). Skipped. "
+                    f"Use 'Update batches' to change dates, not Upload batches."
+                )
+                continue
+
+            # ── Create mode: new batch (own committed transaction) ──
             try:
                 with transaction.atomic():
                     batch = ProgramBatch.objects.create(
