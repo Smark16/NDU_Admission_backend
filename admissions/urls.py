@@ -39,7 +39,9 @@ urlpatterns = [
         'applicant_program_choices/<int:application_id>',
         views.ApplicantProgramChoicesView.as_view(),
     ),
+    path('applicant_change_programme/<int:application_id>', views.ApplicantChangeApplicationProgramme.as_view()),
     path('generate-reg-no/', views.generate_reg_no_view, name='generate_reg_no'),
+    path('list_selected_programs/<int:application_id>', views.ListSelectedPrograms.as_view(), name='list_selected_programs'),
 
     # Subject Urls
 

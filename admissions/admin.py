@@ -79,6 +79,10 @@ class ApplicationAdmin(admin.ModelAdmin):
     readonly_fields = ['created_at', 'updated_at']
     ordering = ['-created_at']
 
+@admin.register(ApplicationProgramChoice)
+class ApplicationProgramChoiceAdmin(admin.ModelAdmin):
+    list_display = ['application', 'program', 'choice_order']
+
 @admin.register(OLevelSubject)
 class OLevelSubjectAdmin(admin.ModelAdmin):
     list_display = ['name', 'code']

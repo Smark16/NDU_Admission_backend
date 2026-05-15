@@ -111,7 +111,6 @@ class Application(models.Model):
     applicant = models.ForeignKey(User, on_delete=models.CASCADE, related_name='applications')
     batch = models.ForeignKey(Batch, on_delete=models.CASCADE, related_name='applications')
     campus = models.ForeignKey(Campus, on_delete=models.CASCADE, related_name='applications')
-    programs = models.ManyToManyField(Program, related_name='application_programs')
     academic_level = models.ForeignKey(AcademicLevel, on_delete=models.CASCADE)
     # Personal Information
     first_name = models.CharField(max_length=100)
@@ -258,45 +257,22 @@ class Application(models.Model):
     def full_name(self):
         return f"{self.first_name} {self.middle_name} {self.last_name}".strip()
 
-
+# program choices
 class ApplicationProgramChoice(models.Model):
-    """Ordered programme choices for an application (replaces relying on M2M ordering alone)."""
+    application = models.ForeignKey("Application", on_delete=models.CASCADE, related_name="program_choices")
 
-    application = models.ForeignKey(
-        Application,
-        on_delete=models.CASCADE,
-        related_name="program_choices",
-    )
-    program = models.ForeignKey(
-        Program,
-        on_delete=models.CASCADE,
-        related_name="application_choices",
-    )
-    preference = models.PositiveSmallIntegerField(
-        default=1,
-        validators=[MinValueValidator(1), MaxValueValidator(50)],
-        help_text="1 = first choice; higher numbers = lower priority.",
-    )
+    program = models.ForeignKey("Programs.Program", on_delete=models.CASCADE)
+
+    choice_order = models.PositiveIntegerField()
+
+    created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        ordering = ["preference", "pk"]
-        constraints = [
-            models.UniqueConstraint(
-                fields=("application", "program"),
-                name="admissions_appprogchoice_application_program_uniq",
-            ),
-            models.UniqueConstraint(
-                fields=("application", "preference"),
-                name="admissions_appprogchoice_application_preference_uniq",
-            ),
-        ]
-        indexes = [
-            models.Index(fields=["application", "preference"]),
-        ]
+        ordering = ["choice_order"]
+        unique_together = ("application", "choice_order")
 
     def __str__(self):
-        return f"{self.application_id}→{self.program_id} (pref {self.preference})"
-
+        return f"{self.application.id} - Choice {self.choice_order} - {self.program.name}"
 
 class OLevelResult(models.Model):
     application = models.ForeignKey(Application, on_delete=models.CASCADE, related_name='olevel_results')

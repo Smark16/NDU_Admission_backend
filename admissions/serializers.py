@@ -107,15 +107,9 @@ class ApplicationSerializer(serializers.ModelSerializer):
 
 # list serializer (main application queue — excludes staff wizard direct entries)
 class ListApplicationsSerializer(serializers.ModelSerializer):
-    programs = serializers.SerializerMethodField()
     academic_level = serializers.CharField(source="academic_level.name", read_only=True)
     batch = serializers.CharField(source="batch.name", read_only=True)
     campus = serializers.CharField(source="campus.name", read_only=True)
-
-    def get_programs(self, obj):
-        return [
-            {"id": p.id, "name": p.name} for p in ordered_programs_for_application(obj)
-        ]
 
     class Meta:
         model = Application
@@ -127,7 +121,6 @@ class ListApplicationsSerializer(serializers.ModelSerializer):
             "status",
             "created_at",
             "email",
-            "programs",
             "academic_level",
             "batch",
             "campus",
@@ -137,7 +130,6 @@ class ListApplicationsSerializer(serializers.ModelSerializer):
 
 
 class AllApplicationsReportSerializer(serializers.ModelSerializer):
-    """Used by /all_applications_report — tolerate missing/legacy FK rows without 500."""
     academic_level = serializers.SerializerMethodField()
     batch = serializers.SerializerMethodField()
     campus = serializers.SerializerMethodField()
@@ -234,8 +226,7 @@ class ApplicationDetailSerializer(serializers.ModelSerializer):
         fields = ['id', 'first_name', 'last_name','middle_name', 'date_of_birth', 'gender', 'nationality', 'phone', 'email',
                   'batch',"nin", "passport_number","disabled", 'olevel_school', 'olevel_year', 'alevel_school', 'alevel_year', 'address',
                   'middle_name', 'next_of_kin_name', 'next_of_kin_contact', 'next_of_kin_relationship', 'revoked_by', 'is_revoked','revocation_reason',
-                  'status', 'application_fee_amount','application_fee_paid', 'created_at', 'reviewed_at', 'passport_photo','reviewed_by',
-                  'programs']
+                  'status', 'application_fee_amount','application_fee_paid', 'created_at', 'reviewed_at', 'passport_photo','reviewed_by']
     
 # o level subject
 class OlevelSubjectSerializer(serializers.ModelSerializer):
@@ -605,3 +596,13 @@ class EmailTemplateUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = EmailTemplate
         fields = ["subject_template", "body_template_html", "is_active"]
+
+# ============================Program choices========================================
+class ApplicationProgramChoiceSerializer(serializers.ModelSerializer):
+    program_name = serializers.CharField(source='program.name', read_only=True)
+    code = serializers.CharField(source='program.code', read_only=True)
+    program_id = serializers.IntegerField(source='program.id')
+
+    class Meta:
+        model = ApplicationProgramChoice
+        fields = ['id', 'application', 'choice_order', 'program_name', 'code', 'program_id']
