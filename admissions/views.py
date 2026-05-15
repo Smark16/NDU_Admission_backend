@@ -893,6 +893,138 @@ class ChangeApplicationProgramme(APIView):
             status=200,
         )
 
+# APPLICANT CHANGE PROGRAM
+class ApplicantChangeApplicationProgramme(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, application_id):
+
+        application = get_object_or_404(
+            Application.objects.prefetch_related(
+                "program_choices__program"
+            ).select_related(
+                "ca mpus"
+            ),
+            pk=application_id,
+        )
+
+        raw_program_ids = request.data.get("program_ids", [])
+
+        if not isinstance(raw_program_ids, list) or not raw_program_ids:
+            return Response(
+                {"detail": "program_ids must be a non-empty list."},
+                status=400
+            )
+
+        try:
+            program_ids = [int(pid) for pid in raw_program_ids]
+
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "program_ids must contain valid integers."},
+                status=400
+            )
+
+        # Prevent duplicates
+        if len(program_ids) != len(set(program_ids)):
+            return Response(
+                {"detail": "Duplicate programmes are not allowed."},
+                status=400
+            )
+
+        # Max 3 choices
+        if len(program_ids) > 3:
+            return Response(
+                {"detail": "Maximum of 3 programme choices allowed."},
+                status=400
+            )
+
+        programs = Program.objects.filter(
+            id__in=program_ids
+        )
+
+        if programs.count() != len(program_ids):
+            return Response(
+                {"detail": "One or more selected programmes are invalid."},
+                status=400
+            )
+
+        # Optional campus update
+        campus_id = request.data.get("campus_id")
+
+        if campus_id not in (None, "", "null"):
+            try:
+                application.campus = Campus.objects.get(
+                    pk=int(campus_id)
+                )
+
+            except (
+                TypeError,
+                ValueError,
+                Campus.DoesNotExist
+            ):
+                return Response(
+                    {"detail": "Invalid campus_id."},
+                    status=400
+                )
+
+        with transaction.atomic():
+
+            # Remove old choices
+            ApplicationProgramChoice.objects.filter(
+                application=application
+            ).delete()
+
+            # Create new ordered choices
+            choices = []
+
+            for index, pid in enumerate(program_ids, start=1):
+
+                choices.append(
+                    ApplicationProgramChoice(
+                        application=application,
+                        program_id=pid,
+                        choice_order=index,
+                    )
+                )
+
+            ApplicationProgramChoice.objects.bulk_create(
+                choices
+            )
+
+            application.save(
+                update_fields=[
+                    "campus",
+                    "updated_at"
+                ]
+            )
+
+        return Response(
+            {
+                "detail": "Programme choices updated successfully.",
+
+                "programs": [
+                    {
+                        "id": choice.program.id,
+                        "name": choice.program.name,
+                        "choice_order": choice.choice_order,
+                    }
+                    for choice in application.program_choices.select_related(
+                        "program"
+                    ).order_by(
+                        "choice_order"
+                    )
+                ],
+
+                "campus": (
+                    application.campus.name
+                    if application.campus
+                    else None
+                ),
+            },
+            status=200,
+        )
+
 # list applicant selelcted programs
 class ListSelectedPrograms(generics.ListAPIView):
     queryset = ApplicationProgramChoice.objects.all()
@@ -1694,7 +1826,7 @@ class ListAdmittedStudents(generics.ListAPIView):
         'admitted_batch',
         'admitted_campus',
         'application__applicant',
-        'programme_enrollment'
+        # 'programme_enrollment'
     ).all()
 
     serializer_class = AdmittedStudentListSerializer
