@@ -59,7 +59,11 @@ def sync_application_program_choices(application, program_ids: list[int]) -> Non
     if program_qs.count() != len(unique_ids):
         raise ValueError("One or more selected programmes are invalid.")
 
-    application.programs.set(program_qs)
+    try:
+        application._meta.get_field("programs")
+        application.programs.set(program_qs)
+    except FieldDoesNotExist:
+        pass
 
     Choice = _choice_model()
     order_field = _order_field_name(Choice)

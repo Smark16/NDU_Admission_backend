@@ -224,9 +224,10 @@ class ApplicationDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model = Application
         fields = ['id', 'first_name', 'last_name','middle_name', 'date_of_birth', 'gender', 'nationality', 'phone', 'email',
-                  'batch',"nin", "passport_number","disabled", 'olevel_school', 'olevel_year', 'alevel_school', 'alevel_year', 'address',
+                  'batch', 'programs', "nin", "passport_number","disabled", 'olevel_school', 'olevel_year', 'alevel_school', 'alevel_year', 'address',
                   'middle_name', 'next_of_kin_name', 'next_of_kin_contact', 'next_of_kin_relationship', 'revoked_by', 'is_revoked','revocation_reason',
-                  'status', 'application_fee_amount','application_fee_paid', 'created_at', 'reviewed_at', 'passport_photo','reviewed_by']
+                  'status', 'application_fee_amount','application_fee_paid', 'created_at', 'reviewed_at', 'passport_photo','reviewed_by',
+                  'program_choices_confirmed_at', 'program_choices_verification_sent_at']
     
 # o level subject
 class OlevelSubjectSerializer(serializers.ModelSerializer):
