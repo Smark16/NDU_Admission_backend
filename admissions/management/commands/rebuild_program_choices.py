@@ -151,7 +151,7 @@ class Command(BaseCommand):
     def handle(self, *args, **kwargs):
         # Get applications without program choices
         applications = Application.objects.filter(
-            status="submitted"
+            status__in=["submitted", "revoked", "under_review", "accepted", "approved"]
         ).exclude(
             program_choices__isnull=False
         ).select_related('academic_level', 'campus')
