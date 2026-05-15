@@ -214,12 +214,12 @@ class ApplicationDetailSerializer(serializers.ModelSerializer):
     reviewed_by = serializers.CharField(source='reviewed_by.full_name', read_only=True, allow_null=True)
     revoked_by = serializers.CharField(source='revoked_by.full_name', read_only=True, allow_null=True)
     batch = serializers.CharField(source='batch.name', read_only=True)
-    programs = serializers.SerializerMethodField()
+    # programs = serializers.SerializerMethodField()
 
-    def get_programs(self, obj):
-        return [
-            {"id": p.id, "name": p.name} for p in ordered_programs_for_application(obj)
-        ]
+    # def get_programs(self, obj):
+    #     return [
+    #         {"id": p.id, "name": p.name} for p in ordered_programs_for_application(obj)
+    #     ]
 
     class Meta:
         model = Application
