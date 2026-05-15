@@ -2397,23 +2397,16 @@ class DirectAdmissionEntryView(APIView):
                     next_of_kin_relationship=d.get('next_of_kin_relationship', '').strip(),
                 )
 
-                # Many-to-Many Programs
-                application.programs.set([program])
-
                 # --- 3.3 Create AdmittedStudent ---
                 provided_reg_no = d.get('reg_no', '').strip()
-                provided_student_id = d.get('student_id', '').strip()
                 provided_study_mode = d.get('study_mode', '').strip()
 
                 # Uniqueness checks
                 if AdmittedStudent.objects.filter(reg_no=provided_reg_no).exists():
                     raise ValueError(f"Reg No '{provided_reg_no}' is already in use.")
-                if AdmittedStudent.objects.filter(student_id=provided_student_id).exists():
-                    raise ValueError(f"Student ID '{provided_student_id}' is already in use.")
 
                 admitted_student = AdmittedStudent.objects.create(
                     application=application,
-                    student_id=provided_student_id,
                     reg_no=provided_reg_no,
                     admitted_program=program,
                     admitted_batch=batch,
@@ -2424,6 +2417,30 @@ class DirectAdmissionEntryView(APIView):
                     admission_date=timezone.now(),
                     admitted_by=request.user,
                 )
+
+                try:
+                    if not admitted_student.is_registered_with_schoolpay:
+
+                        result = register_student_with_schoolpay(admitted_student)
+
+                        logger.info(
+                            "SchoolPay registration for admitted student %s: %s",
+                            admitted_student.id,
+                            result.get("success")
+                        )
+
+                        if not result["success"]:
+                            logger.error(
+                                "SchoolPay registration failed for student %s: %s",
+                                admitted_student.id,
+                                result.get("error") or result.get("data")
+                            )
+
+                except Exception:
+                    logger.exception(
+                        "SchoolPay registration failed during admission"
+                    )
+
 
                 # Queue background tasks AFTER successful commit
                 transaction.on_commit(
