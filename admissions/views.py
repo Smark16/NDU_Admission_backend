@@ -2450,13 +2450,31 @@ def generate_reg_no_view(request):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        from admissions.utils.reg_no import resolve_intake_month_from_batch
+
         campus = Campus.objects.get(id=campus_id)
         program = Program.objects.get(id=program_id)
+
+        intake_month = (request.data.get("intake_month") or "").strip().upper()
+        if not intake_month:
+            application_id = request.data.get("application_id")
+            admission_batch_id = request.data.get("admission_batch_id")
+            if application_id:
+                app = Application.objects.select_related("batch").filter(pk=application_id).first()
+                if app:
+                    intake_month = resolve_intake_month_from_batch(app.batch)
+            elif admission_batch_id:
+                intake_batch = Batch.objects.filter(pk=admission_batch_id).first()
+                if intake_batch:
+                    intake_month = resolve_intake_month_from_batch(intake_batch)
+        if not intake_month:
+            intake_month = "APR"
 
         reg_no = generate_reg_no(
             campus=campus,
             program=program,
-            study_mode=study_mode
+            study_mode=study_mode,
+            intake_month=intake_month,
         )
 
         return Response({"reg_no": reg_no}, status=status.HTTP_200_OK)

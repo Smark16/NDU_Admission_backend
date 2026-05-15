@@ -11,6 +11,30 @@ def _is_hec_program(program) -> bool:
     return "higher education certificate" in name
 
 
+def resolve_intake_month_from_batch(batch, default: str = "APR") -> str:
+    """Map an admissions intake name/code to a 3-letter month token for HEC reg nos."""
+    if batch is None:
+        return default
+    haystack = f"{batch.code or ''} {batch.name or ''}".upper()
+    for token, month in (
+        ("JANUARY", "JAN"), ("JAN", "JAN"),
+        ("FEBRUARY", "FEB"), ("FEB", "FEB"),
+        ("MARCH", "MAR"), ("MAR", "MAR"),
+        ("APRIL", "APR"), ("APR", "APR"),
+        ("MAY", "MAY"),
+        ("JUNE", "JUN"), ("JUN", "JUN"),
+        ("JULY", "JUL"), ("JUL", "JUL"),
+        ("AUGUST", "AUG"), ("AUG", "AUG"),
+        ("SEPTEMBER", "SEP"), ("SEP", "SEP"),
+        ("OCTOBER", "OCT"), ("OCT", "OCT"),
+        ("NOVEMBER", "NOV"), ("NOV", "NOV"),
+        ("DECEMBER", "DEC"), ("DEC", "DEC"),
+    ):
+        if token in haystack:
+            return month
+    return default
+
+
 def _reg_no_prefix(year: str, campus_number: str, program_code: str, study_mode: str, *, is_hec: bool, intake_month: str) -> str:
     if is_hec:
         return f"{year}/{campus_number}/{program_code}/{intake_month}/{study_mode}/"
