@@ -100,13 +100,9 @@ class ApplicationSerializer(serializers.ModelSerializer):
 
 # list serializer (main application queue — excludes staff wizard direct entries)
 class ListApplicationsSerializer(serializers.ModelSerializer):
-    programs = serializers.SerializerMethodField()
     academic_level = serializers.CharField(source="academic_level.name", read_only=True)
     batch = serializers.CharField(source="batch.name", read_only=True)
     campus = serializers.CharField(source="campus.name", read_only=True)
-
-    def get_programs(self, obj):
-        return [{"id": p.id, "name": p.name} for p in obj.programs.all()]
 
     class Meta:
         model = Application
@@ -118,7 +114,6 @@ class ListApplicationsSerializer(serializers.ModelSerializer):
             "status",
             "created_at",
             "email",
-            "programs",
             "academic_level",
             "batch",
             "campus",
