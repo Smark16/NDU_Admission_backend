@@ -958,23 +958,31 @@ class BatchTemplateDownloadView(_BatchUnavailableMixin, APIView):
             .select_related("program")
             .order_by("program__code", "name")
         )
+        batches_by_program: dict[int, list] = {}
+        for batch in existing_batches:
+            batches_by_program.setdefault(batch.program_id, []).append(batch)
+
+        # Every programme in scope gets at least one row: all existing cohorts, or one blank row to create.
+        sample_rows: list = []
+        for prog in sorted(all_programs, key=lambda p: ((p.code or "").lower(), (p.name or "").lower())):
+            prog_batches = batches_by_program.get(prog.id) or []
+            if prog_batches:
+                for batch in sorted(prog_batches, key=lambda b: b.name.lower()):
+                    sample_rows.append(_batch_row_from_model(batch))
+            else:
+                sample_rows.append(_empty_batch_template_row(prog))
 
         scope_prefix = f"{campus_scope_label}: " if campus_scope_label else ""
+        cohort_count = len(existing_batches)
+        program_count = len(all_programs)
+        blank_count = program_count - len(batches_by_program)
 
-        if existing_batches:
-            sample_rows = [_batch_row_from_model(b) for b in existing_batches]
-            instructions = (
-                f"{scope_prefix}Existing cohorts are listed below — change dates or offer window only. "
-                "Keep batch_id and batch_name unchanged when using Update batches. "
-                "Use Upload batches only to add new cohorts (leave batch_id blank)."
-            )
-        else:
-            sample_rows = [_empty_batch_template_row(prog) for prog in all_programs]
-            instructions = (
-                f"{scope_prefix}No cohorts exist yet for the selected programme(s). "
-                "Fill batch_name and dates, then use Upload batches. "
-                "program_code must match exactly. Dates: YYYY-MM-DD."
-            )
+        instructions = (
+            f"{scope_prefix}{program_count} programme(s): {cohort_count} existing cohort row(s) "
+            f"and {blank_count} blank row(s) for programmes without a cohort yet. "
+            "Update batches: edit dates on rows that have batch_id; keep batch_id and batch_name unchanged. "
+            "Upload batches: fill blank rows (no batch_id) to create new cohorts."
+        )
 
         wb = create_workbook(
             headers=_BATCH_TEMPLATE_HEADERS,
