@@ -580,8 +580,9 @@ class AllApplicationsReport(generics.ListAPIView):
         return Application.objects.select_related(
             'academic_level', 'batch', 'campus', 'entered_by'
         ).filter(
-            ~Q(status__in=['draft', 'Admitted', 'rejected']),
+            ~Q(status__in=['draft', 'Admitted','admitted', 'rejected']),
         ).order_by('created_at')
+    
 
 class ListDirectEntryApplications(generics.ListAPIView):
     queryset = (
