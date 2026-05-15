@@ -11,7 +11,8 @@ from datetime import date, datetime, timedelta
 import io
 
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Count, Q
+from django.db.models.deletion import ProtectedError
 from django.db.utils import ProgrammingError
 from django.http import HttpResponse
 from rest_framework import status
@@ -641,39 +642,90 @@ class UpdateProgramBatchView(_BatchUnavailableMixin, APIView):
 
 
 class DeleteProgramBatchView(_BatchUnavailableMixin, APIView):
-    """Delete a program batch (only if no semesters or course units)."""
+    """Delete a program batch when no students are actively enrolled in that cohort.
+
+    Auto-generated semesters and course units are removed with the batch (CASCADE).
+    Pending/withdrawn programme enrollments on this cohort are removed automatically.
+    Blocks when any enrollment has status enrolled, suspended, or completed (PROTECT).
+    """
     permission_classes = [ProgramSchedulingAPIPermission]
+
+    _BLOCKING_ENROLLMENT_STATUSES = ('enrolled', 'suspended', 'completed')
 
     def delete(self, request, batch_id):
         try:
+            from Programs.models import StudentProgrammeEnrollment
+
             try:
                 batch = ProgramBatch.objects.select_related('program').get(id=batch_id)
             except ProgramBatch.DoesNotExist:
                 return Response({'detail': 'Batch not found'}, status=status.HTTP_404_NOT_FOUND)
 
-            semester_count = batch.semesters.count()
-            course_unit_count = batch.course_units.count()
+            status_rows = (
+                StudentProgrammeEnrollment.objects.filter(program_batch=batch)
+                .values('status')
+                .annotate(count=Count('id'))
+            )
+            status_breakdown = {row['status']: row['count'] for row in status_rows}
 
-            if semester_count > 0 or course_unit_count > 0:
+            blocking_count = sum(
+                status_breakdown.get(s, 0) for s in self._BLOCKING_ENROLLMENT_STATUSES
+            )
+            if blocking_count > 0:
+                enrolled_only = status_breakdown.get('enrolled', 0)
                 return Response(
                     {
                         'detail': (
-                            f'Cannot delete batch. It has {semester_count} semester(s) and '
-                            f'{course_unit_count} course unit(s). Delete them first or deactivate the batch.'
+                            f'Cannot delete batch "{batch.name}": {blocking_count} student '
+                            f'placement record(s) still use this cohort '
+                            f'({enrolled_only} fully enrolled). Move or withdraw them first, '
+                            f'or set is_active=false instead of deleting.'
                         ),
-                        'semester_count': semester_count,
-                        'course_unit_count': course_unit_count,
+                        'enrolled_student_count': enrolled_only,
+                        'blocking_placement_count': blocking_count,
+                        'enrollment_status_breakdown': status_breakdown,
                     },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
             batch_name = batch.name
             program_name = batch.program.name
-            batch.delete()
+            semester_count = batch.semesters.count()
+            course_unit_count = batch.course_units.count()
+            intended_count = batch.intended_admissions.count()
+
+            with transaction.atomic():
+                cleared, _ = (
+                    StudentProgrammeEnrollment.objects.filter(program_batch=batch)
+                    .exclude(status__in=self._BLOCKING_ENROLLMENT_STATUSES)
+                    .delete()
+                )
+                try:
+                    batch.delete()
+                except ProtectedError:
+                    remaining = list(
+                        StudentProgrammeEnrollment.objects.filter(program_batch=batch)
+                        .values_list('status', flat=True)
+                    )
+                    return Response(
+                        {
+                            'detail': (
+                                f'Cannot delete batch "{batch_name}": linked student records '
+                                f'still reference this cohort.'
+                            ),
+                            'remaining_enrollment_statuses': remaining,
+                            'enrollment_status_breakdown': status_breakdown,
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
 
             return Response(
                 {
                     'message': f'Batch "{batch_name}" for program "{program_name}" deleted successfully',
+                    'semesters_removed': semester_count,
+                    'course_units_removed': course_unit_count,
+                    'pending_enrollments_cleared': cleared,
+                    'intended_admissions_cleared': intended_count,
                 },
                 status=status.HTTP_200_OK,
             )
@@ -1098,22 +1150,20 @@ class BatchBulkUploadView(_BatchUnavailableMixin, APIView):
 
             existing = ProgramBatch.objects.filter(program=program, name=batch_name).first()
 
-            if existing:
-                if not update_existing:
+            if update_existing:
+                if not existing:
                     errors.append(
-                        f"Row {row_num}: Batch '{batch_name}' already exists for "
-                        f"program '{program.code}'. Skipped. "
-                        f"Enable 'Update existing' to overwrite."
+                        f"Row {row_num}: No batch '{batch_name}' for program '{program.code}'. "
+                        f"Update mode only overwrites existing batches — use Upload (create) to add new ones."
                     )
                     continue
-
-                # ── Update mode: patch the existing batch ──
+                # ── Update mode: patch the existing batch (never create) ──
                 try:
                     with transaction.atomic():
-                        existing.start_date   = start_date
-                        existing.end_date     = end_date
+                        existing.start_date = start_date
+                        existing.end_date = end_date
                         existing.academic_year = acad_year
-                        existing.is_active    = is_active
+                        existing.is_active = is_active
                         existing.offer_start_date = offer_start_date
                         existing.offer_end_date = offer_end_date
                         existing.save(update_fields=[
@@ -1125,7 +1175,15 @@ class BatchBulkUploadView(_BatchUnavailableMixin, APIView):
                     errors.append(f"Row {row_num}: Could not update batch '{batch_name}' — {exc}")
                 continue  # no semester re-creation on update
 
-            # ── Step 1: create the batch (own committed transaction) ──
+            if existing:
+                errors.append(
+                    f"Row {row_num}: Batch '{batch_name}' already exists for "
+                    f"program '{program.code}'. Skipped. "
+                    f"Use 'Update batches' to overwrite, or change batch_name."
+                )
+                continue
+
+            # ── Create mode: new batch (own committed transaction) ──
             try:
                 with transaction.atomic():
                     batch = ProgramBatch.objects.create(
