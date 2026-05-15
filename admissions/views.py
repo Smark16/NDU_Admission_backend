@@ -567,12 +567,6 @@ class ListApplications(generics.ListAPIView):
             is_direct_entry=False
         ).select_related(
             "academic_level", "batch", "campus"
-        ).prefetch_related(
-            "programs",
-            "programs__faculty",
-            "program_choices",
-            "program_choices__program",
-            "program_choices__program__faculty",
         ).order_by('created_at')
 
         # Optional query-param filters so the frontend can narrow server-side
@@ -596,12 +590,6 @@ class AllApplicationsReport(generics.ListAPIView):
         return Application.objects.select_related(
             'academic_level', 'batch', 'campus', 'entered_by', 'applicant',
             'reviewed_by', 'revoked_by', 'offer_letter_generated_by',
-        ).prefetch_related(
-            'programs',
-            'programs__faculty',
-            'program_choices',
-            'program_choices__program',
-            'program_choices__program__faculty',
         ).filter(
             ~Q(status__in=['draft', 'Admitted', 'admitted', 'rejected']),
         ).order_by('created_at')
@@ -610,13 +598,6 @@ class ListDirectEntryApplications(generics.ListAPIView):
     queryset = (
         Application.objects.filter(is_direct_entry=True)
         .select_related("academic_level", "batch", "campus", "entered_by")
-        .prefetch_related(
-            "programs",
-            "programs__faculty",
-            "program_choices",
-            "program_choices__program",
-            "program_choices__program__faculty",
-        )
         .filter(~Q(status__in=["draft", "Admitted", "rejected"]))
         .order_by("-created_at")
     )
