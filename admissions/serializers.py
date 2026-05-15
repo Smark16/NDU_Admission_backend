@@ -214,7 +214,6 @@ class ApplicationDetailSerializer(serializers.ModelSerializer):
     reviewed_by = serializers.CharField(source='reviewed_by.full_name', read_only=True, allow_null=True)
     revoked_by = serializers.CharField(source='revoked_by.full_name', read_only=True, allow_null=True)
     batch = serializers.CharField(source='batch.name', read_only=True)
-
     class Meta:
         model = Application
         fields = ['id', 'first_name', 'last_name','middle_name', 'date_of_birth', 'gender', 'nationality', 'phone', 'email',
