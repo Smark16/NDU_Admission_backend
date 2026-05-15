@@ -131,6 +131,8 @@ class ListApplicationsSerializer(serializers.ModelSerializer):
             "academic_level",
             "batch",
             "campus",
+            "program_choices_confirmed_at",
+            "program_choices_verification_sent_at",
         ]
 
 
@@ -211,6 +213,8 @@ class AllApplicationsReportSerializer(serializers.ModelSerializer):
             "created_at",
             "is_direct_entry",
             "entered_by",
+            "program_choices_confirmed_at",
+            "program_choices_verification_sent_at",
         ]
 
 # detail serializer

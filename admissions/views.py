@@ -32,6 +32,13 @@ from accounts.tasks import celery_send_account_email
 from payments.utils.school_pay_code import register_student_with_schoolpay
 from .utils.trigger_background_tasks import trigger_background_tasks
 from .utils.application_programs_display import ordered_programs_for_application
+from .utils.program_choices import (
+    applicant_may_edit_program_choices,
+    clear_program_choices_confirmation,
+    mark_program_choices_confirmed,
+    program_options_for_application,
+    sync_application_program_choices,
+)
 from payments.models import ApplicationPayment
 from Drafts.models import DraftApplication
 from django.db.models import Q
@@ -810,11 +817,16 @@ class ChangeApplicationProgramme(APIView):
             except (TypeError, ValueError, Campus.DoesNotExist):
                 return Response({"detail": "Invalid campus_id."}, status=400)
 
-        application.programs.set(program_qs)
+        try:
+            sync_application_program_choices(application, program_ids)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
+
+        clear_program_choices_confirmation(application, save=False)
+        update_fields = ["program_choices_confirmed_at", "updated_at"]
         if campus_changed:
-            application.save(update_fields=["campus", "updated_at"])
-        else:
-            application.save(update_fields=["updated_at"])
+            update_fields.insert(0, "campus")
+        application.save(update_fields=update_fields)
 
         return Response(
             {
@@ -824,9 +836,123 @@ class ChangeApplicationProgramme(APIView):
                     for p in ordered_programs_for_application(application)
                 ],
                 "campus": application.campus.name if application.campus else None,
+                "program_choices_confirmed_at": None,
             },
             status=200,
         )
+
+
+class ApplicantProgramChoicesView(APIView):
+    """Applicant: review, update, and confirm programme choices on a submitted application."""
+
+    permission_classes = [IsAuthenticated]
+
+    def _get_owned_application(self, request, application_id):
+        return get_object_or_404(
+            Application.objects.select_related(
+                "batch", "campus", "academic_level", "applicant"
+            ).prefetch_related("program_choices__program", "programs"),
+            pk=application_id,
+            applicant=request.user,
+        )
+
+    def _payload(self, application):
+        current = [
+            {"id": p.id, "name": p.name}
+            for p in ordered_programs_for_application(application)
+        ]
+        may_edit = applicant_may_edit_program_choices(application)
+        return {
+            "application_id": application.id,
+            "status": application.status,
+            "program_choices_confirmed_at": application.program_choices_confirmed_at,
+            "program_choices_verification_sent_at": application.program_choices_verification_sent_at,
+            "can_update_programs": may_edit,
+            "can_confirm": may_edit and len(current) > 0,
+            "is_confirmed": bool(application.program_choices_confirmed_at),
+            "current_programs": current,
+            "available_programs": program_options_for_application(application) if may_edit else [],
+            "campus_id": application.campus_id,
+            "academic_level_id": application.academic_level_id,
+        }
+
+    def get(self, request, application_id):
+        application = self._get_owned_application(request, application_id)
+        return Response(self._payload(application), status=200)
+
+    def patch(self, request, application_id):
+        application = self._get_owned_application(request, application_id)
+        if not applicant_may_edit_program_choices(application):
+            return Response(
+                {"detail": "Programme choices cannot be changed for this application status."},
+                status=400,
+            )
+
+        raw_program_ids = request.data.get("program_ids", [])
+        if not isinstance(raw_program_ids, list) or not raw_program_ids:
+            return Response({"detail": "program_ids must be a non-empty list."}, status=400)
+
+        try:
+            program_ids = [int(pid) for pid in raw_program_ids]
+        except (TypeError, ValueError):
+            return Response({"detail": "program_ids must contain valid integers."}, status=400)
+
+        if len(program_ids) > 3:
+            return Response({"detail": "You may select at most three programmes."}, status=400)
+
+        try:
+            sync_application_program_choices(application, program_ids)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
+
+        clear_program_choices_confirmation(application, save=True)
+        return Response(
+            {
+                "detail": "Programme choices saved. Please confirm when they are correct.",
+                **self._payload(application),
+            },
+            status=200,
+        )
+
+    def post(self, request, application_id):
+        """Confirm current choices (optional program_ids to save then confirm)."""
+        application = self._get_owned_application(request, application_id)
+        if not applicant_may_edit_program_choices(application):
+            return Response(
+                {"detail": "Programme choices cannot be confirmed for this application status."},
+                status=400,
+            )
+
+        raw_program_ids = request.data.get("program_ids")
+        if raw_program_ids is not None:
+            if not isinstance(raw_program_ids, list) or not raw_program_ids:
+                return Response({"detail": "program_ids must be a non-empty list."}, status=400)
+            try:
+                program_ids = [int(pid) for pid in raw_program_ids]
+            except (TypeError, ValueError):
+                return Response({"detail": "program_ids must contain valid integers."}, status=400)
+            if len(program_ids) > 3:
+                return Response({"detail": "You may select at most three programmes."}, status=400)
+            try:
+                sync_application_program_choices(application, program_ids)
+            except ValueError as exc:
+                return Response({"detail": str(exc)}, status=400)
+
+        if not ordered_programs_for_application(application):
+            return Response(
+                {"detail": "Select at least one programme before confirming."},
+                status=400,
+            )
+
+        mark_program_choices_confirmed(application, save=True)
+        return Response(
+            {
+                "detail": "Thank you. Your programme choices have been confirmed.",
+                **self._payload(application),
+            },
+            status=200,
+        )
+
 
 # list rejected students
 class ListRejectedApplications(generics.ListAPIView):
@@ -1194,7 +1320,9 @@ class ApplicantDashboard(APIView):
             "programs": selected_programs,
             "applied_date": application.created_at,
             "application_status": application.status,
-            "admission_letter_pdf": application.admission_letter_pdf.url if application.admission_letter_pdf else None
+            "admission_letter_pdf": application.admission_letter_pdf.url if application.admission_letter_pdf else None,
+            "program_choices_confirmed_at": application.program_choices_confirmed_at,
+            "program_choices_verification_sent_at": application.program_choices_verification_sent_at,
         }
 
         # Try to get admission record

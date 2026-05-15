@@ -212,6 +212,17 @@ class Application(models.Model):
         related_name="generated_offer_letters",
     )
 
+    program_choices_verification_sent_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the applicant was asked to review/confirm programme choices (e.g. bulk email).",
+    )
+    program_choices_confirmed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the applicant confirmed their programme choices in the portal.",
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
