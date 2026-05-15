@@ -578,12 +578,12 @@ class AllApplicationsReport(generics.ListAPIView):
     def get_queryset(self):
 
         return Application.objects.select_related(
-            'academic_level', 'batch', 'campus', 'entered_by'
+            'academic_level', 'batch', 'campus', 'entered_by', 'applicant', 
+            'reviewed_by', 'revoked_by', 'offer_letter_generated_by'
         ).filter(
             ~Q(status__in=['draft', 'Admitted','admitted', 'rejected']),
         ).order_by('created_at')
     
-
 class ListDirectEntryApplications(generics.ListAPIView):
     queryset = (
         Application.objects.filter(is_direct_entry=True)
@@ -904,7 +904,8 @@ class ApplicantChangeApplicationProgramme(APIView):
             Application.objects.prefetch_related(
                 "program_choices__program"
             ).select_related(
-                "ca mpus"
+                "applicant", "batch", "campus", "academic_level", "entered_by", "reviewed_by", 
+                "revoked_by", "offer_letter_generated_by", "admission"
             ),
             pk=application_id,
         )
