@@ -546,15 +546,20 @@ class ProgramBatch(models.Model):
 
     @property
     def is_offer_active(self):
-        """True when today is inside [offer_start_date, offer_end_date] if those bounds are set."""
-        from django.utils import timezone
+        """
+        Cohort-only offer window (both dates set on this row).
 
-        today = timezone.now().date()
-        if self.offer_start_date and today < self.offer_start_date:
+        For intake inheritance use
+        ``Programs.program_batch_resolution.cohort_offer_is_active`` with
+        ``admission_batch`` at admit time.
+        """
+        from admissions.utils.batch_offer_filters import dates_in_offer_window
+
+        if self.offer_start_date is None and self.offer_end_date is None:
+            return True
+        if self.offer_start_date is None or self.offer_end_date is None:
             return False
-        if self.offer_end_date and today > self.offer_end_date:
-            return False
-        return True
+        return dates_in_offer_window(self.offer_start_date, self.offer_end_date)
 
     def clean(self):
         from django.core.exceptions import ValidationError

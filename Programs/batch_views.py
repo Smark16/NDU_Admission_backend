@@ -93,29 +93,32 @@ class CreateBatchView(_BatchUnavailableMixin, APIView):
 
             offer_start_s = (request.data.get('offer_start_date') or '').strip()
             offer_end_s = (request.data.get('offer_end_date') or '').strip()
-            if not offer_start_s or not offer_end_s:
-                return Response(
-                    {
-                        'detail': (
-                            'offer_start_date and offer_end_date are required '
-                            '(admission offer window for this academic cohort).'
-                        )
-                    },
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-            try:
-                offer_start = datetime.strptime(offer_start_s, '%Y-%m-%d').date()
-                offer_end = datetime.strptime(offer_end_s, '%Y-%m-%d').date()
-                if offer_end < offer_start:
+            offer_start = None
+            offer_end = None
+            if offer_start_s or offer_end_s:
+                if not offer_start_s or not offer_end_s:
                     return Response(
-                        {'detail': 'Offer end date must be on or after offer start date'},
+                        {
+                            'detail': (
+                                'offer_start_date and offer_end_date must both be set, '
+                                'or both left empty to use the admission intake offer window.'
+                            )
+                        },
                         status=status.HTTP_400_BAD_REQUEST,
                     )
-            except ValueError as e:
-                return Response(
-                    {'detail': f'Invalid offer date format: {str(e)}. Use YYYY-MM-DD format.'},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+                try:
+                    offer_start = datetime.strptime(offer_start_s, '%Y-%m-%d').date()
+                    offer_end = datetime.strptime(offer_end_s, '%Y-%m-%d').date()
+                    if offer_end < offer_start:
+                        return Response(
+                            {'detail': 'Offer end date must be on or after offer start date'},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+                except ValueError as e:
+                    return Response(
+                        {'detail': f'Invalid offer date format: {str(e)}. Use YYYY-MM-DD format.'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
 
             if ProgramBatch.objects.filter(program=program, name=name).exists():
                 return Response(
@@ -584,31 +587,36 @@ class UpdateProgramBatchView(_BatchUnavailableMixin, APIView):
                             status=status.HTTP_400_BAD_REQUEST,
                         )
 
-            if 'offer_start_date' in request.data and 'offer_end_date' in request.data:
+            if 'offer_start_date' in request.data or 'offer_end_date' in request.data:
                 offer_start_s = (request.data.get('offer_start_date') or '').strip()
                 offer_end_s = (request.data.get('offer_end_date') or '').strip()
-                if not offer_start_s or not offer_end_s:
+                if not offer_start_s and not offer_end_s:
+                    batch.offer_start_date = None
+                    batch.offer_end_date = None
+                elif not offer_start_s or not offer_end_s:
                     return Response(
                         {
                             'detail': (
-                                'offer_start_date and offer_end_date are required when updating the offer window.'
+                                'offer_start_date and offer_end_date must both be set, '
+                                'or both cleared to inherit from the admission intake.'
                             )
                         },
                         status=status.HTTP_400_BAD_REQUEST,
                     )
-                try:
-                    batch.offer_start_date = datetime.strptime(offer_start_s, '%Y-%m-%d').date()
-                    batch.offer_end_date = datetime.strptime(offer_end_s, '%Y-%m-%d').date()
-                    if batch.offer_end_date < batch.offer_start_date:
+                else:
+                    try:
+                        batch.offer_start_date = datetime.strptime(offer_start_s, '%Y-%m-%d').date()
+                        batch.offer_end_date = datetime.strptime(offer_end_s, '%Y-%m-%d').date()
+                        if batch.offer_end_date < batch.offer_start_date:
+                            return Response(
+                                {'detail': 'Offer end date must be on or after offer start date'},
+                                status=status.HTTP_400_BAD_REQUEST,
+                            )
+                    except ValueError:
                         return Response(
-                            {'detail': 'Offer end date must be on or after offer start date'},
+                            {'detail': 'Invalid offer date format. Use YYYY-MM-DD format.'},
                             status=status.HTTP_400_BAD_REQUEST,
                         )
-                except ValueError:
-                    return Response(
-                        {'detail': 'Invalid offer date format. Use YYYY-MM-DD format.'},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
 
             batch.save()
 
@@ -980,6 +988,8 @@ class BatchTemplateDownloadView(_BatchUnavailableMixin, APIView):
         instructions = (
             f"{scope_prefix}{program_count} programme(s): {cohort_count} existing cohort row(s) "
             f"and {blank_count} blank row(s) for programmes without a cohort yet. "
+            "Leave offer_start_date and offer_end_date blank to use each applicant's admission intake offer window. "
+            "Fill both offer columns on a row only to override the intake for that cohort. "
             "Update batches: edit dates on rows that have batch_id; keep batch_id and batch_name unchanged. "
             "Upload batches: fill blank rows (no batch_id) to create new cohorts."
         )

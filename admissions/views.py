@@ -1723,10 +1723,36 @@ class ListProgramBatchOptionsForAdmission(APIView):
     permission_classes = [IsAuthenticated, CanAdmitApplicant]
 
     def get(self, request, program_id):
-        from Programs.program_batch_resolution import admission_program_batch_options_qs
+        from Programs.program_batch_resolution import (
+            admission_program_batch_options_qs,
+            program_batch_offer_api_fields,
+        )
+
+        admission_batch = None
+        application_id = request.query_params.get("application_id")
+        admission_batch_id = request.query_params.get("admission_batch_id")
+        if application_id:
+            application = Application.objects.select_related("batch").filter(
+                pk=application_id
+            ).first()
+            if application is None:
+                return Response(
+                    {"detail": "Application not found."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+            admission_batch = application.batch
+        elif admission_batch_id:
+            admission_batch = Batch.objects.filter(pk=admission_batch_id).first()
+            if admission_batch is None:
+                return Response(
+                    {"detail": "Admission batch (intake) not found."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
 
         today = timezone.now().date()
-        qs = admission_program_batch_options_qs(program_id, today=today).only(
+        qs = admission_program_batch_options_qs(
+            program_id, today=today, admission_batch=admission_batch
+        ).only(
             'id',
             'name',
             'start_date',
@@ -1744,9 +1770,9 @@ class ListProgramBatchOptionsForAdmission(APIView):
                 'start_date': b.start_date.isoformat() if b.start_date else None,
                 'academic_year': b.academic_year or '',
                 'is_active': b.is_active,
-                'offer_start_date': b.offer_start_date.isoformat() if b.offer_start_date else None,
-                'offer_end_date': b.offer_end_date.isoformat() if b.offer_end_date else None,
-                'is_offer_active': b.is_offer_active,
+                **program_batch_offer_api_fields(
+                    b, today=today, admission_batch=admission_batch
+                ),
             }
             for b in qs
         ]

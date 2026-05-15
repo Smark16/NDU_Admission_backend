@@ -1,43 +1,119 @@
 """Resolve academic :class:`~Programs.models.ProgramBatch` for admission / enrollment.
 
-Uses the same rules as the admit-officer batch list: **active** cohorts whose optional
-offer window includes *today* (or with no offer dates set), ordered by latest
-``start_date`` then name.
+Cohort offer window rules:
+  - Both ``offer_start_date`` and ``offer_end_date`` set on the cohort → use those (override).
+  - Both null on the cohort → use the applicant's admission intake (``admissions.Batch``) dates.
+  - When no intake is supplied (admin lists), null cohort dates are treated as always in window;
+    set cohort dates or pass ``admission_batch`` at admit time for intake-driven behaviour.
 """
 from __future__ import annotations
+
+from datetime import date
 
 from django.db.models import Q
 from django.utils import timezone
 
+from admissions.utils.batch_offer_filters import dates_in_offer_window
+
 from .models import ProgramBatch
 
 
-def program_batch_in_active_offer_window_q(*, today=None) -> Q:
-    if today is None:
-        today = timezone.now().date()
-    return (
-        (Q(offer_start_date__isnull=True) & Q(offer_end_date__isnull=True))
-        | (
-            (Q(offer_start_date__isnull=True) | Q(offer_start_date__lte=today))
-            & (Q(offer_end_date__isnull=True) | Q(offer_end_date__gte=today))
+def _today(today=None) -> date:
+    return today if today is not None else timezone.now().date()
+
+
+def effective_offer_dates(program_batch, admission_batch=None):
+    """
+    Return (start, end, source) where source is ``cohort``, ``intake``, or ``none``.
+    """
+    if (
+        program_batch.offer_start_date is not None
+        and program_batch.offer_end_date is not None
+    ):
+        return (
+            program_batch.offer_start_date,
+            program_batch.offer_end_date,
+            "cohort",
         )
-    )
+    if admission_batch is not None:
+        return (
+            admission_batch.offer_start_date,
+            admission_batch.offer_end_date,
+            "intake",
+        )
+    return None, None, "none"
 
 
-def admission_program_batch_options_qs(program, *, today=None):
-    """Active cohorts in offer window for a programme ( queryset, not evaluated )."""
+def cohort_offer_is_active(program_batch, *, today=None, admission_batch=None) -> bool:
+    if not program_batch.is_active:
+        return False
+    start, end, _ = effective_offer_dates(program_batch, admission_batch)
+    return dates_in_offer_window(start, end, today=_today(today))
+
+
+def program_batch_in_active_offer_window_q(*, today=None, admission_batch=None) -> Q:
+    """
+    ORM filter for cohorts that are in an active offer window.
+
+    With ``admission_batch``, null-date cohorts match only when the intake window is active.
+    """
+    today = _today(today)
+    explicit = Q(offer_start_date__isnull=False, offer_end_date__isnull=False)
+    explicit_window = explicit & Q(offer_start_date__lte=today) & Q(offer_end_date__gte=today)
+    inherit = Q(offer_start_date__isnull=True, offer_end_date__isnull=True)
+
+    if admission_batch is None:
+        return explicit_window | inherit
+
+    if not dates_in_offer_window(
+        admission_batch.offer_start_date,
+        admission_batch.offer_end_date,
+        today=today,
+    ):
+        return explicit_window
+
+    return explicit_window | inherit
+
+
+def admission_program_batch_options_qs(program, *, today=None, admission_batch=None):
+    """Active cohorts in offer window for a programme (queryset, not evaluated)."""
     if program is None:
         return ProgramBatch.objects.none()
     pid = program.pk if hasattr(program, "pk") else program
-    if today is None:
-        today = timezone.now().date()
     return (
         ProgramBatch.objects.filter(program_id=pid, is_active=True)
-        .filter(program_batch_in_active_offer_window_q(today=today))
+        .filter(program_batch_in_active_offer_window_q(today=today, admission_batch=admission_batch))
         .order_by("-start_date", "name")
     )
 
 
-def resolve_default_program_batch_for_program(program, *, today=None) -> ProgramBatch | None:
+def resolve_default_program_batch_for_program(
+    program, *, today=None, admission_batch=None
+) -> ProgramBatch | None:
     """First cohort from :func:`admission_program_batch_options_qs`, or ``None``."""
-    return admission_program_batch_options_qs(program, today=today).first()
+    return admission_program_batch_options_qs(
+        program, today=today, admission_batch=admission_batch
+    ).first()
+
+
+def program_batch_offer_api_fields(program_batch, *, today=None, admission_batch=None) -> dict:
+    """Extra read-only fields for APIs (effective dates + source)."""
+    start, end, source = effective_offer_dates(program_batch, admission_batch)
+    return {
+        "offer_start_date": (
+            program_batch.offer_start_date.isoformat()
+            if program_batch.offer_start_date
+            else None
+        ),
+        "offer_end_date": (
+            program_batch.offer_end_date.isoformat()
+            if program_batch.offer_end_date
+            else None
+        ),
+        "effective_offer_start_date": start.isoformat() if start else None,
+        "effective_offer_end_date": end.isoformat() if end else None,
+        "offer_dates_source": source,
+        "is_offer_active": cohort_offer_is_active(
+            program_batch, today=today, admission_batch=admission_batch
+        ),
+    }

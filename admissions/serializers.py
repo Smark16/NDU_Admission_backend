@@ -228,6 +228,8 @@ class ApplicationDetailSerializer(serializers.ModelSerializer):
             {"id": p.id, "name": p.name}
             for p in ordered_programs_for_application(instance)
         ]
+        data["campus_id"] = instance.campus_id
+        data["campus"] = instance.campus.name if instance.campus_id else None
         return data
     
 # o level subject
@@ -344,8 +346,11 @@ class AdmittedStudentSerializer(serializers.ModelSerializer):
 
         if validated_data.get('intended_program_batch') is None:
             prog = validated_data.get('admitted_program')
+            intake = validated_data.get('admitted_batch')
             if prog is not None:
-                default_pb = resolve_default_program_batch_for_program(prog)
+                default_pb = resolve_default_program_batch_for_program(
+                    prog, admission_batch=intake
+                )
                 if default_pb is not None:
                     validated_data['intended_program_batch'] = default_pb
         admitted = super().create(validated_data)
@@ -357,11 +362,20 @@ class AdmittedStudentSerializer(serializers.ModelSerializer):
 
         prog = validated_data.get('admitted_program', instance.admitted_program)
 
+        intake = validated_data.get('admitted_batch', instance.admitted_batch)
         if 'intended_program_batch' in validated_data and validated_data['intended_program_batch'] is None:
-            default_pb = resolve_default_program_batch_for_program(prog) if prog is not None else None
+            default_pb = (
+                resolve_default_program_batch_for_program(prog, admission_batch=intake)
+                if prog is not None
+                else None
+            )
             validated_data['intended_program_batch'] = default_pb
         elif instance.intended_program_batch_id is None and 'intended_program_batch' not in validated_data:
-            default_pb = resolve_default_program_batch_for_program(prog) if prog is not None else None
+            default_pb = (
+                resolve_default_program_batch_for_program(prog, admission_batch=intake)
+                if prog is not None
+                else None
+            )
             if default_pb is not None:
                 validated_data['intended_program_batch'] = default_pb
 

@@ -25,7 +25,10 @@ def _default_program_batch(student: AdmittedStudent):
     if ipb is not None:
         return ipb
 
-    return resolve_default_program_batch_for_program(student.admitted_program)
+    return resolve_default_program_batch_for_program(
+        student.admitted_program,
+        admission_batch=student.admitted_batch,
+    )
 
 
 def activate_programme_enrollment_after_commitment_payment(
