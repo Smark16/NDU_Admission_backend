@@ -37,7 +37,7 @@ class SemesterInline(admin.TabularInline):
 
 @admin.register(ProgramBatch)
 class ProgramBatchAdmin(admin.ModelAdmin):
-    list_display = ['id', 'name', 'program', 'academic_year', 'start_date', 'is_active']
+    list_display = ['id', 'name', 'program', 'academic_year', 'start_date', 'offer_start_date', 'offer_end_date', 'is_active']
     list_filter = ['is_active', 'program']
     search_fields = ['name', 'academic_year']
     inlines = [SemesterInline]

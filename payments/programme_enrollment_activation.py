@@ -14,25 +14,18 @@ logger = logging.getLogger(__name__)
 
 
 def _default_program_batch(student: AdmittedStudent):
-    from Programs.models import ProgramBatch
-
     if not student.admitted_program_id:
         return None
+
+    from Programs.program_batch_resolution import resolve_default_program_batch_for_program
 
     ipb = getattr(student, "intended_program_batch", None)
     if ipb is not None and ipb.program_id != student.admitted_program_id:
         ipb = None
+    if ipb is not None:
+        return ipb
 
-    batches = ProgramBatch.objects.filter(program_id=student.admitted_program_id).order_by(
-        "-is_active",
-        "-start_date",
-        "name",
-    )
-    return ipb or (
-        batches.filter(is_active=True, name__icontains="year 1").first()
-        or batches.filter(is_active=True).first()
-        or batches.first()
-    )
+    return resolve_default_program_batch_for_program(student.admitted_program)
 
 
 def activate_programme_enrollment_after_commitment_payment(

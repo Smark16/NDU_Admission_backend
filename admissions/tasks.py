@@ -2,7 +2,8 @@ from celery import shared_task
 from django.apps import apps
 from django.utils import timezone
 from payments.models import RegistrationSettings
-from Programs.models import StudentProgrammeEnrollment, ProgramBatch
+from Programs.models import StudentProgrammeEnrollment
+from Programs.program_batch_resolution import resolve_default_program_batch_for_program
 
 from .utils.email import send_application_email, send_admission_email, send_admission_update, send_student_login_credentials, send_rejection_email
 from .utils.notification import create_notification
@@ -113,11 +114,10 @@ def celery_auto_enroll_students(self, admission_id, user_id):
     try:
         reg_settings = RegistrationSettings.get_settings()
 
-        program_batch = (
-            admission.intended_program_batch
-            or ProgramBatch.objects.filter(
-                program=admission.admitted_program
-            ).order_by('-is_active', '-start_date').first()
+        today = timezone.now().date()
+        program_batch = admission.intended_program_batch or resolve_default_program_batch_for_program(
+            admission.admitted_program,
+            today=today,
         )
 
         if program_batch:

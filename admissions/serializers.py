@@ -2,6 +2,7 @@ from rest_framework import serializers
 from .models import *
 from accounts.serializers import UserSerializer, CampusSerializer
 from Programs.serializers import ProgramSerializer
+from .utils.application_programs_display import ordered_programs_for_application
 
 # serializers
 
@@ -65,8 +66,12 @@ class CudApplicationSerializer(serializers.ModelSerializer):
 
 # single application
 class SingleApplicationSerializer(serializers.ModelSerializer):
-    programs = ProgramSerializer(read_only=True, many=True)
+    programs = serializers.SerializerMethodField()
     campus = CampusSerializer(read_only=True)
+
+    def get_programs(self, obj):
+        return ProgramSerializer(ordered_programs_for_application(obj), many=True).data
+
     class Meta:
         model = Application
         # Include status so admit-staff UI can verify "accepted" before admitting
@@ -95,7 +100,9 @@ class ApplicationSerializer(serializers.ModelSerializer):
         response['batch'] = BatchSerializer(instance.batch).data
         response['campus'] = CampusSerializer(instance.campus).data
         response['applicant'] = UserSerializer(instance.applicant).data
-        # response['programs'] = ProgramSerializer(instance.programs.all(), many=True).data
+        response['programs'] = ProgramSerializer(
+            ordered_programs_for_application(instance), many=True
+        ).data
         return response
 
 # list serializer (main application queue — excludes staff wizard direct entries)
@@ -117,6 +124,8 @@ class ListApplicationsSerializer(serializers.ModelSerializer):
             "academic_level",
             "batch",
             "campus",
+            "program_choices_confirmed_at",
+            "program_choices_verification_sent_at",
         ]
 
 
@@ -147,29 +156,22 @@ class AllApplicationsReportSerializer(serializers.ModelSerializer):
 
     def get_programs(self, obj):
         try:
-            return ", ".join([
-                choice.program.name
-                for choice in obj.program_choices.select_related("program").order_by("choice_order")
-            ])
+            return ", ".join([p.name for p in ordered_programs_for_application(obj)])
         except Exception:
             return ""
-    
+
     def get_faculty(self, obj):
         names = []
-
         try:
-            for choice in obj.program_choices.select_related(
-                "program__faculty"
-            ).order_by("choice_order"):
-
-                fac = getattr(choice.program, "faculty", None)
-
-                if fac:
-                    names.append(fac.name)
-
+            for p in ordered_programs_for_application(obj):
+                fac = getattr(p, "faculty", None)
+                if fac is not None:
+                    try:
+                        names.append(fac.name)
+                    except Exception:
+                        continue
         except Exception:
             return ""
-
         return ", ".join(dict.fromkeys(names))
 
     def get_entered_by(self, obj):
@@ -203,6 +205,8 @@ class AllApplicationsReportSerializer(serializers.ModelSerializer):
             "created_at",
             "is_direct_entry",
             "entered_by",
+            "program_choices_confirmed_at",
+            "program_choices_verification_sent_at",
         ]
 
 # detail serializer
@@ -210,7 +214,13 @@ class ApplicationDetailSerializer(serializers.ModelSerializer):
     reviewed_by = serializers.CharField(source='reviewed_by.full_name', read_only=True, allow_null=True)
     revoked_by = serializers.CharField(source='revoked_by.full_name', read_only=True, allow_null=True)
     batch = serializers.CharField(source='batch.name', read_only=True)
-    
+    programs = serializers.SerializerMethodField()
+
+    def get_programs(self, obj):
+        return [
+            {"id": p.id, "name": p.name} for p in ordered_programs_for_application(obj)
+        ]
+
     class Meta:
         model = Application
         fields = ['id', 'first_name', 'last_name','middle_name', 'date_of_birth', 'gender', 'nationality', 'phone', 'email',
@@ -305,6 +315,57 @@ class AdmittedStudentSerializer(serializers.ModelSerializer):
     class Meta:
         model = AdmittedStudent
         fields = '__all__'
+
+    @staticmethod
+    def _sync_programme_enrollment_batch(admitted):
+        """Keep academic enrollment cohort aligned with ``intended_program_batch``."""
+        from Programs.models import StudentProgrammeEnrollment
+
+        intended_id = admitted.intended_program_batch_id
+        if not intended_id:
+            return
+        try:
+            spe = StudentProgrammeEnrollment.objects.get(student=admitted)
+        except StudentProgrammeEnrollment.DoesNotExist:
+            return
+        if spe.program_batch_id == intended_id and spe.program_id == admitted.admitted_program_id:
+            return
+        update_fields = ['program_batch', 'updated_at']
+        spe.program_batch_id = intended_id
+        if spe.program_id != admitted.admitted_program_id:
+            spe.program_id = admitted.admitted_program_id
+            update_fields.insert(0, 'program')
+        spe.save(update_fields=update_fields)
+
+    def create(self, validated_data):
+        from Programs.program_batch_resolution import resolve_default_program_batch_for_program
+
+        if validated_data.get('intended_program_batch') is None:
+            prog = validated_data.get('admitted_program')
+            if prog is not None:
+                default_pb = resolve_default_program_batch_for_program(prog)
+                if default_pb is not None:
+                    validated_data['intended_program_batch'] = default_pb
+        admitted = super().create(validated_data)
+        self._sync_programme_enrollment_batch(admitted)
+        return admitted
+
+    def update(self, instance, validated_data):
+        from Programs.program_batch_resolution import resolve_default_program_batch_for_program
+
+        prog = validated_data.get('admitted_program', instance.admitted_program)
+
+        if 'intended_program_batch' in validated_data and validated_data['intended_program_batch'] is None:
+            default_pb = resolve_default_program_batch_for_program(prog) if prog is not None else None
+            validated_data['intended_program_batch'] = default_pb
+        elif instance.intended_program_batch_id is None and 'intended_program_batch' not in validated_data:
+            default_pb = resolve_default_program_batch_for_program(prog) if prog is not None else None
+            if default_pb is not None:
+                validated_data['intended_program_batch'] = default_pb
+
+        admitted = super().update(instance, validated_data)
+        self._sync_programme_enrollment_batch(admitted)
+        return admitted
 
     def validate(self, attrs):
         if 'intended_program_batch' in attrs:
@@ -410,12 +471,23 @@ class AdmissionDetailSerializer(serializers.ModelSerializer):
             'application',
             'is_registered',
             'registration_date',
+            'intended_program_batch',
         ]
 
     def to_representation(self, instance):
         response = super().to_representation(instance)
         response['admitted_program'] = ProgramSerializer(instance.admitted_program).data
         response['admitted_campus'] = CampusSerializer(instance.admitted_campus).data
+        ipb = instance.intended_program_batch
+        if ipb is not None:
+            response['intended_program_batch'] = {
+                'id': ipb.id,
+                'name': ipb.name,
+                'academic_year': ipb.academic_year or '',
+                'start_date': ipb.start_date.isoformat() if ipb.start_date else None,
+            }
+        else:
+            response['intended_program_batch'] = None
         return response
     
 # notification serializers

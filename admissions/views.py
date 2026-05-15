@@ -31,6 +31,14 @@ from .tasks import celery_send_application_email, celery_application_notificatio
 from accounts.tasks import celery_send_account_email
 from payments.utils.school_pay_code import register_student_with_schoolpay
 from .utils.trigger_background_tasks import trigger_background_tasks
+from .utils.application_programs_display import ordered_programs_for_application
+from .utils.program_choices import (
+    applicant_may_edit_program_choices,
+    clear_program_choices_confirmation,
+    mark_program_choices_confirmed,
+    program_options_for_application,
+    sync_application_program_choices,
+)
 from payments.models import ApplicationPayment
 from Drafts.models import DraftApplication
 from django.db.models import Q
@@ -557,6 +565,14 @@ class ListApplications(generics.ListAPIView):
         qs = Application.objects.filter(
             ~Q(status__in=['draft', 'admitted', 'Admitted', 'rejected']),
             is_direct_entry=False
+        ).select_related(
+            "academic_level", "batch", "campus"
+        ).prefetch_related(
+            "programs",
+            "programs__faculty",
+            "program_choices",
+            "program_choices__program",
+            "program_choices__program__faculty",
         ).order_by('created_at')
 
         # Optional query-param filters so the frontend can narrow server-side
@@ -578,16 +594,29 @@ class AllApplicationsReport(generics.ListAPIView):
     def get_queryset(self):
 
         return Application.objects.select_related(
-            'academic_level', 'batch', 'campus', 'entered_by', 'applicant', 
-            'reviewed_by', 'revoked_by', 'offer_letter_generated_by'
+            'academic_level', 'batch', 'campus', 'entered_by', 'applicant',
+            'reviewed_by', 'revoked_by', 'offer_letter_generated_by',
+        ).prefetch_related(
+            'programs',
+            'programs__faculty',
+            'program_choices',
+            'program_choices__program',
+            'program_choices__program__faculty',
         ).filter(
-            ~Q(status__in=['draft', 'Admitted','admitted', 'rejected']),
+            ~Q(status__in=['draft', 'Admitted', 'admitted', 'rejected']),
         ).order_by('created_at')
     
 class ListDirectEntryApplications(generics.ListAPIView):
     queryset = (
         Application.objects.filter(is_direct_entry=True)
         .select_related("academic_level", "batch", "campus", "entered_by")
+        .prefetch_related(
+            "programs",
+            "programs__faculty",
+            "program_choices",
+            "program_choices__program",
+            "program_choices__program__faculty",
+        )
         .filter(~Q(status__in=["draft", "Admitted", "rejected"]))
         .order_by("-created_at")
     )
@@ -821,78 +850,150 @@ class ChangeApplicationProgramme(APIView):
         # Optional campus update
         campus_id = request.data.get("campus_id")
 
+        campus_changed = False
         if campus_id not in (None, "", "null"):
             try:
-                application.campus = Campus.objects.get(
-                    pk=int(campus_id)
-                )
+                application.campus = Campus.objects.get(pk=int(campus_id))
+                campus_changed = True
+            except (TypeError, ValueError, Campus.DoesNotExist):
+                return Response({"detail": "Invalid campus_id."}, status=400)
 
-            except (
-                TypeError,
-                ValueError,
-                Campus.DoesNotExist
-            ):
-                return Response(
-                    {"detail": "Invalid campus_id."},
-                    status=400
-                )
+        try:
+            sync_application_program_choices(application, program_ids)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
 
-        with transaction.atomic():
-
-            # Remove old choices
-            ApplicationProgramChoice.objects.filter(
-                application=application
-            ).delete()
-
-            # Create new ordered choices
-            choices = []
-
-            for index, pid in enumerate(program_ids, start=1):
-
-                choices.append(
-                    ApplicationProgramChoice(
-                        application=application,
-                        program_id=pid,
-                        choice_order=index,
-                    )
-                )
-
-            ApplicationProgramChoice.objects.bulk_create(
-                choices
-            )
-
-            application.save(
-                update_fields=[
-                    "campus",
-                    "updated_at"
-                ]
-            )
+        clear_program_choices_confirmation(application, save=False)
+        update_fields = ["program_choices_confirmed_at", "updated_at"]
+        if campus_changed:
+            update_fields.insert(0, "campus")
+        application.save(update_fields=update_fields)
 
         return Response(
             {
                 "detail": "Programme choices updated successfully.",
-
                 "programs": [
-                    {
-                        "id": choice.program.id,
-                        "name": choice.program.name,
-                        "choice_order": choice.choice_order,
-                    }
-                    for choice in application.program_choices.select_related(
-                        "program"
-                    ).order_by(
-                        "choice_order"
-                    )
+                    {"id": p.id, "name": p.name}
+                    for p in ordered_programs_for_application(application)
                 ],
-
-                "campus": (
-                    application.campus.name
-                    if application.campus
-                    else None
-                ),
+                "campus": application.campus.name if application.campus else None,
+                "program_choices_confirmed_at": None,
             },
             status=200,
         )
+
+
+class ApplicantProgramChoicesView(APIView):
+    """Applicant: review, update, and confirm programme choices on a submitted application."""
+
+    permission_classes = [IsAuthenticated]
+
+    def _get_owned_application(self, request, application_id):
+        return get_object_or_404(
+            Application.objects.select_related(
+                "batch", "campus", "academic_level", "applicant"
+            ).prefetch_related("program_choices__program", "programs"),
+            pk=application_id,
+            applicant=request.user,
+        )
+
+    def _payload(self, application):
+        current = [
+            {"id": p.id, "name": p.name}
+            for p in ordered_programs_for_application(application)
+        ]
+        may_edit = applicant_may_edit_program_choices(application)
+        return {
+            "application_id": application.id,
+            "status": application.status,
+            "program_choices_confirmed_at": application.program_choices_confirmed_at,
+            "program_choices_verification_sent_at": application.program_choices_verification_sent_at,
+            "can_update_programs": may_edit,
+            "can_confirm": may_edit and len(current) > 0,
+            "is_confirmed": bool(application.program_choices_confirmed_at),
+            "current_programs": current,
+            "available_programs": program_options_for_application(application) if may_edit else [],
+            "campus_id": application.campus_id,
+            "academic_level_id": application.academic_level_id,
+        }
+
+    def get(self, request, application_id):
+        application = self._get_owned_application(request, application_id)
+        return Response(self._payload(application), status=200)
+
+    def patch(self, request, application_id):
+        application = self._get_owned_application(request, application_id)
+        if not applicant_may_edit_program_choices(application):
+            return Response(
+                {"detail": "Programme choices cannot be changed for this application status."},
+                status=400,
+            )
+
+        raw_program_ids = request.data.get("program_ids", [])
+        if not isinstance(raw_program_ids, list) or not raw_program_ids:
+            return Response({"detail": "program_ids must be a non-empty list."}, status=400)
+
+        try:
+            program_ids = [int(pid) for pid in raw_program_ids]
+        except (TypeError, ValueError):
+            return Response({"detail": "program_ids must contain valid integers."}, status=400)
+
+        if len(program_ids) > 3:
+            return Response({"detail": "You may select at most three programmes."}, status=400)
+
+        try:
+            sync_application_program_choices(application, program_ids)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
+
+        clear_program_choices_confirmation(application, save=True)
+        return Response(
+            {
+                "detail": "Programme choices saved. Please confirm when they are correct.",
+                **self._payload(application),
+            },
+            status=200,
+        )
+
+    def post(self, request, application_id):
+        """Confirm current choices (optional program_ids to save then confirm)."""
+        application = self._get_owned_application(request, application_id)
+        if not applicant_may_edit_program_choices(application):
+            return Response(
+                {"detail": "Programme choices cannot be confirmed for this application status."},
+                status=400,
+            )
+
+        raw_program_ids = request.data.get("program_ids")
+        if raw_program_ids is not None:
+            if not isinstance(raw_program_ids, list) or not raw_program_ids:
+                return Response({"detail": "program_ids must be a non-empty list."}, status=400)
+            try:
+                program_ids = [int(pid) for pid in raw_program_ids]
+            except (TypeError, ValueError):
+                return Response({"detail": "program_ids must contain valid integers."}, status=400)
+            if len(program_ids) > 3:
+                return Response({"detail": "You may select at most three programmes."}, status=400)
+            try:
+                sync_application_program_choices(application, program_ids)
+            except ValueError as exc:
+                return Response({"detail": str(exc)}, status=400)
+
+        if not ordered_programs_for_application(application):
+            return Response(
+                {"detail": "Select at least one programme before confirming."},
+                status=400,
+            )
+
+        mark_program_choices_confirmed(application, save=True)
+        return Response(
+            {
+                "detail": "Thank you. Your programme choices have been confirmed.",
+                **self._payload(application),
+            },
+            status=200,
+        )
+
 
 # APPLICANT CHANGE PROGRAM
 class ApplicantChangeApplicationProgramme(APIView):
@@ -1027,6 +1128,7 @@ class ApplicantChangeApplicationProgramme(APIView):
             status=200,
         )
 
+
 # list applicant selelcted programs
 class ListSelectedPrograms(generics.ListAPIView):
     queryset = ApplicationProgramChoice.objects.all()
@@ -1036,7 +1138,8 @@ class ListSelectedPrograms(generics.ListAPIView):
     def get_queryset(self):
         application_id = self.kwargs['application_id']
         return ApplicationProgramChoice.objects.filter(application_id=application_id).select_related('application', 'program')
-    
+
+
 # list rejected students
 class ListRejectedApplications(generics.ListAPIView):
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
@@ -1395,7 +1498,7 @@ class ApplicantDashboard(APIView):
             )
 
         # Base data from application
-        # selected_programs = list(application.programs.values_list("name", flat=True))
+        selected_programs = [p.name for p in ordered_programs_for_application(application)]
         base_data = {
             "id":application.id,
             "batch": application.batch.name if application.batch else None,
@@ -1403,7 +1506,9 @@ class ApplicantDashboard(APIView):
             # "programs": selected_programs,
             "applied_date": application.created_at,
             "application_status": application.status,
-            "admission_letter_pdf": application.admission_letter_pdf.url if application.admission_letter_pdf else None
+            "admission_letter_pdf": application.admission_letter_pdf.url if application.admission_letter_pdf else None,
+            "program_choices_confirmed_at": application.program_choices_confirmed_at,
+            "program_choices_verification_sent_at": application.program_choices_verification_sent_at,
         }
 
         # Try to get admission record
@@ -1615,28 +1720,42 @@ class ChangeFacultyStatus(APIView):
 class ListProgramBatchOptionsForAdmission(APIView):
     """
     Active ProgramBatch rows for a programme — minimal fields for admit-officer UI.
+
+    Response shape: ``{ "batches": [...], "default_program_batch_id": <int|null> }``.
+    The default is the first cohort in the same ordering used for automatic placement.
     """
     permission_classes = [IsAuthenticated, CanAdmitApplicant]
 
     def get(self, request, program_id):
-        from Programs.models import ProgramBatch
+        from Programs.program_batch_resolution import admission_program_batch_options_qs
 
-        qs = (
-            ProgramBatch.objects.filter(program_id=program_id, is_active=True)
-            .order_by('-start_date', 'name')
-            .only('id', 'name', 'start_date', 'academic_year', 'is_active')
+        today = timezone.now().date()
+        qs = admission_program_batch_options_qs(program_id, today=today).only(
+            'id',
+            'name',
+            'start_date',
+            'academic_year',
+            'is_active',
+            'offer_start_date',
+            'offer_end_date',
         )
+        first = qs.first()
+        default_id = first.pk if first else None
+        batches = [
+            {
+                'id': b.id,
+                'name': b.name,
+                'start_date': b.start_date.isoformat() if b.start_date else None,
+                'academic_year': b.academic_year or '',
+                'is_active': b.is_active,
+                'offer_start_date': b.offer_start_date.isoformat() if b.offer_start_date else None,
+                'offer_end_date': b.offer_end_date.isoformat() if b.offer_end_date else None,
+                'is_offer_active': b.is_offer_active,
+            }
+            for b in qs
+        ]
         return Response(
-            [
-                {
-                    'id': b.id,
-                    'name': b.name,
-                    'start_date': b.start_date.isoformat() if b.start_date else None,
-                    'academic_year': b.academic_year or '',
-                    'is_active': b.is_active,
-                }
-                for b in qs
-            ],
+            {'batches': batches, 'default_program_batch_id': default_id},
             status=status.HTTP_200_OK,
         )
 
@@ -1849,6 +1968,12 @@ class ListAdmittedStudents(generics.ListAPIView):
         batch_id = p.get("batch")
         if batch_id:
             qs = qs.filter(admitted_batch_id=batch_id)
+        program_batch_id = p.get("program_batch")
+        if program_batch_id:
+            qs = qs.filter(
+                Q(intended_program_batch_id=program_batch_id)
+                | Q(programme_enrollment__program_batch_id=program_batch_id)
+            ).distinct()
         campus_id = p.get("campus")
         if campus_id:
             qs = qs.filter(admitted_campus_id=campus_id)
@@ -1971,6 +2096,7 @@ class CandidateAdmission(generics.RetrieveAPIView):
         'admitted_batch',
         'admitted_campus',
         'admitted_by',
+        'intended_program_batch',
         # 'physical_documents_verified_by',
     ).prefetch_related('admitted_program__campuses')
     serializer_class = AdmissionDetailSerializer
@@ -2539,18 +2665,35 @@ class DirectAdmissionEntryView(APIView):
                 if AdmittedStudent.objects.filter(reg_no=provided_reg_no).exists():
                     raise ValueError(f"Reg No '{provided_reg_no}' is already in use.")
 
-                admitted_student = AdmittedStudent.objects.create(
-                    application=application,
-                    reg_no=provided_reg_no,
-                    admitted_program=program,
-                    admitted_batch=batch,
-                    admitted_campus=campus,
-                    study_mode=provided_study_mode.upper(),
-                    is_admitted=True,
-                    # admission_fee_paid=False, 
-                    admission_date=timezone.now(),
-                    admitted_by=request.user,
-                )
+                raw_ipb = d.get("intended_program_batch", None)
+                if raw_ipb in (None, ""):
+                    intended_val = None
+                else:
+                    try:
+                        intended_val = int(raw_ipb)
+                    except (TypeError, ValueError):
+                        raise ValueError("intended_program_batch must be an integer or empty.")
+
+                admission_payload = {
+                    "application": application.pk,
+                    "student_id": provided_student_id,
+                    "reg_no": provided_reg_no,
+                    "admitted_program": program.pk,
+                    "admitted_batch": batch.pk,
+                    "admitted_campus": campus.pk,
+                    "study_mode": provided_study_mode.upper(),
+                    "is_admitted": True,
+                    "admission_date": timezone.now(),
+                    "admitted_by": request.user.pk,
+                    "intended_program_batch": intended_val,
+                    "admission_notes": (d.get("admission_notes") or "").strip(),
+                }
+                adm_serializer = AdmittedStudentSerializer(data=admission_payload)
+                try:
+                    adm_serializer.is_valid(raise_exception=True)
+                except DRFValidationError as exc:
+                    return Response(exc.detail, status=status.HTTP_400_BAD_REQUEST)
+                admitted_student = adm_serializer.save()
 
                 try:
                     if not admitted_student.is_registered_with_schoolpay:

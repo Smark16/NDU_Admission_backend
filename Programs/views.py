@@ -170,6 +170,9 @@ class ListProgramsWithBatches(generics.ListAPIView):
                     'name': b.name,
                     'academic_year': b.academic_year or '',
                     'start_date': b.start_date.isoformat() if b.start_date else None,
+                    'offer_start_date': b.offer_start_date.isoformat() if b.offer_start_date else None,
+                    'offer_end_date': b.offer_end_date.isoformat() if b.offer_end_date else None,
+                    'is_offer_active': b.is_offer_active,
                     'semesters': [
                         {'id': s.id, 'name': s.name}
                         for s in b.semesters.filter(is_active=True).order_by(

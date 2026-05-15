@@ -21,7 +21,8 @@ from Programs.models import Program, ProgramBatch
 class Command(BaseCommand):
     help = (
         "Create one demo applicant + accepted application + admitted student "
-        "(optional portal account). Uses the first suitable batch, campus, and programme."
+        "(optional portal account). Uses the first suitable intake, campus, and programme "
+        "(or --program-id)."
     )
 
     def add_arguments(self, parser):
@@ -40,11 +41,24 @@ class Command(BaseCommand):
             action="store_true",
             help="Do not create/link the student portal User (reg_no login).",
         )
+        parser.add_argument(
+            "--omit-intended-batch",
+            action="store_true",
+            help="Leave intended_program_batch unset (null) for QA of default cohort on edit/save.",
+        )
+        parser.add_argument(
+            "--program-id",
+            type=int,
+            default=None,
+            help="Admit into this programme PK (default: first active programme by id).",
+        )
 
     def handle(self, *args, **options):
         first = options["first_name"].strip() or "Demo"
         last = options["last_name"].strip() or "Student"
         skip_portal = options["skip_portal_account"]
+        omit_intended = options["omit_intended_batch"]
+        program_id = options["program_id"]
 
         batch = (
             Batch.objects.filter(is_active=True)
@@ -60,9 +74,17 @@ class Command(BaseCommand):
         if not campus:
             raise CommandError("No Campus found.")
 
-        program = Program.objects.filter(is_active=True).order_by("id").first()
-        if not program:
-            raise CommandError("No active Programme found.")
+        if program_id:
+            program = (
+                Program.objects.filter(pk=program_id, is_active=True).first()
+                or Program.objects.filter(pk=program_id).first()
+            )
+            if not program:
+                raise CommandError(f"No programme with id={program_id}.")
+        else:
+            program = Program.objects.filter(is_active=True).order_by("id").first()
+            if not program:
+                raise CommandError("No active Programme found.")
 
         academic_level = program.academic_level_id and program.academic_level
         if not academic_level:
@@ -80,11 +102,13 @@ class Command(BaseCommand):
         email = f"demo.student.{ts}@example.test"
         username = email
 
-        ipb = (
-            ProgramBatch.objects.filter(program=program, is_active=True)
-            .order_by("-start_date", "name")
-            .first()
-        )
+        ipb = None
+        if not omit_intended:
+            ipb = (
+                ProgramBatch.objects.filter(program=program, is_active=True)
+                .order_by("-start_date", "name")
+                .first()
+            )
 
         reg_no = f"DEMO-{ts}"[:100]
         student_id = (f"9{ts}"[-10:]).ljust(10, "0")[:50]

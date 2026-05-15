@@ -39,13 +39,27 @@ class ListCourseUnitEnrollments(generics.ListAPIView):
             })
         return Response(data, status=status.HTTP_200_OK)
 
+def _admitted_students_for_program_batch(program, program_batch):
+    """Admitted students in this academic cohort (intended batch and/or programme enrollment batch)."""
+    from admissions.models import AdmittedStudent
+
+    return (
+        AdmittedStudent.objects.filter(admitted_program=program, is_admitted=True)
+        .filter(
+            Q(intended_program_batch=program_batch)
+            | Q(programme_enrollment__program_batch=program_batch)
+        )
+        .distinct()
+        .select_related("application", "application__applicant", "programme_enrollment")
+    )
+
+
 class GetAvailableStudentsForCourseUnit(APIView):
     """Get list of students available for enrollment in a course unit"""
     permission_classes = [AcademicEnrollmentAdminPermission]
     
     def get(self, request, course_unit_id):
         from .models import CourseUnit, StudentCourseUnitEnrollment
-        from admissions.models import AdmittedStudent
         
         try:
             course_unit = CourseUnit.objects.get(id=course_unit_id)
@@ -57,12 +71,8 @@ class GetAvailableStudentsForCourseUnit(APIView):
         if not program_batch:
             return Response({'detail': 'Course unit is not associated with a program batch'}, status=status.HTTP_400_BAD_REQUEST)
         
-        # Get all admitted students for the same program
         program = program_batch.program
-        admitted_students = AdmittedStudent.objects.filter(
-            admitted_program=program,
-            is_admitted=True
-        ).select_related('application', 'application__applicant')
+        admitted_students = _admitted_students_for_program_batch(program, program_batch)
         
         # Get already enrolled student IDs
         enrolled_student_ids = StudentCourseUnitEnrollment.objects.filter(
@@ -99,6 +109,18 @@ class EnrollStudentsInCourseUnit(APIView):
             course_unit = CourseUnit.objects.get(id=course_unit_id)
         except CourseUnit.DoesNotExist:
             return Response({'detail': 'Course unit not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        program_batch = course_unit.program_batch
+        if not program_batch:
+            return Response(
+                {'detail': 'Course unit is not associated with a program batch'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        program = program_batch.program
+
+        allowed_ids = set(
+            _admitted_students_for_program_batch(program, program_batch).values_list("id", flat=True)
+        )
         
         enrolled = []
         errors = []
@@ -106,7 +128,13 @@ class EnrollStudentsInCourseUnit(APIView):
         with transaction.atomic():
             for student_id in student_ids:
                 try:
-                    student = AdmittedStudent.objects.get(id=student_id)
+                    student = AdmittedStudent.objects.select_related("programme_enrollment").get(id=student_id)
+                    if student.id not in allowed_ids:
+                        errors.append(
+                            f"Student {student.student_id} is not in this programme batch "
+                            f"(intended cohort or programme enrollment must match)."
+                        )
+                        continue
                     # Check if already enrolled
                     if StudentCourseUnitEnrollment.objects.filter(
                         student=student,

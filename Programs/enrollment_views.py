@@ -71,7 +71,7 @@ class AdminCreateEnrollmentView(APIView):
     def post(self, request, student_id):
         try:
             student = AdmittedStudent.objects.select_related(
-                'admitted_program', 'application'
+                'admitted_program', 'application', 'programme_enrollment'
             ).get(pk=student_id)
         except AdmittedStudent.DoesNotExist:
             return Response({'detail': 'Student not found.'}, status=status.HTTP_404_NOT_FOUND)
@@ -117,6 +117,27 @@ class AdminCreateEnrollmentView(APIView):
             return Response(
                 {'detail': 'ProgramBatch not found or does not belong to this programme.'},
                 status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if student.admitted_program_id != program.id:
+            return Response(
+                {'detail': "Selected programme does not match this student's admitted programme."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        in_cohort = student.intended_program_batch_id == program_batch.id or (
+            student.programme_enrollment_id
+            and student.programme_enrollment.program_batch_id == program_batch.id
+        )
+        if not in_cohort:
+            return Response(
+                {
+                    'detail': (
+                        'This student is not assigned to the selected programme batch. '
+                        'Set their intended programme batch on the admission record, '
+                        'or choose the batch that matches their cohort.'
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         curriculum_version = None

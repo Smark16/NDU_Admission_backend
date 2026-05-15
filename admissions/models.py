@@ -80,13 +80,7 @@ class Batch(models.Model):
 
     @property
     def is_offer_active(self):
-        from django.utils import timezone
-
-        today = timezone.now().date()
-        if self.offer_start_date and today < self.offer_start_date:
-            return False
-        if self.offer_end_date and today > self.offer_end_date:
-            return False
+        """Intakes no longer use offer_start/offer_end; cohort offer control is on ``Programs.ProgramBatch``."""
         return True
 
 class OLevelSubject(models.Model):
@@ -217,6 +211,17 @@ class Application(models.Model):
         related_name="generated_offer_letters",
     )
 
+    program_choices_verification_sent_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the applicant was asked to review/confirm programme choices (e.g. bulk email).",
+    )
+    program_choices_confirmed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the applicant confirmed their programme choices in the portal.",
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -254,7 +259,7 @@ class Application(models.Model):
 
 # program choices
 class ApplicationProgramChoice(models.Model):
-    application = models.ForeignKey("Application", on_delete=models.CASCADE, related_name="program_choices" )
+    application = models.ForeignKey("Application", on_delete=models.CASCADE, related_name="program_choices")
 
     program = models.ForeignKey("Programs.Program", on_delete=models.CASCADE)
 
@@ -263,14 +268,11 @@ class ApplicationProgramChoice(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-
         ordering = ["choice_order"]
-
-        unique_together = ( "application", "choice_order")
+        unique_together = ("application", "choice_order")
 
     def __str__(self):
-
-        return (f"{self.application.id} - "f"Choice {self.choice_order} - "f"{self.program.name}")
+        return f"{self.application.id} - Choice {self.choice_order} - {self.program.name}"
 
 class OLevelResult(models.Model):
     application = models.ForeignKey(Application, on_delete=models.CASCADE, related_name='olevel_results')

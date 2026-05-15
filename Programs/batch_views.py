@@ -11,6 +11,7 @@ from datetime import date, datetime, timedelta
 import io
 
 from django.db import transaction
+from django.db.models import Q
 from django.db.utils import ProgrammingError
 from django.http import HttpResponse
 from rest_framework import status
@@ -89,6 +90,32 @@ class CreateBatchView(_BatchUnavailableMixin, APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
+            offer_start_s = (request.data.get('offer_start_date') or '').strip()
+            offer_end_s = (request.data.get('offer_end_date') or '').strip()
+            if not offer_start_s or not offer_end_s:
+                return Response(
+                    {
+                        'detail': (
+                            'offer_start_date and offer_end_date are required '
+                            '(admission offer window for this academic cohort).'
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            try:
+                offer_start = datetime.strptime(offer_start_s, '%Y-%m-%d').date()
+                offer_end = datetime.strptime(offer_end_s, '%Y-%m-%d').date()
+                if offer_end < offer_start:
+                    return Response(
+                        {'detail': 'Offer end date must be on or after offer start date'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+            except ValueError as e:
+                return Response(
+                    {'detail': f'Invalid offer date format: {str(e)}. Use YYYY-MM-DD format.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
             if ProgramBatch.objects.filter(program=program, name=name).exists():
                 return Response(
                     {'detail': f'Batch with name "{name}" already exists for this program'},
@@ -118,6 +145,8 @@ class CreateBatchView(_BatchUnavailableMixin, APIView):
                         academic_year=academic_year,
                         start_date=start,
                         end_date=end,
+                        offer_start_date=offer_start,
+                        offer_end_date=offer_end,
                         is_active=True,
                     )
             except Exception as e:
@@ -151,6 +180,9 @@ class CreateBatchView(_BatchUnavailableMixin, APIView):
                 },
                 'start_date': batch.start_date.isoformat(),
                 'end_date': batch.end_date.isoformat() if batch.end_date else None,
+                'offer_start_date': batch.offer_start_date.isoformat() if batch.offer_start_date else None,
+                'offer_end_date': batch.offer_end_date.isoformat() if batch.offer_end_date else None,
+                'is_offer_active': batch.is_offer_active,
                 'semesters_created': semesters_created,
                 'message': 'Batch created successfully',
             }
@@ -431,6 +463,9 @@ class ListProgramBatchesView(_BatchUnavailableMixin, APIView):
                         },
                         'start_date': batch.start_date.isoformat(),
                         'end_date': batch.end_date.isoformat() if batch.end_date else None,
+                        'offer_start_date': batch.offer_start_date.isoformat() if batch.offer_start_date else None,
+                        'offer_end_date': batch.offer_end_date.isoformat() if batch.offer_end_date else None,
+                        'is_offer_active': batch.is_offer_active,
                         'is_active': batch.is_active,
                         'created_at': batch.created_at.isoformat(),
                         'semester_count': sems.count(),
@@ -548,6 +583,32 @@ class UpdateProgramBatchView(_BatchUnavailableMixin, APIView):
                             status=status.HTTP_400_BAD_REQUEST,
                         )
 
+            if 'offer_start_date' in request.data and 'offer_end_date' in request.data:
+                offer_start_s = (request.data.get('offer_start_date') or '').strip()
+                offer_end_s = (request.data.get('offer_end_date') or '').strip()
+                if not offer_start_s or not offer_end_s:
+                    return Response(
+                        {
+                            'detail': (
+                                'offer_start_date and offer_end_date are required when updating the offer window.'
+                            )
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                try:
+                    batch.offer_start_date = datetime.strptime(offer_start_s, '%Y-%m-%d').date()
+                    batch.offer_end_date = datetime.strptime(offer_end_s, '%Y-%m-%d').date()
+                    if batch.offer_end_date < batch.offer_start_date:
+                        return Response(
+                            {'detail': 'Offer end date must be on or after offer start date'},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+                except ValueError:
+                    return Response(
+                        {'detail': 'Invalid offer date format. Use YYYY-MM-DD format.'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
             batch.save()
 
             return Response(
@@ -563,6 +624,9 @@ class UpdateProgramBatchView(_BatchUnavailableMixin, APIView):
                     },
                     'start_date': batch.start_date.isoformat(),
                     'end_date': batch.end_date.isoformat() if batch.end_date else None,
+                    'offer_start_date': batch.offer_start_date.isoformat() if batch.offer_start_date else None,
+                    'offer_end_date': batch.offer_end_date.isoformat() if batch.offer_end_date else None,
+                    'is_offer_active': batch.is_offer_active,
                     'is_active': batch.is_active,
                     'message': 'Batch updated successfully',
                 },
@@ -998,6 +1062,38 @@ class BatchBulkUploadView(_BatchUnavailableMixin, APIView):
                     errors.append(f"Row {row_num}: end_date must be after start_date.")
                     continue
 
+            offer_start_date = None
+            offer_end_date = None
+            os_raw = raw_val("offer_start_date")
+            oe_raw = raw_val("offer_end_date")
+            has_os = os_raw is not None and str(os_raw).strip() != ""
+            has_oe = oe_raw is not None and str(oe_raw).strip() != ""
+            if has_os ^ has_oe:
+                errors.append(
+                    f"Row {row_num}: offer_start_date and offer_end_date must both be set or both left blank."
+                )
+                continue
+            if has_os:
+                offer_start_date, ose = _parse_date(os_raw)
+                if offer_start_date is None:
+                    errors.append(
+                        f"Row {row_num}: offer_start_date '{ose}' is not a recognised date. "
+                        f"Expected YYYY-MM-DD."
+                    )
+                    continue
+                offer_end_date, oee = _parse_date(oe_raw)
+                if offer_end_date is None:
+                    errors.append(
+                        f"Row {row_num}: offer_end_date '{oee}' is not a recognised date. "
+                        f"Expected YYYY-MM-DD."
+                    )
+                    continue
+                if offer_end_date < offer_start_date:
+                    errors.append(
+                        f"Row {row_num}: offer_end_date must be on or after offer_start_date."
+                    )
+                    continue
+
             is_active = is_active_s not in ("FALSE", "0", "NO", "F")
 
             existing = ProgramBatch.objects.filter(program=program, name=batch_name).first()
@@ -1018,8 +1114,11 @@ class BatchBulkUploadView(_BatchUnavailableMixin, APIView):
                         existing.end_date     = end_date
                         existing.academic_year = acad_year
                         existing.is_active    = is_active
+                        existing.offer_start_date = offer_start_date
+                        existing.offer_end_date = offer_end_date
                         existing.save(update_fields=[
-                            "start_date", "end_date", "academic_year", "is_active"
+                            "start_date", "end_date", "academic_year", "is_active",
+                            "offer_start_date", "offer_end_date",
                         ])
                     updated_count += 1
                 except Exception as exc:
@@ -1035,6 +1134,8 @@ class BatchBulkUploadView(_BatchUnavailableMixin, APIView):
                         academic_year=acad_year,
                         start_date=start_date,
                         end_date=end_date,
+                        offer_start_date=offer_start_date,
+                        offer_end_date=offer_end_date,
                         is_active=is_active,
                     )
                 created_count += 1
