@@ -7,6 +7,7 @@ Endpoints are wired in Programs/urls.py under api/program/:
 Uses Programs.models: ProgramBatch, Semester, CourseUnit (not admissions.Batch).
 """
 import calendar as _calendar
+import csv
 from datetime import date, datetime, timedelta
 import io
 
@@ -21,6 +22,7 @@ from .permissions import ProgramSchedulingAPIPermission
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .batch_offer_defaults import resolve_program_batch_offer_dates
 from .models import (
     CourseCatalogUnit,
     CourseUnit,
@@ -119,6 +121,13 @@ class CreateBatchView(_BatchUnavailableMixin, APIView):
                         {'detail': f'Invalid offer date format: {str(e)}. Use YYYY-MM-DD format.'},
                         status=status.HTTP_400_BAD_REQUEST,
                     )
+
+            offer_start, offer_end = resolve_program_batch_offer_dates(
+                start_date=start,
+                end_date=end,
+                offer_start_date=offer_start,
+                offer_end_date=offer_end,
+            )
 
             if ProgramBatch.objects.filter(program=program, name=name).exists():
                 return Response(
@@ -861,6 +870,55 @@ def _empty_batch_template_row(prog: Program) -> list:
     ]
 
 
+def _batch_template_instructions(*, program_count: int, cohort_count: int, blank_count: int, campus_scope_label: str = "") -> str:
+    scope_prefix = f"{campus_scope_label}: " if campus_scope_label else ""
+    return (
+        f"{scope_prefix}{program_count} programme(s): {cohort_count} existing cohort row(s), "
+        f"{blank_count} blank row(s) for programmes without a cohort. "
+        "Columns offer_start_date and offer_end_date control the admit dropdown (admission offer window). "
+        "Leave both offer columns blank to copy from cohort start_date/end_date. "
+        "Update mode: rows with batch_id — edit any dates including offer_start_date and offer_end_date."
+    )
+
+
+def _build_batch_template_rows(all_programs, batches_by_program: dict) -> list:
+    sample_rows: list = []
+    for prog in sorted(all_programs, key=lambda p: ((p.code or "").lower(), (p.name or "").lower())):
+        prog_batches = batches_by_program.get(prog.id) or []
+        if prog_batches:
+            for batch in sorted(prog_batches, key=lambda b: b.name.lower()):
+                sample_rows.append(_batch_row_from_model(batch))
+        else:
+            sample_rows.append(_empty_batch_template_row(prog))
+    return sample_rows
+
+
+def _finalize_batch_offer_dates(
+    *,
+    start_date: date,
+    end_date: date | None,
+    offer_start_date: date | None,
+    offer_end_date: date | None,
+    has_explicit_offer: bool,
+    update_existing: bool,
+    existing: ProgramBatch | None,
+) -> tuple[date, date]:
+    if (
+        update_existing
+        and existing is not None
+        and not has_explicit_offer
+        and existing.offer_start_date is not None
+        and existing.offer_end_date is not None
+    ):
+        return existing.offer_start_date, existing.offer_end_date
+    return resolve_program_batch_offer_dates(
+        start_date=start_date,
+        end_date=end_date,
+        offer_start_date=offer_start_date,
+        offer_end_date=offer_end_date,
+    )
+
+
 def _resolve_existing_program_batch(program, batch_name: str, batch_id_cell: str):
     """Match cohort by batch_id (preferred) or batch_name (case-insensitive)."""
     bid = (batch_id_cell or "").strip()
@@ -970,29 +1028,32 @@ class BatchTemplateDownloadView(_BatchUnavailableMixin, APIView):
         for batch in existing_batches:
             batches_by_program.setdefault(batch.program_id, []).append(batch)
 
-        # Every programme in scope gets at least one row: all existing cohorts, or one blank row to create.
-        sample_rows: list = []
-        for prog in sorted(all_programs, key=lambda p: ((p.code or "").lower(), (p.name or "").lower())):
-            prog_batches = batches_by_program.get(prog.id) or []
-            if prog_batches:
-                for batch in sorted(prog_batches, key=lambda b: b.name.lower()):
-                    sample_rows.append(_batch_row_from_model(batch))
-            else:
-                sample_rows.append(_empty_batch_template_row(prog))
+        sample_rows = _build_batch_template_rows(all_programs, batches_by_program)
 
-        scope_prefix = f"{campus_scope_label}: " if campus_scope_label else ""
         cohort_count = len(existing_batches)
         program_count = len(all_programs)
         blank_count = program_count - len(batches_by_program)
 
-        instructions = (
-            f"{scope_prefix}{program_count} programme(s): {cohort_count} existing cohort row(s) "
-            f"and {blank_count} blank row(s) for programmes without a cohort yet. "
-            "Leave offer_start_date and offer_end_date blank to use each applicant's admission intake offer window. "
-            "Fill both offer columns on a row only to override the intake for that cohort. "
-            "Update batches: edit dates on rows that have batch_id; keep batch_id and batch_name unchanged. "
-            "Upload batches: fill blank rows (no batch_id) to create new cohorts."
+        instructions = _batch_template_instructions(
+            program_count=program_count,
+            cohort_count=cohort_count,
+            blank_count=blank_count,
+            campus_scope_label=campus_scope_label,
         )
+
+        out_format = (request.GET.get("format") or "xlsx").strip().lower()
+        if out_format == "csv":
+            buffer = io.StringIO()
+            writer = csv.writer(buffer)
+            writer.writerow(_BATCH_TEMPLATE_HEADERS)
+            for row in sample_rows:
+                writer.writerow(row)
+            response = HttpResponse(buffer.getvalue(), content_type="text/csv; charset=utf-8")
+            suffix = campus_scope_label.replace(" ", "_") if campus_scope_label else "all_programmes"
+            response["Content-Disposition"] = (
+                f'attachment; filename="batch_upload_template_{suffix}.csv"'
+            )
+            return response
 
         wb = create_workbook(
             headers=_BATCH_TEMPLATE_HEADERS,
@@ -1077,6 +1138,19 @@ class BatchBulkUploadView(_BatchUnavailableMixin, APIView):
 
         # Normalise column names
         df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
+        for alias, canonical in (
+            ("offer_start", "offer_start_date"),
+            ("offer_end", "offer_end_date"),
+            ("admission_offer_start", "offer_start_date"),
+            ("admission_offer_end", "offer_end_date"),
+            ("admission_offer_start_date", "offer_start_date"),
+            ("admission_offer_end_date", "offer_end_date"),
+        ):
+            if alias in df.columns and canonical not in df.columns:
+                df = df.rename(columns={alias: canonical})
+
+        is_excel_upload = filename.endswith((".xlsx", ".xls"))
+        data_row_offset = 3 if is_excel_upload else 2  # excel: instructions + header
 
         required_cols = {"program_code", "batch_name", "start_date"}
         missing = required_cols - set(df.columns)
@@ -1166,7 +1240,7 @@ class BatchBulkUploadView(_BatchUnavailableMixin, APIView):
             return None, s  # return the raw string so the caller can use it in the error message
 
         for idx, row in df.iterrows():
-            row_num = idx + 3  # +1 header, +1 instructions row, +1 for 1-based
+            row_num = int(idx) + data_row_offset
 
             def cell(col: str) -> str:
                 val = row.get(col, "")
@@ -1274,6 +1348,20 @@ class BatchBulkUploadView(_BatchUnavailableMixin, APIView):
             existing, match_err = _resolve_existing_program_batch(
                 program, batch_name, batch_id_cell,
             )
+
+            try:
+                offer_start_date, offer_end_date = _finalize_batch_offer_dates(
+                    start_date=start_date,
+                    end_date=end_date,
+                    offer_start_date=offer_start_date,
+                    offer_end_date=offer_end_date,
+                    has_explicit_offer=has_os and has_oe,
+                    update_existing=update_existing,
+                    existing=existing,
+                )
+            except ValueError as exc:
+                errors.append(f"Row {row_num}: {exc}")
+                continue
 
             if update_existing:
                 if match_err == "invalid_batch_id":
