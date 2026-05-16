@@ -126,64 +126,124 @@ class ListApplicationsSerializer(serializers.ModelSerializer):
         ]
 
 
+# class AllApplicationsReportSerializer(serializers.ModelSerializer):
+#     academic_level = serializers.SerializerMethodField()
+#     batch = serializers.SerializerMethodField()
+#     campus = serializers.SerializerMethodField()
+#     programs = serializers.SerializerMethodField()
+#     faculty = serializers.SerializerMethodField()
+
+#     def get_academic_level(self, obj):
+#         try:
+#             return obj.academic_level.name if obj.academic_level_id and obj.academic_level else ""
+#         except Exception:
+#             return ""
+
+#     def get_batch(self, obj):
+#         try:
+#             return obj.batch.name if obj.batch_id and obj.batch else ""
+#         except Exception:
+#             return ""
+
+#     def get_campus(self, obj):
+#         try:
+#             return obj.campus.name if obj.campus_id and obj.campus else ""
+#         except Exception:
+#             return ""
+
+#     def get_programs(self, obj):
+#         try:
+#             return ", ".join([p.name for p in ordered_programs_for_application(obj)])
+#         except Exception:
+#             return ""
+
+#     def get_faculty(self, obj):
+#         names = []
+#         try:
+#             for p in ordered_programs_for_application(obj):
+#                 fac = getattr(p, "faculty", None)
+#                 if fac is not None:
+#                     try:
+#                         names.append(fac.name)
+#                     except Exception:
+#                         continue
+#         except Exception:
+#             return ""
+#         return ", ".join(dict.fromkeys(names))
+
+#     def get_entered_by(self, obj):
+#         try:
+#             if getattr(obj, "is_direct_entry", False) and getattr(obj, "entered_by_id", None):
+#                 eb = obj.entered_by
+#                 if eb is None:
+#                     return "Staff"
+#                 name = f"{eb.first_name or ''} {eb.last_name or ''}".strip()
+#                 return name or getattr(eb, "username", "") or str(eb.pk)
+#         except Exception:
+#             return "Staff"
+#         return "Online"
+
+#     class Meta:
+#         model = Application
+#         fields = [
+#             "id",
+#             "first_name",
+#             "last_name",
+#             "email",
+#             "gender",
+#             "academic_level",
+#             "batch",
+#             "campus",
+#             "programs",
+#             "faculty",
+#             "status",
+#             "created_at",
+#             "is_direct_entry",
+#         ]
+
 class AllApplicationsReportSerializer(serializers.ModelSerializer):
     academic_level = serializers.SerializerMethodField()
     batch = serializers.SerializerMethodField()
     campus = serializers.SerializerMethodField()
     programs = serializers.SerializerMethodField()
     faculty = serializers.SerializerMethodField()
+    entered_by = serializers.SerializerMethodField()
 
     def get_academic_level(self, obj):
-        try:
-            return obj.academic_level.name if obj.academic_level_id and obj.academic_level else ""
-        except Exception:
-            return ""
+        return obj.academic_level.name if obj.academic_level else ""
 
     def get_batch(self, obj):
-        try:
-            return obj.batch.name if obj.batch_id and obj.batch else ""
-        except Exception:
-            return ""
+        return obj.batch.name if obj.batch else ""
 
     def get_campus(self, obj):
-        try:
-            return obj.campus.name if obj.campus_id and obj.campus else ""
-        except Exception:
-            return ""
+        return obj.campus.name if obj.campus else ""
 
     def get_programs(self, obj):
         try:
-            return ", ".join([p.name for p in ordered_programs_for_application(obj)])
-        except Exception:
+            choices = getattr(obj, 'prefetched_program_choices', [])
+            return ", ".join([choice.program.name for choice in choices])
+        except:
             return ""
 
     def get_faculty(self, obj):
-        names = []
         try:
-            for p in ordered_programs_for_application(obj):
-                fac = getattr(p, "faculty", None)
-                if fac is not None:
-                    try:
-                        names.append(fac.name)
-                    except Exception:
-                        continue
-        except Exception:
+            choices = getattr(obj, 'prefetched_program_choices', [])
+            faculties = []
+            for choice in choices:
+                faculty = getattr(choice.program, 'faculty', None)
+                if faculty and faculty.name:
+                    faculties.append(faculty.name)
+            # Remove duplicates while preserving order
+            return ", ".join(dict.fromkeys(faculties))
+        except:
             return ""
-        return ", ".join(dict.fromkeys(names))
 
     def get_entered_by(self, obj):
-        try:
-            if getattr(obj, "is_direct_entry", False) and getattr(obj, "entered_by_id", None):
-                eb = obj.entered_by
-                if eb is None:
-                    return "Staff"
-                name = f"{eb.first_name or ''} {eb.last_name or ''}".strip()
-                return name or getattr(eb, "username", "") or str(eb.pk)
-        except Exception:
-            return "Staff"
+        if getattr(obj, 'is_direct_entry', False) and getattr(obj, 'entered_by', None):
+            eb = obj.entered_by
+            name = f"{eb.first_name or ''} {eb.last_name or ''}".strip()
+            return name or eb.username or str(eb.pk)
         return "Online"
-
-    entered_by = serializers.SerializerMethodField()
 
     class Meta:
         model = Application
@@ -202,8 +262,6 @@ class AllApplicationsReportSerializer(serializers.ModelSerializer):
             "created_at",
             "is_direct_entry",
             "entered_by",
-            "program_choices_confirmed_at",
-            "program_choices_verification_sent_at",
         ]
 
 # detail serializer

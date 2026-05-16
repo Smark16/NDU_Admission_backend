@@ -10,8 +10,6 @@ from rest_framework.exceptions import ValidationError as DRFValidationError
 from .serializers import *
 from .permissions import (
     VerifyPhysicalDocumentsPermission,
-    EditApplicationRegistrationPermission,
-    user_can_approve_application,
     user_can_reject_application,
     user_can_admit_applicant,
     user_can_restore_revoked_admission,
@@ -41,8 +39,9 @@ from .utils.program_choices import (
 )
 from payments.models import ApplicationPayment
 from Drafts.models import DraftApplication
-from django.db.models import Q
+from django.db.models import Q, Prefetch
 from datetime import datetime
+from rest_framework.pagination import PageNumberPagination
 
 import logging
 import json
@@ -581,21 +580,44 @@ class ListApplications(generics.ListAPIView):
             qs = qs.filter(batch_id=batch_id)
         return qs
 
+# class AllApplicationsReport(generics.ListAPIView):
+#     serializer_class = AllApplicationsReportSerializer
+#     permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+#     def get_queryset(self):
+
+#         return Application.objects.select_related(
+#             'academic_level', 'batch', 'campus', 'applicant',
+#         ).filter(
+#             ~Q(status__in=['draft', 'Admitted', 'admitted']),
+#         ).order_by('created_at')
+
+class StandardPagination(PageNumberPagination):
+    page_size = 50
+    page_size_query_param = 'page_size'
+    max_page_size = 200
+
 class AllApplicationsReport(generics.ListAPIView):
     serializer_class = AllApplicationsReportSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    pagination_class = StandardPagination
 
     def get_queryset(self):
-
         return Application.objects.select_related(
-            'academic_level', 'batch', 'campus', 'entered_by', 'applicant',
-            'reviewed_by', 'revoked_by', 'offer_letter_generated_by',
+            'academic_level', 
+            'batch', 
+            'campus', 
+            'applicant',
+            'entered_by'
         ).prefetch_related(
-            'program_choices',
-            'program_choices__program',
-            'program_choices__program__faculty',
+            Prefetch(
+                'program_choices',
+                queryset=ApplicationProgramChoice.objects.select_related('program__faculty')
+                          .order_by('choice_order'),
+                to_attr='prefetched_program_choices'
+            )
         ).filter(
-            ~Q(status__in=['draft', 'Admitted', 'admitted']),
+            ~Q(status__in=['draft', 'Admitted', 'admitted'])
         ).order_by('created_at')
     
 class ListDirectEntryApplications(generics.ListAPIView):
