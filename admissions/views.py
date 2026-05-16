@@ -752,7 +752,7 @@ class EditApplicationProfile(APIView):
 
 # change application programme choices and campus
 class ChangeApplicationProgramme(APIView):
-    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    permission_classes = [IsAuthenticated]
 
     def patch(self, request, application_id):
 
