@@ -21,6 +21,7 @@ from .permissions import ProgramSchedulingAPIPermission
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .batch_offer_defaults import resolve_program_batch_offer_dates
 from .models import (
     CourseCatalogUnit,
     CourseUnit,
@@ -119,6 +120,13 @@ class CreateBatchView(_BatchUnavailableMixin, APIView):
                         {'detail': f'Invalid offer date format: {str(e)}. Use YYYY-MM-DD format.'},
                         status=status.HTTP_400_BAD_REQUEST,
                     )
+
+            offer_start, offer_end = resolve_program_batch_offer_dates(
+                start_date=start,
+                end_date=end,
+                offer_start_date=offer_start,
+                offer_end_date=offer_end,
+            )
 
             if ProgramBatch.objects.filter(program=program, name=name).exists():
                 return Response(
@@ -988,7 +996,7 @@ class BatchTemplateDownloadView(_BatchUnavailableMixin, APIView):
         instructions = (
             f"{scope_prefix}{program_count} programme(s): {cohort_count} existing cohort row(s) "
             f"and {blank_count} blank row(s) for programmes without a cohort yet. "
-            "Leave offer_start_date and offer_end_date blank to use each applicant's admission intake offer window. "
+            "Leave offer_start_date and offer_end_date blank to auto-fill from cohort start_date/end_date (recommended). "
             "Fill both offer columns on a row only to override the intake for that cohort. "
             "Update batches: edit dates on rows that have batch_id; keep batch_id and batch_name unchanged. "
             "Upload batches: fill blank rows (no batch_id) to create new cohorts."
@@ -1268,6 +1276,17 @@ class BatchBulkUploadView(_BatchUnavailableMixin, APIView):
                         f"Row {row_num}: offer_end_date must be on or after offer_start_date."
                     )
                     continue
+
+            try:
+                offer_start_date, offer_end_date = resolve_program_batch_offer_dates(
+                    start_date=start_date,
+                    end_date=end_date,
+                    offer_start_date=offer_start_date,
+                    offer_end_date=offer_end_date,
+                )
+            except ValueError as exc:
+                errors.append(f"Row {row_num}: {exc}")
+                continue
 
             is_active = is_active_s not in ("FALSE", "0", "NO", "F")
 
