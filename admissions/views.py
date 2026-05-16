@@ -694,6 +694,7 @@ class ChangeApplicationStatus(APIView):
             return Response({"detail":str(e)}) 
 
 class EditApplicationProfile(APIView):
+    queryset = Application.objects.all()
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
     def patch(self, request, application_id):
