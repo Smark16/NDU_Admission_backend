@@ -592,15 +592,15 @@ class ListApplications(generics.ListAPIView):
 #             ~Q(status__in=['draft', 'Admitted', 'admitted']),
 #         ).order_by('created_at')
 
-class StandardPagination(PageNumberPagination):
-    page_size = 50
-    page_size_query_param = 'page_size'
-    max_page_size = 200
+# class StandardPagination(PageNumberPagination):
+#     page_size = 50
+#     page_size_query_param = 'page_size'
+#     max_page_size = 200
 
 class AllApplicationsReport(generics.ListAPIView):
     serializer_class = AllApplicationsReportSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
-    pagination_class = StandardPagination
+    # pagination_class = StandardPagination
 
     def get_queryset(self):
         return Application.objects.select_related(
