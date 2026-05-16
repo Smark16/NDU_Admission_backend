@@ -18,30 +18,74 @@ def _schoolpay_gender(value: str) -> str:
         return "F"
     return ""
 
+# def _schoolpay_phone(value: str) -> str:
+#     """Normalize applicant phone for SchoolPay guardianPhone (local 0XXXXXXXXX)."""
+#     phone = re.sub(r"\s+", "", str(value or "").strip())
+#     if not phone:
+#         return ""
+
+#     # Common data-entry typo: letter O instead of zero at the start.
+#     if phone[0] in "Oo" and len(phone) > 1 and phone[1:].isdigit():
+#         phone = "0" + phone[1:]
+
+#     if phone.startswith("+256"):
+#         phone = "0" + phone[4:]
+#     elif phone.startswith("256") and len(phone) > 3:
+#         phone = "0" + phone[3:]
+
+#     digits = re.sub(r"\D", "", phone)
+#     if digits.startswith("256") and len(digits) >= 12:
+#         digits = "0" + digits[3:]
+#     if len(digits) == 9 and digits.startswith("7"):
+#         return "0" + digits
+#     if digits.startswith("0") and len(digits) == 10:
+#         return digits
+#     return phone
+
 def _schoolpay_phone(value: str) -> str:
-    """Normalize applicant phone for SchoolPay guardianPhone (local 0XXXXXXXXX)."""
-    phone = re.sub(r"\s+", "", str(value or "").strip())
-    if not phone:
+    if not value:
         return ""
 
-    # Common data-entry typo: letter O instead of zero at the start.
-    if phone[0] in "Oo" and len(phone) > 1 and phone[1:].isdigit():
-        phone = "0" + phone[1:]
+    phone = str(value).strip()
 
-    if phone.startswith("+256"):
-        phone = "0" + phone[4:]
-    elif phone.startswith("256") and len(phone) > 3:
-        phone = "0" + phone[3:]
+    # Remove all whitespace
+    phone = re.sub(r"\s+", "", phone)
 
+    # Fix common typo: Letter 'O' instead of zero
+    phone = re.sub(r'^[Oo]', '0', phone)
+
+    # Extract digits only
     digits = re.sub(r"\D", "", phone)
-    if digits.startswith("256") and len(digits) >= 12:
-        digits = "0" + digits[3:]
-    if len(digits) == 9 and digits.startswith("7"):
-        return "0" + digits
-    if digits.startswith("0") and len(digits) == 10:
-        return digits
-    return phone
 
+    # ==================== INTERNATIONAL HANDLING ====================
+
+    # Already in international format (e.g. +25798221328)
+    if phone.startswith('+'):
+        return phone  # Return as-is for international numbers
+
+    # Starts with country code without + (e.g. 25798221328)
+    if digits.startswith(('256', '257', '254', '255', '250', '243')) and len(digits) >= 12:
+        return "+" + digits
+
+    # ==================== UGANDA NUMBERS ====================
+
+    # Ugandan numbers starting with 256
+    if digits.startswith("256") and len(digits) >= 12:
+        digits = "0" + digits[3:]   # convert to local format: 07xxxxxxxx
+
+    # Starts with 7 → add leading 0 (common local format)
+    elif len(digits) == 9 and digits.startswith("7"):
+        digits = "0" + digits
+
+    # Already in local 10-digit format
+    elif len(digits) == 10 and digits.startswith("0"):
+        pass  # already good
+
+    # Too short or invalid → return original (SchoolPay might reject it anyway)
+    elif len(digits) < 9:
+        return phone  # return original so we can log the bad input
+
+    return digits
 
 def _extract_gateway_paycode(data: dict) -> str:
     for key in ("paymentCode", "studentCode", "studentPaymentCode"):
@@ -49,7 +93,6 @@ def _extract_gateway_paycode(data: dict) -> str:
         if value:
             return value
     return ""
-
 
 def _normalize_person_name(value: str) -> str:
     return " ".join(str(value or "").strip().lower().split())
