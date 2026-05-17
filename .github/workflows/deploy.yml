@@ -33,6 +33,7 @@ jobs:
           pip install -r requirements.txt
 
           # === Clean and safe migration strategy ===
+          rm OfferLetter/AdmissionLetter/migrations/0003_alter_offerlettertemplate_file_type_and_more.py
           python manage.py makemigrations --merge --noinput
           
           # Fake known problematic migrations
