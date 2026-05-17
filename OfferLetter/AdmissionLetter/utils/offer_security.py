@@ -10,6 +10,9 @@ from io import BytesIO
 
 logger = logging.getLogger(__name__)
 
+# ~2 cm above the bottom edge so typical printers do not clip the QR / footer.
+SECURITY_LIFT_PT = 57
+
 
 def stamp_offer_letter_pdf(
     pdf_bytes: bytes,
@@ -28,8 +31,9 @@ def stamp_offer_letter_pdf(
 
     margin = 32
     qr_size = 58
+    lift = SECURITY_LIFT_PT
     text_right = rect.width - margin - qr_size - 8
-    y0 = rect.height - 76
+    y0 = rect.height - 76 - lift
 
     footer_lines = [
         f"Printed by: {printed_by}",
@@ -59,9 +63,9 @@ def stamp_offer_letter_pdf(
         buf.seek(0)
         qr_rect = fitz.Rect(
             rect.width - margin - qr_size,
-            rect.height - margin - qr_size,
+            rect.height - margin - qr_size - lift,
             rect.width - margin,
-            rect.height - margin,
+            rect.height - margin - lift,
         )
         page.insert_image(qr_rect, stream=buf.getvalue())
     except Exception as e:
