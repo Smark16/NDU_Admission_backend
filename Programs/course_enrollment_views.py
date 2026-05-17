@@ -1382,11 +1382,12 @@ class StudentAcademicTrackerView(APIView):
                 'program', 'program_batch', 'curriculum_version'
             ).get(student=admitted_student)
         except StudentProgrammeEnrollment.DoesNotExist:
+            from .program_batch_resolution import academic_cohort_display_for_student
+
             program = admitted_student.admitted_program
             cal = getattr(program, "calendar_type", None) or "semester"
             term_label = "Trimester" if cal == "trimester" else "Semester"
-            cohort = admitted_student.intended_program_batch
-            batch_name = cohort.name if cohort else str(admitted_student.admitted_batch)
+            cohort_label, intake_label = academic_cohort_display_for_student(admitted_student)
             has_spec = bool(getattr(program, "has_specialization", False))
             return Response(
                 {
@@ -1401,7 +1402,9 @@ class StudentAcademicTrackerView(APIView):
                         "term_label": term_label,
                         "program": program.name,
                         "program_short": program.short_form,
-                        "batch": batch_name,
+                        "batch": cohort_label,
+                        "academic_cohort": cohort_label,
+                        "admission_intake": intake_label,
                         "calendar_type": cal,
                         "max_years": program.max_years,
                         "entry_year": None,
@@ -1567,6 +1570,12 @@ class StudentAcademicTrackerView(APIView):
         selected_spec = normalize_specialization(spe.specialization) or None
         spec_required_now = spec_gate['requires_specialization']
 
+        from .program_batch_resolution import academic_cohort_display_for_student
+
+        cohort_label, intake_label = academic_cohort_display_for_student(
+            admitted_student, spe
+        )
+
         return Response({
             'academic_position': {
                 'year_of_study': effective_year,
@@ -1574,7 +1583,9 @@ class StudentAcademicTrackerView(APIView):
                 'term_label': term_label,
                 'program': program.name,
                 'program_short': program.short_form,
-                'batch': spe.program_batch.name,
+                'batch': cohort_label,
+                'academic_cohort': cohort_label,
+                'admission_intake': intake_label,
                 'calendar_type': cal,
                 'max_years': program.max_years,
                 'entry_year': spe.entry_year_of_study,

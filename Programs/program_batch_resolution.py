@@ -117,3 +117,50 @@ def program_batch_offer_api_fields(program_batch, *, today=None, admission_batch
             program_batch, today=today, admission_batch=admission_batch
         ),
     }
+
+
+def format_program_batch_display(program_batch: ProgramBatch | None) -> str:
+    """Human-readable academic cohort label (not admission intake)."""
+    if program_batch is None:
+        return ""
+    name = (program_batch.name or "").strip()
+    year = (getattr(program_batch, "academic_year", None) or "").strip()
+    if name and year and year not in name:
+        return f"{name} ({year})"
+    return name or year or "—"
+
+
+def resolve_student_academic_cohort(
+    admitted_student,
+    enrollment=None,
+) -> ProgramBatch | None:
+    """
+    Academic cohort for display: enrollment batch → intended cohort → default offer cohort.
+    Never returns admissions.Batch (intake).
+    """
+    if enrollment is not None and getattr(enrollment, "program_batch_id", None):
+        return enrollment.program_batch
+    intended = getattr(admitted_student, "intended_program_batch", None)
+    if intended is not None and getattr(intended, "pk", None):
+        return intended
+    program = getattr(admitted_student, "admitted_program", None)
+    if program is None and getattr(admitted_student, "admitted_program_id", None):
+        from .models import Program
+
+        program = Program.objects.filter(pk=admitted_student.admitted_program_id).first()
+    admission_batch = getattr(admitted_student, "admitted_batch", None)
+    return resolve_default_program_batch_for_program(
+        program,
+        admission_batch=admission_batch,
+    )
+
+
+def academic_cohort_display_for_student(admitted_student, enrollment=None) -> tuple[str, str | None]:
+    """
+    Returns (academic_cohort_label, admission_intake_label).
+    Intake is only returned when no academic cohort could be resolved.
+    """
+    cohort = resolve_student_academic_cohort(admitted_student, enrollment)
+    if cohort:
+        return format_program_batch_display(cohort), str(admitted_student.admitted_batch)
+    return "Not assigned yet", str(admitted_student.admitted_batch)
