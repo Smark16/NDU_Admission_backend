@@ -620,20 +620,29 @@ class AllApplicationsReport(generics.ListAPIView):
             ~Q(status__in=['draft', 'Admitted', 'admitted'])
         ).order_by('created_at')
     
+
 class ListDirectEntryApplications(generics.ListAPIView):
-    queryset = (
-        Application.objects.filter(is_direct_entry=True)
-        .select_related("academic_level", "batch", "campus", "entered_by")
-        .prefetch_related(
-            "program_choices",
-            "program_choices__program",
-            "program_choices__program__faculty",
-        )
-        .filter(~Q(status__in=["draft", "Admitted", "rejected"]))
-        .order_by("-created_at")
-    )
     serializer_class = AllApplicationsReportSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    # pagination_class = StandardPagination
+
+    def get_queryset(self):
+        return Application.objects.filter(is_direct_entry=True).select_related(
+            'academic_level', 
+            'batch', 
+            'campus', 
+            'applicant',
+            'entered_by'
+        ).prefetch_related(
+            Prefetch(
+                'program_choices',
+                queryset=ApplicationProgramChoice.objects.select_related('program__faculty')
+                          .order_by('choice_order'),
+                to_attr='prefetched_program_choices'
+            )
+        ).filter(
+            ~Q(status__in=['draft', 'Admitted', 'admitted', 'rejected'])
+        ).order_by('created_at')
 
 class RejectStudent(APIView):
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
