@@ -11,12 +11,8 @@ from .registration_gates import (
     get_programme_enrollment_status,
     settings_block_message,
 )
-from .student_fee_pricing import (
-    is_international_student,
-    paid_by_currency,
-    required_by_currency,
-)
-from .student_portal_finance import _rules_for_student, other_schedule_rows_and_due_by_currency
+from .student_fee_pricing import is_international_student, paid_by_currency
+from .student_payment_allocation import build_finance_allocation
 
 
 def build_registration_eligibility_payload(student: AdmittedStudent) -> dict:
@@ -61,13 +57,10 @@ def build_registration_eligibility_payload(student: AdmittedStudent) -> dict:
         }
 
     # ── Normal path: compute tuition % and check against threshold ─────────────
-    international = is_international_student(student)
-    rules = _rules_for_student(student)
-    req_by = required_by_currency(rules, international)
-    _, other_due_by_ccy = other_schedule_rows_and_due_by_currency(student, international)
-    for ccy, amt in other_due_by_ccy.items():
-        req_by[ccy] = req_by.get(ccy, Decimal("0")) + amt
-    paid_by = paid_by_currency(student)
+    alloc = build_finance_allocation(student)
+    international = alloc.international
+    req_by = alloc.required_by_currency
+    paid_by = {k: Decimal(str(v)) for k, v in alloc.paid_by_currency.items()}
     min_pct = Decimal(str(settings.min_tuition_payment_percentage)) / Decimal("100")
 
     if not req_by:
@@ -84,8 +77,8 @@ def build_registration_eligibility_payload(student: AdmittedStudent) -> dict:
             **enroll_info,
         }
 
-    primary_ccy = max(req_by.keys(), key=lambda k: float(req_by[k]))
-    tr = req_by[primary_ccy]
+    primary_ccy = alloc.primary_currency
+    tr = Decimal(str(alloc.total_required))
     tp = paid_by.get(primary_ccy, Decimal("0"))
     pct = float((tp / tr * Decimal("100"))) if tr > 0 else 0.0
 
@@ -95,7 +88,7 @@ def build_registration_eligibility_payload(student: AdmittedStudent) -> dict:
         if req <= 0:
             continue
         paid = paid_by.get(ccy, Decimal("0"))
-        need = req * min_pct
+        need = Decimal(str(req)) * min_pct
         if paid < need:
             payment_ok = False
             short_parts.append(f"{ccy} {float(need - paid):,.2f}")
@@ -114,7 +107,7 @@ def build_registration_eligibility_payload(student: AdmittedStudent) -> dict:
         "minimum_required": float(settings.min_tuition_payment_percentage),
         "total_required": float(tr),
         "total_paid": float(tp),
-        "balance": float(max(tr - tp, Decimal("0"))),
+        "balance": float(alloc.balance),
         "display_currency": primary_ccy,
         "tuition_check_skipped": False,
         "message": pay_msg,
