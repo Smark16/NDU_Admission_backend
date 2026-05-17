@@ -3,7 +3,7 @@ from accounts.erp_drf_permissions import CanViewAdmissionQueues, user_has_any_er
 from .models import *
 from rest_framework.views import APIView
 from django.shortcuts import get_object_or_404
-from rest_framework import generics, status
+from rest_framework import generics, status, filters
 from rest_framework.permissions import *
 from rest_framework.response import Response
 from rest_framework.exceptions import ValidationError as DRFValidationError
@@ -40,6 +40,7 @@ from .utils.program_choices import (
 from payments.models import ApplicationPayment
 from Drafts.models import DraftApplication
 from django.db.models import Q, Prefetch
+from django_filters.rest_framework import DjangoFilterBackend
 from datetime import datetime
 from rest_framework.pagination import PageNumberPagination
 
@@ -580,30 +581,23 @@ class ListApplications(generics.ListAPIView):
             qs = qs.filter(batch_id=batch_id)
         return qs
 
-# class AllApplicationsReport(generics.ListAPIView):
-#     serializer_class = AllApplicationsReportSerializer
-#     permission_classes = [IsAuthenticated, DjangoModelPermissions]
+class StandardPagination(PageNumberPagination):
+    page_size = 50
+    page_size_query_param = 'page_size'
+    max_page_size = 200
 
-#     def get_queryset(self):
-
-#         return Application.objects.select_related(
-#             'academic_level', 'batch', 'campus', 'applicant',
-#         ).filter(
-#             ~Q(status__in=['draft', 'Admitted', 'admitted']),
-#         ).order_by('created_at')
-
-# class StandardPagination(PageNumberPagination):
-#     page_size = 50
-#     page_size_query_param = 'page_size'
-#     max_page_size = 200
 
 class AllApplicationsReport(generics.ListAPIView):
     serializer_class = AllApplicationsReportSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
-    # pagination_class = StandardPagination
+    pagination_class = StandardPagination
+
+    search_fields = ['first_name', 'last_name', 'email', 'application_reference']
+    ordering_fields = ['created_at', 'id', 'status', 'first_name']
+    ordering = ['-created_at']
 
     def get_queryset(self):
-        return Application.objects.select_related(
+        queryset = Application.objects.select_related(
             'academic_level', 
             'batch', 
             'campus', 
@@ -618,9 +612,47 @@ class AllApplicationsReport(generics.ListAPIView):
             )
         ).filter(
             ~Q(status__in=['draft', 'Admitted', 'admitted'])
-        ).order_by('created_at')
-    
+        )
 
+        # ====================== MANUAL FILTERS ======================
+        status = self.request.query_params.get('status')
+        gender = self.request.query_params.get('gender')
+        academic_level = self.request.query_params.get('academic_level')
+        batch = self.request.query_params.get('batch')
+        campus = self.request.query_params.get('campus')
+        program = self.request.query_params.get('program')
+        faculty = self.request.query_params.get('faculty')
+        date_from = self.request.query_params.get('date_from')
+        date_to = self.request.query_params.get('date_to')
+
+        if status and status != "all":
+            queryset = queryset.filter(status=status)
+
+        if gender and gender != "all":
+            queryset = queryset.filter(gender=gender)
+
+        if academic_level and academic_level != "all":
+            queryset = queryset.filter(academic_level__name=academic_level)
+
+        if batch and batch != "all":
+            queryset = queryset.filter(batch__name=batch)
+
+        if campus and campus != "all":
+            queryset = queryset.filter(campus__name=campus)
+
+        if program and program != "all":
+            queryset = queryset.filter(program_choices__program__name__icontains=program)
+
+        if faculty and faculty != "all":
+            queryset = queryset.filter(program_choices__program__faculty__name__icontains=faculty)
+
+        if date_from:
+            queryset = queryset.filter(created_at__date__gte=date_from)
+        if date_to:
+            queryset = queryset.filter(created_at__date__lte=date_to)
+
+        return queryset.distinct()
+    
 class ListDirectEntryApplications(generics.ListAPIView):
     serializer_class = AllApplicationsReportSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
