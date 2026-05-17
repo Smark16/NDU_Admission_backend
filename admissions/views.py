@@ -594,7 +594,7 @@ class AllApplicationsReport(generics.ListAPIView):
 
     search_fields = ['first_name', 'last_name', 'email', 'application_reference']
     ordering_fields = ['created_at', 'id', 'status', 'first_name']
-    ordering = ['-created_at']
+    ordering = ['created_at']
 
     def get_queryset(self):
         queryset = Application.objects.select_related(
@@ -674,7 +674,7 @@ class ListDirectEntryApplications(generics.ListAPIView):
             )
         ).filter(
             ~Q(status__in=['draft', 'Admitted', 'admitted', 'rejected'])
-        ).order_by('created_at')
+        ).order_by('-created_at')
 
 class RejectStudent(APIView):
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
