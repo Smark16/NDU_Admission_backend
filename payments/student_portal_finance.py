@@ -229,10 +229,45 @@ def other_schedule_rows_and_due_by_currency(
     return rows, dict(due_by_ccy)
 
 
+def _installment_display(extra: dict[str, Any]) -> str:
+    """Human-readable instalment / term label for tuition structure rows."""
+    inst = extra.get("installment_number")
+    if inst:
+        return f"Installment {inst}"
+    y = extra.get("semester_year_of_study")
+    t = extra.get("semester_term_number")
+    if y and t:
+        return f"Year {y}, Term {t}"
+    order = extra.get("semester_order")
+    if order:
+        return f"Semester {order}"
+    name = (extra.get("semester_name") or "").strip()
+    return name or "—"
+
+
+def _default_programme_semester_label(student: AdmittedStudent) -> str:
+    for rule in _rules_for_student(student):
+        if rule.semester_id and rule.semester:
+            return rule.semester.name
+    return "Programme fees"
+
+
+def _payment_history_semester_label(payment: StudentTuitionPayment, student: AdmittedStudent) -> str:
+    if payment.semester_id and payment.semester:
+        return payment.semester.name
+    rule = payment.fee_plan_rule
+    if rule is not None and rule.semester_id and rule.semester:
+        return rule.semester.name
+    if payment.source == "ad_hoc" and payment.semester_id and payment.semester:
+        return payment.semester.name
+    return _default_programme_semester_label(student)
+
+
 def _tuition_structure_item_from_line(line) -> dict[str, Any]:
     ex = line.extra
     if line.kind == "scheduled_other":
         sem_name = f"Year {line.payable_year}, Term {line.payable_term} (scheduled fee)"
+        inst_label = f"Year {line.payable_year}, Term {line.payable_term}"
         return {
             "rule_id": line.rule_id,
             "fee_head": line.fee_head,
@@ -247,6 +282,7 @@ def _tuition_structure_item_from_line(line) -> dict[str, Any]:
                 "program_batch_name": ex.get("program_batch_name"),
             },
             "installment_number": None,
+            "installment_display": inst_label,
             "due_date_days": None,
         }
     return {
@@ -263,6 +299,7 @@ def _tuition_structure_item_from_line(line) -> dict[str, Any]:
             "program_batch_name": ex.get("program_batch_name"),
         },
         "installment_number": ex.get("installment_number"),
+        "installment_display": _installment_display(ex),
         "due_date_days": ex.get("due_date_days"),
     }
 
@@ -380,6 +417,7 @@ def payment_status_dict(student: AdmittedStudent, request=None) -> dict:
     other_fee_rows, _ = other_schedule_rows_and_due_by_currency(student)
     adhoc_charges = _adhoc_charges_for_student(student)
 
+    default_semester = _default_programme_semester_label(student)
     history = []
     for row in TuitionLedger.objects.filter(
         student=student, transaction_completion_status="Completed"
@@ -393,7 +431,7 @@ def payment_status_dict(student: AdmittedStudent, request=None) -> dict:
                 "status": "completed",
                 "payment_method": row.source_payment_channel or "SchoolPay",
                 "fee_head": "Tuition payment",
-                "semester": "",
+                "semester": default_semester,
                 "paid_at": row.payment_date_time.isoformat() if row.payment_date_time else None,
                 "receipt_number": row.schoolpay_receipt_number or "",
                 "is_waived": False,
@@ -401,7 +439,11 @@ def payment_status_dict(student: AdmittedStudent, request=None) -> dict:
             }
         )
     for p in StudentTuitionPayment.objects.filter(student=student).select_related(
-        "fee_plan_rule__fee_head", "fee_head", "semester", "charged_by"
+        "fee_plan_rule__fee_head",
+        "fee_plan_rule__semester",
+        "fee_head",
+        "semester",
+        "charged_by",
     ).order_by("-created_at")[:100]:
         if p.source == 'ad_hoc':
             fh = p.fee_head.name if p.fee_head_id else "Ad-hoc charge"
@@ -420,13 +462,15 @@ def payment_status_dict(student: AdmittedStudent, request=None) -> dict:
                 "status":         p.status,
                 "payment_method": p.payment_method or "",
                 "fee_head":       lbl,
-                "semester":       p.semester.name if p.semester_id else "",
+                "semester":       _payment_history_semester_label(p, student),
                 "paid_at":        p.paid_at.isoformat() if p.paid_at else None,
                 "receipt_number": p.receipt_number or "",
                 "is_waived":      p.is_waived,
                 "label":          p.label or "",
             }
         )
+
+    history.sort(key=lambda h: h.get("paid_at") or "", reverse=True)
 
     # Separate ad-hoc outstanding charges for the student's charges section
     adhoc_list = [

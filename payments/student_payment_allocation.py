@@ -131,6 +131,9 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
                 extra={
                     "semester_id": rule.semester_id,
                     "semester_name": sem.name if sem else "",
+                    "semester_year_of_study": sem.year_of_study if sem else None,
+                    "semester_term_number": sem.term_number if sem else None,
+                    "semester_order": sem.order if sem else None,
                     "program_batch_id": rule.program_batch_id,
                     "program_batch_name": (
                         rule.program_batch.name if rule.program_batch_id else None
