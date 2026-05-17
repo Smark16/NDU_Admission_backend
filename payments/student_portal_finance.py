@@ -31,9 +31,10 @@ def get_admitted_student_for_user(user):
             "admitted_batch",
             "application",
             "admitted_by",
-            "student_user"
-            # "programme_enrollment",
-            # "programme_enrollment__program_batch",
+            "student_user",
+            "intended_program_batch",
+            "programme_enrollment",
+            "programme_enrollment__program_batch",
         )
         .filter(
             Q(application__applicant=user)
@@ -45,19 +46,65 @@ def get_admitted_student_for_user(user):
     )
 
 
+def _student_program_batch_id(student: AdmittedStudent) -> int | None:
+    """
+    Cohort for fee rules: enrollment → intended at admit → default offer cohort
+    → sole cohort with a semester tuition matrix (legacy records).
+    """
+    try:
+        enr = student.programme_enrollment
+        if enr is not None and enr.program_batch_id:
+            return int(enr.program_batch_id)
+    except Exception:
+        pass
+    if student.intended_program_batch_id:
+        return int(student.intended_program_batch_id)
+
+    program = student.admitted_program
+    if not program:
+        return None
+
+    from Programs.program_batch_resolution import resolve_default_program_batch_for_program
+
+    default_pb = resolve_default_program_batch_for_program(
+        program, admission_batch=student.admitted_batch
+    )
+    if default_pb is not None:
+        return int(default_pb.id)
+
+    fee_plan = get_or_create_tuition_fee_plan(program)
+    batch_ids = list(
+        FeePlanRule.objects.filter(
+            fee_plan=fee_plan,
+            program_batch_id__isnull=False,
+            program_batch__program_id=program.id,
+            semester_id__isnull=False,
+        )
+        .values_list("program_batch_id", flat=True)
+        .distinct()
+    )
+    if len(batch_ids) == 1:
+        return int(batch_ids[0])
+    return None
+
+
 def _rules_for_student(student: AdmittedStudent):
     from .feeplanrule_table import ensure_feeplanrule_table
 
     ensure_feeplanrule_table()
     program = student.admitted_program
     fee_plan = get_or_create_tuition_fee_plan(program)
+    qs = FeePlanRule.objects.filter(
+        fee_plan=fee_plan,
+        program_batch__program_id=program.id,
+    )
+    pb_id = _student_program_batch_id(student)
+    if pb_id:
+        qs = qs.filter(program_batch_id=pb_id)
     return list(
-        FeePlanRule.objects.filter(
-            fee_plan=fee_plan,
-            program_batch__program_id=program.id,
+        qs.select_related("fee_head", "program_batch", "semester").order_by(
+            "program_batch_id", "semester_id", "order"
         )
-        .select_related("fee_head", "program_batch", "semester")
-        .order_by("program_batch_id", "semester_id", "order")
     )
 
 
@@ -81,20 +128,17 @@ def _applicable_other_schedule_rules(student: AdmittedStudent) -> list[FeePlanRu
         return []
     program = student.admitted_program
     fee_plan = get_or_create_other_schedule_fee_plan(program)
-    pb_id = None
-    try:
-        enr = student.programme_enrollment
-        if enr is not None and enr.program_batch_id:
-            pb_id = int(enr.program_batch_id)
-    except Exception:
-        pb_id = None
+    pb_id = _student_program_batch_id(student)
     qs = (
         FeePlanRule.objects.filter(
             fee_plan=fee_plan,
-            program_id=program.id,
             is_active=True,
             payable_year_of_study__isnull=False,
             payable_term_number__isnull=False,
+        )
+        .filter(
+            Q(program_id=program.id)
+            | Q(program__isnull=True, fee_plan__program_id=program.id)
         )
         .select_related("fee_head", "program_batch")
         .order_by("payable_year_of_study", "payable_term_number", "fee_head__name", "id")
