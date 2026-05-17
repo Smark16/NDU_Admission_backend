@@ -1361,7 +1361,10 @@ class StudentAcademicTrackerView(APIView):
         # ── Locate admitted student ──────────────────────────────────────────
         try:
             admitted_student = AdmittedStudent.objects.select_related(
-                'admitted_program', 'admitted_campus'
+                'admitted_program',
+                'admitted_campus',
+                'admitted_batch',
+                'intended_program_batch',
             ).filter(
                 Q(application__applicant=user) | Q(student_user=user) | Q(reg_no=user.username)
             ).first()
@@ -1379,9 +1382,61 @@ class StudentAcademicTrackerView(APIView):
                 'program', 'program_batch', 'curriculum_version'
             ).get(student=admitted_student)
         except StudentProgrammeEnrollment.DoesNotExist:
+            program = admitted_student.admitted_program
+            cal = getattr(program, "calendar_type", None) or "semester"
+            term_label = "Trimester" if cal == "trimester" else "Semester"
+            cohort = admitted_student.intended_program_batch
+            batch_name = cohort.name if cohort else str(admitted_student.admitted_batch)
+            has_spec = bool(getattr(program, "has_specialization", False))
             return Response(
-                {'detail': 'No academic enrollment record found.'},
-                status=status.HTTP_404_NOT_FOUND,
+                {
+                    "enrollment_pending": True,
+                    "message": (
+                        "You are admitted, but academic enrollment is not active yet. "
+                        "Visit My Enrollment or contact the admissions office."
+                    ),
+                    "academic_position": {
+                        "year_of_study": 1,
+                        "term_number": 1,
+                        "term_label": term_label,
+                        "program": program.name,
+                        "program_short": program.short_form,
+                        "batch": batch_name,
+                        "calendar_type": cal,
+                        "max_years": program.max_years,
+                        "entry_year": None,
+                        "entry_term": None,
+                    },
+                    "enrollment": {
+                        "status": "pending",
+                        "status_display": "Not yet enrolled",
+                        "is_enrolled": False,
+                        "enrolled_at": None,
+                    },
+                    "registration": {
+                        "status": "not_eligible",
+                        "label": "Not Eligible",
+                        "active_count": 0,
+                        "registered_count": 0,
+                    },
+                    "deferred": {"count": 0, "courses": []},
+                    "specialization": {
+                        "program_has_specialization": has_spec,
+                        "entry_year": getattr(program, "specialization_entry_year", None),
+                        "entry_term": getattr(program, "specialization_entry_term", None),
+                        "selected": None,
+                        "required_now": False,
+                        "is_missing": False,
+                        "before_specialization_entry": True,
+                        "available_specializations": [],
+                    },
+                    "promotion": {
+                        "has_record": False,
+                        "last_promoted_at": None,
+                        "promoted_to_semester": None,
+                    },
+                },
+                status=status.HTTP_200_OK,
             )
 
         program = spe.program
