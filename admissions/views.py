@@ -612,7 +612,7 @@ class AllApplicationsReport(generics.ListAPIView):
             )
         ).filter(
             ~Q(status__in=['draft', 'Admitted', 'admitted'])
-        )
+        ).order_by('created_at')
 
         # ====================== MANUAL FILTERS ======================
         status = self.request.query_params.get('status')
