@@ -41,6 +41,7 @@ from payments.models import ApplicationPayment
 from Drafts.models import DraftApplication
 from django.db.models import Q, Prefetch
 from django_filters.rest_framework import DjangoFilterBackend
+from rest_framework.filters import SearchFilter, OrderingFilter
 from datetime import datetime
 from rest_framework.pagination import PageNumberPagination
 
@@ -586,7 +587,6 @@ class StandardPagination(PageNumberPagination):
     page_size_query_param = 'page_size'
     max_page_size = 200
 
-
 class AllApplicationsReport(generics.ListAPIView):
     serializer_class = AllApplicationsReportSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
@@ -594,6 +594,7 @@ class AllApplicationsReport(generics.ListAPIView):
 
     search_fields = ['first_name', 'last_name', 'email', 'application_reference']
     ordering_fields = ['created_at', 'id', 'status', 'first_name']
+    filter_backends = [SearchFilter, OrderingFilter, DjangoFilterBackend]
     ordering = ['created_at']
 
     def get_queryset(self):
