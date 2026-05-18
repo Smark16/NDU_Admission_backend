@@ -8,7 +8,14 @@ def send_application_email(application, subject="Application Submitted Successfu
         f"Your application has been successfully submitted to Ndejje University.\n"
         f"Application ID: {application.id}\n"
         f"Submitted on: {application.created_at.strftime('%d %B %Y')}\n\n"
-        f"Thank you,\nNdejje University Admissions Team"
+        f"Please note that all subsequent communication regarding your application, "
+        f"including updates, admission decisions, and further instructions, will be sent "
+        f"to your email address. You are therefore not required to come to the university "
+        f"campus physically unless officially advised otherwise.\n\n"
+        f"Kindly keep checking your email regularly for updates from the Admissions Office.\n\n"
+        f"Thank you for choosing Ndejje University.\n\n"
+        f"Admissions Team\n"
+        f"Ndejje University"
     )
 
     return send_configurable_email(application.email, subject, body)
@@ -47,7 +54,7 @@ ii) NOTE: This amount shall be credited towards your tuition fees.
 iii) Sending the Bank Deposit Slip and payment confirmation receipt to:
 confirmation@ndu.ac.ug
 
-iv) Pick your admission letter from any of our campuses or receive it through your portal.
+iv)NOTE: AFTER PAYING THE COMMITMENT FEE, PLEASE LOG IN TO YOUR HORIZON PORTAL TO DOWNLOAD AND PRINT YOUR ADMISSION LETTER.
 
 COMMUNICATION
 
