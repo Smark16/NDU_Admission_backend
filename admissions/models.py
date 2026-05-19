@@ -221,7 +221,13 @@ class Application(models.Model):
     program_choices_confirmed_at = models.DateTimeField(
         null=True,
         blank=True,
-        help_text="When the applicant confirmed their programme choices in the portal.",
+        help_text="When programme choices were confirmed in the portal (applicant or staff).",
+    )
+    program_choices_confirmed_by = models.CharField(
+        max_length=16,
+        blank=True,
+        default="",
+        help_text="Who confirmed: applicant (portal) or staff (change programme). Empty = legacy.",
     )
 
     created_at = models.DateTimeField(auto_now_add=True)

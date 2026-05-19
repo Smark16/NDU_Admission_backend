@@ -31,10 +31,11 @@ from payments.utils.school_pay_code import register_student_with_schoolpay
 from .utils.trigger_background_tasks import trigger_background_tasks
 from .utils.application_programs_display import ordered_programs_for_application
 from .utils.program_choices import (
+    PROGRAM_CHOICE_CONFIRMED_BY_APPLICANT,
+    applicant_confirmed_program_choices,
     applicant_may_edit_program_choices,
     clear_program_choices_confirmation,
     mark_program_choices_confirmed,
-    mark_program_choices_settled_by_admin,
     program_options_for_application,
     sync_application_program_choices,
 )
@@ -651,7 +652,10 @@ def build_applications_report_queryset(request, *, apply_choice_filter: bool = T
                 program_choices_confirmed_at__isnull=True,
             )
         elif cc == "confirmed":
-            queryset = queryset.filter(program_choices_confirmed_at__isnull=False)
+            queryset = queryset.filter(
+                program_choices_confirmed_at__isnull=False,
+                program_choices_confirmed_by=PROGRAM_CHOICE_CONFIRMED_BY_APPLICANT,
+            )
         elif cc == "flagged":
             from .utils.program_choice_integrity import application_ids_with_suspect_program_choices
 
@@ -679,7 +683,8 @@ class ApplicationChoiceStatsView(APIView):
                     program_choices_confirmed_at__isnull=True,
                 ).count(),
                 "confirmed": base.filter(
-                    program_choices_confirmed_at__isnull=False
+                    program_choices_confirmed_at__isnull=False,
+                    program_choices_confirmed_by=PROGRAM_CHOICE_CONFIRMED_BY_APPLICANT,
                 ).count(),
                 "flagged": base.filter(id__in=flagged_ids).count(),
             }
@@ -932,8 +937,9 @@ class ChangeApplicationProgramme(APIView):
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=400)
 
-        mark_program_choices_settled_by_admin(application, save=False)
-        update_fields = ["program_choices_confirmed_at", "updated_at"]
+        # Staff edits require the applicant to confirm again — do not show as applicant-confirmed.
+        clear_program_choices_confirmation(application, save=False)
+        update_fields = ["program_choices_confirmed_at", "program_choices_confirmed_by", "updated_at"]
         if campus_changed:
             update_fields.insert(0, "campus")
         application.save(update_fields=update_fields)
@@ -996,11 +1002,12 @@ class ApplicantProgramChoicesView(APIView):
             "application_id": application.id,
             "status": application.status,
             "program_choices_confirmed_at": application.program_choices_confirmed_at,
+            "program_choices_confirmed_by": application.program_choices_confirmed_by or "",
             "program_choices_verification_sent_at": application.program_choices_verification_sent_at,
             "program_choices_suspect": suspect,
             "can_update_programs": may_edit,
             "can_confirm": may_edit and len(current) > 0,
-            "is_confirmed": bool(application.program_choices_confirmed_at),
+            "is_confirmed": applicant_confirmed_program_choices(application),
             "current_programs": current,
             "available_programs": program_options_for_application(application) if may_edit else [],
             "campus_id": application.campus_id,

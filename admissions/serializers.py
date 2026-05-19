@@ -269,6 +269,7 @@ class AllApplicationsReportSerializer(serializers.ModelSerializer):
             "updated_at",
             "reviewed_at",
             "program_choices_confirmed_at",
+            "program_choices_confirmed_by",
             "program_choices_suspect",
             "is_direct_entry",
             "entered_by",

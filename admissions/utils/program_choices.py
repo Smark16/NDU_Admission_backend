@@ -9,6 +9,9 @@ from django.utils import timezone
 from Programs.models import Program
 
 # Applicants may update/confirm while the application is still in the review pipeline.
+PROGRAM_CHOICE_CONFIRMED_BY_APPLICANT = "applicant"
+PROGRAM_CHOICE_CONFIRMED_BY_STAFF = "staff"
+
 APPLICANT_PROGRAM_CHOICE_STATUSES = frozenset(
     {
         "submitted",
@@ -79,20 +82,50 @@ def sync_application_program_choices(application, program_ids: list[int]) -> Non
 
 def clear_program_choices_confirmation(application, *, save: bool = True) -> None:
     application.program_choices_confirmed_at = None
+    application.program_choices_confirmed_by = ""
     if save:
-        application.save(update_fields=["program_choices_confirmed_at", "updated_at"])
+        application.save(
+            update_fields=[
+                "program_choices_confirmed_at",
+                "program_choices_confirmed_by",
+                "updated_at",
+            ]
+        )
 
 
 def mark_program_choices_confirmed(application, *, save: bool = True) -> None:
-    """Applicant confirmed choices in the portal."""
+    """Applicant clicked Confirm in the portal."""
     application.program_choices_confirmed_at = timezone.now()
+    application.program_choices_confirmed_by = PROGRAM_CHOICE_CONFIRMED_BY_APPLICANT
     if save:
-        application.save(update_fields=["program_choices_confirmed_at", "updated_at"])
+        application.save(
+            update_fields=[
+                "program_choices_confirmed_at",
+                "program_choices_confirmed_by",
+                "updated_at",
+            ]
+        )
 
 
 def mark_program_choices_settled_by_admin(application, *, save: bool = True) -> None:
-    """Staff verified or corrected programme choices (same timestamp field as applicant confirm)."""
-    mark_program_choices_confirmed(application, save=save)
+    """Staff saved programme choices via change programme (not applicant confirm)."""
+    application.program_choices_confirmed_at = timezone.now()
+    application.program_choices_confirmed_by = PROGRAM_CHOICE_CONFIRMED_BY_STAFF
+    if save:
+        application.save(
+            update_fields=[
+                "program_choices_confirmed_at",
+                "program_choices_confirmed_by",
+                "updated_at",
+            ]
+        )
+
+
+def applicant_confirmed_program_choices(application) -> bool:
+    return bool(application.program_choices_confirmed_at) and (
+        (application.program_choices_confirmed_by or "").strip().lower()
+        == PROGRAM_CHOICE_CONFIRMED_BY_APPLICANT
+    )
 
 
 def program_options_for_application(application) -> list[dict]:
