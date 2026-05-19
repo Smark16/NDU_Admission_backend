@@ -35,18 +35,11 @@ class Command(BaseCommand):
         qs = Application.objects.filter(program_choices_confirmed_at__isnull=False).filter(
             program_choices_confirmed_by=""
         )
-        staff_app_ids = set(
-            AuditLog.objects.filter(action=ACTION)
-            .exclude(object_id__isnull=True)
-            .exclude(object_id="")
-            .values_list("object_id", flat=True)
+        staff_app_ids_int = set(
+            AuditLog.objects.filter(action=ACTION, object_id__isnull=False).values_list(
+                "object_id", flat=True
+            )
         )
-        staff_app_ids_int = set()
-        for oid in staff_app_ids:
-            try:
-                staff_app_ids_int.add(int(oid))
-            except (TypeError, ValueError):
-                continue
 
         to_staff = []
         to_applicant = []
