@@ -627,6 +627,7 @@ class AllApplicationsReport(generics.ListAPIView):
         faculty = self.request.query_params.get('faculty')
         date_from = self.request.query_params.get('date_from')
         date_to = self.request.query_params.get('date_to')
+        choice_confirmation = self.request.query_params.get('choice_confirmation')
 
         if status and status != "all":
             queryset = queryset.filter(status=status)
@@ -653,6 +654,22 @@ class AllApplicationsReport(generics.ListAPIView):
             queryset = queryset.filter(created_at__date__gte=date_from)
         if date_to:
             queryset = queryset.filter(created_at__date__lte=date_to)
+
+        if choice_confirmation and choice_confirmation != "all":
+            cc = choice_confirmation.strip().lower()
+            if cc == "awaiting":
+                queryset = queryset.filter(
+                    status__in=["submitted", "under_review"],
+                    program_choices_confirmed_at__isnull=True,
+                )
+            elif cc == "confirmed":
+                queryset = queryset.filter(program_choices_confirmed_at__isnull=False)
+            elif cc == "flagged":
+                from .utils.program_choice_integrity import application_ids_with_suspect_program_choices
+
+                queryset = queryset.filter(
+                    id__in=application_ids_with_suspect_program_choices()
+                )
 
         return queryset.distinct()
     
