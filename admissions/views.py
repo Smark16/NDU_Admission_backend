@@ -610,7 +610,7 @@ def build_applications_report_queryset(request, *, apply_choice_filter: bool = T
                 to_attr="prefetched_program_choices",
             )
         )
-        .filter(~Q(status__in=["draft", "Admitted", "admitted"]))
+        .filter(~Q(status__in=["draft", "Admitted", "admitted", "rejected"]))
         .order_by("created_at")
     )
 
@@ -689,7 +689,6 @@ class ApplicationChoiceStatsView(APIView):
                 "flagged": base.filter(id__in=flagged_ids).count(),
             }
         )
-
 
 class AllApplicationsReport(generics.ListAPIView):
     serializer_class = AllApplicationsReportSerializer
