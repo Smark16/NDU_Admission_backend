@@ -84,9 +84,15 @@ def clear_program_choices_confirmation(application, *, save: bool = True) -> Non
 
 
 def mark_program_choices_confirmed(application, *, save: bool = True) -> None:
+    """Applicant confirmed choices in the portal."""
     application.program_choices_confirmed_at = timezone.now()
     if save:
         application.save(update_fields=["program_choices_confirmed_at", "updated_at"])
+
+
+def mark_program_choices_settled_by_admin(application, *, save: bool = True) -> None:
+    """Staff verified or corrected programme choices (same timestamp field as applicant confirm)."""
+    mark_program_choices_confirmed(application, save=save)
 
 
 def program_options_for_application(application) -> list[dict]:
