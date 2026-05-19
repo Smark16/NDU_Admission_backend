@@ -1263,7 +1263,7 @@ class ListAlevelSubjects(generics.ListAPIView):
 
         return Response(data)
 
-class EditAlevelSubjecgts(generics.UpdateAPIView):
+class EditAlevelSubjects(generics.UpdateAPIView):
     queryset = ALevelSubject.objects.all()
     serializer_class = AlevelSubjectSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
@@ -1286,7 +1286,82 @@ class DeleteAlevelSubjects(generics.RetrieveDestroyAPIView):
         instance.delete()
 
         return Response({"detail":"subject deleted successfully"})
+    
+#=================================================Olevel Results==========================================
+#update Olevel results
+class UpdateOlevelResults(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, application_id):
+        application = get_object_or_404(Application, id=application_id)
         
+        results = request.data.get('results', [])
+        
+        # Delete old results
+        OLevelResult.objects.filter(application=application).delete()
+        
+        created = []
+        for item in results:
+            subject = get_object_or_404(OLevelSubject, id=item['subject_id'])
+            created.append(OLevelResult.objects.create(
+                application=application,
+                subject=subject,
+                grade=item['grade']
+            ))
+        
+        serializer = OlevelResultSerializer(created, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+#=======================================================Alevel===========================================
+class UpdateAlevelResults(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, application_id):
+        application = get_object_or_404(Application, id=application_id)
+        
+        results = request.data.get('results', [])
+        
+        # Delete old results
+        ALevelResult.objects.filter(application=application).delete()
+        
+        created = []
+        for item in results:
+            subject = get_object_or_404(ALevelSubject, id=item['subject_id'])
+            created.append(ALevelResult.objects.create(
+                application=application,
+                subject=subject,
+                grade=item['grade']
+            ))
+        
+        serializer = AlevelResultSerializer(created, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+#========================================Update Additional qualifications=======================================
+class UpdateAdditionalQualififcations(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, application_id):
+        application = get_object_or_404(Application, id=application_id)
+        
+        results = request.data.get('qualifications', [])
+        
+        # Delete old results
+        AdditionalQualifications.objects.filter(application=application).delete()
+
+        created = []
+        for item in results:
+            created.append(AdditionalQualifications.objects.create(
+                application=application,
+                additional_qualification_institution=item['additional_qualification_institution'],
+                additional_qualification_type=item['additional_qualification_type'],
+                additional_qualification_year=item['additional_qualification_year'],
+                class_of_award=item['class_of_award']
+            ))
+        
+        serializer = AdditionalQualifficationsSerializer(created, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
 # ========================================================Batch=================================================
 
 #create batch

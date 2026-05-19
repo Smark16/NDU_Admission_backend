@@ -46,12 +46,17 @@ urlpatterns = [
     path('generate-reg-no/', views.generate_reg_no_view, name='generate_reg_no'),
     path('list_selected_programs/<int:application_id>', views.ListSelectedPrograms.as_view(), name='list_selected_programs'),
 
+    #resullts
+    path('update_olevel_results/<int:application_id>/', views.UpdateOlevelResults.as_view()),
+    path('update_alevel_results/<int:application_id>/', views.UpdateAlevelResults.as_view()),
+    path('update_additional_qualifications/<int:application_id>/', views.UpdateAdditionalQualififcations.as_view()),
+
     # Subject Urls
 
     # ========================Alevel=====================
     path('list_alevel_subject', views.ListAlevelSubjects.as_view()),
     path('create_alevel_subjects', views.CreateAlevelSubjects.as_view()),
-    path('edit_alevel_results/<int:pk>', views.EditAlevelSubjecgts.as_view()),
+    path('edit_alevel_results/<int:pk>', views.EditAlevelSubjects.as_view()),
     path('delete_alevel_subject/<int:pk>', views.DeleteAlevelSubjects.as_view()),
 
     # ====================olevel===============================
