@@ -37,6 +37,7 @@ from .utils.program_choices import (
     clear_program_choices_confirmation,
     mark_program_choices_confirmed,
     program_options_for_application,
+    sync_application_academic_level_from_programs,
     sync_application_program_choices,
 )
 from .utils.program_choice_integrity import application_has_suspect_program_choices
@@ -931,8 +932,13 @@ class ChangeApplicationProgramme(APIView):
             except (TypeError, ValueError, Campus.DoesNotExist):
                 return Response({"detail": "Invalid campus_id."}, status=400)
 
+        level_changed = False
+        new_level_name = None
         try:
             sync_application_program_choices(application, program_ids)
+            level_changed, new_level_name = sync_application_academic_level_from_programs(
+                application, program_ids
+            )
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=400)
 
@@ -942,6 +948,8 @@ class ChangeApplicationProgramme(APIView):
         update_fields = ["program_choices_confirmed_at", "program_choices_confirmed_by", "updated_at"]
         if campus_changed:
             update_fields.insert(0, "campus")
+        if level_changed:
+            update_fields.insert(0, "academic_level")
         application.save(update_fields=update_fields)
 
         confirmed_at = application.program_choices_confirmed_at
@@ -951,6 +959,8 @@ class ChangeApplicationProgramme(APIView):
         desc_parts = ["Programmes: " + ", ".join(program_parts)] if program_parts else []
         if application.campus:
             desc_parts.append(f"Campus: {application.campus.name}")
+        if level_changed and new_level_name:
+            desc_parts.append(f"Academic level: {new_level_name}")
         raw_note = request.data.get("note")
         if raw_note:
             txt = str(raw_note).strip()
@@ -964,6 +974,8 @@ class ChangeApplicationProgramme(APIView):
             request=request,
         )
         detail = "Programme choices updated successfully."
+        if level_changed and new_level_name:
+            detail += f" Academic level set to {new_level_name}."
         if had_applicant_confirmation:
             detail += (
                 " Applicant confirmation was cleared; they should review and confirm again in the portal."
@@ -976,6 +988,11 @@ class ChangeApplicationProgramme(APIView):
                     for p in ordered_programs_for_application(application)
                 ],
                 "campus": application.campus.name if application.campus else None,
+                "academic_level": (
+                    application.academic_level.name
+                    if application.academic_level_id
+                    else None
+                ),
                 "program_choices_confirmed_at": (
                     confirmed_at.isoformat() if confirmed_at else None
                 ),
@@ -1750,16 +1767,27 @@ class ReviewApplication(APIView):
 
     def get(self, request, application_id):
         # Fetch optimized object AFTER update
-        application = Application.objects.select_related(
-            'applicant', 'batch', 'campus', 'academic_level', 'reviewed_by'
-        ).get(pk=application_id)
+        application = (
+            Application.objects.select_related(
+                "applicant", "batch", "campus", "academic_level", "reviewed_by"
+            )
+            .prefetch_related(
+                Prefetch(
+                    "program_choices",
+                    queryset=ApplicationProgramChoice.objects.select_related(
+                        "program", "program__faculty"
+                    ).order_by("choice_order"),
+                )
+            )
+            .get(pk=application_id)
+        )
 
         # Related queries
         olevel_results = OLevelResult.objects.filter(application=application).select_related('subject')
         alevel_results = ALevelResult.objects.filter(application=application).select_related('subject')
         documents = ApplicationDocument.objects.filter(application=application).select_related('application')
         qualifications = AdditionalQualifications.objects.filter(application=application).select_related('application')
-        program_choices = ApplicationProgramChoice.objects.filter(application=application).select_related('application', 'program')
+        program_choices = list(application.program_choices.all())
 
         data = {
             'application': ApplicationDetailSerializer(application).data,

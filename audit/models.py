@@ -14,6 +14,7 @@ class AuditLog(models.Model):
         ('id_card_reissue', 'ID card reissued'),
         ('passport_photo_update', 'Passport / ID photo updated at desk'),
         ('passport_photo_delete', 'Passport / ID photo removed at desk'),
+        ('program_choice_admin_change', 'Programme choices updated by staff'),
     ]
     
     user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)

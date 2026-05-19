@@ -297,6 +297,10 @@ class ApplicationDetailSerializer(serializers.ModelSerializer):
         ]
         data["campus_id"] = instance.campus_id
         data["campus"] = instance.campus.name if instance.campus_id else None
+        data["academic_level_id"] = instance.academic_level_id
+        data["academic_level"] = (
+            instance.academic_level.name if instance.academic_level_id else None
+        )
         return data
     
 # o level subject
