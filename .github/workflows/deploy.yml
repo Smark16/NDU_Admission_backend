@@ -42,6 +42,9 @@ jobs:
         
           # Final migrate (this should now be safe)
           python manage.py migrate
+
+          # Ensure confirmation columns exist if 0027 was only faked
+          python manage.py ensure_program_choice_confirmation_columns
           
           python manage.py collectstatic --noinput
         

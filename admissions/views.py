@@ -589,6 +589,103 @@ class StandardPagination(PageNumberPagination):
     page_size_query_param = 'page_size'
     max_page_size = 200
 
+
+def build_applications_report_queryset(request, *, apply_choice_filter: bool = True):
+    """Shared filters for AllApplicationsReport and choice stats."""
+    queryset = (
+        Application.objects.select_related(
+            "academic_level",
+            "batch",
+            "campus",
+            "applicant",
+            "entered_by",
+        )
+        .prefetch_related(
+            Prefetch(
+                "program_choices",
+                queryset=ApplicationProgramChoice.objects.select_related(
+                    "program__faculty"
+                ).order_by("choice_order"),
+                to_attr="prefetched_program_choices",
+            )
+        )
+        .filter(~Q(status__in=["draft", "Admitted", "admitted"]))
+        .order_by("created_at")
+    )
+
+    status = request.query_params.get("status")
+    gender = request.query_params.get("gender")
+    academic_level = request.query_params.get("academic_level")
+    batch = request.query_params.get("batch")
+    campus = request.query_params.get("campus")
+    program = request.query_params.get("program")
+    faculty = request.query_params.get("faculty")
+    date_from = request.query_params.get("date_from")
+    date_to = request.query_params.get("date_to")
+    choice_confirmation = request.query_params.get("choice_confirmation") if apply_choice_filter else None
+
+    if status and status != "all":
+        queryset = queryset.filter(status=status)
+    if gender and gender != "all":
+        queryset = queryset.filter(gender=gender)
+    if academic_level and academic_level != "all":
+        queryset = queryset.filter(academic_level__name=academic_level)
+    if batch and batch != "all":
+        queryset = queryset.filter(batch__name=batch)
+    if campus and campus != "all":
+        queryset = queryset.filter(campus__name=campus)
+    if program and program != "all":
+        queryset = queryset.filter(program_choices__program__name__icontains=program)
+    if faculty and faculty != "all":
+        queryset = queryset.filter(program_choices__program__faculty__name__icontains=faculty)
+    if date_from:
+        queryset = queryset.filter(created_at__date__gte=date_from)
+    if date_to:
+        queryset = queryset.filter(created_at__date__lte=date_to)
+
+    if choice_confirmation and choice_confirmation != "all":
+        cc = choice_confirmation.strip().lower()
+        if cc == "awaiting":
+            queryset = queryset.filter(
+                status__in=["submitted", "under_review"],
+                program_choices_confirmed_at__isnull=True,
+            )
+        elif cc == "confirmed":
+            queryset = queryset.filter(program_choices_confirmed_at__isnull=False)
+        elif cc == "flagged":
+            from .utils.program_choice_integrity import application_ids_with_suspect_program_choices
+
+            queryset = queryset.filter(
+                id__in=application_ids_with_suspect_program_choices()
+            )
+
+    return queryset.distinct()
+
+
+class ApplicationChoiceStatsView(APIView):
+    """Counts for programme-choice summary cards (respects list filters except choice_confirmation)."""
+
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+    def get(self, request):
+        base = build_applications_report_queryset(request, apply_choice_filter=False)
+        from .utils.program_choice_integrity import application_ids_with_suspect_program_choices
+
+        flagged_ids = application_ids_with_suspect_program_choices()
+        return Response(
+            {
+                "awaiting": base.filter(
+                    status__in=["submitted", "under_review"],
+                    program_choices_confirmed_at__isnull=True,
+                ).count(),
+                "confirmed": base.filter(
+                    program_choices_confirmed_at__isnull=False
+                ).count(),
+                "flagged": base.filter(id__in=flagged_ids).count(),
+            }
+        )
+
+
 class AllApplicationsReport(generics.ListAPIView):
     serializer_class = AllApplicationsReportSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
@@ -600,78 +697,7 @@ class AllApplicationsReport(generics.ListAPIView):
     ordering = ['created_at']
 
     def get_queryset(self):
-        queryset = Application.objects.select_related(
-            'academic_level', 
-            'batch', 
-            'campus', 
-            'applicant',
-            'entered_by'
-        ).prefetch_related(
-            Prefetch(
-                'program_choices',
-                queryset=ApplicationProgramChoice.objects.select_related('program__faculty')
-                          .order_by('choice_order'),
-                to_attr='prefetched_program_choices'
-            )
-        ).filter(
-            ~Q(status__in=['draft', 'Admitted', 'admitted'])
-        ).order_by('created_at')
-
-        # ====================== MANUAL FILTERS ======================
-        status = self.request.query_params.get('status')
-        gender = self.request.query_params.get('gender')
-        academic_level = self.request.query_params.get('academic_level')
-        batch = self.request.query_params.get('batch')
-        campus = self.request.query_params.get('campus')
-        program = self.request.query_params.get('program')
-        faculty = self.request.query_params.get('faculty')
-        date_from = self.request.query_params.get('date_from')
-        date_to = self.request.query_params.get('date_to')
-        choice_confirmation = self.request.query_params.get('choice_confirmation')
-
-        if status and status != "all":
-            queryset = queryset.filter(status=status)
-
-        if gender and gender != "all":
-            queryset = queryset.filter(gender=gender)
-
-        if academic_level and academic_level != "all":
-            queryset = queryset.filter(academic_level__name=academic_level)
-
-        if batch and batch != "all":
-            queryset = queryset.filter(batch__name=batch)
-
-        if campus and campus != "all":
-            queryset = queryset.filter(campus__name=campus)
-
-        if program and program != "all":
-            queryset = queryset.filter(program_choices__program__name__icontains=program)
-
-        if faculty and faculty != "all":
-            queryset = queryset.filter(program_choices__program__faculty__name__icontains=faculty)
-
-        if date_from:
-            queryset = queryset.filter(created_at__date__gte=date_from)
-        if date_to:
-            queryset = queryset.filter(created_at__date__lte=date_to)
-
-        if choice_confirmation and choice_confirmation != "all":
-            cc = choice_confirmation.strip().lower()
-            if cc == "awaiting":
-                queryset = queryset.filter(
-                    status__in=["submitted", "under_review"],
-                    program_choices_confirmed_at__isnull=True,
-                )
-            elif cc == "confirmed":
-                queryset = queryset.filter(program_choices_confirmed_at__isnull=False)
-            elif cc == "flagged":
-                from .utils.program_choice_integrity import application_ids_with_suspect_program_choices
-
-                queryset = queryset.filter(
-                    id__in=application_ids_with_suspect_program_choices()
-                )
-
-        return queryset.distinct()
+        return build_applications_report_queryset(self.request, apply_choice_filter=True)
     
 class ListDirectEntryApplications(generics.ListAPIView):
     serializer_class = AllApplicationsReportSerializer
