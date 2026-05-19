@@ -936,7 +936,8 @@ class ChangeApplicationProgramme(APIView):
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=400)
 
-        # Staff edits require the applicant to confirm again — do not show as applicant-confirmed.
+        # Staff may override applicant confirmation; applicant must confirm again after admin edit.
+        had_applicant_confirmation = applicant_confirmed_program_choices(application)
         clear_program_choices_confirmation(application, save=False)
         update_fields = ["program_choices_confirmed_at", "program_choices_confirmed_by", "updated_at"]
         if campus_changed:
@@ -962,9 +963,14 @@ class ChangeApplicationProgramme(APIView):
             description="; ".join(desc_parts) if desc_parts else "Programme choices updated.",
             request=request,
         )
+        detail = "Programme choices updated successfully."
+        if had_applicant_confirmation:
+            detail += (
+                " Applicant confirmation was cleared; they should review and confirm again in the portal."
+            )
         return Response(
             {
-                "detail": "Programme choices updated successfully.",
+                "detail": detail,
                 "programs": [
                     {"id": p.id, "name": p.name}
                     for p in ordered_programs_for_application(application)
