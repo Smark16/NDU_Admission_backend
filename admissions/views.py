@@ -31,12 +31,15 @@ from payments.utils.school_pay_code import register_student_with_schoolpay
 from .utils.trigger_background_tasks import trigger_background_tasks
 from .utils.application_programs_display import ordered_programs_for_application
 from .utils.program_choices import (
+    PROGRAM_CHOICE_CONFIRMED_BY_APPLICANT,
+    applicant_confirmed_program_choices,
     applicant_may_edit_program_choices,
     clear_program_choices_confirmation,
     mark_program_choices_confirmed,
     program_options_for_application,
     sync_application_program_choices,
 )
+from .utils.program_choice_integrity import application_has_suspect_program_choices
 from payments.models import ApplicationPayment
 from Drafts.models import DraftApplication
 from django.db.models import Q, Prefetch
@@ -587,6 +590,107 @@ class StandardPagination(PageNumberPagination):
     page_size_query_param = 'page_size'
     max_page_size = 200
 
+
+def build_applications_report_queryset(request, *, apply_choice_filter: bool = True):
+    """Shared filters for AllApplicationsReport and choice stats."""
+    queryset = (
+        Application.objects.select_related(
+            "academic_level",
+            "batch",
+            "campus",
+            "applicant",
+            "entered_by",
+        )
+        .prefetch_related(
+            Prefetch(
+                "program_choices",
+                queryset=ApplicationProgramChoice.objects.select_related(
+                    "program__faculty"
+                ).order_by("choice_order"),
+                to_attr="prefetched_program_choices",
+            )
+        )
+        .filter(~Q(status__in=["draft", "Admitted", "admitted"]))
+        .order_by("created_at")
+    )
+
+    status = request.query_params.get("status")
+    gender = request.query_params.get("gender")
+    academic_level = request.query_params.get("academic_level")
+    batch = request.query_params.get("batch")
+    campus = request.query_params.get("campus")
+    program = request.query_params.get("program")
+    faculty = request.query_params.get("faculty")
+    date_from = request.query_params.get("date_from")
+    date_to = request.query_params.get("date_to")
+    choice_confirmation = request.query_params.get("choice_confirmation") if apply_choice_filter else None
+
+    if status and status != "all":
+        queryset = queryset.filter(status=status)
+    if gender and gender != "all":
+        queryset = queryset.filter(gender=gender)
+    if academic_level and academic_level != "all":
+        queryset = queryset.filter(academic_level__name=academic_level)
+    if batch and batch != "all":
+        queryset = queryset.filter(batch__name=batch)
+    if campus and campus != "all":
+        queryset = queryset.filter(campus__name=campus)
+    if program and program != "all":
+        queryset = queryset.filter(program_choices__program__name__icontains=program)
+    if faculty and faculty != "all":
+        queryset = queryset.filter(program_choices__program__faculty__name__icontains=faculty)
+    if date_from:
+        queryset = queryset.filter(created_at__date__gte=date_from)
+    if date_to:
+        queryset = queryset.filter(created_at__date__lte=date_to)
+
+    if choice_confirmation and choice_confirmation != "all":
+        cc = choice_confirmation.strip().lower()
+        if cc == "awaiting":
+            queryset = queryset.filter(
+                status__in=["submitted", "under_review"],
+                program_choices_confirmed_at__isnull=True,
+            )
+        elif cc == "confirmed":
+            queryset = queryset.filter(
+                program_choices_confirmed_at__isnull=False,
+                program_choices_confirmed_by=PROGRAM_CHOICE_CONFIRMED_BY_APPLICANT,
+            )
+        elif cc == "flagged":
+            from .utils.program_choice_integrity import application_ids_with_suspect_program_choices
+
+            queryset = queryset.filter(
+                id__in=application_ids_with_suspect_program_choices()
+            )
+
+    return queryset.distinct()
+
+
+class ApplicationChoiceStatsView(APIView):
+    """Counts for programme-choice summary cards (respects list filters except choice_confirmation)."""
+
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+    def get(self, request):
+        base = build_applications_report_queryset(request, apply_choice_filter=False)
+        from .utils.program_choice_integrity import application_ids_with_suspect_program_choices
+
+        flagged_ids = application_ids_with_suspect_program_choices()
+        return Response(
+            {
+                "awaiting": base.filter(
+                    status__in=["submitted", "under_review"],
+                    program_choices_confirmed_at__isnull=True,
+                ).count(),
+                "confirmed": base.filter(
+                    program_choices_confirmed_at__isnull=False,
+                    program_choices_confirmed_by=PROGRAM_CHOICE_CONFIRMED_BY_APPLICANT,
+                ).count(),
+                "flagged": base.filter(id__in=flagged_ids).count(),
+            }
+        )
+
+
 class AllApplicationsReport(generics.ListAPIView):
     serializer_class = AllApplicationsReportSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
@@ -598,61 +702,7 @@ class AllApplicationsReport(generics.ListAPIView):
     ordering = ['created_at']
 
     def get_queryset(self):
-        queryset = Application.objects.select_related(
-            'academic_level', 
-            'batch', 
-            'campus', 
-            'applicant',
-            'entered_by'
-        ).prefetch_related(
-            Prefetch(
-                'program_choices',
-                queryset=ApplicationProgramChoice.objects.select_related('program__faculty')
-                          .order_by('choice_order'),
-                to_attr='prefetched_program_choices'
-            )
-        ).filter(
-            ~Q(status__in=['draft', 'Admitted', 'admitted'])
-        ).order_by('created_at')
-
-        # ====================== MANUAL FILTERS ======================
-        status = self.request.query_params.get('status')
-        gender = self.request.query_params.get('gender')
-        academic_level = self.request.query_params.get('academic_level')
-        batch = self.request.query_params.get('batch')
-        campus = self.request.query_params.get('campus')
-        program = self.request.query_params.get('program')
-        faculty = self.request.query_params.get('faculty')
-        date_from = self.request.query_params.get('date_from')
-        date_to = self.request.query_params.get('date_to')
-
-        if status and status != "all":
-            queryset = queryset.filter(status=status)
-
-        if gender and gender != "all":
-            queryset = queryset.filter(gender=gender)
-
-        if academic_level and academic_level != "all":
-            queryset = queryset.filter(academic_level__name=academic_level)
-
-        if batch and batch != "all":
-            queryset = queryset.filter(batch__name=batch)
-
-        if campus and campus != "all":
-            queryset = queryset.filter(campus__name=campus)
-
-        if program and program != "all":
-            queryset = queryset.filter(program_choices__program__name__icontains=program)
-
-        if faculty and faculty != "all":
-            queryset = queryset.filter(program_choices__program__faculty__name__icontains=faculty)
-
-        if date_from:
-            queryset = queryset.filter(created_at__date__gte=date_from)
-        if date_to:
-            queryset = queryset.filter(created_at__date__lte=date_to)
-
-        return queryset.distinct()
+        return build_applications_report_queryset(self.request, apply_choice_filter=True)
     
 class ListDirectEntryApplications(generics.ListAPIView):
     serializer_class = AllApplicationsReportSerializer
@@ -887,12 +937,32 @@ class ChangeApplicationProgramme(APIView):
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=400)
 
+        # Staff edits require the applicant to confirm again — do not show as applicant-confirmed.
         clear_program_choices_confirmation(application, save=False)
-        update_fields = ["program_choices_confirmed_at", "updated_at"]
+        update_fields = ["program_choices_confirmed_at", "program_choices_confirmed_by", "updated_at"]
         if campus_changed:
             update_fields.insert(0, "campus")
         application.save(update_fields=update_fields)
 
+        confirmed_at = application.program_choices_confirmed_at
+        program_parts = [
+            p.name for p in ordered_programs_for_application(application)
+        ]
+        desc_parts = ["Programmes: " + ", ".join(program_parts)] if program_parts else []
+        if application.campus:
+            desc_parts.append(f"Campus: {application.campus.name}")
+        raw_note = request.data.get("note")
+        if raw_note:
+            txt = str(raw_note).strip()
+            if txt:
+                desc_parts.append(f"Note: {txt[:500]}")
+        log_audit_event(
+            request.user,
+            "program_choice_admin_change",
+            application,
+            description="; ".join(desc_parts) if desc_parts else "Programme choices updated.",
+            request=request,
+        )
         return Response(
             {
                 "detail": "Programme choices updated successfully.",
@@ -901,7 +971,9 @@ class ChangeApplicationProgramme(APIView):
                     for p in ordered_programs_for_application(application)
                 ],
                 "campus": application.campus.name if application.campus else None,
-                "program_choices_confirmed_at": None,
+                "program_choices_confirmed_at": (
+                    confirmed_at.isoformat() if confirmed_at else None
+                ),
             },
             status=200,
         )
@@ -925,14 +997,17 @@ class ApplicantProgramChoicesView(APIView):
             for p in ordered_programs_for_application(application)
         ]
         may_edit = applicant_may_edit_program_choices(application)
+        suspect = application_has_suspect_program_choices(application)
         return {
             "application_id": application.id,
             "status": application.status,
             "program_choices_confirmed_at": application.program_choices_confirmed_at,
+            "program_choices_confirmed_by": application.program_choices_confirmed_by or "",
             "program_choices_verification_sent_at": application.program_choices_verification_sent_at,
+            "program_choices_suspect": suspect,
             "can_update_programs": may_edit,
             "can_confirm": may_edit and len(current) > 0,
-            "is_confirmed": bool(application.program_choices_confirmed_at),
+            "is_confirmed": applicant_confirmed_program_choices(application),
             "current_programs": current,
             "available_programs": program_options_for_application(application) if may_edit else [],
             "campus_id": application.campus_id,

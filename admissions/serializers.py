@@ -208,6 +208,7 @@ class AllApplicationsReportSerializer(serializers.ModelSerializer):
     programs = serializers.SerializerMethodField()
     faculty = serializers.SerializerMethodField()
     entered_by = serializers.SerializerMethodField()
+    program_choices_suspect = serializers.SerializerMethodField()
 
     def get_academic_level(self, obj):
         return obj.academic_level.name if obj.academic_level else ""
@@ -245,6 +246,11 @@ class AllApplicationsReportSerializer(serializers.ModelSerializer):
             return name or eb.username or str(eb.pk)
         return "Online"
 
+    def get_program_choices_suspect(self, obj):
+        from admissions.utils.program_choice_integrity import application_has_suspect_program_choices
+
+        return application_has_suspect_program_choices(obj)
+
     class Meta:
         model = Application
         fields = [
@@ -260,6 +266,11 @@ class AllApplicationsReportSerializer(serializers.ModelSerializer):
             "faculty",
             "status",
             "created_at",
+            "updated_at",
+            "reviewed_at",
+            "program_choices_confirmed_at",
+            "program_choices_confirmed_by",
+            "program_choices_suspect",
             "is_direct_entry",
             "entered_by",
         ]

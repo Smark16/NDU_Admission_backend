@@ -182,10 +182,10 @@ class AnalyticsDashboardView(APIView):
         )
 
         # ── Faculty: accepted applications vs admitted students ───────────────
-        # Accepted = Application with status accepted, faculty from chosen programmes (M2M → distinct count).
+        # Accepted = Application with status accepted; faculty via ApplicationProgramChoice.
         accepted_applications_by_faculty = list(
             submitted_qs.filter(status="accepted")
-            .values(faculty_name=F("programs__faculty__name"))
+            .values(faculty_name=F("program_choices__program__faculty__name"))
             .annotate(count=Count("id", distinct=True))
             .exclude(faculty_name=None)
             .order_by("-count")
@@ -202,8 +202,8 @@ class AnalyticsDashboardView(APIView):
         # ── Top 10 Programs by Applications ───────────────────────────────────
         top_programs = list(
             submitted_qs
-            .values(program_name=F("programs__name"))
-            .annotate(count=Count("id"))
+            .values(program_name=F("program_choices__program__name"))
+            .annotate(count=Count("id", distinct=True))
             .exclude(program_name=None)
             .order_by("-count")[:10]
         )
