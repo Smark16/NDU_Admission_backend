@@ -34,9 +34,11 @@ from .utils.program_choices import (
     applicant_may_edit_program_choices,
     clear_program_choices_confirmation,
     mark_program_choices_confirmed,
+    mark_program_choices_settled_by_admin,
     program_options_for_application,
     sync_application_program_choices,
 )
+from .utils.program_choice_integrity import application_has_suspect_program_choices
 from payments.models import ApplicationPayment
 from Drafts.models import DraftApplication
 from django.db.models import Q, Prefetch
@@ -887,12 +889,31 @@ class ChangeApplicationProgramme(APIView):
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=400)
 
-        clear_program_choices_confirmation(application, save=False)
+        mark_program_choices_settled_by_admin(application, save=False)
         update_fields = ["program_choices_confirmed_at", "updated_at"]
         if campus_changed:
             update_fields.insert(0, "campus")
         application.save(update_fields=update_fields)
 
+        confirmed_at = application.program_choices_confirmed_at
+        program_parts = [
+            p.name for p in ordered_programs_for_application(application)
+        ]
+        desc_parts = ["Programmes: " + ", ".join(program_parts)] if program_parts else []
+        if application.campus:
+            desc_parts.append(f"Campus: {application.campus.name}")
+        raw_note = request.data.get("note")
+        if raw_note:
+            txt = str(raw_note).strip()
+            if txt:
+                desc_parts.append(f"Note: {txt[:500]}")
+        log_audit_event(
+            request.user,
+            "program_choice_admin_change",
+            application,
+            description="; ".join(desc_parts) if desc_parts else "Programme choices updated.",
+            request=request,
+        )
         return Response(
             {
                 "detail": "Programme choices updated successfully.",
@@ -901,7 +922,9 @@ class ChangeApplicationProgramme(APIView):
                     for p in ordered_programs_for_application(application)
                 ],
                 "campus": application.campus.name if application.campus else None,
-                "program_choices_confirmed_at": None,
+                "program_choices_confirmed_at": (
+                    confirmed_at.isoformat() if confirmed_at else None
+                ),
             },
             status=200,
         )
@@ -925,11 +948,13 @@ class ApplicantProgramChoicesView(APIView):
             for p in ordered_programs_for_application(application)
         ]
         may_edit = applicant_may_edit_program_choices(application)
+        suspect = application_has_suspect_program_choices(application)
         return {
             "application_id": application.id,
             "status": application.status,
             "program_choices_confirmed_at": application.program_choices_confirmed_at,
             "program_choices_verification_sent_at": application.program_choices_verification_sent_at,
+            "program_choices_suspect": suspect,
             "can_update_programs": may_edit,
             "can_confirm": may_edit and len(current) > 0,
             "is_confirmed": bool(application.program_choices_confirmed_at),

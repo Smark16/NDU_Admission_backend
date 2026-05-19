@@ -21,13 +21,13 @@ from __future__ import annotations
 
 import csv
 import time
-from collections import defaultdict
 from datetime import date, datetime
 from pathlib import Path
 
 from django.core.management.base import BaseCommand, CommandError
 from django.db.models import Q
-from admissions.models import Application, ApplicationProgramChoice
+from admissions.models import Application
+from admissions.utils.program_choice_integrity import application_ids_with_suspect_program_choices
 from admissions.utils.program_choice_verification_email import (
     build_program_choice_verification_email,
 )
@@ -40,40 +40,6 @@ DEFAULT_STATUSES = (
     "accepted",
     "approved",
 )
-
-CLONED_SIGNATURES = {
-    (28, 29, 30),
-    (162, 163, 164),
-    (181, 190, 195),
-    (154, 153, 210),
-    (31, 77, 76),
-}
-
-
-def _resolve_order_field() -> str:
-    for name in ("choice_order", "preference", "rank", "order"):
-        try:
-            ApplicationProgramChoice._meta.get_field(name)
-        except Exception:
-            continue
-        return name
-    raise CommandError("ApplicationProgramChoice has no ordering field.")
-
-
-def _cloned_application_ids() -> set[int]:
-    order_field = _resolve_order_field()
-    by_app = defaultdict(list)
-    for aid, pid, ord_val in ApplicationProgramChoice.objects.values_list(
-        "application_id", "program_id", order_field
-    ):
-        by_app[aid].append((ord_val, pid))
-    out = set()
-    for aid, pairs in by_app.items():
-        sig = tuple(pid for _, pid in sorted(pairs))
-        if sig in CLONED_SIGNATURES:
-            out.add(aid)
-    return out
-
 
 class Command(BaseCommand):
     help = (
@@ -169,7 +135,7 @@ class Command(BaseCommand):
         )
 
         if options["cloned_only"]:
-            cloned_ids = _cloned_application_ids()
+            cloned_ids = application_ids_with_suspect_program_choices()
             qs = qs.filter(id__in=cloned_ids)
             self.stdout.write(f"Cloned-template application IDs: {len(cloned_ids)}")
 
