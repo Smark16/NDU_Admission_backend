@@ -667,7 +667,7 @@ def build_applications_report_queryset(request, *, apply_choice_filter: bool = T
 
 
 class ApplicationChoiceStatsView(APIView):
-    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    permission_classes = [IsAuthenticated]
 
     def get(self, request):
         base = build_applications_report_queryset(request, apply_choice_filter=False)
