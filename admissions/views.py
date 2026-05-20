@@ -1435,6 +1435,28 @@ class UpdateAdditionalQualififcations(APIView):
         serializer = AdditionalQualifficationsSerializer(created, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
+#==================================================Update Documents=======================================
+class UpdateDocumentAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, doc_id):
+        document = get_object_or_404(ApplicationDocument, id=doc_id)
+
+        # Security check
+        if document.application.applicant != request.user:
+            return Response({"detail": "Permission denied"}, status=status.HTTP_403_FORBIDDEN)
+
+        file = request.FILES.get('file')
+        if file:
+            document.file = file
+
+        if 'document_type' in request.data:
+            document.document_type = request.data['document_type']
+        if 'name' in request.data:
+            document.name = request.data['name']
+
+        document.save()
+        return Response({"detail": "Document updated successfully"}, status=status.HTTP_200_OK)
 
 # ========================================================Batch=================================================
 

@@ -51,7 +51,7 @@ urlpatterns = [
     path('update_olevel_results/<int:application_id>/', views.UpdateOlevelResults.as_view()),
     path('update_alevel_results/<int:application_id>/', views.UpdateAlevelResults.as_view()),
     path('update_additional_qualifications/<int:application_id>/', views.UpdateAdditionalQualififcations.as_view()),
-
+    path('document/<int:doc_id>/update/', views.UpdateDocumentAPIView.as_view(), name='update-document'),
     # Subject Urls
 
     # ========================Alevel=====================
