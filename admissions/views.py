@@ -624,6 +624,17 @@ def build_applications_report_queryset(request, *, apply_choice_filter: bool = T
     date_from = request.query_params.get("date_from")
     date_to = request.query_params.get("date_to")
     choice_confirmation = request.query_params.get("choice_confirmation") if apply_choice_filter else None
+    search = (request.query_params.get("search") or "").strip()
+
+    if search:
+        queryset = queryset.filter(
+            Q(first_name__icontains=search)
+            | Q(last_name__icontains=search)
+            | Q(email__icontains=search)
+            | Q(application_reference__icontains=search)
+            | Q(program_choices__program__name__icontains=search)
+            | Q(program_choices__program__faculty__name__icontains=search)
+        )
 
     if status and status != "all":
         queryset = queryset.filter(status=status)
@@ -693,10 +704,8 @@ class AllApplicationsReport(generics.ListAPIView):
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
     pagination_class = StandardPagination
 
-    search_fields = ['first_name', 'last_name', 'email', 'program_choices__program__name',
-        'program_choices__program__faculty__name',]
     ordering_fields = ['created_at', 'id', 'status', 'first_name']
-    filter_backends = [SearchFilter, OrderingFilter, DjangoFilterBackend]
+    filter_backends = [OrderingFilter]
     ordering = ['created_at']
 
     def get_queryset(self):
