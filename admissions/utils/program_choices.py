@@ -80,6 +80,41 @@ def sync_application_program_choices(application, program_ids: list[int]) -> Non
     Choice.objects.bulk_create(rows)
 
 
+def sync_application_academic_level_from_programs(
+    application, program_ids: list[int]
+) -> tuple[bool, str | None]:
+    """
+    Set application.academic_level from the first programme choice.
+    All selected programmes must share the same academic level.
+    Returns (changed, new_level_name).
+    """
+    if not program_ids:
+        return False, None
+
+    programs = list(
+        Program.objects.filter(id__in=program_ids).select_related("academic_level")
+    )
+    by_id = {p.id: p for p in programs}
+    ordered = [by_id[pid] for pid in program_ids if pid in by_id]
+    if not ordered:
+        return False, None
+
+    level_ids = {p.academic_level_id for p in ordered if p.academic_level_id}
+    if len(level_ids) > 1:
+        raise ValueError(
+            "All selected programmes must be at the same academic level (e.g. all Degree or all Diploma)."
+        )
+
+    primary = ordered[0]
+    if not primary.academic_level_id:
+        return False, None
+
+    changed = application.academic_level_id != primary.academic_level_id
+    application.academic_level = primary.academic_level
+    level_name = primary.academic_level.name if primary.academic_level else None
+    return changed, level_name
+
+
 def clear_program_choices_confirmation(application, *, save: bool = True) -> None:
     application.program_choices_confirmed_at = None
     application.program_choices_confirmed_by = ""

@@ -26,6 +26,10 @@ from .semester_registration_views import (
     RegisterForCourses,
     UpdateRegistrationSettings,
 )
+from .student_tuition_payment_views import (
+    InitiateTuitionPaymentView,
+    TuitionPaymentStatusView,
+)
 from .other_fee_schedule_views import (
     OtherFeeScheduleCloneView,
     OtherFeeScheduleRuleDetailView,
@@ -73,6 +77,16 @@ urlpatterns = [
     path('admin/tuition_ledger/transactions', AdminTuitionLedgerTransactionsView.as_view(), name='admin_tuition_ledger_transactions'),
     path('student/tuition_structure', GetStudentTuitionStructure.as_view(), name='get_student_tuition_structure'),
     path('student/payment_status', GetStudentPaymentStatus.as_view(), name='get_student_payment_status'),
+    path(
+        'student/initiate_tuition_payment',
+        InitiateTuitionPaymentView.as_view(),
+        name='initiate_tuition_payment',
+    ),
+    path(
+        'student/tuition_payment_status/<str:payment_ref>',
+        TuitionPaymentStatusView.as_view(),
+        name='tuition_payment_status',
+    ),
     path(
         'student/offer_letter_pdf',
         DownloadStudentOfferLetterPdf.as_view(),

@@ -155,11 +155,14 @@ class ProgramSerializer(serializers.ModelSerializer):
 class ListProgramsSerializer(serializers.ModelSerializer):
     faculty = serializers.CharField(source='faculty.name', read_only=True, allow_null=True)
     academic_level = serializers.CharField(source='academic_level.name', read_only=True)
+    academic_level_id = serializers.IntegerField(
+        source='academic_level.id', read_only=True, allow_null=True
+    )
 
     class Meta:
         model = Program
         fields = [
-            'id', 'name', 'code', 'short_form', 'faculty', 'academic_level',
+            'id', 'name', 'code', 'short_form', 'faculty', 'academic_level', 'academic_level_id',
             'campuses', 'min_years', 'max_years',
             'curriculum_mode', 'curriculum_source_program',
             'is_active', 'created_at', 'updated_at',

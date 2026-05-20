@@ -286,7 +286,8 @@ class ApplicationDetailSerializer(serializers.ModelSerializer):
                   'batch', "nin", "passport_number","disabled", 'olevel_school', 'olevel_year', 'alevel_school', 'alevel_year', 'address',
                   'middle_name', 'next_of_kin_name', 'next_of_kin_contact', 'next_of_kin_relationship', 'revoked_by', 'is_revoked','revocation_reason',
                   'status', 'application_fee_amount','application_fee_paid', 'created_at', 'reviewed_at', 'passport_photo','reviewed_by',
-                  'program_choices_confirmed_at', 'program_choices_verification_sent_at']
+                  'program_choices_confirmed_at', 'program_choices_confirmed_by',
+                  'program_choices_verification_sent_at']
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
@@ -296,6 +297,10 @@ class ApplicationDetailSerializer(serializers.ModelSerializer):
         ]
         data["campus_id"] = instance.campus_id
         data["campus"] = instance.campus.name if instance.campus_id else None
+        data["academic_level_id"] = instance.academic_level_id
+        data["academic_level"] = (
+            instance.academic_level.name if instance.academic_level_id else None
+        )
         return data
     
 # o level subject
