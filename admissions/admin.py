@@ -82,6 +82,7 @@ class ApplicationAdmin(admin.ModelAdmin):
 @admin.register(ApplicationProgramChoice)
 class ApplicationProgramChoiceAdmin(admin.ModelAdmin):
     list_display = ['application', 'program', 'choice_order']
+    search_fields = ['program__name', 'application__first_name', 'application__last_name']
 
 @admin.register(OLevelSubject)
 class OLevelSubjectAdmin(admin.ModelAdmin):
