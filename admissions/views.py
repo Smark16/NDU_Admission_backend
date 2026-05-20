@@ -593,7 +593,6 @@ class StandardPagination(PageNumberPagination):
 
 
 def build_applications_report_queryset(request, *, apply_choice_filter: bool = True):
-    """Shared filters for AllApplicationsReport and choice stats."""
     queryset = (
         Application.objects.select_related(
             "academic_level",
@@ -668,9 +667,7 @@ def build_applications_report_queryset(request, *, apply_choice_filter: bool = T
 
 
 class ApplicationChoiceStatsView(APIView):
-    """Counts for programme-choice summary cards (respects list filters except choice_confirmation)."""
-
-    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    permission_classes = [IsAuthenticated]
 
     def get(self, request):
         base = build_applications_report_queryset(request, apply_choice_filter=False)
@@ -696,7 +693,8 @@ class AllApplicationsReport(generics.ListAPIView):
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
     pagination_class = StandardPagination
 
-    search_fields = ['first_name', 'last_name', 'email', 'application_reference']
+    search_fields = ['first_name', 'last_name', 'email', 'program_choices__program__name',
+        'program_choices__program__faculty__name',]
     ordering_fields = ['created_at', 'id', 'status', 'first_name']
     filter_backends = [SearchFilter, OrderingFilter, DjangoFilterBackend]
     ordering = ['created_at']
