@@ -47,11 +47,15 @@ urlpatterns = [
     path('generate-reg-no/', views.generate_reg_no_view, name='generate_reg_no'),
     path('list_selected_programs/<int:application_id>', views.ListSelectedPrograms.as_view(), name='list_selected_programs'),
 
-    #resullts
+    #results
     path('update_olevel_results/<int:application_id>/', views.UpdateOlevelResults.as_view()),
     path('update_alevel_results/<int:application_id>/', views.UpdateAlevelResults.as_view()),
     path('update_additional_qualifications/<int:application_id>/', views.UpdateAdditionalQualififcations.as_view()),
     path('document/<int:doc_id>/update/', views.UpdateDocumentAPIView.as_view(), name='update-document'),
+    path('upload_document/<int:application_id>/', views.UploadDocumentAPIView.as_view()),
+    path('document/<int:doc_id>/', views.DeleteDocumentAPIView.as_view()),
+    path('personal-info/<int:application_id>/', views.UpdatePersonalInfoAPIView.as_view()),
+
     # Subject Urls
 
     # ========================Alevel=====================

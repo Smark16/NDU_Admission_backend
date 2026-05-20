@@ -1381,6 +1381,35 @@ class DeleteAlevelSubjects(generics.RetrieveDestroyAPIView):
         instance.delete()
 
         return Response({"detail":"subject deleted successfully"})
+
+#=====================================update personal info==============================================
+# views.py
+class UpdatePersonalInfoAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, application_id):
+        application = get_object_or_404(Application, id=application_id)
+
+        if application.applicant != request.user:
+            return Response({"detail": "Permission denied"}, status=status.HTTP_403_FORBIDDEN)
+
+        # Update all allowed fields
+        fields = [
+            'first_name', 'title', 'last_name', 'middle_name',
+            'gender', 'nationality', 'phone', 'email', 'address', 'nin',
+            'passport_number', 'disabled', 'next_of_kin_name',
+            'next_of_kin_contact', 'next_of_kin_relationship',
+            'has_olevel', 'olevel_school', 'olevel_year', 'olevel_index_number',
+            'has_alevel', 'alevel_school', 'alevel_year', 'alevel_index_number',
+            'alevel_combination'
+        ]
+
+        for field in fields:
+            if field in request.data:
+                setattr(application, field, request.data[field])
+
+        application.save()
+        return Response({"detail": "Personal information updated successfully"}, status=status.HTTP_200_OK)
     
 #=================================================Olevel Results==========================================
 #update Olevel results
@@ -1463,21 +1492,54 @@ class UpdateDocumentAPIView(APIView):
     def patch(self, request, doc_id):
         document = get_object_or_404(ApplicationDocument, id=doc_id)
 
-        # Security check
-        if document.application.applicant != request.user:
-            return Response({"detail": "Permission denied"}, status=status.HTTP_403_FORBIDDEN)
-
         file = request.FILES.get('file')
         if file:
             document.file = file
+            document.name = file.name  # Update name
 
         if 'document_type' in request.data:
             document.document_type = request.data['document_type']
-        if 'name' in request.data:
-            document.name = request.data['name']
 
         document.save()
         return Response({"detail": "Document updated successfully"}, status=status.HTTP_200_OK)
+
+#==========================Upload documnts===============================================
+class UploadDocumentAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, application_id):
+        application = get_object_or_404(Application, id=application_id)
+
+        file = request.FILES.get('file')
+        if not file:
+            return Response({"detail": "No file provided"}, status=status.HTTP_400_BAD_REQUEST)
+
+        document_type = request.data.get('document_type')
+        if not document_type:
+            return Response({"detail": "document_type is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        document = ApplicationDocument.objects.create(
+            application=application,
+            name=file.name,                
+            document_type=document_type,
+            file=file,
+        )
+
+        return Response({
+            "id": document.id,
+            "name": document.name,
+            "document_type": document.document_type,
+            "uploaded_at": document.uploaded_at,
+        }, status=status.HTTP_201_CREATED)
+
+#==================================Delete documents================================================
+class DeleteDocumentAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, doc_id):
+        document = get_object_or_404(ApplicationDocument, id=doc_id)
+        document.delete()
+        return Response({"detail": "Document deleted"}, status=status.HTTP_204_NO_CONTENT)
 
 # ========================================================Batch=================================================
 
