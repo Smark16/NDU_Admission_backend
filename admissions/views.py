@@ -735,7 +735,7 @@ class ListDirectEntryApplications(generics.ListAPIView):
         ).order_by('-created_at')
 
 class RejectStudent(APIView):
-    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    permission_classes = [IsAuthenticated]
 
     def patch(self, request, application_id):
         if not user_can_reject_application(request.user):
@@ -1393,6 +1393,33 @@ class DeleteAlevelSubjects(generics.RetrieveDestroyAPIView):
 
 #=====================================update personal info==============================================
 # views.py
+# class UpdatePersonalInfoAPIView(APIView):
+#     permission_classes = [IsAuthenticated]
+
+#     def patch(self, request, application_id):
+#         application = get_object_or_404(Application, id=application_id)
+
+#         if application.applicant != request.user:
+#             return Response({"detail": "Permission denied"}, status=status.HTTP_403_FORBIDDEN)
+
+#         # Update all allowed fields
+#         fields = [
+#             'first_name', 'title', 'last_name', 'middle_name','date_of_birth',
+#             'gender', 'nationality', 'phone', 'email', 'address', 'nin',
+#             'passport_number', 'disabled', 'next_of_kin_name',
+#             'next_of_kin_contact', 'next_of_kin_relationship',
+#             'has_olevel', 'olevel_school', 'olevel_year', 'olevel_index_number',
+#             'has_alevel', 'alevel_school', 'alevel_year', 'alevel_index_number',
+#             'alevel_combination'
+#         ]
+
+#         for field in fields:
+#             if field in request.data:
+#                 setattr(application, field, request.data[field])
+
+#         application.save()
+#         return Response({"detail": "Personal information updated successfully"}, status=status.HTTP_200_OK)
+
 class UpdatePersonalInfoAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -1402,7 +1429,6 @@ class UpdatePersonalInfoAPIView(APIView):
         if application.applicant != request.user:
             return Response({"detail": "Permission denied"}, status=status.HTTP_403_FORBIDDEN)
 
-        # Update all allowed fields
         fields = [
             'first_name', 'title', 'last_name', 'middle_name',
             'gender', 'nationality', 'phone', 'email', 'address', 'nin',
@@ -1417,8 +1443,37 @@ class UpdatePersonalInfoAPIView(APIView):
             if field in request.data:
                 setattr(application, field, request.data[field])
 
-        application.save()
-        return Response({"detail": "Personal information updated successfully"}, status=status.HTTP_200_OK)
+        # ==================== SPECIAL HANDLING FOR date_of_birth ====================
+        if 'date_of_birth' in request.data:
+            dob = request.data['date_of_birth']
+            if dob:  # Only process if value is provided
+                try:
+                    # Try to parse common date formats
+                    if isinstance(dob, str):
+                        # Handle YYYY-MM-DD (most common from frontend)
+                        if len(dob) >= 10:
+                            parsed_date = datetime.strptime(dob[:10], "%Y-%m-%d").date()
+                            application.date_of_birth = parsed_date
+                        else:
+                            raise ValueError("Invalid date format")
+                    else:
+                        application.date_of_birth = dob
+                except (ValueError, TypeError) as e:
+                    return Response({
+                        "detail": "Invalid date_of_birth format. Use YYYY-MM-DD (e.g., 2000-12-25)"
+                    }, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            application.save()
+            return Response({
+                "detail": "Personal information updated successfully"
+            }, status=status.HTTP_200_OK)
+        except ValidationError as e:
+            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({
+                "detail": "An error occurred while saving."
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
 #=================================================Olevel Results==========================================
 #update Olevel results
