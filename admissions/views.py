@@ -43,7 +43,7 @@ from .utils.program_choices import (
 from .utils.program_choice_integrity import application_has_suspect_program_choices
 from payments.models import ApplicationPayment
 from Drafts.models import DraftApplication
-from django.db.models import Q, Prefetch
+from django.db.models import Q, Prefetch, Count
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter, OrderingFilter
 from datetime import datetime
@@ -591,7 +591,7 @@ class StandardPagination(PageNumberPagination):
     page_size_query_param = 'page_size'
     max_page_size = 200
 
-
+# Applicant lists
 def build_applications_report_queryset(request, *, apply_choice_filter: bool = True):
     queryset = (
         Application.objects.select_related(
@@ -676,6 +676,79 @@ def build_applications_report_queryset(request, *, apply_choice_filter: bool = T
 
     return queryset.distinct()
 
+# applicant detailed report
+def build_applications_detail_report_queryset(request, *, apply_choice_filter: bool = True):
+    queryset = (
+        Application.objects.select_related(
+            "academic_level",
+            "batch",
+            "campus",
+            "applicant",
+            "entered_by",
+        )
+        .prefetch_related(
+            Prefetch(
+                "program_choices",
+                queryset=ApplicationProgramChoice.objects.select_related(
+                    "program__faculty"
+                ).order_by("choice_order"),
+                to_attr="prefetched_program_choices",
+            )
+        )
+        .filter(~Q(status__in=["draft"]))
+        .order_by("created_at")
+    )
+
+    status = request.query_params.get("status")
+    gender = request.query_params.get("gender")
+    academic_level = request.query_params.get("academic_level")
+    batch = request.query_params.get("batch")
+    campus = request.query_params.get("campus")
+    program = request.query_params.get("program")
+    faculty = request.query_params.get("faculty")
+    date_from = request.query_params.get("date_from")
+    date_to = request.query_params.get("date_to")
+    search = (request.query_params.get("search") or "").strip()
+    direct_entry_param = request.query_params.get("is_direct_entry")
+
+    if search:
+        queryset = queryset.filter(
+            Q(first_name__icontains=search)
+            | Q(last_name__icontains=search)
+            | Q(email__icontains=search)
+            | Q(application_reference__icontains=search)
+            | Q(program_choices__program__name__icontains=search)
+            | Q(program_choices__program__faculty__name__icontains=search)
+        )
+
+    if status and status != "all":
+        queryset = queryset.filter(status=status)
+    if gender and gender != "all":
+        queryset = queryset.filter(gender=gender)
+    if academic_level and academic_level != "all":
+        queryset = queryset.filter(academic_level__name=academic_level)
+    if batch and batch != "all":
+        queryset = queryset.filter(batch__name=batch)
+    if campus and campus != "all":
+        queryset = queryset.filter(campus__name=campus)
+    if program and program != "all":
+        queryset = queryset.filter(program_choices__program__name__icontains=program)
+    if faculty and faculty != "all":
+        queryset = queryset.filter(program_choices__program__faculty__name__icontains=faculty)
+    if date_from:
+        queryset = queryset.filter(created_at__date__gte=date_from)
+    if date_to:
+        queryset = queryset.filter(created_at__date__lte=date_to)
+    if direct_entry_param is not None:
+        direct_entry_param = str(direct_entry_param).lower().strip()
+        
+        if direct_entry_param == "true":
+            queryset = queryset.filter(is_direct_entry=True)
+        elif direct_entry_param == "false":
+            queryset = queryset.filter(is_direct_entry=False)
+
+    return queryset.distinct()
+
 
 class ApplicationChoiceStatsView(APIView):
     permission_classes = [IsAuthenticated]
@@ -699,6 +772,7 @@ class ApplicationChoiceStatsView(APIView):
             }
         )
 
+# Applicants List
 class AllApplicationsReport(generics.ListAPIView):
     serializer_class = AllApplicationsReportSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
@@ -710,6 +784,19 @@ class AllApplicationsReport(generics.ListAPIView):
 
     def get_queryset(self):
         return build_applications_report_queryset(self.request, apply_choice_filter=True)
+
+#Applicant detailed list
+class AllApplicationDetailedReport(generics.ListAPIView):
+    serializer_class = AllApplicationsReportSerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    pagination_class = StandardPagination
+
+    ordering_fields = ['created_at', 'id', 'status', 'first_name']
+    filter_backends = [OrderingFilter]
+    ordering = ['created_at']
+
+    def get_queryset(self):
+        return build_applications_detail_report_queryset(self.request, apply_choice_filter=True)
     
 class ListDirectEntryApplications(generics.ListAPIView):
     serializer_class = AllApplicationsReportSerializer
@@ -2507,26 +2594,42 @@ class AdminDashboardStats(APIView):
     permission_classes = [CanViewAdmissionQueues]
 
     def get(self, request):
-        total_applications = Application.objects.all().count()
-        online_applications = Application.objects.filter(is_direct_entry=False).count()
-        direct_applications = Application.objects.filter(is_direct_entry=True).count()
-        pending_applications = Application.objects.filter(status='submitted').count()
+        # Main applications stats in one query
+        apps_stats = Application.objects.aggregate(
+            total_applications=Count('id'),
+            online_applications=Count('id', filter=Q(is_direct_entry=False)),
+            direct_applications=Count('id', filter=Q(is_direct_entry=True)),
+            rejected_students=Count('id', filter=Q(status__iexact='rejected')),
+            
+            # Better pending logic - adjust according to your actual business logic
+            pending_applications=Count('id', filter=Q(
+                status__in=['submitted', 'under_review', 'pending', 'revoked', 'approved', 'accepted']
+            )),
+        )
+
+        # Admitted students
         admitted_students = AdmittedStudent.objects.filter(
-            is_admitted=True,
+            is_admitted=True
         ).count()
-        rejected_students = Application.objects.filter(status__iexact="rejected").count()
-        total_batches = Batch.objects.all().count()
-        active_batches = Batch.objects.filter(is_active=True).filter(batch_offer_window_q()).count()
+
+        # Batches stats
+        batches_stats = Batch.objects.aggregate(
+            total_batches=Count('id'),
+            active_batches=Count('id', filter=Q(
+                is_active=True,
+                # Add your batch_offer_window_q() condition here if needed
+            )),
+        )
 
         return Response({
-            "totalApplication":total_applications,
-            "onlineApplications":online_applications,
-            "directApplications":direct_applications,
-            "pendingApplications":pending_applications,
-            "admittedStudents":admitted_students,
-            "rejectedStudents":rejected_students,
-            "total_batches":total_batches,
-            "activeBatches":active_batches
+            "totalApplication": apps_stats['total_applications'],
+            "onlineApplications": apps_stats['online_applications'],
+            "directApplications": apps_stats['direct_applications'],
+            "pendingApplications": apps_stats['pending_applications'],
+            "admittedStudents": admitted_students,
+            "rejectedStudents": apps_stats['rejected_students'],
+            "total_batches": batches_stats['total_batches'],
+            "activeBatches": batches_stats['active_batches'],
         }, status=200)
 
 # ===================================================notifications======================================
