@@ -174,6 +174,7 @@ class Application(models.Model):
    
     # Application Status
     status = models.CharField(max_length=20, default='draft')
+    pending_reason = models.TextField(max_length=255, blank=True, null=True)
     application_reference = models.CharField(max_length=50, unique=True, blank=True, null=True)
     school_pay_reference = models.CharField(max_length=100, blank=True, null=True)
     application_fee_paid = models.BooleanField(default=False)

@@ -888,11 +888,14 @@ class ChangeApplicationStatus(APIView):
             with transaction.atomic():
                 app_id = self.kwargs['pk']
                 newStatus = request.data.get('status')
+                pending_reason = request.data.get('pending_reason')
                 ns = str(newStatus or '').strip().lower()
+                pr = str(pending_reason or '').strip().lower()
                 try:
                     application = Application.objects.select_related(
                       'applicant', 'batch', 'campus', 'academic_level', 'reviewed_by').get(pk=app_id)
                     application.status = ns
+                    application.pending_reason = pr
                     application.save()
 
                     return Response({"detail":"status changed successfully"})

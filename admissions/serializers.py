@@ -180,6 +180,7 @@ class AllApplicationsReportSerializer(serializers.ModelSerializer):
             "academic_level",
             "batch",
             "campus",
+            'pending_reason',
             "programs",
             "faculty",
             "status",
