@@ -100,6 +100,7 @@ class TuitionLedgerSerializer(serializers.ModelSerializer):
             "schoolpay_receipt_number",
             "settlement_bank_code",
             "source_payment_channel",
+            "student_registration_number",
             "transaction_completion_status",
             "reconciled",
             "created_at",
