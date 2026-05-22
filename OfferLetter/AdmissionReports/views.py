@@ -553,7 +553,130 @@ class ExportFacultyAdmissionsExcel(APIView):
 
         return response
 
+# Admitted students reports
+class ExportAdmittedExcel(APIView):
+    permission_classes = [IsAuthenticated, ExportVerificationRegisterPermission]
 
+    def get(self, request):
+        # --------------------------------------------------------------
+        # 1. FILTERS
+        # --------------------------------------------------------------
+        academic_year = request.query_params.get("academic_year") or get_current_academic_year()
+        batch_id = request.query_params.get("batch")
+        admission_period = request.query_params.get("admission_period")
+        campus = request.query_params.get("campus")          # Can be name OR id
+        program = request.query_params.get("program")
+        faculty = request.query_params.get("faculty")
+        is_registered = (request.query_params.get("is_registered") or "").lower()
+
+        # --------------------------------------------------------------
+        # 2. MAIN QUERY
+        # --------------------------------------------------------------
+        qs = AdmittedStudent.objects.select_related(
+            "application",
+            "admitted_program",
+            "admitted_program__faculty",
+            "admitted_campus",
+            "admitted_batch",
+        ).filter(is_admitted=True)
+
+        if academic_year:
+            qs = qs.filter(admitted_batch__academic_year=academic_year)
+
+        if admission_period:
+            qs = qs.filter(admitted_batch__name__icontains=admission_period)
+
+        # FIXED: Handle both campus name and campus ID
+        if campus:
+            if campus.isdigit():                                 # If it's a number → treat as ID
+                qs = qs.filter(admitted_campus_id=int(campus))
+            else:                                                # Otherwise treat as name
+                qs = qs.filter(admitted_campus__name__iexact=campus.strip())
+
+        if program:
+            qs = qs.filter(admitted_program__name__icontains=program)
+
+        if faculty:
+            qs = qs.filter(admitted_program__faculty__name__icontains=faculty)
+
+        if is_registered in ("1", "true", "yes"):
+            qs = qs.filter(is_registered=True)
+        elif is_registered in ("0", "false", "no"):
+            qs = qs.filter(is_registered=False)
+
+        if batch_id and batch_id.isdigit():
+            qs = qs.filter(admitted_batch_id=int(batch_id))
+
+        admitted_students = list(qs)
+
+        # --------------------------------------------------------------
+        # 3. BUILD ROWS
+        # --------------------------------------------------------------
+        headers = [
+            "ID",
+            "STUDENT NAMES",
+            "STUDENT NO",
+            "REG NO",
+            "PHONE",
+            "EMAIL",
+            "ACADEMIC YEAR",
+            "INTAKE",
+            "FACULTY",
+            "GENDER",
+            "NATIONALITY",
+            "REGISTERED (Y/N)",
+            "ADMITTED PROGRAM",
+            "STUDY MODE",
+            "CAMPUS",
+            "ORIGIN",
+            "ADMITTED BY",
+            "ADMISSION DATE"
+        ]
+
+        rows = []
+        for adm in admitted_students:
+            app = adm.application
+            batch = adm.admitted_batch
+
+            faculty_name = ""
+            if adm.admitted_program and adm.admitted_program.faculty:
+                faculty_name = adm.admitted_program.faculty.name or ""
+
+            rows.append([
+                adm.id,
+                f"{app.first_name} {app.last_name}",
+                adm.student_id or "",
+                adm.reg_no or "",
+                app.phone or "",
+                app.email or "",
+                batch.academic_year if batch else "",
+                batch.name if batch else "",
+                faculty_name,
+                app.gender or "",
+                app.nationality or "",
+                "Y" if getattr(adm, 'is_registered', False) else "N",
+                adm.admitted_program.name if adm.admitted_program else "",
+                getattr(adm, 'study_mode', ""),
+                adm.admitted_campus.name if adm.admitted_campus else "",
+                "APPLIED ONLINE",
+                adm.admitted_by.get_full_name() if getattr(adm, 'admitted_by', None) else "",
+                adm.admission_date.strftime("%Y-%m-%d") if adm.admission_date else "",
+            ])
+
+        # --------------------------------------------------------------
+        # 4. CREATE EXCEL
+        # --------------------------------------------------------------
+        wb = create_workbook(headers, rows, sheet_name="Admitted Students")
+
+        response = HttpResponse(
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        filename = f"admitted_students_{academic_year}_{admission_period or 'all'}.xlsx"
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        wb.save(response)
+
+        return response
+        
 class ExportFirstRegistrationReportExcel(APIView):
     """Registration-details Excel after desk verification (default: verified students only)."""
 
