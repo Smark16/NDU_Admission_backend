@@ -2910,6 +2910,7 @@ def generate_reg_no_view(request):
         campus_id = request.data.get("campus")
         program_id = request.data.get("program")
         study_mode = request.data.get("study_mode")
+        batch_id = request.data.get("batch")
 
         if not campus_id or not program_id or not study_mode:
             return Response(

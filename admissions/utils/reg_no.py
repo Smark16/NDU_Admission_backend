@@ -7,34 +7,45 @@ from django.db.models import Max
 from admissions.models import AdmittedStudent
 
 def _is_hec_program(program) -> bool:
-    """Check if this is a Higher Education Certificate program."""
     name = (program.name or "").lower()
     return "higher education certificate" in name or "hec" in name
 
-
 def resolve_intake_month_from_batch(batch, default: str = "APR") -> str:
-    """Map an admissions intake name/code to a 3-letter month token for HEC reg nos."""
-    if batch is None:
+    if not batch:
         return default
-    haystack = f"{batch.code or ''} {batch.name or ''}".upper()
-    for token, month in (
-        ("JANUARY", "JAN"), ("JAN", "JAN"),
-        ("FEBRUARY", "FEB"), ("FEB", "FEB"),
-        ("MARCH", "MAR"), ("MAR", "MAR"),
-        ("APRIL", "APR"), ("APR", "APR"),
-        ("MAY", "MAY"),
-        ("JUNE", "JUN"), ("JUN", "JUN"),
-        ("JULY", "JUL"), ("JUL", "JUL"),
-        ("AUGUST", "AUG"), ("AUG", "AUG"),
-        ("SEPTEMBER", "SEP"), ("SEP", "SEP"),
-        ("OCTOBER", "OCT"), ("OCT", "OCT"),
-        ("NOVEMBER", "NOV"), ("NOV", "NOV"),
-        ("DECEMBER", "DEC"), ("DEC", "DEC"),
-    ):
+
+    # If batch is a ProgramBatch instance
+    if hasattr(batch, 'name') and hasattr(batch, 'start_date'):
+        haystack = f"{batch.name or ''} {getattr(batch, 'academic_year', '')}".upper()
+        
+        # Try to get month from start_date first (most reliable)
+        if hasattr(batch, 'start_date') and batch.start_date:
+            month = batch.start_date.strftime("%b").upper()  
+            return month[:3]
+
+    # Fallback: search in name/code
+    haystack = f"{getattr(batch, 'code', '')} {getattr(batch, 'name', '')} {getattr(batch, 'academic_year', '')}".upper()
+
+    month_map = {
+        "JANUARY": "JAN", "JAN": "JAN",
+        "FEBRUARY": "FEB", "FEB": "FEB",
+        "MARCH": "MAR", "MAR": "MAR",
+        "APRIL": "APR", "APR": "APR",
+        "MAY": "MAY",
+        "JUNE": "JUN", "JUN": "JUN",
+        "JULY": "JUL", "JUL": "JUL",
+        "AUGUST": "AUG", "AUG": "AUG",
+        "SEPTEMBER": "SEP", "SEP": "SEP",
+        "OCTOBER": "OCT", "OCT": "OCT",
+        "NOVEMBER": "NOV", "NOV": "NOV",
+        "DECEMBER": "DEC", "DEC": "DEC",
+    }
+
+    for token, month in month_map.items():
         if token in haystack:
             return month
-    return default
 
+    return default
 
 def _reg_no_prefix(year: str, campus_number: str, program_code: str, study_mode: str, *, is_hec: bool, intake_month: str) -> str:
     if is_hec:
@@ -42,10 +53,7 @@ def _reg_no_prefix(year: str, campus_number: str, program_code: str, study_mode:
     return f"{year}/{campus_number}/{program_code}/{study_mode}/"
 
 @transaction.atomic
-def generate_reg_no(campus, program, study_mode, intake_month: str = "APR"):
-    """
-    Keeps your original prefix logic but uses global latest number for sequencing.
-    """
+def generate_reg_no(campus, program, study_mode, batch=None, intake_month: str = 'APR'):
     year = str(datetime.now().year)[-2:]
     campus_number = "2" if "kampala" in (campus.name or "").lower() else "1"
 
@@ -53,6 +61,9 @@ def generate_reg_no(campus, program, study_mode, intake_month: str = "APR"):
     program_code = program_code_match.group() if program_code_match else "000"
 
     is_hec = _is_hec_program(program)
+
+     # === Get Intake Month from Batch ===
+    # intake_month = resolve_intake_month_from_batch(batch, default="APR")
     
     # === Your Original Prefix Logic ===
     prefix = _reg_no_prefix(

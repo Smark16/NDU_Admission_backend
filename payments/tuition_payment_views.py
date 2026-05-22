@@ -6,6 +6,7 @@ from rest_framework.permissions import (
     DjangoModelPermissions,
     IsAuthenticated,
 )
+from rest_framework.pagination import PageNumberPagination
 
 from payments.models import TuitionLedger
 from datetime import datetime
@@ -25,6 +26,11 @@ from payments.utils.Transaction_sync import (
 from payments.serializers import (
     TuitionLedgerSerializer
 )
+
+class StandardPagination(PageNumberPagination):
+    page_size = 25
+    page_size_query_param = 'page_size'
+    max_page_size = 100
 
 # fetch all transactions with filters and search
 class TuitionLedgerListView(APIView):
@@ -100,26 +106,24 @@ class TuitionLedgerListView(APIView):
         if search:
 
             queryset = queryset.filter(
-                Q(student_name__icontains=search)
-                |
-                Q(student_payment_code__icontains=search)
-                |
-                Q(
-                    schoolpay_receipt_number__icontains=search
-                )
+                Q(student_name__icontains=search) |
+                Q(student_payment_code__icontains=search) |
+                Q(schoolpay_receipt_number__icontains=search) |
+                Q(student_registration_number__icontains=search)
             )
 
         queryset = queryset.order_by(
             "-payment_date_time"
         )
 
-        serializer = TuitionLedgerSerializer(
-            queryset,
-            many=True
-        )
+        # Pagination
+        paginator = StandardPagination()
+        paginated_queryset = paginator.paginate_queryset(queryset, request)
 
-        return Response(serializer.data)
+        serializer = TuitionLedgerSerializer(paginated_queryset, many=True)
 
+        return paginator.get_paginated_response(serializer.data)
+        
 # manual transaction sync
 class ManualHistoricalReconciliationView(
     APIView
