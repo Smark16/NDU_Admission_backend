@@ -40,6 +40,7 @@ jobs:
           python manage.py migrate Programs 0006 --fake
           python manage.py migrate admissions 0027 --fake
           python manage.py migrate admissions 0030 --fake
+          python manage.py migrate admissions 0032 --fake
         
           # Final migrate (this should now be safe)
           python manage.py migrate
