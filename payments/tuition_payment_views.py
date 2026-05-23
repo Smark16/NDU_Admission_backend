@@ -7,6 +7,8 @@ from rest_framework.permissions import (
     IsAuthenticated,
 )
 from rest_framework.pagination import PageNumberPagination
+from django.utils import timezone
+from datetime import timedelta, datetime
 
 from payments.models import TuitionLedger
 from datetime import datetime
@@ -111,6 +113,38 @@ class TuitionLedgerListView(APIView):
                 Q(schoolpay_receipt_number__icontains=search) |
                 Q(student_registration_number__icontains=search)
             )
+
+        # ===================== TIME PERIOD FILTER =====================
+        time_period = request.query_params.get("time_period")
+
+        today = timezone.now().date()
+
+        if time_period:
+            if time_period == "today":
+                queryset = queryset.filter(payment_date_time__date=today)
+
+            elif time_period == "yesterday":
+                yesterday = today - timedelta(days=1)
+                queryset = queryset.filter(payment_date_time__date=yesterday)
+
+            elif time_period == "this_month":
+                queryset = queryset.filter(
+                    payment_date_time__year=today.year,
+                    payment_date_time__month=today.month
+                )
+
+            elif time_period == "last_month":
+                last_month = today.replace(day=1) - timedelta(days=1)
+                queryset = queryset.filter(
+                    payment_date_time__year=last_month.year,
+                    payment_date_time__month=last_month.month
+                )
+
+            elif time_period == "this_year":
+                queryset = queryset.filter(payment_date_time__year=today.year)
+
+            elif time_period == "last_year":
+                queryset = queryset.filter(payment_date_time__year=today.year - 1)
 
         queryset = queryset.order_by(
             "-payment_date_time"
