@@ -8,4 +8,5 @@ urlpatterns = [
     path('export_admitted_students/', ExportAdmittedExcel.as_view()),
     path('export_faculty_excel/', ExportFacultyAdmissionsExcel.as_view()),
     path('export_first_registration_report/', ExportFirstRegistrationReportExcel.as_view()),
+    path('export_applicants_report/', ExportApplicantsExcel.as_view())
 ]

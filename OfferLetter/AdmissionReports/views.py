@@ -5,9 +5,10 @@ from rest_framework.permissions import *
 from admissions.permissions import ExportVerificationRegisterPermission
 from admissions.models import * 
 from django.db.models.functions import Coalesce
-from django.db.models import Count, F, Q
+from django.db.models import Count, F, Q, Prefetch
 from collections import defaultdict
 from django.db import connection
+from datetime import datetime
 
 from .utils.excel import create_workbook
 from .utils.calculate_passes import calculate_pp_sp
@@ -17,6 +18,10 @@ from admissions.utils.academic_year import get_current_academic_year
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
+
+from admissions.utils.program_choices import (
+    PROGRAM_CHOICE_CONFIRMED_BY_APPLICANT,
+)
 
 
 def _application_full_name_upper(app):
@@ -588,9 +593,9 @@ class ExportAdmittedExcel(APIView):
 
         # FIXED: Handle both campus name and campus ID
         if campus:
-            if campus.isdigit():                                 # If it's a number → treat as ID
+            if campus.isdigit():                                 
                 qs = qs.filter(admitted_campus_id=int(campus))
-            else:                                                # Otherwise treat as name
+            else:                                               
                 qs = qs.filter(admitted_campus__name__iexact=campus.strip())
 
         if program:
@@ -676,7 +681,165 @@ class ExportAdmittedExcel(APIView):
         wb.save(response)
 
         return response
-        
+
+# Applicant students reports
+class ExportApplicantsExcel(APIView):
+    permission_classes = [IsAuthenticated, ExportVerificationRegisterPermission]
+
+    def get(self, request):
+        # --------------------------------------------------------------
+        # 1. FILTERS (Exactly as you specified)
+        # --------------------------------------------------------------
+        status = request.query_params.get("status")
+        gender = request.query_params.get("gender")
+        academic_level = request.query_params.get("academic_level")
+        batch = request.query_params.get("batch")
+        campus = request.query_params.get("campus")
+        program = request.query_params.get("program")
+        date_from = request.query_params.get("date_from")
+        date_to = request.query_params.get("to_date")
+        choice_confirmation = request.query_params.get("choice_confirmation")
+        search = (request.query_params.get("search") or "").strip()
+
+        # --------------------------------------------------------------
+        # 2. MAIN QUERY
+        # --------------------------------------------------------------
+        qs = (
+            Application.objects.select_related(
+                "academic_level",
+                "batch",
+                "campus",
+                "applicant",
+                "entered_by",
+            )
+            .prefetch_related(
+                Prefetch(
+                    "program_choices",
+                    queryset=ApplicationProgramChoice.objects.select_related(
+                        "program__faculty"
+                    ).order_by("choice_order"),
+                    to_attr="prefetched_program_choices",
+                )
+            )
+            .filter(~Q(status__in=["draft", "Admitted", "admitted", "rejected"]))
+            .order_by("-created_at")
+        )
+
+        # Apply Filters
+        if search:
+            qs = qs.filter(
+                Q(first_name__icontains=search) |
+                Q(last_name__icontains=search) |
+                Q(email__icontains=search) |
+                Q(application_reference__icontains=search) |
+                Q(program_choices__program__name__icontains=search)
+            )
+
+        if status and status != "all":
+            qs = qs.filter(status=status)
+
+        if gender and gender != "all":
+            qs = qs.filter(gender=gender)
+
+        if academic_level and academic_level != "all":
+            qs = qs.filter(academic_level__name=academic_level)
+
+        if batch and batch != "all":
+            qs = qs.filter(batch__name=batch)
+
+        if campus and campus != "all":
+            qs = qs.filter(campus__name=campus)
+
+        if program and program != "all":
+            qs = qs.filter(program_choices__program__name__icontains=program)
+
+        if date_from:
+            qs = qs.filter(created_at__date__gte=date_from)
+        if date_to:
+            qs = qs.filter(created_at__date__lte=date_to)
+
+        # if choice_confirmation and choice_confirmation != "all":
+        #     if choice_confirmation.lower() == "confirmed":
+        #         qs = qs.filter(program_choices_confirmed_at__isnull=False)
+        #     elif choice_confirmation.lower() == "awaiting":
+        #         qs = qs.filter(program_choices_confirmed_at__isnull=True)
+
+        if choice_confirmation and choice_confirmation != "all":
+            cc = choice_confirmation.strip().lower()
+            if cc == "awaiting":
+                qs = qs.filter(
+                    status__in=["submitted", "under_review"],
+                    program_choices_confirmed_at__isnull=True,
+                )
+            elif cc == "confirmed":
+                qs = qs.filter(
+                    program_choices_confirmed_at__isnull=False,
+                    program_choices_confirmed_by=PROGRAM_CHOICE_CONFIRMED_BY_APPLICANT,
+                )
+            elif cc == "flagged":
+                from admissions.utils.program_choice_integrity import application_ids_with_suspect_program_choices
+
+                qs = qs.filter(
+                    id__in=application_ids_with_suspect_program_choices()
+                )
+
+        # --------------------------------------------------------------
+        # 3. BUILD EXCEL ROWS
+        # --------------------------------------------------------------
+        headers = [
+            "FIRST NAME",
+            "LAST NAME",
+            "GENDER",
+            "PHONE",
+            "EMAIL",
+            "NATIONALITY",
+            "PROGRAMMES APPLIED",
+            "CAMPUS",
+            "BATCH",
+            "ACADEMIC LEVEL",
+            "STATUS",
+            "APPLICATION DATE",
+            "ENTRY TYPE",
+        ]
+
+        rows = []
+        for app in qs:
+            # Get all chosen programs as comma-separated
+            programs_list = [
+                choice.program.name for choice in getattr(app, 'prefetched_program_choices', [])
+            ]
+            programs_str = ", ".join(programs_list) if programs_list else "—"
+
+            rows.append([
+                app.first_name or "",
+                app.last_name or "",
+                app.gender or "",
+                app.phone or "",
+                app.email or "",
+                app.nationality or "",
+                programs_str,
+                app.campus.name if app.campus else "",
+                app.batch.name if app.batch else "",
+                app.academic_level.name if app.academic_level else "",
+                app.status or "",
+                app.created_at.strftime("%Y-%m-%d %H:%M") if app.created_at else "",
+                "Direct Entry" if getattr(app, 'is_direct_entry', False) else "Online",
+            ])
+
+        # --------------------------------------------------------------
+        # 4. CREATE EXCEL
+        # --------------------------------------------------------------
+        wb = create_workbook(headers, rows, sheet_name="Applicants Report")
+
+        response = HttpResponse(
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        filename = f"applicants_report_{datetime.now().strftime('%Y-%m-%d_%H%M')}.xlsx"
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        wb.save(response)
+
+        return response
+
 class ExportFirstRegistrationReportExcel(APIView):
     """Registration-details Excel after desk verification (default: verified students only)."""
 
