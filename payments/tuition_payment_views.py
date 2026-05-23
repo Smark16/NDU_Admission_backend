@@ -1,4 +1,4 @@
-from django.db.models import Q
+from django.db.models import Q, Sum, Count
 
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -146,6 +146,20 @@ class TuitionLedgerListView(APIView):
             elif time_period == "last_year":
                 queryset = queryset.filter(payment_date_time__year=today.year - 1)
 
+         # ===================== CALCULATE STATS =====================
+        completed_filter = Q(transaction_completion_status='Completed')
+
+        stats = queryset.aggregate(
+            total_transactions=Count('id'),
+            total_collected=Sum('amount', filter=completed_filter),
+            unique_students=Count('student_payment_code', distinct=True),
+        )
+
+        # Safe Average Calculation (outside aggregate)
+        completed_count = queryset.filter(completed_filter).count()
+        total_collected_val = stats['total_collected'] or 0
+        avg_transaction = float(total_collected_val / completed_count) if completed_count > 0 else 0
+
         queryset = queryset.order_by(
             "-payment_date_time"
         )
@@ -156,7 +170,16 @@ class TuitionLedgerListView(APIView):
 
         serializer = TuitionLedgerSerializer(paginated_queryset, many=True)
 
-        return paginator.get_paginated_response(serializer.data)
+        # Return both data and stats
+        return paginator.get_paginated_response({
+            "results": serializer.data,
+            "stats": {
+                "totalTransactions": stats['total_transactions'] or 0,
+                "totalCollected": float(total_collected_val),
+                "uniqueStudents": stats['unique_students'] or 0,
+                "avgTransaction": round(avg_transaction, 2),
+            }
+        })
         
 # manual transaction sync
 class ManualHistoricalReconciliationView(
