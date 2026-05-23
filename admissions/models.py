@@ -338,7 +338,7 @@ class AdditionalQualifications(models.Model):
     application = models.ForeignKey(Application, on_delete=models.CASCADE, related_name='additionals', null=True, blank=True)
     additional_qualification_institution = models.CharField(max_length=200, blank=True, help_text="Institution Name")
     additional_qualification_type = models.CharField(max_length=30, blank=True)
-    additional_qualification_year = models.PositiveIntegerField(blank=True, null=True, help_text="Award Year")
+    additional_qualification_year = models.CharField(max_length=15, blank=True, null=True, help_text="Award Year")
     class_of_award = models.CharField(max_length=200, blank=True, null=True)
 
 class AdmittedStudent(models.Model):

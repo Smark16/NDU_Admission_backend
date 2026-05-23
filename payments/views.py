@@ -110,7 +110,7 @@ class InitiatePayment(APIView):
         reason = "Application Fee"
 
         if settings.DEBUG:
-          callBackUrl = "https://d9c6-41-75-172-68.ngrok-free.app/api/payments/webhook/" 
+          callBackUrl = "https://7aa7-196-43-131-1.ngrok-free.app/api/payments/webhook/" 
         else:
           callBackUrl = request.build_absolute_uri("/api/payments/webhook/")
 
