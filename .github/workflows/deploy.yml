@@ -26,7 +26,7 @@ jobs:
           set -e
           cd /home/admissions/NDU_Admission_backend
           git reset --hard
-          rm Drafts/migrations/0003_alter_draftapplication_applicant.py
+          # rm Drafts/migrations/0003_alter_draftapplication_applicant.py
           git pull origin main
           source venv/bin/activate
           python -m pip install --upgrade pip
