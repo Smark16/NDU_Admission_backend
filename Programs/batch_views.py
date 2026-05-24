@@ -1,11 +1,3 @@
-"""
-NEW MODULE — Program batch management API (integrated from copy-from source).
-
-Endpoints are wired in Programs/urls.py under api/program/:
-  program/<id>/batches, batch/<id>/update, batch/<id>/semester/create, etc.
-
-Uses Programs.models: ProgramBatch, Semester, CourseUnit (not admissions.Batch).
-"""
 import calendar as _calendar
 import csv
 from datetime import date, datetime, timedelta

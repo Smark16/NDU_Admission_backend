@@ -1,9 +1,4 @@
-"""
-Program app URLconf.
 
-NEW routes (batch / semester / subject APIs) are grouped below; they use
-Programs.ProgramBatch — not admissions.Batch (application intake).
-"""
 from django.urls import path
 
 from .batch_views import (

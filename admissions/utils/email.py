@@ -49,6 +49,28 @@ You are required to confirm your acceptance of this admission by:
 
 i) Paying a non-refundable fee of {confirmation_fee} using your School Pay Code {admission.student_id} not later than the stipulated deadline.
 
+THESE ARE THE PAYMENT GUIDE LINES
+ => FOR MTN MOBILE MONEY
+   1. Dial *165#
+   2.Go to payments(4)
+   3.select school fees(3)
+   4.select school pay(2)
+   5.select pay fees(1)
+   Enter student No
+   Verify your student details
+   Enter amount to pay
+   Confim with MTN mobile money pin
+
+ => FOR AIRTEL MONEY
+    1.Dial *185#
+    2.Go to school fees (6)
+    3.select school pay(2)
+    4.select pay fees (1)
+    Enter student No
+    Enter amount to pay
+    Verify your student details
+    Confim with Airtel mobile money pin
+
 ii) NOTE: This amount shall be credited towards your tuition fees.
 
 iii) Sending the Bank Deposit Slip and payment confirmation receipt to:
