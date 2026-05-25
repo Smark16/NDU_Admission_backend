@@ -57,7 +57,7 @@ urlpatterns = [
     path('document/<int:doc_id>/', views.DeleteDocumentAPIView.as_view()),
     path('personal-info/<int:application_id>/', views.UpdatePersonalInfoAPIView.as_view()),
     path('update_education_setup/<int:application_id>/', views.update_education_setup),
-
+    path('admin_update_education_setup/<int:application_id>/', views.admin_update_education_setup),
     # Subject Urls
 
     # ========================Alevel=====================

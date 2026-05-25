@@ -1537,6 +1537,7 @@ class UpdatePersonalInfoAPIView(APIView):
 
 # ==========================update level setup=====================================
 @api_view(['POST'])
+@permission_classes([IsAuthenticated])
 def update_education_setup(request, application_id):
     application = get_object_or_404(Application, id=application_id)
     
@@ -1549,12 +1550,42 @@ def update_education_setup(request, application_id):
     application.has_olevel = data.get('has_olevel', False)
     application.olevel_school = data.get('olevel_school')
     application.olevel_index_number = data.get('olevel_index_number')
+
+    if data.get('olevel_year'):
+        application.olevel_year = data.get('olevel_year')
+
+    application.has_alevel = data.get('has_alevel', False)
+    application.alevel_school = data.get('alevel_school')
+    application.alevel_index_number = data.get('alevel_index_number')
+
+    if data.get('alevel_year'):
+        application.alevel_year = data.get('alevel_year')
+
+    application.alevel_combination = data.get('alevel_combination')
+
+    application.save()
+
+    return Response({"detail": "Education setup updated successfully"}, status=200)
+
+# Admin education setup update
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def admin_update_education_setup(request, application_id):
+    application = get_object_or_404(Application, id=application_id)
+    
+    data = request.data
+
+    application.has_olevel = data.get('has_olevel', False)
+    application.olevel_school = data.get('olevel_school')
+    application.olevel_index_number = data.get('olevel_index_number')
     application.olevel_year = data.get('olevel_year')
 
     application.has_alevel = data.get('has_alevel', False)
     application.alevel_school = data.get('alevel_school')
     application.alevel_index_number = data.get('alevel_index_number')
-    application.alevel_year = data.get('alevel_year')
+    if data.get('alevel_year'):
+        application.alevel_year = data.get('alevel_year')
+
     application.alevel_combination = data.get('alevel_combination')
 
     application.save()

@@ -197,8 +197,8 @@ class ApplicationDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model = Application
         fields = ['id', 'first_name', 'last_name','middle_name', 'date_of_birth', 'gender', 'nationality', 'phone', 'email',
-                  'batch', "nin", "passport_number","disabled", 'olevel_school', 'olevel_year', 'alevel_school', 'alevel_year', 'address',
-                  'middle_name', 'next_of_kin_name', 'next_of_kin_contact', 'next_of_kin_relationship', 'revoked_by', 'is_revoked','revocation_reason',
+                  'batch', "nin", "passport_number","disabled", "has_olevel",'olevel_school', 'olevel_year',"olevel_index_number", "has_alevel", 'alevel_school', 'alevel_year', 'alevel_index_number', 
+                  'address','middle_name', 'next_of_kin_name', 'next_of_kin_contact', 'next_of_kin_relationship', 'revoked_by', 'is_revoked','revocation_reason',"alevel_combination",
                   'status', 'application_fee_amount','application_fee_paid', 'created_at', 'reviewed_at', 'passport_photo','reviewed_by',
                   'program_choices_confirmed_at', 'program_choices_verification_sent_at']
 
@@ -385,7 +385,7 @@ class AdmittedStudentSerializer(serializers.ModelSerializer):
         return attrs
 
 class AdmittedStudentListSerializer(serializers.ModelSerializer):
-    name = serializers.CharField(source='application.applicant.get_full_name', read_only=True)
+    name = serializers.SerializerMethodField()
     program = serializers.CharField(source='admitted_program.name', read_only=True)
     faculty = serializers.SerializerMethodField()  
     campus = serializers.CharField(source='admitted_campus.name', read_only=True)
@@ -421,6 +421,18 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
             'approved_by_name',
             'approved_at',
         ]
+
+    def get_name(self, obj):
+        app = obj.application
+        if not app:
+            return "N/A"
+        
+        first = getattr(app, 'first_name', '') or ''
+        last = getattr(app, 'last_name', '') or ''
+        middle = getattr(app, 'middle_name', '') or ''
+        
+        full_name = f"{first} {middle} {last}".strip()
+        return full_name if full_name else "Unnamed Student"
 
     def get_faculty(self, obj):
         if not obj.admitted_program:
