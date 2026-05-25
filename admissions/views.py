@@ -1652,10 +1652,27 @@ class ListAdmittedStudents(generics.ListAPIView):
             qs = qs.filter(admitted_batch_id=batch_id)
         program_batch_id = p.get("program_batch")
         if program_batch_id:
+            batch_q = Q(intended_program_batch_id=program_batch_id) | Q(
+                programme_enrollment__program_batch_id=program_batch_id
+            )
+            # Include admits with no cohort set yet (same programme filter applies below).
+            if p.get("program"):
+                batch_q |= Q(intended_program_batch__isnull=True)
+            qs = qs.filter(batch_q).distinct()
+        is_admitted = (p.get("is_admitted") or "").lower()
+        if is_admitted in ("1", "true", "yes"):
+            qs = qs.filter(is_admitted=True)
+        elif is_admitted in ("0", "false", "no"):
+            qs = qs.filter(is_admitted=False)
+        search = (p.get("search") or "").strip()
+        if search:
             qs = qs.filter(
-                Q(intended_program_batch_id=program_batch_id)
-                | Q(programme_enrollment__program_batch_id=program_batch_id)
-            ).distinct()
+                Q(student_id__icontains=search)
+                | Q(reg_no__icontains=search)
+                | Q(application__first_name__icontains=search)
+                | Q(application__last_name__icontains=search)
+                | Q(application__applicant__email__icontains=search)
+            )
         campus_id = p.get("campus")
         if campus_id:
             qs = qs.filter(admitted_campus_id=campus_id)

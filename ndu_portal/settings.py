@@ -48,6 +48,8 @@ LOCAL_APPS = [
     'audit',
     'payments',
     'Programs',
+    'examinations',
+    'graduation',
     'Drafts',
     'OfferLetter.AdmissionLetter',
     'OfferLetter.AdmissionReports'
@@ -325,4 +327,3 @@ LOGGING = {
         },
     },
 }
-

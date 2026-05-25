@@ -4,7 +4,7 @@ from django.core.validators import MinValueValidator, MaxValueValidator
 from django.utils import timezone
 from accounts.models import User, Campus
 from Programs.models import Program
-from .utils.academic_year import get_current_academic_year
+from .utils.academic_year import get_default_academic_year_label
 from .utils.reference import generate_reference
 
 class Faculty(models.Model):
@@ -32,6 +32,44 @@ class AcademicLevel(models.Model):
 
     def __str__(self):
         return self.name
+
+
+class AcademicYear(models.Model):
+    """
+    Canonical academic year labels (e.g. 2025/2026) used on intake and programme batches.
+    """
+
+    label = models.CharField(max_length=25, unique=True)
+    is_current = models.BooleanField(
+        default=False,
+        help_text="Default year suggested when creating new batches.",
+    )
+    is_active = models.BooleanField(
+        default=True,
+        help_text="Inactive years stay on old records but cannot be selected for new batches.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-label"]
+        verbose_name = "Academic year"
+        verbose_name_plural = "Academic years"
+
+    def __str__(self):
+        mark = " (current)" if self.is_current else ""
+        return f"{self.label}{mark}"
+
+    def save(self, *args, **kwargs):
+        from .utils.academic_year import normalize_academic_year_label
+
+        self.label = normalize_academic_year_label(self.label)
+        super().save(*args, **kwargs)
+        if self.is_current:
+            AcademicYear.objects.filter(is_current=True).exclude(pk=self.pk).update(
+                is_current=False
+            )
+
 
 class Batch(models.Model):
     name = models.CharField(max_length=100)
@@ -65,7 +103,7 @@ class Batch(models.Model):
 
     def save(self, *args, **kwargs):
         if not self.academic_year:
-            self.academic_year = get_current_academic_year()
+            self.academic_year = get_default_academic_year_label()
 
         super().save(*args, **kwargs)
 

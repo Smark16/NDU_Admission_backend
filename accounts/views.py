@@ -265,6 +265,7 @@ class ListPermissions(generics.ListAPIView):
                 "access_admissions",
                 "access_academics",
                 "access_finance",
+                "access_examinations",
                 "manage_curriculum",
                 "manage_program_scheduling",
                 "manage_course_catalog",
@@ -272,9 +273,26 @@ class ListPermissions(generics.ListAPIView):
                 "configure_fee_plans",
                 "manage_communication_templates",
             )
+            examinations_codes = (
+                "enter_marks",
+                "publish_results",
+                "view_all_results",
+                "manage_exam_schedule",
+                "manage_retakes",
+                "approve_result_changes",
+            )
+            graduation_codes = (
+                "view_qualified_lists",
+                "manage_ceremonies",
+                "assign_students",
+                "view_graduation_lists",
+            )
+            accounts_codes = list(accounts_codes) + ["access_graduation"]
             qs = qs.filter(
                 Q(content_type__app_label="admissions", codename__in=admissions_codes)
                 | Q(content_type__app_label="accounts", codename__in=accounts_codes)
+                | Q(content_type__app_label="examinations", codename__in=examinations_codes)
+                | Q(content_type__app_label="graduation", codename__in=graduation_codes)
             )
         return qs
 

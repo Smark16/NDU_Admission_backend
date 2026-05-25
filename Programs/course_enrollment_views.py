@@ -40,18 +40,9 @@ class ListCourseUnitEnrollments(generics.ListAPIView):
         return Response(data, status=status.HTTP_200_OK)
 
 def _admitted_students_for_program_batch(program, program_batch):
-    """Admitted students in this academic cohort (intended batch and/or programme enrollment batch)."""
-    from admissions.models import AdmittedStudent
+    from .enrollment_cohort import admitted_students_for_program_batch
 
-    return (
-        AdmittedStudent.objects.filter(admitted_program=program, is_admitted=True)
-        .filter(
-            Q(intended_program_batch=program_batch)
-            | Q(programme_enrollment__program_batch=program_batch)
-        )
-        .distinct()
-        .select_related("application", "application__applicant", "programme_enrollment")
-    )
+    return admitted_students_for_program_batch(program, program_batch)
 
 
 class GetAvailableStudentsForCourseUnit(APIView):

@@ -140,6 +140,19 @@ class RegisterSerializer(serializers.ModelSerializer):
                 user.is_lecturer = True
                 user.save(update_fields=["is_lecturer"])
 
+            try:
+                from examinations.role_setup import EXAMINATION_STAFF_ROLE_NAMES
+                from graduation.role_setup import GRADUATION_ROLE_MATRIX
+
+                staff_roles = set(EXAMINATION_STAFF_ROLE_NAMES) | set(GRADUATION_ROLE_MATRIX.keys())
+                if role_name in staff_roles and not user.is_staff:
+                    user.is_staff = True
+                    user.save(update_fields=["is_staff"])
+            except ImportError:
+                if role_name in ("Examination Manager", "Graduation Officer") and not user.is_staff:
+                    user.is_staff = True
+                    user.save(update_fields=["is_staff"])
+
         # Send email (best-effort — skip if broker/Redis is unavailable)
         try:
             celery_send_account_email.delay(user.id, password)

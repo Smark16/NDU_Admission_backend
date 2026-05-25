@@ -49,6 +49,17 @@ from .specialization_views import (
     ProgramSpecializationListCreateView,
 )
 
+from .timetable_views import (
+    LecturerMyTimetableView,
+    RoomTypeListCreateView,
+    SemesterTimetableBulkPublishView,
+    SemesterTimetableView,
+    StudentMyTimetableView,
+    TimetableSessionDetailView,
+    VenueDetailView,
+    VenueListCreateView,
+    VenueSuggestCodeView,
+)
 from .course_enrollment_views import (
     AdminDeregisterStudentFromCourses,
     AdminRegisterStudentForCourses,
@@ -156,6 +167,29 @@ urlpatterns = [
         CurriculumSuggestionsForSemesterView.as_view(),
         name='semester_curriculum_suggestions',
     ),
+
+    # ----- timetable (semester-scoped on ProgramBatch) -----
+    path('room_types', RoomTypeListCreateView.as_view(), name='room_type_list_create'),
+    path('venues/suggest_code', VenueSuggestCodeView.as_view(), name='venue_suggest_code'),
+    path('venues', VenueListCreateView.as_view(), name='venue_list_create'),
+    path('venues/<int:pk>', VenueDetailView.as_view(), name='venue_detail'),
+    path(
+        'semester/<int:semester_id>/timetable',
+        SemesterTimetableView.as_view(),
+        name='semester_timetable',
+    ),
+    path(
+        'semester/<int:semester_id>/timetable/publish',
+        SemesterTimetableBulkPublishView.as_view(),
+        name='semester_timetable_publish',
+    ),
+    path(
+        'timetable/sessions/<int:pk>',
+        TimetableSessionDetailView.as_view(),
+        name='timetable_session_detail',
+    ),
+    path('student/my_timetable', StudentMyTimetableView.as_view(), name='student_my_timetable'),
+    path('lecturer/my_timetable', LecturerMyTimetableView.as_view(), name='lecturer_my_timetable'),
 
     # ----- programme specialization track management -----
     path(

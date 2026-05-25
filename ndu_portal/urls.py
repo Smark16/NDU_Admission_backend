@@ -21,6 +21,8 @@ urlpatterns = [
     path('api/admissions/', include('admissions.urls')),
     path('api/drafts/', include('Drafts.urls')),
     path('api/payments/', include('payments.urls')),
+    path('api/examinations/', include('examinations.urls')),
+    path('api/graduation/', include('graduation.urls')),
     path('api/audit/', include('audit.urls')),
     path('api/program/', include('Programs.urls')),
     path('api/courses/', include('Programs.course_urls')),
