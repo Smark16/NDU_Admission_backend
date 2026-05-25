@@ -1482,34 +1482,6 @@ class DeleteAlevelSubjects(generics.RetrieveDestroyAPIView):
         return Response({"detail":"subject deleted successfully"})
 
 #=====================================update personal info==============================================
-# views.py
-# class UpdatePersonalInfoAPIView(APIView):
-#     permission_classes = [IsAuthenticated]
-
-#     def patch(self, request, application_id):
-#         application = get_object_or_404(Application, id=application_id)
-
-#         if application.applicant != request.user:
-#             return Response({"detail": "Permission denied"}, status=status.HTTP_403_FORBIDDEN)
-
-#         # Update all allowed fields
-#         fields = [
-#             'first_name', 'title', 'last_name', 'middle_name','date_of_birth',
-#             'gender', 'nationality', 'phone', 'email', 'address', 'nin',
-#             'passport_number', 'disabled', 'next_of_kin_name',
-#             'next_of_kin_contact', 'next_of_kin_relationship',
-#             'has_olevel', 'olevel_school', 'olevel_year', 'olevel_index_number',
-#             'has_alevel', 'alevel_school', 'alevel_year', 'alevel_index_number',
-#             'alevel_combination'
-#         ]
-
-#         for field in fields:
-#             if field in request.data:
-#                 setattr(application, field, request.data[field])
-
-#         application.save()
-#         return Response({"detail": "Personal information updated successfully"}, status=status.HTTP_200_OK)
-
 class UpdatePersonalInfoAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -1558,12 +1530,36 @@ class UpdatePersonalInfoAPIView(APIView):
             return Response({
                 "detail": "Personal information updated successfully"
             }, status=status.HTTP_200_OK)
-        except ValidationError as e:
-            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
             return Response({
                 "detail": "An error occurred while saving."
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+# ==========================update level setup=====================================
+@api_view(['POST'])
+def update_education_setup(request, application_id):
+    application = get_object_or_404(Application, id=application_id)
+    
+    # Optional: Check ownership
+    if application.applicant != request.user:
+        return Response({"detail": "Not authorized"}, status=403)
+
+    data = request.data
+
+    application.has_olevel = data.get('has_olevel', False)
+    application.olevel_school = data.get('olevel_school')
+    application.olevel_index_number = data.get('olevel_index_number')
+    application.olevel_year = data.get('olevel_year')
+
+    application.has_alevel = data.get('has_alevel', False)
+    application.alevel_school = data.get('alevel_school')
+    application.alevel_index_number = data.get('alevel_index_number')
+    application.alevel_year = data.get('alevel_year')
+    application.alevel_combination = data.get('alevel_combination')
+
+    application.save()
+
+    return Response({"detail": "Education setup updated successfully"}, status=200)
     
 #=================================================Olevel Results==========================================
 #update Olevel results

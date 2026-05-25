@@ -56,6 +56,7 @@ urlpatterns = [
     path('upload_document/<int:application_id>/', views.UploadDocumentAPIView.as_view()),
     path('document/<int:doc_id>/', views.DeleteDocumentAPIView.as_view()),
     path('personal-info/<int:application_id>/', views.UpdatePersonalInfoAPIView.as_view()),
+    path('update_education_setup/<int:application_id>/', views.update_education_setup),
 
     # Subject Urls
 
