@@ -249,6 +249,8 @@ CSRF_TRUSTED_ORIGINS = [
     'http://172.17.31.147',
     "https://admissions.ndu.ac.ug",
     "https://erp.ndejje.ndu.ac.ug",
+    "http://test.ndu.ac.ug",
+    "https://test.ndu.ac.ug",
 ]
 
 # CORS_ALLOW_ALL_ORIGINS = True
@@ -262,7 +264,14 @@ CORS_ALLOWED_ORIGINS = [
     "https://admissions.ndu.ac.ug",
     "http://localhost:3001",
     "https://erp.ndejje.ndu.ac.ug",
-    "https://www.schoolpay.co.ug"
+    "https://www.schoolpay.co.ug",
+    "http://test.ndu.ac.ug",
+    "https://test.ndu.ac.ug",
+]
+
+# Staging / test hosts (e.g. test.ndu.ac.ug) without listing every subdomain
+CORS_ALLOWED_ORIGIN_REGEXES = [
+    r"^https?://([a-z0-9-]+\.)*ndu\.ac\.ug$",
 ]
 
 REST_FRAMEWORK = {
