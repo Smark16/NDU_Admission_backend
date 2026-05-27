@@ -3,6 +3,7 @@ from rest_framework import generics, status
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from .serializers import *
+from Drafts.models import *
 import json
 import logging
 import uuid
@@ -110,7 +111,7 @@ class InitiatePayment(APIView):
         reason = "Application Fee"
 
         if settings.DEBUG:
-          callBackUrl = "https://7aa7-196-43-131-1.ngrok-free.app/api/payments/webhook/" 
+          callBackUrl = "https://320f-41-75-173-243.ngrok-free.app/api/payments/webhook/" 
         else:
           callBackUrl = request.build_absolute_uri("/api/payments/webhook/")
 
@@ -186,9 +187,6 @@ def schoolpay_webhook(request):
 
     # === LOG EVERYTHING SO YOU CAN SEE WHAT ARRIVES ===
     logger.info("SchoolPay webhook received: %s", json.dumps(data, indent=2))
-    print("=== SCHOOLPAY WEBHOOK ===")
-    print(json.dumps(data, indent=2))
-    print("=========================")
 
     # For admission/application fees, SchoolPay usually sends a simple payload
     status = data.get('status')
@@ -209,69 +207,63 @@ def schoolpay_webhook(request):
                 payment_reference=payment_ref
             ).first()
 
+            # if draft:
+            #     draft.application_fee_paid = True
+            #     draft.application_reference = app_payment.external_reference
+            #     draft.save(
+            #         update_fields=[
+            #             'application_fee_paid',
+            #             'application_reference'
+            #         ]
+            #     )
+
             if app_payment:
+                draft = DraftApplication.objects.filter(
+                    applicant=app_payment.user,
+                ).order_by('-updated_at').first()
+
                 if app_payment.status == 'PAID':
                     logger.info("ApplicationPayment %s already PAID", payment_ref)
                     return JsonResponse({'status': 'duplicate'}, status=200)
                 app_payment.status = 'PAID'
                 app_payment.receipt_number = data.get('receiptNumber')
                 app_payment.transaction_id = data.get('transactionId')
-                app_payment.save()
+                app_payment.save(update_fields=['status','receipt_number','transaction_id'])
                 logger.info("✅ ApplicationPayment %s marked PAID", payment_ref)
+
+                # manage draft
+                if draft:
+                    draft.application_fee_paid = True
+                    draft.application_reference = app_payment.external_reference
+                    draft.save(update_fields=['application_fee_paid', 'application_reference'])
 
                 # ── Link payment back to the application ──────────────────
                 # Find the applicant's most recent submitted application and
                 # stamp it as fee-paid so admins can see it is confirmed.
-                from admissions.models import Application as App
-                linked_app = (
-                    App.objects.filter(applicant=app_payment.user)
-                    .exclude(status='draft')
-                    .order_by('-created_at')
-                    .first()
-                )
-                if linked_app and not linked_app.application_fee_paid:
-                    linked_app.application_fee_paid = True
-                    linked_app.application_fee_amount = app_payment.amount
-                    if not linked_app.application_reference:
-                        linked_app.application_reference = app_payment.external_reference
-                    linked_app.save(update_fields=[
-                        'application_fee_paid',
-                        'application_fee_amount',
-                        'application_reference',
-                    ])
-                    logger.info("✅ Application %s marked fee_paid", linked_app.id)
+                # from admissions.models import Application as App
+                # linked_app = (
+                #     App.objects.filter(applicant=app_payment.user)
+                #     .exclude(status='draft')
+                #     .order_by('-created_at')
+                #     .first()
+                # )
+                # if linked_app and not linked_app.application_fee_paid:
+                #     linked_app.application_fee_paid = True
+                #     linked_app.application_fee_amount = app_payment.amount
+                #     if not linked_app.application_reference:
+                #         linked_app.application_reference = app_payment.external_reference
+                #     linked_app.save(update_fields=[
+                #         'application_fee_paid',
+                #         'application_fee_amount',
+                #         'application_reference',
+                #     ])
+                #     logger.info("✅ Application %s marked fee_paid", linked_app.id)
                 # ─────────────────────────────────────────────────────────
 
                 return JsonResponse({'status': 'ok'}, status=200)
 
     except Exception as e:
         logger.exception("Error processing ApplicationPayment for ref %s", payment_ref)
-        return JsonResponse({'error': 'Internal server error'}, status=500)
-
-    # ── Try StudentTuitionPayment (tuition / portal-initiated) ───────────────
-    try:
-        with transaction.atomic():
-            tuition_payment = StudentTuitionPayment.objects.select_for_update().filter(
-                payment_reference=payment_ref
-            ).first()
-
-            if tuition_payment:
-                if tuition_payment.status == 'completed':
-                    logger.info("StudentTuitionPayment %s already completed", payment_ref)
-                    return JsonResponse({'status': 'duplicate'}, status=200)
-                from django.utils import timezone as tz
-                tuition_payment.status = 'completed'
-                tuition_payment.receipt_number = data.get('receiptNumber', '')
-                tuition_payment.paid_at = tz.now()
-                tuition_payment.notes = (
-                    tuition_payment.notes + f"\nSchoolPay transactionId: {data.get('transactionId', '')}"
-                ).strip()
-                tuition_payment.save()
-                logger.info("✅ StudentTuitionPayment %s marked completed", payment_ref)
-                return JsonResponse({'status': 'ok'}, status=200)
-
-    except Exception as e:
-        logger.exception("Error processing StudentTuitionPayment for ref %s", payment_ref)
         return JsonResponse({'error': 'Internal server error'}, status=500)
 
     logger.warning("No matching payment found for reference: %s", payment_ref)
@@ -282,16 +274,40 @@ class CheckPaymentStatus(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, payment_ref):
+
         payment = ApplicationPayment.objects.get(
             payment_reference=payment_ref,
             user=request.user
         )
 
+        # Get or create draft
+        draft = DraftApplication.objects.filter(
+                applicant=request.user,
+            ).order_by('-updated_at').first()
+
+        # if not draft:
+        #         pass
+        # if draft:
+        #     draft.refresh_from_db()
+        #     draft.application_fee_paid = True
+        #     draft.application_reference = payment.external_reference
+        #     draft.save(
+        #         update_fields=[
+        #             'application_fee_paid',
+        #             'application_reference'
+        #         ]
+        #     )
+
         if payment.status == 'PAID':
             return Response({
                 'status': 'PAID',
-                "transactionId":payment.transaction_id,
-                })
+                'transactionId': payment.transaction_id,
+                'external_reference': payment.external_reference,
+
+                # IMPORTANT
+                'application_fee_paid': True,
+                'draft_updated': True,
+            })
 
         client = SchoolPayClient()
         data = client.check_status(payment.payment_reference) 
@@ -302,16 +318,35 @@ class CheckPaymentStatus(APIView):
                     payment.status = 'PAID'
                     payment.receipt_number = data.get('receiptNumber')
                     payment.transaction_id = data.get('transactionId')
-                    payment.save()
+                    payment.save(update_fields=['status', 'receipt_number', 'transaction_id'])
+
+                    # manage draft
+                    if draft:
+                        draft.application_fee_paid = True
+                        draft.application_reference = payment.external_reference
+                        draft.save(update_fields=['application_fee_paid', 'application_reference'])
 
             elif data.get('status') in ['FAILED', 'CANCELLED']:
                 payment.status = 'FAILED'
-                payment.save()
+                payment.save(update_fields=['status'])
+
+        # IMPORTANT
+        payment.refresh_from_db()
+
+        if draft:
+            draft.refresh_from_db()
 
         return Response({
             'status': payment.status,
-            "transactionId":payment.transaction_id,
-            })
+            'transactionId': payment.transaction_id,
+            'external_reference': payment.external_reference,
+
+            # IMPORTANT
+            'application_fee_paid': draft.application_fee_paid if draft else False,
+            'draft_updated': bool(
+                draft and draft.application_fee_paid
+            ),
+        })
 # ========================================================end schoolpay====================================================
 
 # ==================================Payments==============================
