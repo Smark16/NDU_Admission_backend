@@ -7,8 +7,10 @@ urlpatterns = [
     path("login", ObtainTokenView.as_view()),
     path("register", RegisterView.as_view()),
     path('send_email', PasswordResetRequestView.as_view()),
+    path('erp_send_email', HorizonPasswordResetRequestView.as_view()),
     path("reset_password/confirm/", PasswordResetConfirmView.as_view()),
     path("reset_password/<uidb64>/<token>/", password_reset_redirect, name="password_reset_redirect"),
+    path('horizon_reset_password/<uidb64>/<token>/', password_horizon_reset_redirect, name='reset_erp_password'),
 
     path('list_users', ListUsers.as_view()),
     path('list_staff', ListStaff.as_view()),

@@ -48,3 +48,20 @@ def send_reset_password_link(user, subject="Password Reset Request"):
     )
 
     return success
+
+def send_horizon_reset_password_link(user, subject="Password Reset Request"):
+    uidb64 = urlsafe_base64_encode(force_bytes(user.pk))
+    token = default_token_generator.make_token(user)
+    reset_url = f"{settings.BACKEND_URL}/api/accounts/horizon_reset_password/{uidb64}/{token}/"
+    html_body = render_to_string('erp_password_reset.html', {
+        'user': user,
+        'reset_url': reset_url,
+    })
+    success = send_configurable_email(
+        to_email=user.email,
+        subject=subject,
+        body=html_body,
+        is_html=True,                 
+    )
+
+    return success

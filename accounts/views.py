@@ -22,7 +22,7 @@ from django.utils.http import urlsafe_base64_decode
 from django.shortcuts import redirect
 from django.contrib.auth.tokens import default_token_generator
 from django.core.cache import cache
-from .tasks import celery_send_password_reset_Link
+from .tasks import celery_send_password_reset_Link, celery_send_erp_password_reset_Link
 
 # login view
 class ObtainTokenView(TokenObtainPairView):
@@ -100,11 +100,6 @@ class UpdateUser(generics.UpdateAPIView):
             instance.save(update_fields=["password", "must_change_password"])
 
         # ── Lecturer role sync ────────────────────────────────────────────────
-        # If the saved role is "Lecturer", ensure is_lecturer=True and Lecturer
-        # group membership — matching what AssignLecturerRole does.
-        # We only auto-GRANT here; removal remains a deliberate separate action
-        # (via the assign_lecturer endpoint) so we never accidentally lock out a
-        # lecturer who already has course unit responsibilities.
         if new_role == "Lecturer" and not instance.is_lecturer:
             instance.is_lecturer = True
             instance.save(update_fields=["is_lecturer"])
@@ -444,6 +439,21 @@ class PasswordResetRequestView(APIView):
 
         return Response({"detail": "Password reset email sent."}, status=status.HTTP_200_OK)
 
+# password reset link
+class HorizonPasswordResetRequestView(APIView):
+    def post(self, request):
+        email = request.data.get('email')
+        user = User.objects.filter(email=email, is_applicant=False).first()
+        if not user:
+                return Response({"detail": "User with this Email not found."}, status=status.HTTP_404_NOT_FOUND)
+    
+        try:
+            celery_send_erp_password_reset_Link.delay(user.id)
+        except Exception:
+            pass
+
+        return Response({"detail": "Password reset email sent."}, status=status.HTTP_200_OK)    
+
 # reset login password view
 class PasswordResetConfirmView(APIView):
     def post(self, request):
@@ -488,6 +498,11 @@ def password_reset_redirect(request, uidb64, token):
     frontend_url = f"{settings.LOGIN_URL.rstrip('/')}/reset-password?uidb64={uidb64}&token={token}"
     return redirect(frontend_url)
 
+# Horizon Frontend redirect
+# Frontend redirect
+def password_horizon_reset_redirect(request, uidb64, token):
+    frontend_url = f"{settings.ERP_FRONTEND_URL.rstrip('/')}/reset-password?uidb64={uidb64}&token={token}"
+    return redirect(frontend_url)
 
 # ── Student first-login forced password change ────────────────────────────────
 class StudentFirstLoginChangePassword(APIView):
