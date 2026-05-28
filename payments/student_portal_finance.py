@@ -193,12 +193,14 @@ def offer_letter_portal_fields(student: AdmittedStudent, request=None) -> dict[s
         and getattr(app, "admission_letter_pdf", None)
         and getattr(app.admission_letter_pdf, "name", None)
     )
-    pdf_url = offer_letter_pdf_url(student, request) if eligible and has_pdf else None
+    # pdf_url = offer_letter_pdf_url(student, request) if eligible and has_pdf else None
+    pdf_url = offer_letter_pdf_url(student, request) if has_pdf else None
     return {
         **summary,
         "offer_letter_eligible": eligible,
         "offer_letter_pdf_url": pdf_url,
-        "offer_letter_can_download": bool(eligible and has_pdf),
+        # "offer_letter_can_download": bool(eligible and has_pdf),
+        "offer_letter_can_download": bool(has_pdf),
     }
 
 

@@ -333,6 +333,9 @@ class ExportTutionExcel(APIView):
             "NATIONALITY",
             "REG NO",
             "PAYCODE",
+            "FACULTY",
+            "PROGRAM",
+            "CAMPUS",
             "AMOUNT PAID",
             "PAYMENT DATE"
         ]
@@ -350,6 +353,9 @@ class ExportTutionExcel(APIView):
                 app.student.application.nationality or "",
                 app.student_registration_number or "",
                 app.student_payment_code or "",
+                app.student.admitted_program.faculty.name if app.student.admitted_program else "",
+                app.student.admitted_program.name if app.student.admitted_program else "",
+                app.student.admitted_campus.name if app.student.admitted_campus else "",
                 app.amount or "",
                 app.payment_date_time.strftime("%Y-%m-%d %H:%M") if app.payment_date_time else "",
             ])
