@@ -55,7 +55,6 @@ def _rule_to_row(r: FeePlanRule) -> dict:
         "amount_international": str(r.amount_international) if r.amount_international is not None else "",
         "currency_international": r.currency_international or "",
         "payable_year_of_study": r.payable_year_of_study,
-        "payable_term_number": r.payable_term_number,
         "program_batch_id": r.program_batch_id,
         "program_batch_name": r.program_batch.name if r.program_batch_id else "",
         "scope": "batch" if r.program_batch_id else "program",
@@ -90,7 +89,7 @@ class OtherFeeScheduleView(APIView):
                 payable_term_number__isnull=False,
             )
             .select_related("fee_head", "program_batch")
-            .order_by("payable_year_of_study", "payable_term_number", "fee_head__name", "id")
+            .order_by("payable_year_of_study","fee_head__name", "id")
         )
         if batch_id:
             try:

@@ -95,7 +95,6 @@ def fill_pdf_template(template_path: str, context: dict, field_positions: dict) 
     doc.close()
     return pdf_bytes
 
-
 def convert_docx_to_pdf_bytes(docx_path: str) -> bytes:
     system = platform.system()
     pdf_path = os.path.splitext(docx_path)[0] + ".pdf"
