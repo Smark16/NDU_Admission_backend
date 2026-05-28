@@ -76,7 +76,9 @@ ii) NOTE: This amount shall be credited towards your tuition fees.
 iii) Sending the Bank Deposit Slip and payment confirmation receipt to:
 confirmation@ndu.ac.ug
 
-iv)NOTE: PLEASE LOG IN TO YOUR HORIZON PORTAL TO DOWNLOAD AND PRINT YOUR ADMISSION LETTER THERE WILL BE NO NEED TO COME PYHSICALLY FOR THE LETTER.
+iv) A second Email will be sent to you with your credentials you will use to log into the horizon student portal
+
+v)NOTE: PLEASE LOG IN TO YOUR HORIZON PORTAL TO DOWNLOAD AND PRINT YOUR ADMISSION LETTER THERE WILL BE NO NEED TO COME PYHSICALLY FOR THE LETTER.
 
 COMMUNICATION
 
