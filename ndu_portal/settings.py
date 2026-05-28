@@ -271,9 +271,25 @@ CORS_ALLOWED_ORIGINS = [
     "https://test.ndu.ac.ug",
 ]
 
-# Staging / test hosts (e.g. test.ndu.ac.ug) without listing every subdomain
+# More flexible option - Recommended for your case
 CORS_ALLOWED_ORIGIN_REGEXES = [
     r"^https?://([a-z0-9-]+\.)*ndu\.ac\.ug$",
+    r"^http://137\.63\.139\.78$",
+]
+
+# Important for debugging
+CORS_EXPOSE_HEADERS = ['Content-Type', 'Authorization', 'X-CSRFToken']
+CORS_ALLOW_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']
+CORS_ALLOW_HEADERS = [
+    'accept',
+    'accept-encoding',
+    'authorization',
+    'content-type',
+    'dnt',
+    'origin',
+    'user-agent',
+    'x-csrftoken',
+    'x-requested-with',
 ]
 
 REST_FRAMEWORK = {
