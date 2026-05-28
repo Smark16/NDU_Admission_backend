@@ -17,7 +17,6 @@ logger = logging.getLogger(__name__)
 
 
 def _optional_fk_id(value):
-    """Coerce request values to a positive int FK id, or None (never empty string)."""
     if value is None:
         return None
     if isinstance(value, str):

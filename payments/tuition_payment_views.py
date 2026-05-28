@@ -1,3 +1,6 @@
+from OfferLetter.AdmissionReports.utils.excel import create_workbook
+from django.http import HttpResponse
+
 from django.db.models import Q, Sum, Count
 
 from rest_framework.views import APIView
@@ -300,3 +303,67 @@ class StudentTransactions(APIView):
         )
 
         return Response(serializer.data)
+    
+# Applicant students reports
+class ExportTutionExcel(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        # --------------------------------------------------------------
+        # 2. MAIN QUERY
+        # --------------------------------------------------------------
+        qs = (
+            TuitionLedger.objects.select_related(
+                "student",
+                "user"
+            )
+            .filter(user__isnull=False, student__isnull=False)
+            .order_by("-created_at")
+        )
+
+        # --------------------------------------------------------------
+        # 3. BUILD EXCEL ROWS
+        # --------------------------------------------------------------
+        headers = [
+            "FIRST NAME",
+            "LAST NAME",
+            "GENDER",
+            "PHONE",
+            "EMAIL",
+            "NATIONALITY",
+            "REG NO",
+            "PAYCODE",
+            "AMOUNT PAID",
+            "PAYMENT DATE"
+        ]
+
+        rows = []
+        for app in qs:
+            # Get all chosen programs as comma-separated
+    
+            rows.append([
+                app.student.application.first_name or "",
+                app.student.application.last_name or "",
+                app.student.application.gender or "",
+                app.student.application.phone or "",
+                app.student.application.email or "",
+                app.student.application.nationality or "",
+                app.student_registration_number or "",
+                app.student_payment_code or "",
+                app.amount or "",
+                app.payment_date_time.strftime("%Y-%m-%d %H:%M") if app.payment_date_time else "",
+            ])
+
+        # --------------------------------------------------------------
+        # 4. CREATE EXCEL
+        # --------------------------------------------------------------
+        wb = create_workbook(headers, rows, sheet_name="Tution Report")
+
+        response = HttpResponse(
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        filename = f"tution_report_{datetime.now().strftime('%Y-%m-%d_%H%M')}.xlsx"
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        wb.save(response)
+
+        return response
