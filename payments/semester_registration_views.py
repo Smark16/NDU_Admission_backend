@@ -114,7 +114,8 @@ class DownloadStudentOfferLetterPdf(APIView):
     def get(self, request):
         from django.http import FileResponse
 
-        from .student_portal_finance import commitment_payment_summary, get_admitted_student_for_user
+        # from .student_portal_finance import commitment_payment_summary, get_admitted_student_for_user
+        from .student_portal_finance import get_admitted_student_for_user
 
         student = get_admitted_student_for_user(request.user)
         if not student:
@@ -122,14 +123,14 @@ class DownloadStudentOfferLetterPdf(APIView):
                 {"detail": "Admitted student profile not found."},
                 status=status.HTTP_404_NOT_FOUND,
             )
-        summary = commitment_payment_summary(student)
-        commitment_met = bool(summary["commitment_met"])
-        admission_paid = bool(getattr(student, "admission_fee_paid", False))
-        if not (commitment_met or admission_paid):
-            return Response(
-                {"detail": "Offer letter download is available after the commitment or admission fee requirement is met."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+        # summary = commitment_payment_summary(student)
+        # commitment_met = bool(summary["commitment_met"])
+        # admission_paid = bool(getattr(student, "admission_fee_paid", False))
+        # if not (commitment_met or admission_paid):
+        #     return Response(
+        #         {"detail": "Offer letter download is available after the commitment or admission fee requirement is met."},
+        #         status=status.HTTP_403_FORBIDDEN,
+        #     )
         app = student.application
         if not app or not app.admission_letter_pdf or not app.admission_letter_pdf.name:
             return Response(
