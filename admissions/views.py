@@ -43,7 +43,8 @@ from .utils.program_choices import (
 from .utils.program_choice_integrity import application_has_suspect_program_choices
 from payments.models import ApplicationPayment
 from Drafts.models import DraftApplication
-from django.db.models import Q, Prefetch, Count
+from django.db.models import Q, Prefetch, Count, Value
+from django.db.models.functions import Concat
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter, OrderingFilter
 from datetime import datetime
@@ -176,12 +177,6 @@ def create_applications(request):
                 application.application_fee_paid = True
                 application.application_fee_amount = payment.amount
                 application.application_reference = payment.external_reference
-
-            # if passport_photo := files.get("passport_photo"):
-            #      application.passport_photo = passport_photo
-
-            # if 'passport_photo' in request.FILES:
-            #     application.passport_photo = request.FILES['passport_photo']
             
             draft = None
             try:
@@ -280,10 +275,6 @@ def create_applications(request):
             if payment:
                 payment.application = application
                 payment.save(update_fields=["application"])
-
-            # === Programs (Many-to-Many) ===
-            # if programs_data:
-            #     application.programs.set(programs_data)
             
             # manage draft documents
             if not request.FILES.getlist('documents') and draft:
@@ -2447,49 +2438,165 @@ class ListAdmittedStudents(generics.ListAPIView):
         'admitted_batch',
         'admitted_campus',
         'application__applicant',
-        # 'programme_enrollment'
+        'admitted_by'
     ).all()
 
     serializer_class = AdmittedStudentListSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    pagination_class = StandardPagination
+
+    # Ordering
+    ordering_fields = ['created_at', 'admission_date', 'id', 'reg_no', 'student_id']
+    ordering = ['-created_at']
+
+    # DRF search filters
+    filter_backends = [SearchFilter, OrderingFilter]
+    search_fields = [
+        'student_id',
+        'reg_no',
+        'application__first_name',
+        'application__last_name',
+        'admitted_program__name',
+        'admitted_program__faculty__name',
+    ]
 
     def get_queryset(self):
-        qs = super().get_queryset()
-        p = self.request.query_params
-        dv = (p.get("documents_verified") or "").lower()
-        if dv in ("1", "true", "yes"):
-            qs = qs.filter(physical_documents_verified=True)
-        elif dv in ("0", "false", "no"):
-            qs = qs.filter(physical_documents_verified=False)
+        queryset = super().get_queryset()
 
-        ay = p.get("academic_year")
-        if ay:
-            qs = qs.filter(admitted_batch__academic_year=ay)
-        batch_id = p.get("batch")
-        if batch_id:
-            qs = qs.filter(admitted_batch_id=batch_id)
-        program_batch_id = p.get("program_batch")
-        if program_batch_id:
-            qs = qs.filter(
-                Q(intended_program_batch_id=program_batch_id)
-                | Q(programme_enrollment__program_batch_id=program_batch_id)
-            ).distinct()
-        campus_id = p.get("campus")
-        if campus_id:
-            qs = qs.filter(admitted_campus_id=campus_id)
-        program_id = p.get("program")
-        if program_id:
-            qs = qs.filter(admitted_program_id=program_id)
-        faculty_id = p.get("faculty")
-        if faculty_id:
-            qs = qs.filter(admitted_program__faculty_id=faculty_id)
-        reg = (p.get("is_registered") or "").lower()
-        if reg in ("1", "true", "yes"):
-            qs = qs.filter(is_registered=True)
-        elif reg in ("0", "false", "no"):
-            qs = qs.filter(is_registered=False)
-        return qs
+        # Get query parameters
+        search = self.request.query_params.get('search', '').strip()
+        batch = self.request.query_params.get('batch')
+        campus = self.request.query_params.get('campus')
+        faculty = self.request.query_params.get('faculty')
+        program = self.request.query_params.get('program')
+        is_registered = self.request.query_params.get('is_registered')
+        is_approved = self.request.query_params.get('is_approved')
+        date_from = self.request.query_params.get('date_from')
+        date_to = self.request.query_params.get('date_to')
 
+        # Search across multiple fields
+        if search:
+            queryset = queryset.annotate(
+                    applicant_full_name=Concat(
+                        'application__first_name',
+                        Value(' '),
+                        'application__last_name'
+                    )
+                ).filter(
+                Q(student_id__icontains=search) |
+                Q(reg_no__icontains=search) |
+                Q(application__first_name__icontains=search) |
+                Q(applicant_full_name__icontains=search) |
+                Q(application__last_name__icontains=search) |
+                Q(admitted_program__name__icontains=search) |
+                Q(admitted_program__faculty__name__icontains=search)
+            )
+
+        # Exact filters
+        if batch and batch != "all":
+            queryset = queryset.filter(admitted_batch__name=batch)
+
+        if campus and campus != "all":
+            queryset = queryset.filter(admitted_campus__name=campus)
+
+        if program and program != "all":
+            queryset = queryset.filter(admitted_program__name__icontains=program)
+
+        if faculty and faculty != "all":
+            queryset = queryset.filter(admitted_program__faculty__name__icontains=faculty)
+
+        # Boolean filters
+        if is_registered is not None and is_registered.lower() != "all":
+            queryset = queryset.filter(is_registered=is_registered.lower() == "true")
+
+        # if is_approved is not None and is_approved.lower() != "all":
+        #     queryset = queryset.filter(is_approved=is_approved.lower() == "true")
+
+        # Date filters
+        if date_from:
+            queryset = queryset.filter(admission_date__date__gte=date_from)
+        if date_to:
+            queryset = queryset.filter(admission_date__date__lte=date_to)
+
+        return queryset.distinct()
+
+# class ListAdmittedStudents(generics.ListAPIView):
+#     queryset = AdmittedStudent.objects.select_related(
+#         'admitted_program__faculty',
+#         'admitted_batch',
+#         'admitted_campus',
+#         'application__applicant',
+#         'admitted_by'
+#     ).all()
+
+#     serializer_class = AdmittedStudentListSerializer
+#     permission_classes = [IsAuthenticated, DjangoModelPermissions]
+#     pagination_class = StandardPagination
+
+#     ordering_fields = ['created_at', 'id', 'status', 'application__first_name']
+#     filter_backends = [OrderingFilter]
+#     searchFilter = ['application__first_name', 'application__last_name', 'application__middlename', 'admitted_program__name', 'reg_no', 'student_id']
+#     ordering = ['created_at']
+
+#     def get_queryset(request):
+#         queryset = AdmittedStudent.objects.select_related(
+#         'admitted_program__faculty',
+#         'admitted_batch',
+#         'admitted_campus',
+#         'application__applicant',
+#         'admitted_by'
+#         ).all()
+
+#         status = request.query_params.get("status")
+#         academic_level = request.query_params.get("academic_level")
+#         batch = request.query_params.get("batch")
+#         campus = request.query_params.get("campus")
+#         program = request.query_params.get("program")
+#         faculty = request.query_params.get("faculty")
+#         date_from = request.query_params.get("date_from")
+#         date_to = request.query_params.get("date_to")
+#         search = (request.query_params.get("search") or "").strip()
+#         direct_entry_param = request.query_params.get("is_direct_entry")
+
+#         if search:
+#             queryset = queryset.filter(
+#                 Q(first_name__icontains=search)
+#                 | Q(last_name__icontains=search)
+#                 | Q(email__icontains=search)
+#                 | Q(application_reference__icontains=search)
+#                 | Q(program_choices__program__name__icontains=search)
+#                 | Q(program_choices__program__faculty__name__icontains=search)
+#             )
+
+#         if status and status != "all":
+#             queryset = queryset.filter(status=status)
+#         if gender and gender != "all":
+#             queryset = queryset.filter(gender=gender)
+#         if academic_level and academic_level != "all":
+#             queryset = queryset.filter(academic_level__name=academic_level)
+#         if batch and batch != "all":
+#             queryset = queryset.filter(batch__name=batch)
+#         if campus and campus != "all":
+#             queryset = queryset.filter(campus__name=campus)
+#         if program and program != "all":
+#             queryset = queryset.filter(program_choices__program__name__icontains=program)
+#         if faculty and faculty != "all":
+#             queryset = queryset.filter(program_choices__program__faculty__name__icontains=faculty)
+#         if date_from:
+#             queryset = queryset.filter(created_at__date__gte=date_from)
+#         if date_to:
+#             queryset = queryset.filter(created_at__date__lte=date_to)
+#         if direct_entry_param is not None:
+#             direct_entry_param = str(direct_entry_param).lower().strip()
+            
+#             if direct_entry_param == "true":
+#                 queryset = queryset.filter(is_direct_entry=True)
+#             elif direct_entry_param == "false":
+#                 queryset = queryset.filter(is_direct_entry=False)
+
+#         return queryset.distinct()
+
+ 
 class MarkPhysicalDocumentsVerified(APIView):
     permission_classes = [IsAuthenticated, VerifyPhysicalDocumentsPermission]
 

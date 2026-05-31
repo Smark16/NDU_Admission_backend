@@ -43,10 +43,6 @@ def get_admitted_student_for_user(user):
 
 
 def _student_program_batch_id(student: AdmittedStudent) -> int | None:
-    """
-    Cohort for fee rules: enrollment → intended at admit → default offer cohort
-    → sole cohort with a semester tuition matrix (legacy records).
-    """
     try:
         enr = student.programme_enrollment
         if enr is not None and enr.program_batch_id:
@@ -82,7 +78,6 @@ def _student_program_batch_id(student: AdmittedStudent) -> int | None:
     if len(batch_ids) == 1:
         return int(batch_ids[0])
     return None
-
 
 def _rules_for_student(student: AdmittedStudent):
     from .feeplanrule_table import ensure_feeplanrule_table
@@ -181,7 +176,6 @@ def offer_letter_pdf_url(student: AdmittedStudent, request=None) -> str | None:
     except Exception:
         return None
 
-
 def offer_letter_portal_fields(student: AdmittedStudent, request=None) -> dict[str, Any]:
     summary = commitment_payment_summary(student)
     commitment_met = bool(summary["commitment_met"])
@@ -202,7 +196,6 @@ def offer_letter_portal_fields(student: AdmittedStudent, request=None) -> dict[s
         # "offer_letter_can_download": bool(eligible and has_pdf),
         "offer_letter_can_download": bool(has_pdf),
     }
-
 
 def other_schedule_rows_and_due_by_currency(
     student: AdmittedStudent, intl: bool | None = None
@@ -245,7 +238,6 @@ def _installment_display(extra: dict[str, Any]) -> str:
         return f"Semester {order}"
     name = (extra.get("semester_name") or "").strip()
     return name or "—"
-
 
 def _default_programme_semester_label(student: AdmittedStudent) -> str:
     for rule in _rules_for_student(student):
