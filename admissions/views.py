@@ -25,7 +25,7 @@ from django.db import transaction
 from django.db.models.deletion import ProtectedError
 from django.db.utils import OperationalError
 # from .utils.validate_photo import validate_passport_photo
-from .tasks import celery_send_application_email, celery_application_notification, celery_admission_email, celery_admission_update, celery_create_student_account, celery_send_rejection_email
+from .tasks import celery_send_application_email, celery_application_notification, celery_admission_email, celery_admission_update, celery_create_student_account, celery_send_rejection_email, celery_update_student_account
 from accounts.tasks import celery_send_account_email
 from payments.utils.school_pay_code import register_student_with_schoolpay
 from .utils.trigger_background_tasks import trigger_background_tasks
@@ -2519,83 +2519,6 @@ class ListAdmittedStudents(generics.ListAPIView):
             queryset = queryset.filter(admission_date__date__lte=date_to)
 
         return queryset.distinct()
-
-# class ListAdmittedStudents(generics.ListAPIView):
-#     queryset = AdmittedStudent.objects.select_related(
-#         'admitted_program__faculty',
-#         'admitted_batch',
-#         'admitted_campus',
-#         'application__applicant',
-#         'admitted_by'
-#     ).all()
-
-#     serializer_class = AdmittedStudentListSerializer
-#     permission_classes = [IsAuthenticated, DjangoModelPermissions]
-#     pagination_class = StandardPagination
-
-#     ordering_fields = ['created_at', 'id', 'status', 'application__first_name']
-#     filter_backends = [OrderingFilter]
-#     searchFilter = ['application__first_name', 'application__last_name', 'application__middlename', 'admitted_program__name', 'reg_no', 'student_id']
-#     ordering = ['created_at']
-
-#     def get_queryset(request):
-#         queryset = AdmittedStudent.objects.select_related(
-#         'admitted_program__faculty',
-#         'admitted_batch',
-#         'admitted_campus',
-#         'application__applicant',
-#         'admitted_by'
-#         ).all()
-
-#         status = request.query_params.get("status")
-#         academic_level = request.query_params.get("academic_level")
-#         batch = request.query_params.get("batch")
-#         campus = request.query_params.get("campus")
-#         program = request.query_params.get("program")
-#         faculty = request.query_params.get("faculty")
-#         date_from = request.query_params.get("date_from")
-#         date_to = request.query_params.get("date_to")
-#         search = (request.query_params.get("search") or "").strip()
-#         direct_entry_param = request.query_params.get("is_direct_entry")
-
-#         if search:
-#             queryset = queryset.filter(
-#                 Q(first_name__icontains=search)
-#                 | Q(last_name__icontains=search)
-#                 | Q(email__icontains=search)
-#                 | Q(application_reference__icontains=search)
-#                 | Q(program_choices__program__name__icontains=search)
-#                 | Q(program_choices__program__faculty__name__icontains=search)
-#             )
-
-#         if status and status != "all":
-#             queryset = queryset.filter(status=status)
-#         if gender and gender != "all":
-#             queryset = queryset.filter(gender=gender)
-#         if academic_level and academic_level != "all":
-#             queryset = queryset.filter(academic_level__name=academic_level)
-#         if batch and batch != "all":
-#             queryset = queryset.filter(batch__name=batch)
-#         if campus and campus != "all":
-#             queryset = queryset.filter(campus__name=campus)
-#         if program and program != "all":
-#             queryset = queryset.filter(program_choices__program__name__icontains=program)
-#         if faculty and faculty != "all":
-#             queryset = queryset.filter(program_choices__program__faculty__name__icontains=faculty)
-#         if date_from:
-#             queryset = queryset.filter(created_at__date__gte=date_from)
-#         if date_to:
-#             queryset = queryset.filter(created_at__date__lte=date_to)
-#         if direct_entry_param is not None:
-#             direct_entry_param = str(direct_entry_param).lower().strip()
-            
-#             if direct_entry_param == "true":
-#                 queryset = queryset.filter(is_direct_entry=True)
-#             elif direct_entry_param == "false":
-#                 queryset = queryset.filter(is_direct_entry=False)
-
-#         return queryset.distinct()
-
  
 class MarkPhysicalDocumentsVerified(APIView):
     permission_classes = [IsAuthenticated, VerifyPhysicalDocumentsPermission]
@@ -2682,6 +2605,19 @@ class ClearPhysicalDocumentsVerification(APIView):
         return Response(AdmittedStudentListSerializer(student).data, status=200)
 
 # update admitted students
+# class UpdateAdmittedStudent(generics.UpdateAPIView):
+#     permission_classes = [IsAuthenticated, DjangoModelPermissions]
+#     queryset = AdmittedStudent.objects.all()
+#     serializer_class = AdmittedStudentSerializer
+
+#     @transaction.atomic
+#     def perform_update(self, serializer):
+#         admission_data = serializer.save()
+#         try:
+#             celery_admission_update.delay(admission_data.id)
+#             celery_update_student_account.delay(admission_data.id, admission_data.application.id)
+#         except Exception as e:
+#             logger.warning("Celery error: %s", f"{e.__class__.__name__}: {e}")
 class UpdateAdmittedStudent(generics.UpdateAPIView):
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
     queryset = AdmittedStudent.objects.all()
@@ -2689,11 +2625,15 @@ class UpdateAdmittedStudent(generics.UpdateAPIView):
 
     @transaction.atomic
     def perform_update(self, serializer):
-        admission_data = serializer.save()
+        admission = serializer.save()   # This saves the AdmittedStudent instance
+
         try:
-            celery_admission_update.delay(admission_data.id)
+            # Always trigger both tasks when admission is updated
+            celery_admission_update.delay(admission.id)
+            celery_update_student_account.delay(admission.id, admission.application.id)
+            
         except Exception as e:
-            logger.warning("Celery error: %s", f"{e.__class__.__name__}: {e}")
+            logger.warning(f"Celery task scheduling failed: {e.__class__.__name__}: {e}")
 
 # candidate admission
 class CandidateAdmission(generics.RetrieveAPIView):
