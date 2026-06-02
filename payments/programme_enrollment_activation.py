@@ -53,11 +53,9 @@ def activate_programme_enrollment_after_commitment_payment(
         return {"activated": False, "reason": "commitment_not_met", **summary}
 
     with transaction.atomic():
-        locked_student = (
-            AdmittedStudent.objects.select_for_update()
-            .select_related("admitted_program", "programme_enrollment")
-            .get(pk=student.pk)
-        )
+        # Avoid select_related() on nullable relations with FOR UPDATE:
+        # PostgreSQL rejects row locks on the nullable side of outer joins.
+        locked_student = AdmittedStudent.objects.select_for_update().get(pk=student.pk)
 
         try:
             enrollment = locked_student.programme_enrollment
