@@ -27,6 +27,30 @@ def curriculum_versions_queryset(program: Program):
     return ProgramCurriculumVersion.objects.filter(program=owner)
 
 
+def resolve_effective_curriculum_version(program: Program, batch=None):
+    """Curriculum version used for blueprint lookups (Load from Curriculum, etc.).
+
+    Inherited programmes read lines from the master programme. If a batch still
+    points at a local (child) curriculum version from before inheritance was
+    linked, ignore it and use the master's default version instead.
+    """
+    from .models import resolve_program_default_curriculum_version
+
+    owner = curriculum_owner_program(program)
+    if not owner:
+        return None
+
+    version = None
+    if batch is not None and getattr(batch, "curriculum_version_id", None):
+        version = batch.curriculum_version
+        if version.program_id != owner.id:
+            version = None
+
+    if version is None:
+        version = resolve_program_default_curriculum_version(program)
+    return version
+
+
 def curriculum_version_matches_program(program: Program, version: ProgramCurriculumVersion) -> bool:
     if not program or not version:
         return False
