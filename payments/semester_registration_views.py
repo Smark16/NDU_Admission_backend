@@ -251,6 +251,9 @@ class GetRegistrationSettings(APIView):
                     "require_enrollment": s.require_enrollment,
                     "require_programme_enrollment": s.require_programme_enrollment,
                     "auto_enroll_on_admission": getattr(s, "auto_enroll_on_admission", False),
+                    "auto_assign_course_units_after_commitment": getattr(
+                        s, "auto_assign_course_units_after_commitment", True
+                    ),
                     "skip_tuition_check": s.skip_tuition_check,
                     "is_active": s.is_active,
                 }
@@ -282,6 +285,10 @@ class UpdateRegistrationSettings(APIView):
                 s.require_programme_enrollment = _parse_optional_bool(request.data["require_programme_enrollment"])
             if "auto_enroll_on_admission" in request.data:
                 s.auto_enroll_on_admission = _parse_optional_bool(request.data["auto_enroll_on_admission"])
+            if "auto_assign_course_units_after_commitment" in request.data:
+                s.auto_assign_course_units_after_commitment = _parse_optional_bool(
+                    request.data["auto_assign_course_units_after_commitment"]
+                )
             if "skip_tuition_check" in request.data:
                 s.skip_tuition_check = _parse_optional_bool(request.data["skip_tuition_check"])
             if "is_active" in request.data:
@@ -300,6 +307,9 @@ class UpdateRegistrationSettings(APIView):
                     "require_enrollment": s.require_enrollment,
                     "require_programme_enrollment": s.require_programme_enrollment,
                     "auto_enroll_on_admission": getattr(s, "auto_enroll_on_admission", False),
+                    "auto_assign_course_units_after_commitment": getattr(
+                        s, "auto_assign_course_units_after_commitment", True
+                    ),
                     "skip_tuition_check": s.skip_tuition_check,
                     "is_active": s.is_active,
                 }
