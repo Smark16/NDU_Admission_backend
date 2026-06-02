@@ -207,16 +207,6 @@ def schoolpay_webhook(request):
                 payment_reference=payment_ref
             ).first()
 
-            # if draft:
-            #     draft.application_fee_paid = True
-            #     draft.application_reference = app_payment.external_reference
-            #     draft.save(
-            #         update_fields=[
-            #             'application_fee_paid',
-            #             'application_reference'
-            #         ]
-            #     )
-
             if app_payment:
                 draft = DraftApplication.objects.filter(
                     applicant=app_payment.user,
@@ -275,28 +265,15 @@ class CheckPaymentStatus(APIView):
 
     def get(self, request, payment_ref):
 
-        payment = ApplicationPayment.objects.get(
+        payment = ApplicationPayment.objects.filter(
             payment_reference=payment_ref,
             user=request.user
-        )
+        ).first()
 
         # Get or create draft
         draft = DraftApplication.objects.filter(
                 applicant=request.user,
             ).order_by('-updated_at').first()
-
-        # if not draft:
-        #         pass
-        # if draft:
-        #     draft.refresh_from_db()
-        #     draft.application_fee_paid = True
-        #     draft.application_reference = payment.external_reference
-        #     draft.save(
-        #         update_fields=[
-        #             'application_fee_paid',
-        #             'application_reference'
-        #         ]
-        #     )
 
         if payment.status == 'PAID':
             return Response({
