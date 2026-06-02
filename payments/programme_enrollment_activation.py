@@ -36,12 +36,19 @@ def _auto_assign_current_semester_course_units(enrollment) -> dict:
     """Auto-assign course units in student's current active semester when enabled."""
     from Programs.models import CourseUnit, Semester, StudentCourseUnitEnrollment
 
+    def _zero(reason: str) -> dict:
+        return {
+            "course_units_auto_assigned": 0,
+            "course_units_total_in_semester": 0,
+            "auto_assign_skip_reason": reason,
+        }
+
     settings = RegistrationSettings.get_settings()
     if not getattr(settings, "auto_assign_course_units_after_commitment", True):
-        return {"course_units_auto_assigned": 0, "course_units_total_in_semester": 0}
+        return _zero("toggle_disabled")
 
     if not enrollment.program_batch_id:
-        return {"course_units_auto_assigned": 0, "course_units_total_in_semester": 0}
+        return _zero("no_program_batch")
 
     semester = (
         Semester.objects.filter(
@@ -54,13 +61,15 @@ def _auto_assign_current_semester_course_units(enrollment) -> dict:
         .first()
     )
     if semester is None:
-        return {"course_units_auto_assigned": 0, "course_units_total_in_semester": 0}
+        return _zero(
+            f"no_active_semester_y{enrollment.current_year_of_study}_t{enrollment.current_term_number}"
+        )
 
     units = list(
         CourseUnit.objects.filter(semester=semester, is_active=True).only("id")
     )
     if not units:
-        return {"course_units_auto_assigned": 0, "course_units_total_in_semester": 0}
+        return _zero(f"no_active_course_units_semester_{semester.id}")
 
     unit_ids = [u.id for u in units]
     existing_ids = set(
@@ -85,6 +94,7 @@ def _auto_assign_current_semester_course_units(enrollment) -> dict:
     return {
         "course_units_auto_assigned": len(missing_ids),
         "course_units_total_in_semester": len(unit_ids),
+        "auto_assign_skip_reason": None,
     }
 
 
