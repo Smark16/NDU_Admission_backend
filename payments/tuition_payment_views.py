@@ -13,7 +13,10 @@ from rest_framework.pagination import PageNumberPagination
 from django.utils import timezone
 from datetime import timedelta, datetime
 
+from decimal import Decimal
+
 from payments.models import TuitionLedger
+from payments.student_payment_allocation import COMMITMENT_FEE_THRESHOLD
 from datetime import datetime
 from datetime import timedelta
 
@@ -309,17 +312,35 @@ class ExportTutionExcel(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        # --------------------------------------------------------------
-        # 2. MAIN QUERY
-        # --------------------------------------------------------------
+        commitment_only = (request.query_params.get("commitment_only") or "").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        min_amount_raw = request.query_params.get("min_amount")
+        min_amount = (
+            Decimal(min_amount_raw)
+            if min_amount_raw not in (None, "")
+            else (COMMITMENT_FEE_THRESHOLD if commitment_only else None)
+        )
+
         qs = (
             TuitionLedger.objects.select_related(
                 "student",
-                "user"
+                "student__application",
+                "student__admitted_program__faculty",
+                "student__admitted_campus",
+                "user",
             )
-            .filter(user__isnull=False, student__isnull=False)
-            .order_by("-created_at")
+            .filter(
+                user__isnull=False,
+                student__isnull=False,
+                transaction_completion_status="Completed",
+            )
+            .order_by("-payment_date_time")
         )
+        if min_amount is not None:
+            qs = qs.filter(amount__gte=min_amount)
 
         # --------------------------------------------------------------
         # 3. BUILD EXCEL ROWS
@@ -341,23 +362,30 @@ class ExportTutionExcel(APIView):
         ]
 
         rows = []
-        for app in qs:
-            # Get all chosen programs as comma-separated
-    
+        for ledger in qs:
+            student = ledger.student
+            application = student.application
+            reg_no = (student.reg_no or ledger.student_registration_number or "").strip()
+            paycode = (student.student_id or ledger.student_payment_code or "").strip()
+
             rows.append([
-                app.student.application.first_name or "",
-                app.student.application.last_name or "",
-                app.student.application.gender or "",
-                app.student.application.phone or "",
-                app.student.application.email or "",
-                app.student.application.nationality or "",
-                app.student_registration_number or "",
-                app.student_payment_code or "",
-                app.student.admitted_program.faculty.name if app.student.admitted_program else "",
-                app.student.admitted_program.name if app.student.admitted_program else "",
-                app.student.admitted_campus.name if app.student.admitted_campus else "",
-                app.amount or "",
-                app.payment_date_time.strftime("%Y-%m-%d %H:%M") if app.payment_date_time else "",
+                application.first_name or "",
+                application.last_name or "",
+                application.gender or "",
+                application.phone or "",
+                application.email or "",
+                application.nationality or "",
+                reg_no,
+                paycode,
+                student.admitted_program.faculty.name
+                if student.admitted_program and student.admitted_program.faculty
+                else "",
+                student.admitted_program.name if student.admitted_program else "",
+                student.admitted_campus.name if student.admitted_campus else "",
+                ledger.amount or "",
+                ledger.payment_date_time.strftime("%Y-%m-%d %H:%M")
+                if ledger.payment_date_time
+                else "",
             ])
 
         # --------------------------------------------------------------
