@@ -14,6 +14,29 @@ from .student_portal_finance import commitment_payment_summary
 logger = logging.getLogger(__name__)
 
 
+def try_activate_programme_enrollment_after_payment(
+    student: AdmittedStudent | None,
+) -> dict | None:
+    """
+    Idempotent entry point for payment signals and SchoolPay ledger sync.
+    Reloads the student row so admission_fee_paid and ledger credits are current.
+    """
+    if student is None or not getattr(student, "pk", None):
+        return None
+    fresh = (
+        AdmittedStudent.objects.filter(pk=student.pk, is_admitted=True)
+        .select_related(
+            "admitted_program",
+            "admitted_batch",
+            "intended_program_batch",
+        )
+        .first()
+    )
+    if fresh is None:
+        return None
+    return activate_programme_enrollment_after_commitment_payment(fresh)
+
+
 def _default_program_batch(student: AdmittedStudent):
     if not student.admitted_program_id:
         return None

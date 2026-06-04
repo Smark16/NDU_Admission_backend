@@ -3,6 +3,9 @@ from django.utils.dateparse import parse_datetime
 from django.utils import timezone
 
 from payments.models import TuitionLedger
+from payments.programme_enrollment_activation import (
+    try_activate_programme_enrollment_after_payment,
+)
 from admissions.models import AdmittedStudent
 
 import hashlib
@@ -167,35 +170,32 @@ def reconcile_transactions(data):
             )
         )
 
-        # ALREADY EXISTS
+        # Existing receipt: still attempt enrollment (backlog / missed activation)
         if not created:
+            if (
+                student
+                and ledger.transaction_completion_status == "Completed"
+            ):
+                try_activate_programme_enrollment_after_payment(student)
             continue
 
-        # RECONCILIATION
-        if (
-            student
-            and ledger.transaction_completion_status == "Completed"
-            and ledger.amount >= ADMISSION_FEE_AMOUNT
-        ):
+        # RECONCILIATION + academic enrollment when commitment is met
+        if student and ledger.transaction_completion_status == "Completed":
+            if ledger.amount >= ADMISSION_FEE_AMOUNT and not student.admission_fee_paid:
+                student.admission_fee_paid = True
+                student.admission_fee_paid_at = timezone.now()
+                student.save(
+                    update_fields=[
+                        "admission_fee_paid",
+                        "admission_fee_paid_at",
+                    ]
+                )
 
-            student.admission_fee_paid = True
+            if not ledger.reconciled:
+                ledger.reconciled = True
+                ledger.save(update_fields=["reconciled"])
 
-            student.admission_fee_paid_at = (
-                timezone.now()
-            )
-
-            student.save(
-                update_fields=[
-                    "admission_fee_paid",
-                    "admission_fee_paid_at"
-                ]
-            )
-
-            ledger.reconciled = True
-
-            ledger.save(
-                update_fields=["reconciled"]
-            )
+            try_activate_programme_enrollment_after_payment(student)
 
         created_count += 1
 
