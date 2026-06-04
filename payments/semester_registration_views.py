@@ -5,7 +5,9 @@ from django.utils.dateparse import parse_datetime
 
 from Programs.permissions import FeePlanConfigurationPermission
 from rest_framework import status
-from rest_framework.permissions import IsAuthenticated
+from django.db.models import Q
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -316,3 +318,75 @@ class UpdateRegistrationSettings(APIView):
             )
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def verify_registration_card_public(request, student_id: str):
+    """
+    Public: scan QR on printed registration card (no auth).
+    Returns live tuition paid % from the finance engine.
+    """
+    from Programs.models import StudentCourseUnitEnrollment, StudentProgrammeEnrollment
+
+    from .student_portal_finance import student_finance_totals
+
+    lookup = (student_id or "").strip()
+    if not lookup:
+        return Response(
+            {"valid": False, "detail": "Missing student identifier."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    student = (
+        AdmittedStudent.objects.filter(
+            Q(student_id=lookup) | Q(reg_no=lookup),
+            is_admitted=True,
+        )
+        .select_related("admitted_program", "admitted_campus", "application")
+        .first()
+    )
+    if not student:
+        return Response(
+            {"valid": False, "detail": "This registration card is not recognised."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    finance = student_finance_totals(student)
+    registered_count = StudentCourseUnitEnrollment.objects.filter(
+        student=student,
+        registration_date__isnull=False,
+    ).count()
+
+    enrollment_status = None
+    enrollment_status_display = None
+    try:
+        spe = StudentProgrammeEnrollment.objects.get(student=student)
+        enrollment_status = spe.status
+        enrollment_status_display = spe.get_status_display()
+    except StudentProgrammeEnrollment.DoesNotExist:
+        enrollment_status = "none"
+        enrollment_status_display = "Not enrolled"
+
+    return Response(
+        {
+            "valid": True,
+            "student_id": student.student_id,
+            "reg_no": student.reg_no,
+            "student_name": student.full_name,
+            "programme": student.admitted_program.name if student.admitted_program_id else None,
+            "campus": student.admitted_campus.name if student.admitted_campus_id else None,
+            "enrollment_status": enrollment_status,
+            "enrollment_status_display": enrollment_status_display,
+            "registered_courses_count": registered_count,
+            "percentage_paid": finance["percentage_paid"],
+            "total_paid": finance["total_paid"],
+            "total_required": finance["total_required"],
+            "balance": finance["balance"],
+            "display_currency": finance["display_currency"],
+            "commitment_met": finance["commitment_met"],
+            "commitment_paid_ugx": finance["commitment_paid_ugx"],
+            "commitment_threshold": finance["commitment_threshold"],
+            "system": "Ndejje University — Horizon ERP",
+        }
+    )
