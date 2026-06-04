@@ -10,6 +10,14 @@ from admissions.email_template_views import (
     EmailTemplateResetDefaultView,
 )
 from admissions.announcement_views import SendAnnouncementView, TestAnnouncementView
+from admissions.student_bulk_import_views import (
+    StudentBulkImportTemplateView,
+    StudentBulkImportView,
+)
+from admissions.student_fee_balance_import_views import (
+    StudentFeeBalanceImportTemplateView,
+    StudentFeeBalanceImportView,
+)
 
 app_name = 'admissions'
 
@@ -133,6 +141,22 @@ urlpatterns = [
     # Direct entry (admin / manual / legacy migration)
     path('direct_application_entry', views.DirectApplicationEntryView.as_view(), name='direct_application_entry'),
     path('direct_admission_entry', views.DirectAdmissionEntryView.as_view(), name='direct_admission_entry'),
+    path(
+        'students/bulk_import_template',
+        StudentBulkImportTemplateView.as_view(),
+        name='student_bulk_import_template',
+    ),
+    path('students/bulk_import', StudentBulkImportView.as_view(), name='student_bulk_import'),
+    path(
+        'students/fee_balance_import_template',
+        StudentFeeBalanceImportTemplateView.as_view(),
+        name='student_fee_balance_import_template',
+    ),
+    path(
+        'students/fee_balance_import',
+        StudentFeeBalanceImportView.as_view(),
+        name='student_fee_balance_import',
+    ),
 
     # Student ID cards (admin)
     path('id_cards/eligible', id_card_views.IdCardEligibleListView.as_view(), name='id_cards_eligible'),

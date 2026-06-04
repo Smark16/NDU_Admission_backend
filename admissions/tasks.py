@@ -80,6 +80,7 @@ def celery_create_student_account(self, admission_id, application_id):
                     'email': application.applicant.email,
                     'is_student': True,
                     'must_change_password': True,
+                    'allow_multi_campus_per_day': False,
                         }
                     )
         if created:
