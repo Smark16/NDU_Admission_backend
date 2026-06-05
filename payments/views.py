@@ -227,29 +227,6 @@ def schoolpay_webhook(request):
                     draft.application_reference = app_payment.external_reference
                     draft.save(update_fields=['application_fee_paid', 'application_reference'])
 
-                # ── Link payment back to the application ──────────────────
-                # Find the applicant's most recent submitted application and
-                # stamp it as fee-paid so admins can see it is confirmed.
-                # from admissions.models import Application as App
-                # linked_app = (
-                #     App.objects.filter(applicant=app_payment.user)
-                #     .exclude(status='draft')
-                #     .order_by('-created_at')
-                #     .first()
-                # )
-                # if linked_app and not linked_app.application_fee_paid:
-                #     linked_app.application_fee_paid = True
-                #     linked_app.application_fee_amount = app_payment.amount
-                #     if not linked_app.application_reference:
-                #         linked_app.application_reference = app_payment.external_reference
-                #     linked_app.save(update_fields=[
-                #         'application_fee_paid',
-                #         'application_fee_amount',
-                #         'application_reference',
-                #     ])
-                #     logger.info("✅ Application %s marked fee_paid", linked_app.id)
-                # ─────────────────────────────────────────────────────────
-
                 return JsonResponse({'status': 'ok'}, status=200)
 
     except Exception as e:
