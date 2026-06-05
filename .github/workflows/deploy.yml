@@ -45,6 +45,7 @@ jobs:
           python manage.py migrate Programs 0007_timetable --fake
           python manage.py migrate Programs 0008_venue_classroom_fields --fake
           python manage.py migrate Programs 0009_roomtype_and_venue_code --fake
+          python manage.py migrate Programs 0010_timetable_ndejje_rules --fake
         
           # Final migrate (this should now be safe)
           python manage.py migrate
