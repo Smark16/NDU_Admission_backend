@@ -32,8 +32,19 @@ from django.db import close_old_connections
 
 import logging
 import platform
-from .tasks import send_offerletter_email, convert_and_save_pdf_task
+import uuid
+
+from .tasks import (
+    bulk_generate_offer_letters_task,
+    load_bulk_offer_letter_job,
+    save_bulk_offer_letter_job,
+    send_offerletter_email,
+    convert_and_save_pdf_task,
+)
+from .utils.offer_generation import generate_offer_letter_for_application, resolve_verify_base
 import base64
+
+BULK_SYNC_THRESHOLD = 25
 
 logger = logging.getLogger(__name__)
 
@@ -320,48 +331,51 @@ def _eligible_offer_letter_application_ids(
     )
 
 
-def _process_bulk_offer_letters(request, application_ids: list[int]) -> dict:
+def _bool_request_flag(value, default=False):
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).lower() in ("1", "true", "yes")
+
+
+def _process_bulk_offer_letters_sync(
+    request,
+    application_ids: list[int],
+    *,
+    send_email: bool = False,
+    only_missing_pdf: bool = True,
+) -> dict:
     generated = 0
     reused_pdf = 0
     failed = 0
     errors = []
+    verify_base = resolve_verify_base(request)
 
     for applicant_id in application_ids:
-        try:
-            applicant = Application.objects.filter(pk=applicant_id).first()
-            if not applicant:
-                failed += 1
-                errors.append({"id": applicant_id, "detail": "Applicant not found."})
-                continue
-
-            if applicant.admission_letter_pdf:
-                send_offerletter_email.delay(applicant.id)
+        result = generate_offer_letter_for_application(
+            applicant_id,
+            request.user,
+            verify_base=verify_base,
+            send_email=send_email,
+            skip_if_pdf_exists=only_missing_pdf,
+        )
+        if result.get("ok"):
+            if result.get("status") == "skipped":
                 reused_pdf += 1
-                continue
-
-            single_response = send_offer_letter(request, applicant.id)
-            if 200 <= single_response.status_code < 300:
-                generated += 1
             else:
-                failed += 1
-                error_detail = "Failed to generate/send offer letter."
-                if isinstance(single_response.data, dict):
-                    error_detail = single_response.data.get("detail", error_detail)
-                errors.append({"id": applicant_id, "detail": error_detail})
-        except Exception as e:
-            logger.error(
-                f"Bulk offer letter processing failed for applicant {applicant_id}: {e}",
-                exc_info=True,
-            )
+                generated += 1
+        else:
             failed += 1
-            errors.append({"id": applicant_id, "detail": "Unexpected server error."})
+            errors.append({"id": applicant_id, "detail": result.get("detail", "Generation failed.")})
 
     total = len(application_ids)
     return {
         "detail": (
-            f"Processed {total} applicants. Generated+queued: {generated}, "
-            f"Reused existing PDF+queued: {reused_pdf}, Failed: {failed}."
+            f"Processed {total} applicants. Generated: {generated}, "
+            f"Reused existing PDF: {reused_pdf}, Failed: {failed}."
         ),
+        "async": False,
         "summary": {
             "total": total,
             "generated_and_queued": generated,
@@ -370,6 +384,50 @@ def _process_bulk_offer_letters(request, application_ids: list[int]) -> dict:
         },
         "errors": errors[:50],
         "status_code": 200 if failed == 0 else 207,
+    }
+
+
+def _queue_bulk_offer_letters_async(
+    request,
+    application_ids: list[int],
+    *,
+    send_email: bool = False,
+    only_missing_pdf: bool = True,
+) -> dict:
+    job_id = uuid.uuid4().hex
+    job_payload = {
+        "job_id": job_id,
+        "status": "queued",
+        "total": len(application_ids),
+        "processed": 0,
+        "generated": 0,
+        "reused": 0,
+        "failed": 0,
+        "errors": [],
+        "send_email": send_email,
+        "only_missing_pdf": only_missing_pdf,
+        "started_by": getattr(request.user, "id", None),
+        "created_at": timezone.now().isoformat(),
+    }
+    save_bulk_offer_letter_job(job_id, job_payload)
+    bulk_generate_offer_letters_task.delay(
+        job_id,
+        application_ids,
+        request.user.id,
+        send_email=send_email,
+        skip_if_pdf_exists=only_missing_pdf,
+        verify_base=resolve_verify_base(request),
+    )
+    return {
+        "detail": (
+            f"Bulk offer letter job queued for {len(application_ids)} applicant(s). "
+            "Poll bulk_job_status for progress."
+        ),
+        "async": True,
+        "job_id": job_id,
+        "total": len(application_ids),
+        "status_url": f"/api/offer_letter/bulk_job_status/{job_id}",
+        "status_code": 202,
     }
 
 
@@ -490,9 +548,37 @@ def bulk_send_offer_letters(request):
         if not cleaned_ids:
             return Response({"detail": "No valid applicant IDs provided."}, status=400)
 
-    result = _process_bulk_offer_letters(request, cleaned_ids)
+    send_email = _bool_request_flag(request.data.get("send_email"), default=False)
+    force_async = _bool_request_flag(request.data.get("async"), default=False)
+    use_async = force_async or all_eligible or len(cleaned_ids) > BULK_SYNC_THRESHOLD
+
+    if use_async:
+        result = _queue_bulk_offer_letters_async(
+            request,
+            cleaned_ids,
+            send_email=send_email,
+            only_missing_pdf=only_missing_pdf,
+        )
+    else:
+        result = _process_bulk_offer_letters_sync(
+            request,
+            cleaned_ids,
+            send_email=send_email,
+            only_missing_pdf=only_missing_pdf,
+        )
+
     status_code = result.pop("status_code", 200)
     return Response(result, status=status_code)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def bulk_offer_letter_job_status(request, job_id):
+    job = load_bulk_offer_letter_job(job_id)
+    if not job:
+        return Response({"detail": "Bulk job not found or expired."}, status=404)
+    return Response(job)
+
 
 @api_view(["GET"])
 @permission_classes([AllowAny])
