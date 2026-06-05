@@ -8,9 +8,33 @@ from django.utils import timezone
 
 from admissions.models import AdmittedStudent
 
+from .models import RegistrationSettings
 from .student_portal_finance import commitment_payment_summary
 
 logger = logging.getLogger(__name__)
+
+
+def try_activate_programme_enrollment_after_payment(
+    student: AdmittedStudent | None,
+) -> dict | None:
+    """
+    Idempotent entry point for payment signals and SchoolPay ledger sync.
+    Reloads the student row so admission_fee_paid and ledger credits are current.
+    """
+    if student is None or not getattr(student, "pk", None):
+        return None
+    fresh = (
+        AdmittedStudent.objects.filter(pk=student.pk, is_admitted=True)
+        .select_related(
+            "admitted_program",
+            "admitted_batch",
+            "intended_program_batch",
+        )
+        .first()
+    )
+    if fresh is None:
+        return None
+    return activate_programme_enrollment_after_commitment_payment(fresh)
 
 
 def _default_program_batch(student: AdmittedStudent):
@@ -29,6 +53,72 @@ def _default_program_batch(student: AdmittedStudent):
         student.admitted_program,
         admission_batch=student.admitted_batch,
     )
+
+
+def _auto_assign_current_semester_course_units(enrollment) -> dict:
+    """Auto-assign course units in student's current active semester when enabled."""
+    from Programs.models import CourseUnit, Semester, StudentCourseUnitEnrollment
+
+    def _zero(reason: str) -> dict:
+        return {
+            "course_units_auto_assigned": 0,
+            "course_units_total_in_semester": 0,
+            "auto_assign_skip_reason": reason,
+        }
+
+    settings = RegistrationSettings.get_settings()
+    if not getattr(settings, "auto_assign_course_units_after_commitment", True):
+        return _zero("toggle_disabled")
+
+    if not enrollment.program_batch_id:
+        return _zero("no_program_batch")
+
+    semester = (
+        Semester.objects.filter(
+            program_batch_id=enrollment.program_batch_id,
+            year_of_study=enrollment.current_year_of_study,
+            term_number=enrollment.current_term_number,
+            is_active=True,
+        )
+        .order_by("order", "id")
+        .first()
+    )
+    if semester is None:
+        return _zero(
+            f"no_active_semester_y{enrollment.current_year_of_study}_t{enrollment.current_term_number}"
+        )
+
+    units = list(
+        CourseUnit.objects.filter(semester=semester, is_active=True).only("id")
+    )
+    if not units:
+        return _zero(f"no_active_course_units_semester_{semester.id}")
+
+    unit_ids = [u.id for u in units]
+    existing_ids = set(
+        StudentCourseUnitEnrollment.objects.filter(
+            student=enrollment.student, course_unit_id__in=unit_ids
+        ).values_list("course_unit_id", flat=True)
+    )
+    missing_ids = [cid for cid in unit_ids if cid not in existing_ids]
+    if missing_ids:
+        StudentCourseUnitEnrollment.objects.bulk_create(
+            [
+                StudentCourseUnitEnrollment(
+                    student=enrollment.student,
+                    course_unit_id=cid,
+                    status="enrolled",
+                    source="admin_assigned",
+                )
+                for cid in missing_ids
+            ],
+            ignore_conflicts=True,
+        )
+    return {
+        "course_units_auto_assigned": len(missing_ids),
+        "course_units_total_in_semester": len(unit_ids),
+        "auto_assign_skip_reason": None,
+    }
 
 
 def activate_programme_enrollment_after_commitment_payment(
@@ -91,17 +181,21 @@ def activate_programme_enrollment_after_commitment_payment(
                 "Created enrolled SPE for student %s after commitment payment",
                 locked_student.student_id,
             )
+            auto_assign_result = _auto_assign_current_semester_course_units(enrollment)
             return {
                 "activated": True,
                 "reason": "created_enrolled",
                 "enrollment_id": enrollment.id,
+                **auto_assign_result,
             }
 
         if enrollment.status == "enrolled":
+            auto_assign_result = _auto_assign_current_semester_course_units(enrollment)
             return {
                 "activated": False,
                 "reason": "already_enrolled",
                 "enrollment_id": enrollment.id,
+                **auto_assign_result,
             }
 
         if enrollment.status != "pending":
@@ -123,8 +217,10 @@ def activate_programme_enrollment_after_commitment_payment(
             enrollment.id,
             locked_student.student_id,
         )
+        auto_assign_result = _auto_assign_current_semester_course_units(enrollment)
         return {
             "activated": True,
             "reason": "activated",
             "enrollment_id": enrollment.id,
+            **auto_assign_result,
         }

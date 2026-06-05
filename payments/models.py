@@ -446,6 +446,13 @@ class RegistrationSettings(models.Model):
             "(skips commitment fee gate)."
         ),
     )
+    auto_assign_course_units_after_commitment = models.BooleanField(
+        default=True,
+        help_text=(
+            "When enabled, commitment-based enrollment activation also auto-assigns "
+            "active course units for the student's current batch semester."
+        ),
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     updated_by = models.ForeignKey(
@@ -475,6 +482,7 @@ class RegistrationSettings(models.Model):
             existing.skip_tuition_check = self.skip_tuition_check
             existing.is_active = self.is_active
             existing.auto_enroll_on_admission = self.auto_enroll_on_admission
+            existing.auto_assign_course_units_after_commitment = self.auto_assign_course_units_after_commitment
             existing.updated_by = self.updated_by
             return existing.save(*args, **kwargs)
         return super().save(*args, **kwargs)
@@ -490,6 +498,7 @@ class RegistrationSettings(models.Model):
                 'skip_tuition_check': False,
                 'is_active': True,
                 'auto_enroll_on_admission': False,
+                'auto_assign_course_units_after_commitment': True,
             }
         )
         return settings

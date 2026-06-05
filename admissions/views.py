@@ -2437,8 +2437,10 @@ class ListAdmittedStudents(generics.ListAPIView):
         'admitted_program__faculty',
         'admitted_batch',
         'admitted_campus',
+        'intended_program_batch',
+        'programme_enrollment__program_batch',
         'application__applicant',
-        'admitted_by'
+        'admitted_by',
     ).all()
 
     serializer_class = AdmittedStudentListSerializer
@@ -2466,6 +2468,7 @@ class ListAdmittedStudents(generics.ListAPIView):
         # Get query parameters
         search = self.request.query_params.get('search', '').strip()
         batch = self.request.query_params.get('batch')
+        academic_batch = self.request.query_params.get('academic_batch')
         campus = self.request.query_params.get('campus')
         faculty = self.request.query_params.get('faculty')
         program = self.request.query_params.get('program')
@@ -2495,6 +2498,9 @@ class ListAdmittedStudents(generics.ListAPIView):
         # Exact filters
         if batch and batch != "all":
             queryset = queryset.filter(admitted_batch__name=batch)
+
+        if academic_batch and academic_batch != "all":
+            queryset = queryset.filter(intended_program_batch__name=academic_batch)
 
         if campus and campus != "all":
             queryset = queryset.filter(admitted_campus__name=campus)

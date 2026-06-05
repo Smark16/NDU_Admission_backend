@@ -25,6 +25,7 @@ from .semester_registration_views import (
     GetStudentTuitionStructure,
     RegisterForCourses,
     UpdateRegistrationSettings,
+    verify_registration_card_public,
 )
 from .student_tuition_payment_views import (
     InitiateTuitionPaymentView,
@@ -99,6 +100,11 @@ urlpatterns = [
         name='check_registration_eligibility',
     ),
     path('student/register_for_courses', RegisterForCourses.as_view(), name='register_for_courses'),
+    path(
+        'verify_registration/<str:student_id>',
+        verify_registration_card_public,
+        name='verify_registration_card',
+    ),
     path('registration_settings', GetRegistrationSettings.as_view(), name='get_registration_settings'),
     path('registration_settings/update', UpdateRegistrationSettings.as_view(), name='update_registration_settings'),
 

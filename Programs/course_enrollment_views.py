@@ -563,6 +563,7 @@ class GetStudentEnrolledCourses(APIView):
         from payments.student_portal_finance import (
             get_admitted_student_for_user,
             offer_letter_portal_fields,
+            student_finance_totals,
         )
 
         admitted_student = get_admitted_student_for_user(request.user)
@@ -683,6 +684,8 @@ class GetStudentEnrolledCourses(APIView):
         except Exception:
             pass
 
+        finance = student_finance_totals(admitted_student)
+
         return Response({
             'student_id': admitted_student.student_id,
             'reg_no': admitted_student.reg_no,
@@ -692,6 +695,12 @@ class GetStudentEnrolledCourses(APIView):
             'campus': admitted_student.admitted_campus.name if admitted_student.admitted_campus else None,
             'passport_photo': photo_url,
             'admission_fee_paid': admitted_student.admission_fee_paid,
+            'percentage_paid': finance['percentage_paid'],
+            'total_paid': finance['total_paid'],
+            'total_required': finance['total_required'],
+            'balance': finance['balance'],
+            'display_currency': finance['display_currency'],
+            'commitment_met': finance['commitment_met'],
             'current_year_of_study': current_year,
             'current_term_number': current_term,
             'enrolled_courses': active_courses,

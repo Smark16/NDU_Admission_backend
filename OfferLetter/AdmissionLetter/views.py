@@ -20,6 +20,7 @@ import secrets
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.db.models import Q
 from admissions.models import Application, AdmittedStudent
 from .utils.letters import render_docx_from_template, save_docx_to_field, convert_docx_to_pdf_bytes, save_docx_to_field, fill_pdf_template
 
@@ -271,30 +272,61 @@ def resend_offer_letter(request, applicant_id):
         status=200,
     )
 
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def bulk_send_offer_letters(request):
-    """Generate (if needed) and queue offer letter emails for multiple applicants."""
-    raw_ids = request.data.get("application_ids", [])
-    if not isinstance(raw_ids, list) or not raw_ids:
-        return Response({"detail": "application_ids must be a non-empty list."}, status=400)
+def _active_template_program_ids() -> set[int]:
+    return set(
+        OfferLetterTemplate.objects.filter(status="active")
+        .values_list("programs__id", flat=True)
+        .distinct()
+    )
 
-    cleaned_ids = []
-    for raw_id in raw_ids:
-        try:
-            cleaned_ids.append(int(raw_id))
-        except (TypeError, ValueError):
-            continue
 
-    if not cleaned_ids:
-        return Response({"detail": "No valid applicant IDs provided."}, status=400)
+def _eligible_offer_letter_application_ids(
+    *,
+    only_missing_pdf: bool = False,
+    include_existing_pdf: bool = True,
+    admitted_batch_id: int | None = None,
+    program_id: int | None = None,
+) -> list[int]:
+    """
+    Admitted, non-revoked students whose programme has an active offer-letter template.
+    """
+    program_ids = _active_template_program_ids()
+    if not program_ids:
+        return []
 
+    qs = AdmittedStudent.objects.filter(
+        is_admitted=True,
+        application__is_revoked=False,
+        admitted_program_id__in=program_ids,
+    )
+    if admitted_batch_id:
+        qs = qs.filter(admitted_batch_id=admitted_batch_id)
+    if program_id:
+        qs = qs.filter(admitted_program_id=program_id)
+
+    if only_missing_pdf:
+        qs = qs.filter(
+            Q(application__admission_letter_pdf__isnull=True)
+            | Q(application__admission_letter_pdf="")
+        )
+    elif not include_existing_pdf:
+        qs = qs.filter(
+            Q(application__admission_letter_pdf__isnull=True)
+            | Q(application__admission_letter_pdf="")
+        )
+
+    return list(
+        qs.order_by("application_id").values_list("application_id", flat=True).distinct()
+    )
+
+
+def _process_bulk_offer_letters(request, application_ids: list[int]) -> dict:
     generated = 0
     reused_pdf = 0
     failed = 0
     errors = []
 
-    for applicant_id in cleaned_ids:
+    for applicant_id in application_ids:
         try:
             applicant = Application.objects.filter(pk=applicant_id).first()
             if not applicant:
@@ -302,13 +334,11 @@ def bulk_send_offer_letters(request):
                 errors.append({"id": applicant_id, "detail": "Applicant not found."})
                 continue
 
-            # If a PDF already exists, simply queue resend.
             if applicant.admission_letter_pdf:
                 send_offerletter_email.delay(applicant.id)
                 reused_pdf += 1
                 continue
 
-            # Reuse existing single-app generation/send flow.
             single_response = send_offer_letter(request, applicant.id)
             if 200 <= single_response.status_code < 300:
                 generated += 1
@@ -319,24 +349,150 @@ def bulk_send_offer_letters(request):
                     error_detail = single_response.data.get("detail", error_detail)
                 errors.append({"id": applicant_id, "detail": error_detail})
         except Exception as e:
-            logger.error(f"Bulk offer letter processing failed for applicant {applicant_id}: {e}", exc_info=True)
+            logger.error(
+                f"Bulk offer letter processing failed for applicant {applicant_id}: {e}",
+                exc_info=True,
+            )
             failed += 1
             errors.append({"id": applicant_id, "detail": "Unexpected server error."})
 
-    total = len(cleaned_ids)
+    total = len(application_ids)
+    return {
+        "detail": (
+            f"Processed {total} applicants. Generated+queued: {generated}, "
+            f"Reused existing PDF+queued: {reused_pdf}, Failed: {failed}."
+        ),
+        "summary": {
+            "total": total,
+            "generated_and_queued": generated,
+            "reused_existing_pdf_and_queued": reused_pdf,
+            "failed": failed,
+        },
+        "errors": errors[:50],
+        "status_code": 200 if failed == 0 else 207,
+    }
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def bulk_eligible_offer_letters_preview(request):
+    """Count admitted students eligible for bulk offer-letter generation."""
+    only_missing = request.query_params.get("only_missing_pdf", "true").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    admitted_batch_id = request.query_params.get("admitted_batch_id")
+    program_id = request.query_params.get("program_id")
+    try:
+        batch_id = int(admitted_batch_id) if admitted_batch_id else None
+    except (TypeError, ValueError):
+        batch_id = None
+    try:
+        prog_id = int(program_id) if program_id else None
+    except (TypeError, ValueError):
+        prog_id = None
+
+    program_ids = _active_template_program_ids()
+    eligible_ids = _eligible_offer_letter_application_ids(
+        only_missing_pdf=only_missing,
+        admitted_batch_id=batch_id,
+        program_id=prog_id,
+    )
+    all_eligible_ids = _eligible_offer_letter_application_ids(
+        only_missing_pdf=False,
+        admitted_batch_id=batch_id,
+        program_id=prog_id,
+    )
+
+    admitted_total = AdmittedStudent.objects.filter(
+        is_admitted=True,
+        application__is_revoked=False,
+    )
+    if batch_id:
+        admitted_total = admitted_total.filter(admitted_batch_id=batch_id)
+    if prog_id:
+        admitted_total = admitted_total.filter(admitted_program_id=prog_id)
+
+    no_template = admitted_total.exclude(admitted_program_id__in=program_ids).count()
+
     return Response(
         {
-            "detail": f"Processed {total} applicants. Generated+queued: {generated}, Reused existing PDF+queued: {reused_pdf}, Failed: {failed}.",
-            "summary": {
-                "total": total,
-                "generated_and_queued": generated,
-                "reused_existing_pdf_and_queued": reused_pdf,
-                "failed": failed,
-            },
-            "errors": errors[:50],
-        },
-        status=200 if failed == 0 else 207,
+            "programs_with_templates": len(program_ids),
+            "eligible_to_process": len(eligible_ids),
+            "eligible_with_template_total": len(all_eligible_ids),
+            "without_template": no_template,
+            "only_missing_pdf": only_missing,
+            "application_ids_sample": eligible_ids[:20],
+        }
     )
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def bulk_send_offer_letters(request):
+    """
+    Generate (if needed) and queue offer letter emails.
+
+    Either pass application_ids, or all_eligible=true for every admitted student
+    whose programme has an active template.
+    """
+    all_eligible = request.data.get("all_eligible") in (True, "true", "yes", "1", 1)
+    only_missing_pdf = request.data.get("only_missing_pdf", True)
+    if isinstance(only_missing_pdf, str):
+        only_missing_pdf = only_missing_pdf.lower() in ("1", "true", "yes")
+
+    if all_eligible:
+        batch_id = request.data.get("admitted_batch_id")
+        prog_id = request.data.get("program_id")
+        try:
+            batch_id = int(batch_id) if batch_id not in (None, "") else None
+        except (TypeError, ValueError):
+            batch_id = None
+        try:
+            prog_id = int(prog_id) if prog_id not in (None, "") else None
+        except (TypeError, ValueError):
+            prog_id = None
+
+        cleaned_ids = _eligible_offer_letter_application_ids(
+            only_missing_pdf=only_missing_pdf,
+            admitted_batch_id=batch_id,
+            program_id=prog_id,
+        )
+        if not cleaned_ids:
+            return Response(
+                {
+                    "detail": "No eligible admitted students found (need active template per programme).",
+                    "summary": {
+                        "total": 0,
+                        "generated_and_queued": 0,
+                        "reused_existing_pdf_and_queued": 0,
+                        "failed": 0,
+                    },
+                },
+                status=400,
+            )
+    else:
+        raw_ids = request.data.get("application_ids", [])
+        if not isinstance(raw_ids, list) or not raw_ids:
+            return Response(
+                {"detail": "application_ids must be a non-empty list, or set all_eligible=true."},
+                status=400,
+            )
+
+        cleaned_ids = []
+        for raw_id in raw_ids:
+            try:
+                cleaned_ids.append(int(raw_id))
+            except (TypeError, ValueError):
+                continue
+
+        if not cleaned_ids:
+            return Response({"detail": "No valid applicant IDs provided."}, status=400)
+
+    result = _process_bulk_offer_letters(request, cleaned_ids)
+    status_code = result.pop("status_code", 200)
+    return Response(result, status=status_code)
 
 @api_view(["GET"])
 @permission_classes([AllowAny])

@@ -390,6 +390,7 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
     faculty = serializers.SerializerMethodField()  
     campus = serializers.CharField(source='admitted_campus.name', read_only=True)
     batch = serializers.CharField(source='admitted_batch.name', default='__', read_only=True)
+    academic_batch = serializers.SerializerMethodField()
     status = serializers.CharField(source='application.status', read_only=True)
     admission_letter_pdf = serializers.SerializerMethodField()
     # Optional registrar workflow (not on all DBs — default so UI stays usable)
@@ -410,6 +411,7 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
             'faculty',
             'campus',
             'batch',
+            'academic_batch',
             'admission_date',
             'is_registered',
             'application',
@@ -440,6 +442,17 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
         if not obj.admitted_program.faculty:
             return "__"
         return obj.admitted_program.faculty.name
+
+    def get_academic_batch(self, obj):
+        from Programs.program_batch_resolution import (
+            format_program_batch_display,
+            resolve_student_academic_cohort,
+        )
+
+        cohort = resolve_student_academic_cohort(obj)
+        if cohort is not None:
+            return format_program_batch_display(cohort)
+        return "—"
 
     def get_admission_letter_pdf(self, obj):
         app = obj.application

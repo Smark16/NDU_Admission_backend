@@ -48,6 +48,7 @@ from .curriculum_inheritance import (
     curriculum_owner_program,
     curriculum_versions_queryset,
     program_allows_curriculum_writes,
+    resolve_effective_curriculum_version,
 )
 from .serializers import ProgramCurriculumLineSerializer, ProgramCurriculumVersionSerializer
 
@@ -422,9 +423,8 @@ class CurriculumSuggestionsForSemesterView(APIView):
 
         program = semester.program_batch.program
         owner = curriculum_owner_program(program)
-        curriculum_version = (
-            semester.program_batch.curriculum_version
-            or resolve_program_default_curriculum_version(program)
+        curriculum_version = resolve_effective_curriculum_version(
+            program, semester.program_batch
         )
         if not curriculum_version:
             return Response(
@@ -490,6 +490,9 @@ class CurriculumSuggestionsForSemesterView(APIView):
             'program_id': program.id,
             'program_name': program.name,
             'program_short_form': program.short_form,
+            'curriculum_owner_program_id': owner.id,
+            'curriculum_owner_program_name': owner.name,
+            'curriculum_is_inherited': program.curriculum_is_inherited,
             'curriculum_version': ProgramCurriculumVersionSerializer(curriculum_version).data,
             'calendar_type': program.calendar_type,
             'total_curriculum_lines': len(suggestions),
