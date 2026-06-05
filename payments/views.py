@@ -248,7 +248,7 @@ def schoolpay_webhook(request):
         logger.exception("Error processing ApplicationPayment for ref %s", payment_ref)
         return JsonResponse({'error': 'Internal server error'}, status=500)
 
-    # ── Try StudentTuitionPayment (tuition / portal-initiated) ───────────────
+    # ── Try StudentTuitionPayment (tuition) ───────────────
     try:
         with transaction.atomic():
             tuition_payment = StudentTuitionPayment.objects.select_for_update().filter(
