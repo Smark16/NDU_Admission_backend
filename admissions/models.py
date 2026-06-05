@@ -299,26 +299,28 @@ class ApplicationProgramChoice(models.Model):
         on_delete=models.CASCADE,
         related_name="application_choices",
     )
-    preference = models.PositiveSmallIntegerField(
+    choice_order = models.PositiveSmallIntegerField(
         default=1,
         validators=[MinValueValidator(1), MaxValueValidator(50)],
         help_text="1 = first choice; higher numbers = lower priority.",
     )
 
+    created_at = models.DateTimeField(auto_now_add=True)
+
     class Meta:
-        ordering = ["preference", "pk"]
+        ordering = ["choice_order", "pk"]
         constraints = [
             models.UniqueConstraint(
                 fields=("application", "program"),
                 name="admissions_appprogchoice_application_program_uniq",
             ),
             models.UniqueConstraint(
-                fields=("application", "preference"),
-                name="admissions_appprogchoice_application_preference_uniq",
+                fields=("application", "choice_order"),
+                name="admissions_appprogchoice_application_choice_order_uniq",
             ),
         ]
         indexes = [
-            models.Index(fields=["application", "preference"]),
+            models.Index(fields=["application", "choice_order"]),
         ]
 
     def __str__(self):
