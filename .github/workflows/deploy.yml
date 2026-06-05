@@ -43,6 +43,7 @@ jobs:
           python manage.py migrate admissions 0032 --fake
           python manage.py migrate accounts 0028_user_primary_campus --fake
           python manage.py migrate Programs 0007_timetable --fake
+          python manage.py migrate Programs 0008_venue_classroom_fields --fake
         
           # Final migrate (this should now be safe)
           python manage.py migrate
