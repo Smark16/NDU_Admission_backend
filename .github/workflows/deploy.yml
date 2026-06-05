@@ -38,7 +38,7 @@ jobs:
           
           # Fake known problematic migrations
           python manage.py migrate Programs 0006 --fake
-          python manage.py migrate admissions 0027 --fake
+          python manage.py migrate admissions 0027_application_program_choice_confirmation --fake
           python manage.py migrate admissions 0030 --fake
           python manage.py migrate admissions 0032 --fake
         
