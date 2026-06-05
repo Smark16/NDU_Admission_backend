@@ -1,9 +1,17 @@
 from django.contrib import admin
 
 from .models import (
-    CourseCatalogUnit, Program, ProgramBatch, ProgramCurriculumLine,
-    Semester, StudentProgrammeEnrollment, StudentCurriculumOverride,
+    CourseCatalogUnit,
+    Program,
+    ProgramBatch,
+    ProgramCurriculumLine,
+    Semester,
+    StudentProgrammeEnrollment,
+    StudentCurriculumOverride,
     StudentCourseUnitEnrollment,
+    RoomType,
+    TimetableSession,
+    Venue,
 )
 
 # NEW MODULE: ProgramBatch + Semester inline (academic structure; not admissions.Batch)
@@ -144,3 +152,45 @@ class StudentCourseUnitEnrollmentAdmin(admin.ModelAdmin):
     list_filter = ['source', 'status', 'course_unit__semester__program_batch']
     search_fields = ['student__student_id', 'course_unit__code', 'course_unit__name']
     ordering = ['-enrollment_date']
+
+
+@admin.register(RoomType)
+class RoomTypeAdmin(admin.ModelAdmin):
+    list_display = ["id", "name", "is_active", "created_at"]
+    list_filter = ["is_active"]
+    search_fields = ["name"]
+
+
+@admin.register(Venue)
+class VenueAdmin(admin.ModelAdmin):
+    list_display = [
+        "id",
+        "code",
+        "name",
+        "building",
+        "campus",
+        "room_type",
+        "capacity",
+        "is_active",
+    ]
+    list_filter = ["is_active", "campus", "room_type"]
+    search_fields = ["name", "code", "building"]
+
+
+@admin.register(TimetableSession)
+class TimetableSessionAdmin(admin.ModelAdmin):
+    list_display = [
+        "id",
+        "course_unit",
+        "day_of_week",
+        "start_time",
+        "end_time",
+        "venue",
+        "session_type",
+        "delivery_mode",
+        "is_published",
+        "is_active",
+    ]
+    list_filter = ["day_of_week", "session_type", "is_published", "is_active"]
+    search_fields = ["course_unit__code", "course_unit__name", "room_label"]
+    raw_id_fields = ["course_unit", "venue"]

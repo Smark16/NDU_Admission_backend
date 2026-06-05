@@ -54,18 +54,31 @@ class CreateBatchView(_BatchUnavailableMixin, APIView):
                 )
 
             name = request.data.get('name', '').strip()
-            academic_year = request.data.get('academic_year', '').strip()
+            academic_year_raw = request.data.get('academic_year', '').strip()
             start_date = request.data.get('start_date', '').strip()
             end_date = request.data.get('end_date', '').strip()
             curriculum_version_id = request.data.get('curriculum_version')
 
             if not name:
                 return Response({'detail': 'Batch name is required'}, status=status.HTTP_400_BAD_REQUEST)
-            if not academic_year:
+            if not academic_year_raw:
                 return Response(
                     {'detail': 'Academic year is required (e.g. 2024/2025)'},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+            try:
+                from admissions.utils.academic_year import get_registered_academic_year_label
+
+                academic_year = get_registered_academic_year_label(academic_year_raw)
+            except Exception as exc:
+                from django.core.exceptions import ValidationError as DjangoValidationError
+
+                detail = (
+                    str(exc)
+                    if isinstance(exc, DjangoValidationError)
+                    else 'Invalid academic year.'
+                )
+                return Response({'detail': detail}, status=status.HTTP_400_BAD_REQUEST)
             if not start_date:
                 return Response({'detail': 'Start date is required'}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -537,7 +550,21 @@ class UpdateProgramBatchView(_BatchUnavailableMixin, APIView):
             curriculum_version_id = request.data.get('curriculum_version')
 
             if academic_year is not None:
-                batch.academic_year = str(academic_year).strip()
+                try:
+                    from admissions.utils.academic_year import get_registered_academic_year_label
+
+                    batch.academic_year = get_registered_academic_year_label(
+                        str(academic_year).strip()
+                    )
+                except Exception as exc:
+                    from django.core.exceptions import ValidationError as DjangoValidationError
+
+                    detail = (
+                        str(exc)
+                        if isinstance(exc, DjangoValidationError)
+                        else "Invalid academic year."
+                    )
+                    return Response({"detail": detail}, status=status.HTTP_400_BAD_REQUEST)
 
             if name:
                 if ProgramBatch.objects.filter(program=batch.program, name=name).exclude(id=batch_id).exists():

@@ -9,6 +9,7 @@ from admissions.email_template_views import (
     EmailTemplatePreviewView,
     EmailTemplateResetDefaultView,
 )
+
 from admissions.announcement_views import SendAnnouncementView, TestAnnouncementView
 from admissions.student_bulk_import_views import (
     StudentBulkImportTemplateView,
@@ -18,6 +19,8 @@ from admissions.student_fee_balance_import_views import (
     StudentFeeBalanceImportTemplateView,
     StudentFeeBalanceImportView,
 )
+
+from admissions.academic_year_views import AcademicYearDetailView, AcademicYearListCreateView
 
 app_name = 'admissions'
 
@@ -36,10 +39,12 @@ urlpatterns = [
     path('create_direct_applications', views.create_direct_applications),
     path('direct_entry_applications', views.ListDirectEntryApplications.as_view()),
     path('all_applications_report/', views.AllApplicationsReport.as_view()),
+
     path('all_applications_detail_report/', views.AllApplicationDetailedReport.as_view()),
     path('application_choice_stats/', views.ApplicationChoiceStatsView.as_view()),
     path('test_announcement', TestAnnouncementView.as_view()),
     path('send_announcement', SendAnnouncementView.as_view()),
+
     path('rejected_applications', views.ListRejectedApplications.as_view()),
     path('reject_application/<int:application_id>', views.RejectStudent.as_view()),
     path('application_detail/<int:application_id>', views.application_detail),
@@ -88,6 +93,9 @@ urlpatterns = [
     path('edit_batch/<int:pk>', views.EditBatch.as_view()),
     path('delete_batch/<int:pk>', views.DeleteBatch.as_view()),
     path('intake_options', views.IntakeOptions.as_view()),
+
+    path('academic_years/', AcademicYearListCreateView.as_view()),
+    path('academic_years/<int:pk>/', AcademicYearDetailView.as_view()),
 
     # academic levels
     path('list_academic_level',  views.ListAcademicLevel.as_view()),

@@ -1146,6 +1146,161 @@ class StudentCurriculumOverride(models.Model):
                 )
 
 
+# =============================================================================
+# Timetable (class sessions on operational course units)
+# =============================================================================
+
+
+class RoomType(models.Model):
+    """Registry of classroom kinds (built-in defaults + staff-created labels)."""
+
+    name = models.CharField(max_length=40, unique=True)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["name"]
+        verbose_name = "Room type"
+        verbose_name_plural = "Room types"
+
+    def __str__(self):
+        return self.name
+
+
+class Venue(models.Model):
+    """Teaching space (room, lab, hall). Scoped to a campus for multi-site scheduling."""
+
+    campus = models.ForeignKey(
+        Campus,
+        on_delete=models.PROTECT,
+        related_name="venues",
+        help_text="Campus where this room is located (required for new rows).",
+    )
+    code = models.CharField(
+        max_length=40,
+        blank=True,
+        default="",
+        help_text="Short code unique per campus, e.g. MAIN-LT1.",
+    )
+    name = models.CharField(max_length=120, help_text="e.g. Lecture Theatre 1")
+    building = models.CharField(max_length=80, blank=True, default="")
+    room_type = models.CharField(
+        max_length=40,
+        default="Lecture room",
+        help_text="Label from room type registry (e.g. Lecture room, Laboratory).",
+    )
+    capacity = models.PositiveIntegerField(null=True, blank=True)
+    allows_parallel_sessions = models.BooleanField(
+        default=False,
+        help_text="When true, multiple practical/lab sessions may use this room at the same time (split groups).",
+    )
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["campus__name", "building", "name"]
+        verbose_name = "Venue"
+        verbose_name_plural = "Venues"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["campus", "name"],
+                name="programs_venue_unique_name_per_campus",
+            ),
+            models.UniqueConstraint(
+                fields=["campus", "code"],
+                condition=~models.Q(code=""),
+                name="programs_venue_unique_code_per_campus",
+            ),
+        ]
+
+    def __str__(self):
+        label = self.code or self.name
+        return f"{label} ({self.campus.name})"
+
+
+class TimetableSession(models.Model):
+    """One scheduled block for a course unit (lecture, tutorial, or practical)."""
+
+    SESSION_TYPE_CHOICES = [
+        ("lecture", "Lecture"),
+        ("tutorial", "Tutorial"),
+        ("practical", "Practical / Lab"),
+    ]
+
+    DELIVERY_MODE_CHOICES = [
+        ("on_campus", "On campus"),
+        ("online", "Online"),
+        ("hybrid", "Hybrid"),
+    ]
+
+    DAY_CHOICES = [
+        (1, "Monday"),
+        (2, "Tuesday"),
+        (3, "Wednesday"),
+        (4, "Thursday"),
+        (5, "Friday"),
+        (6, "Saturday"),
+        (7, "Sunday"),
+    ]
+
+    course_unit = models.ForeignKey(
+        CourseUnit,
+        on_delete=models.CASCADE,
+        related_name="timetable_sessions",
+    )
+    day_of_week = models.PositiveSmallIntegerField(choices=DAY_CHOICES)
+    start_time = models.TimeField()
+    end_time = models.TimeField()
+    venue = models.ForeignKey(
+        Venue,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="timetable_sessions",
+    )
+    room_label = models.CharField(
+        max_length=120,
+        blank=True,
+        default="",
+        help_text="Free-text room if not using a registered venue.",
+    )
+    session_type = models.CharField(
+        max_length=20,
+        choices=SESSION_TYPE_CHOICES,
+        default="lecture",
+    )
+    delivery_mode = models.CharField(
+        max_length=20,
+        choices=DELIVERY_MODE_CHOICES,
+        default="on_campus",
+        help_text="Online sessions skip room clash checks; hybrid/on_campus use registered rooms when published.",
+    )
+    notes = models.CharField(max_length=255, blank=True, default="")
+    is_published = models.BooleanField(
+        default=True,
+        help_text="When false, hidden from student/lecturer portal views.",
+    )
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["day_of_week", "start_time", "course_unit__code"]
+        verbose_name = "Timetable session"
+        verbose_name_plural = "Timetable sessions"
+
+    def __str__(self):
+        day = dict(self.DAY_CHOICES).get(self.day_of_week, "?")
+        return f"{self.course_unit.code} {day} {self.start_time}-{self.end_time}"
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        if self.start_time and self.end_time and self.end_time <= self.start_time:
+            raise ValidationError({"end_time": "End time must be after start time."})
+
+
 # --- Existing: bulk program upload (unchanged) ---
 
 

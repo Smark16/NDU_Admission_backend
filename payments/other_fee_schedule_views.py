@@ -56,7 +56,6 @@ def _rule_to_row(r: FeePlanRule) -> dict:
         "amount_international": str(r.amount_international) if r.amount_international is not None else "",
         "currency_international": r.currency_international or "",
         "payable_year_of_study": r.payable_year_of_study,
-        "payable_term_number": r.payable_term_number,
         "program_batch_id": r.program_batch_id,
         "program_batch_name": r.program_batch.name if r.program_batch_id else "",
         "scope": "batch" if r.program_batch_id else "program",
@@ -64,8 +63,6 @@ def _rule_to_row(r: FeePlanRule) -> dict:
 
 
 class OtherFeeScheduleView(APIView):
-    """GET list / POST create for /api/payments/other_fee_schedule"""
-
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -76,6 +73,25 @@ class OtherFeeScheduleView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         try:
+
+            program = Program.objects.get(pk=int(program_id))
+        except (Program.DoesNotExist, TypeError, ValueError):
+            return Response({"detail": "Program not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        batch_id = request.query_params.get("program_batch_id")
+        fee_plan = get_or_create_other_schedule_fee_plan(program)
+        qs = (
+            FeePlanRule.objects.filter(
+                fee_plan=fee_plan,
+                program_id=program.id,
+                is_active=True,
+                payable_year_of_study__isnull=False,
+                payable_term_number__isnull=False,
+            )
+            .select_related("fee_head", "program_batch")
+            .order_by("payable_year_of_study","fee_head__name", "id")
+        )
+        if batch_id:
             try:
                 program = Program.objects.get(pk=int(program_id))
             except (Program.DoesNotExist, TypeError, ValueError):
@@ -107,22 +123,22 @@ class OtherFeeScheduleView(APIView):
                 qs = qs.filter(program_batch__isnull=True)
 
             return Response({"rows": [_rule_to_row(r) for r in qs]})
-        except DatabaseError as e:
-            return Response(
-                {
-                    "detail": (
-                        "Database is out of date for scheduled other fees. "
-                        "Run: python manage.py migrate payments"
-                    ),
-                    "error": str(e),
-                },
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
-        except Exception as e:
-            return Response(
-                {"detail": f"Failed to load scheduled other fees: {e}"},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
+        # except DatabaseError as e:
+        #     return Response(
+        #         {
+        #             "detail": (
+        #                 "Database is out of date for scheduled other fees. "
+        #                 "Run: python manage.py migrate payments"
+        #             ),
+        #             "error": str(e),
+        #         },
+        #         status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        #     )
+        # except Exception as e:
+        #     return Response(
+        #         {"detail": f"Failed to load scheduled other fees: {e}"},
+        #         status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        #     )
 
     def post(self, request):
         try:

@@ -1,10 +1,20 @@
+from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 from .models import *
 from accounts.serializers import UserSerializer, CampusSerializer
 from Programs.serializers import ProgramSerializer
 from .utils.application_programs_display import ordered_programs_for_application
+from .utils.academic_year import get_registered_academic_year_label
 
 # serializers
+
+
+class AcademicYearSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AcademicYear
+        fields = ["id", "label", "is_current", "is_active", "created_at", "updated_at"]
+        read_only_fields = ["created_at", "updated_at"]
+
 
 # batch
 class BatchSerializer(serializers.ModelSerializer):
@@ -33,6 +43,12 @@ class BatchSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({
                 'offer_end_date': 'Offer end date cannot be before offer start date.',
             })
+        raw_year = attrs.get('academic_year')
+        if raw_year is not None and str(raw_year).strip():
+            try:
+                attrs['academic_year'] = get_registered_academic_year_label(str(raw_year))
+            except DjangoValidationError as exc:
+                raise serializers.ValidationError({'academic_year': str(exc)}) from exc
         return attrs
 
     def to_representation(self, instance):

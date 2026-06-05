@@ -4,7 +4,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("admissions", "0029_merge_20260515_1550"),
+        ("admissions", "0024_application_programs"),
     ]
 
     operations = [

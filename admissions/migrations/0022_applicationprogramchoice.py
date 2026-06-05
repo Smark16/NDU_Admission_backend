@@ -8,7 +8,6 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ('Programs', '0004_merge_20260512_0115'),
-        ('admissions', '0021_merge_20260514_0211'),
     ]
 
     operations = [

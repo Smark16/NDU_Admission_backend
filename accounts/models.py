@@ -33,6 +33,18 @@ class User(AbstractUser):
     is_applicant = models.BooleanField(default=False, db_index=True)
     is_student = models.BooleanField(default=False, db_index=True)
     is_lecturer = models.BooleanField(default=False, db_index=True)
+    primary_campus = models.ForeignKey(
+        Campus,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="primary_staff",
+        help_text="Main teaching campus (used for timetable campus rules).",
+    )
+    allow_multi_campus_per_day = models.BooleanField(
+        default=False,
+        help_text="If false, timetable blocks same lecturer on two campuses in one day.",
+    )
     must_change_password = models.BooleanField(default=False)
     allow_multi_campus_per_day = models.BooleanField(
         default=False,
@@ -191,6 +203,14 @@ class ErpAccessPolicy(models.Model):
                 "Configure fee plans, tuition matrices, and billing schedules",
             ),
             ("manage_communication_templates", "Manage system email templates and communications"),
+            (
+                "access_examinations",
+                "Access Examinations module (marks, timetable, publish, reports)",
+            ),
+            (
+                "access_graduation",
+                "Access Graduation module (qualified lists, ceremonies)",
+            ),
         ]
 
     def __str__(self):

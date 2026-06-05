@@ -124,17 +124,21 @@ class AdminCreateEnrollmentView(APIView):
                 {'detail': "Selected programme does not match this student's admitted programme."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        in_cohort = student.intended_program_batch_id == program_batch.id or (
-            student.programme_enrollment_id
-            and student.programme_enrollment.program_batch_id == program_batch.id
+        in_cohort = (
+            student.intended_program_batch_id == program_batch.id
+            or (
+                student.programme_enrollment_id
+                and student.programme_enrollment.program_batch_id == program_batch.id
+            )
+            or student.intended_program_batch_id is None
         )
         if not in_cohort:
             return Response(
                 {
                     'detail': (
-                        'This student is not assigned to the selected programme batch. '
-                        'Set their intended programme batch on the admission record, '
-                        'or choose the batch that matches their cohort.'
+                        'This student is assigned to a different programme batch. '
+                        'Choose the batch that matches their intended cohort, or update '
+                        'their intended programme batch on the admission record.'
                     )
                 },
                 status=status.HTTP_400_BAD_REQUEST,
@@ -233,6 +237,10 @@ class AdminCreateEnrollmentView(APIView):
             if notes:
                 enrollment.notes = notes
             enrollment.save()
+
+        if student.intended_program_batch_id is None:
+            student.intended_program_batch = program_batch
+            student.save(update_fields=["intended_program_batch", "updated_at"])
 
         serializer = StudentProgrammeEnrollmentSerializer(enrollment)
         http_status = status.HTTP_201_CREATED if created else status.HTTP_200_OK

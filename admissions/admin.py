@@ -42,6 +42,14 @@ class AcademicLevelAdmin(admin.ModelAdmin):
     list_filter = ['is_active']
     search_fields = ['name']
 
+
+@admin.register(AcademicYear)
+class AcademicYearAdmin(admin.ModelAdmin):
+    list_display = ['label', 'is_current', 'is_active', 'updated_at']
+    list_filter = ['is_current', 'is_active']
+    search_fields = ['label']
+    ordering = ['-label']
+
 @admin.register(Batch)
 class BatchAdmin(admin.ModelAdmin):
     list_display = [
