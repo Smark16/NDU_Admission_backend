@@ -165,7 +165,7 @@ class ListProgramsSerializer(serializers.ModelSerializer):
             'id', 'name', 'code', 'short_form', 'faculty', 'academic_level', 'academic_level_id',
             'campuses', 'min_years', 'max_years',
             'curriculum_mode', 'curriculum_source_program',
-            'is_active', 'created_at', 'updated_at',
+            'is_active','is_hec', 'created_at', 'updated_at',
         ]
 
     def to_representation(self, instance):

@@ -53,6 +53,7 @@ class Program(models.Model):
         ),
     )
     is_active = models.BooleanField(default=True)
+    is_hec = models.BooleanField(default=False)
     CURRICULUM_MODE_MASTER = 'master'
     CURRICULUM_MODE_INHERITED = 'inherited'
     CURRICULUM_MODE_FORKED = 'forked'

@@ -19,6 +19,7 @@ ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=[
     'localhost',
     'applications.ndu.ac.ug',
     'applications-admin.ndu.ac.ug',
+    'https://www.schoolpaytest.servicecops.com',
     '.ndu.ac.ug',           
     '794e-41-75-173-12.ngrok-free.app'
 ])
@@ -267,6 +268,7 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:3001",
     "https://erp.ndejje.ndu.ac.ug",
     "https://www.schoolpay.co.ug",
+    "https://schoolpaytest.servicecops.com",
     "http://test.ndu.ac.ug",
     "https://test.ndu.ac.ug",
 ]
