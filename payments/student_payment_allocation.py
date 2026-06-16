@@ -11,6 +11,7 @@ from typing import Any
 from admissions.models import AdmittedStudent
 
 from payments.models import FeePlanRule, StudentTuitionPayment, TuitionLedger
+from payments.billing_visibility import billing_date_iso, billing_date_reached
 from payments.student_fee_pricing import effective_amount_currency, is_international_student
 
 COMMITMENT_FEE_THRESHOLD = Decimal("150000")
@@ -28,6 +29,7 @@ class DemandLine:
     payable_year: int | None = None
     payable_term: int | None = None
     milestone_reached: bool = True
+    billing_reached: bool = True
     paid_amount: Decimal = Decimal("0")
     balance: Decimal = Decimal("0")
     status: str = "due"  # due | paid | not_due
@@ -102,6 +104,14 @@ def _tuition_rule_sort_key(rule: FeePlanRule) -> tuple:
     )
 
 
+def _line_is_billable(line: DemandLine) -> bool:
+    if not line.billing_reached:
+        return False
+    if line.kind == "scheduled_other" and not line.milestone_reached:
+        return False
+    return True
+
+
 def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[DemandLine]:
     from payments.student_portal_finance import (
         _adhoc_charges_for_student,
@@ -120,6 +130,7 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
         if amt <= 0:
             continue
         sem = rule.semester
+        billable = billing_date_reached(rule)
         lines.append(
             DemandLine(
                 kind="tuition_structure",
@@ -128,6 +139,7 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
                 description=sem.name if sem else "Programme tuition",
                 amount=amt,
                 currency=cur,
+                billing_reached=billable,
                 extra={
                     "semester_id": rule.semester_id,
                     "semester_name": sem.name if sem else "",
@@ -140,6 +152,7 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
                     ),
                     "installment_number": rule.installment_number,
                     "due_date_days": rule.due_date_days,
+                    "billing_date": billing_date_iso(rule),
                 },
             )
         )
@@ -148,6 +161,7 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
         py = int(rule.payable_year_of_study)
         pt = int(rule.payable_term_number)
         reached = _milestone_reached(cy, ct, py, pt)
+        billable = billing_date_reached(rule)
         amt, cur = effective_amount_currency(rule, international)
         if amt <= 0:
             continue
@@ -162,11 +176,13 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
                 payable_year=py,
                 payable_term=pt,
                 milestone_reached=reached,
+                billing_reached=billable,
                 extra={
                     "program_batch_id": rule.program_batch_id,
                     "program_batch_name": (
                         rule.program_batch.name if rule.program_batch_id else None
                     ),
+                    "billing_date": billing_date_iso(rule),
                 },
             )
         )
@@ -206,7 +222,7 @@ def _allocate_pools_to_lines(
         return applied
 
     for line in lines:
-        if line.kind == "scheduled_other" and not line.milestone_reached:
+        if not _line_is_billable(line):
             line.paid_amount = Decimal("0")
             line.balance = line.amount
             line.status = "not_due"
@@ -229,7 +245,7 @@ def build_finance_allocation(student: AdmittedStudent) -> FinanceAllocation:
 
     required_by: defaultdict[str, Decimal] = defaultdict(Decimal)
     for line in lines:
-        if line.kind == "scheduled_other" and not line.milestone_reached:
+        if not _line_is_billable(line):
             continue
         if line.kind == "ad_hoc" and line.extra.get("charge_status") not in (
             "pending",
@@ -258,7 +274,7 @@ def build_finance_allocation(student: AdmittedStudent) -> FinanceAllocation:
         line.balance
         for line in lines
         if line.kind == "scheduled_other"
-        and line.milestone_reached
+        and _line_is_billable(line)
         and line.status == "due"
         and line.currency == primary
     )
@@ -286,7 +302,11 @@ def build_finance_allocation(student: AdmittedStudent) -> FinanceAllocation:
         balance=balance,
         percentage_paid=round(pct, 1),
         tuition_structure_total=sum(
-            line.amount for line in lines if line.kind == "tuition_structure" and line.currency == primary
+            line.amount
+            for line in lines
+            if line.kind == "tuition_structure"
+            and line.billing_reached
+            and line.currency == primary
         ),
         scheduled_other_due=scheduled_due,
         ad_hoc_total=adhoc_total,

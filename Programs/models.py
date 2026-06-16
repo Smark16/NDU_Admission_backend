@@ -1251,6 +1251,11 @@ class TimetableSession(models.Model):
         related_name="timetable_sessions",
     )
     day_of_week = models.PositiveSmallIntegerField(choices=DAY_CHOICES)
+    session_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Calendar date when this class takes place.",
+    )
     start_time = models.TimeField()
     end_time = models.TimeField()
     venue = models.ForeignKey(
@@ -1300,6 +1305,39 @@ class TimetableSession(models.Model):
 
         if self.start_time and self.end_time and self.end_time <= self.start_time:
             raise ValidationError({"end_time": "End time must be after start time."})
+
+        if self.session_date:
+            expected_day = self.session_date.weekday() + 1
+            if self.day_of_week != expected_day:
+                day_name = dict(self.DAY_CHOICES).get(expected_day, "")
+                raise ValidationError(
+                    {
+                        "session_date": (
+                            f"This date falls on {day_name}. "
+                            "The weekday must match the selected date."
+                        )
+                    }
+                )
+            semester = getattr(self.course_unit, "semester", None)
+            if semester:
+                if semester.start_date and self.session_date < semester.start_date:
+                    raise ValidationError(
+                        {
+                            "session_date": (
+                                f"Class date cannot be before semester start "
+                                f"({semester.start_date.strftime('%d %b %Y')})."
+                            )
+                        }
+                    )
+                if semester.end_date and self.session_date > semester.end_date:
+                    raise ValidationError(
+                        {
+                            "session_date": (
+                                f"Class date cannot be after semester end "
+                                f"({semester.end_date.strftime('%d %b %Y')})."
+                            )
+                        }
+                    )
 
 
 # --- Existing: bulk program upload (unchanged) ---

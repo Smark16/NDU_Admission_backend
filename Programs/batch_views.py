@@ -15,6 +15,14 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .batch_offer_defaults import resolve_program_batch_offer_dates
+from admissions.faculty_scope import (
+    assert_can_modify_program_batch_structure,
+    assert_can_modify_program_structure,
+    assert_program_in_user_faculties,
+    assert_program_structure_modify_access,
+    filter_program_batches_for_user,
+    filter_programs_for_user,
+)
 from .models import (
     CourseCatalogUnit,
     CourseUnit,
@@ -52,6 +60,8 @@ class CreateBatchView(_BatchUnavailableMixin, APIView):
                     {'detail': f'Program with id {program_id} not found'},
                     status=status.HTTP_404_NOT_FOUND,
                 )
+
+            assert_can_modify_program_structure(request.user, program)
 
             name = request.data.get('name', '').strip()
             academic_year_raw = request.data.get('academic_year', '').strip()
@@ -227,6 +237,8 @@ class CreateSemesterView(_BatchUnavailableMixin, APIView):
             except ProgramBatch.DoesNotExist:
                 return Response({'detail': 'Batch not found'}, status=status.HTTP_404_NOT_FOUND)
 
+            assert_can_modify_program_batch_structure(request.user, batch)
+
             name = request.data.get('name', '').strip()
             start_date = request.data.get('start_date', '').strip()
             end_date = request.data.get('end_date', '').strip()
@@ -368,6 +380,8 @@ class CreateSubjectView(_BatchUnavailableMixin, APIView):
             except ProgramBatch.DoesNotExist:
                 return Response({'detail': 'Batch not found'}, status=status.HTTP_404_NOT_FOUND)
 
+            assert_can_modify_program_batch_structure(request.user, batch)
+
             semester_id = request.data.get('semester')
             course_unit_id = request.data.get('course_unit_id')
             name = ''
@@ -463,6 +477,7 @@ class ListProgramBatchesView(_BatchUnavailableMixin, APIView):
     def get(self, request, program_id):
         try:
             program = Program.objects.get(id=program_id)
+            assert_program_in_user_faculties(request.user, program)
             batches = ProgramBatch.objects.filter(program=program).order_by('-start_date', 'name')
 
             batches_data = []
@@ -541,6 +556,8 @@ class UpdateProgramBatchView(_BatchUnavailableMixin, APIView):
                 batch = ProgramBatch.objects.select_related('program').get(id=batch_id)
             except ProgramBatch.DoesNotExist:
                 return Response({'detail': 'Batch not found'}, status=status.HTTP_404_NOT_FOUND)
+
+            assert_can_modify_program_batch_structure(request.user, batch)
 
             name = request.data.get('name', '').strip()
             academic_year = request.data.get('academic_year')
@@ -696,6 +713,8 @@ class DeleteProgramBatchView(_BatchUnavailableMixin, APIView):
                 batch = ProgramBatch.objects.select_related('program').get(id=batch_id)
             except ProgramBatch.DoesNotExist:
                 return Response({'detail': 'Batch not found'}, status=status.HTTP_404_NOT_FOUND)
+
+            assert_can_modify_program_batch_structure(request.user, batch)
 
             status_rows = (
                 StudentProgrammeEnrollment.objects.filter(program_batch=batch)
@@ -997,15 +1016,18 @@ class BatchTemplateDownloadView(_BatchUnavailableMixin, APIView):
                     )
                 campus_scope_label = campus.name
                 all_programs = list(
-                    Program.objects.filter(
-                        campuses__id=campus_pk,
-                        is_active=True,
-                    )
-                    .distinct()
-                    .order_by('code')
+                    filter_programs_for_user(
+                        Program.objects.filter(
+                            campuses__id=campus_pk,
+                            is_active=True,
+                        ).distinct(),
+                        request.user,
+                    ).order_by('code')
                 )
             else:
-                all_programs = list(Program.objects.order_by('code'))
+                all_programs = list(
+                    filter_programs_for_user(Program.objects.all(), request.user).order_by('code')
+                )
         else:
             id_list: list[int] = []
             for part in raw_ids.split(","):
@@ -1026,7 +1048,12 @@ class BatchTemplateDownloadView(_BatchUnavailableMixin, APIView):
                 )
             # Preserve order, dedupe
             unique_ids = list(dict.fromkeys(id_list))
-            all_programs = list(Program.objects.filter(id__in=unique_ids).order_by('code'))
+            all_programs = list(
+                filter_programs_for_user(
+                    Program.objects.filter(id__in=unique_ids),
+                    request.user,
+                ).order_by('code')
+            )
             found_ids = {p.id for p in all_programs}
             missing = [i for i in unique_ids if i not in found_ids]
             if missing:
@@ -1126,6 +1153,7 @@ class BatchBulkUploadView(_BatchUnavailableMixin, APIView):
     parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request):
+        assert_program_structure_modify_access(request.user)
         try:
             import pandas as pd
         except ImportError:
@@ -1182,15 +1210,19 @@ class BatchBulkUploadView(_BatchUnavailableMixin, APIView):
         # Drop completely empty rows
         df = df.dropna(how="all")
 
-        # Program lookup caches
+        # Program lookup caches (faculty-scoped for Faculty Admin)
+        scoped_programs = filter_programs_for_user(
+            Program.objects.filter(is_active=True),
+            request.user,
+        )
         program_map: dict = {
             p.code.strip(): p
-            for p in Program.objects.filter(is_active=True)
+            for p in scoped_programs
             if p.code
         }
         short_form_map: dict = {
             p.short_form.strip().upper(): p
-            for p in Program.objects.filter(is_active=True)
+            for p in scoped_programs
             if p.short_form
         }
 
@@ -1507,11 +1539,23 @@ class AutoCreateSemestersView(_BatchUnavailableMixin, APIView):
     permission_classes = [ProgramSchedulingAPIPermission]
 
     def post(self, request):
+        assert_program_structure_modify_access(request.user)
         program_id = request.data.get("program_id")
 
-        qs = ProgramBatch.objects.select_related("program").prefetch_related("semesters")
+        qs = filter_program_batches_for_user(
+            ProgramBatch.objects.select_related("program").prefetch_related("semesters"),
+            request.user,
+        )
         if program_id:
             qs = qs.filter(program_id=program_id)
+            if not qs.exists():
+                program = Program.objects.filter(pk=program_id).first()
+                if program:
+                    assert_can_modify_program_structure(request.user, program)
+                return Response(
+                    {"detail": "No batches found for this programme in your faculty scope."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
 
         batches_processed = 0
         semesters_created = 0

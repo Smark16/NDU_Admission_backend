@@ -25,7 +25,7 @@ class Campus(models.Model):
 
 
 class User(AbstractUser):
-    role = models.CharField(max_length=20, blank=True, null=True)
+    role = models.CharField(max_length=64, blank=True, null=True)
     campuses = models.ManyToManyField(Campus, blank=True, related_name="users")
     phone = models.CharField(max_length=20, blank=True, null=True)
     staff_id = models.CharField(max_length=50, blank=True, null=True, unique=True, db_index=True)
@@ -33,6 +33,17 @@ class User(AbstractUser):
     is_applicant = models.BooleanField(default=False, db_index=True)
     is_student = models.BooleanField(default=False, db_index=True)
     is_lecturer = models.BooleanField(default=False, db_index=True)
+    portal_mode = models.CharField(
+        max_length=20,
+        blank=True,
+        null=True,
+        choices=(
+            ("admin", "Admin portal"),
+            ("lecturer", "Lecturer portal"),
+            ("student", "Student portal"),
+        ),
+        help_text="Active portal view when the user can access more than one ERP portal.",
+    )
     primary_campus = models.ForeignKey(
         Campus,
         on_delete=models.SET_NULL,
@@ -56,6 +67,12 @@ class User(AbstractUser):
         null=True,
         blank=True,
         related_name="primary_campus_users",
+    )
+    faculties = models.ManyToManyField(
+        "admissions.Faculty",
+        blank=True,
+        related_name="assigned_staff",
+        help_text="Faculties this staff member may access (Faculty Dean and similar roles).",
     )
 
     @property
@@ -152,6 +169,24 @@ class SystemSettings(models.Model):
         blank=True,
         default="",
         help_text="Template key matching id_card_templates[].key",
+    )
+    university_name = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="Display name on login and portal headers (e.g. NDEJJE UNIVERSITY STEWARD ERP).",
+    )
+    portal_logo = models.ImageField(
+        upload_to="portal_branding/",
+        blank=True,
+        null=True,
+        help_text="Logo shown on the login page and optionally elsewhere in the portal.",
+    )
+    login_cover_image = models.ImageField(
+        upload_to="portal_branding/",
+        blank=True,
+        null=True,
+        help_text="Hero / background image on the login page left panel.",
     )
 
     class Meta:

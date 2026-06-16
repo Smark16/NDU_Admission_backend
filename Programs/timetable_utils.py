@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, time
+from datetime import date, datetime, time, timedelta
 from collections import defaultdict
+
+from django.db.models import Q
 
 from Programs.models import TimetableSession
 
@@ -73,6 +75,44 @@ def session_campus_id(session: TimetableSession) -> int | None:
     return None
 
 
+def format_short_date(value: date) -> str:
+    return value.strftime("%d %b %Y")
+
+
+def weekday_dates_in_range(start: date, end: date, day_of_week: int) -> list[date]:
+    """Return each calendar date for a weekday between semester start and end."""
+    if not start or not end or end < start:
+        return []
+    target_weekday = int(day_of_week) - 1  # TimetableSession: 1=Mon … 7=Sun
+    current = start
+    while current.weekday() != target_weekday:
+        current += timedelta(days=1)
+        if current > end:
+            return []
+    dates: list[date] = []
+    while current <= end:
+        dates.append(current)
+        current += timedelta(days=7)
+    return dates
+
+
+def session_date_label(day_label: str, session_dates: list[date]) -> str:
+    if not session_dates:
+        return day_label or ""
+    if len(session_dates) == 1:
+        return format_short_date(session_dates[0])
+    return f"{format_short_date(session_dates[0])} – {format_short_date(session_dates[-1])}"
+
+
+def semester_period_label(name: str, start: date | None, end: date | None) -> str:
+    label = (name or "Semester").strip()
+    if start and end:
+        return f"{label}: {format_short_date(start)} – {format_short_date(end)}"
+    if start:
+        return f"{label}: from {format_short_date(start)}"
+    return label
+
+
 def serialize_session(session: TimetableSession) -> dict:
     lecturers = []
     for lec in session.course_unit.lecturers.all():
@@ -87,6 +127,23 @@ def serialize_session(session: TimetableSession) -> dict:
     venue = session.venue
     cu = session.course_unit
     cat = cu.catalog_unit if cu and cu.catalog_unit_id else None
+    semester = getattr(cu, "semester", None) if cu else None
+    semester_start = getattr(semester, "start_date", None) if semester else None
+    semester_end = getattr(semester, "end_date", None) if semester else None
+    if semester_end is None and semester_start is not None:
+        semester_end = semester_start
+    day_label = DAY_LABELS.get(session.day_of_week, "")
+    session_date = session.session_date
+    if session_date:
+        session_dates = [session_date]
+        date_label = format_short_date(session_date)
+    else:
+        session_dates = (
+            weekday_dates_in_range(semester_start, semester_end, session.day_of_week)
+            if semester_start and semester_end
+            else []
+        )
+        date_label = session_date_label(day_label, session_dates)
     return {
         "id": session.id,
         "course_unit_id": session.course_unit_id,
@@ -96,7 +153,18 @@ def serialize_session(session: TimetableSession) -> dict:
         "catalog_code": cat.code if cat else "",
         "catalog_name": cat.title if cat else "",
         "day_of_week": session.day_of_week,
-        "day_label": DAY_LABELS.get(session.day_of_week, ""),
+        "day_label": day_label,
+        "session_date": session_date.isoformat() if session_date else "",
+        "session_dates": [d.isoformat() for d in session_dates],
+        "date_label": date_label,
+        "semester_name": semester.name if semester else "",
+        "semester_start": semester_start.isoformat() if semester_start else "",
+        "semester_end": semester_end.isoformat() if semester_end else "",
+        "semester_period": semester_period_label(
+            semester.name if semester else "",
+            semester_start,
+            semester_end,
+        ),
         "start_time": session.start_time.strftime("%H:%M"),
         "end_time": session.end_time.strftime("%H:%M"),
         "duration_minutes": session_duration_minutes(session.start_time, session.end_time),
@@ -164,10 +232,34 @@ def validate_session_scheduling(
             "Using a free-text room only. Register the room under Classrooms for reliable clash checks."
         )
 
+    # ── Campus isolation: Room must belong to program's allowed campuses ────────
+    if session.venue_id and not is_online_delivery(session):
+        program = session.course_unit.semester.program_batch.program
+        allowed_campuses = program.campuses.values_list("id", flat=True)
+        
+        if allowed_campuses and session.venue.campus_id not in allowed_campuses:
+            campus_names = ", ".join(
+                program.campuses.values_list("name", flat=True).order_by("name")
+            )
+            room_campus = session.venue.campus.name if session.venue.campus else "Unknown"
+            out.errors.append(
+                f'Room "{session.venue.name}" is on campus {room_campus}, '
+                f'but this programme is only offered on: {campus_names}. '
+                f'Select a classroom assigned to one of these campuses.'
+            )
+    # ───────────────────────────────────────────────────────────────────────────
+
     if not session.course_unit_id:
         return out
 
-    others = _active_sessions_qs(exclude_pk=pk).filter(day_of_week=session.day_of_week)
+    others = _active_sessions_qs(exclude_pk=pk)
+    if session.session_date:
+        others = others.filter(
+            Q(session_date=session.session_date)
+            | Q(session_date__isnull=True, day_of_week=session.day_of_week)
+        )
+    else:
+        others = others.filter(day_of_week=session.day_of_week)
     lecturer_ids = set(session.course_unit.lecturers.values_list("id", flat=True))
     session_campus = session_campus_id(session)
     check_room = not is_online_delivery(session) and bool(session.venue_id)

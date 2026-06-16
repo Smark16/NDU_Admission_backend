@@ -11,10 +11,21 @@ from .serializers import *
 from .permissions import (
     VerifyPhysicalDocumentsPermission,
     user_can_reject_application,
+    user_can_approve_application,
     user_can_admit_applicant,
     user_can_restore_revoked_admission,
     CanAdmitApplicant,
     CanManageAdmissionChangeRequests,
+)
+from .faculty_scope import (
+    filter_applications_for_user,
+    filter_admitted_students_for_user,
+    filter_faculties_for_user,
+    filter_admission_change_requests_for_user,
+    assert_application_access,
+    assert_admitted_student_access,
+    assert_admissions_modify_access,
+    user_is_admissions_view_only,
 )
 from audit.utils import log_audit_event
 from rest_framework.parsers import MultiPartParser, FormParser
@@ -575,7 +586,7 @@ class ListApplications(generics.ListAPIView):
             qs = qs.filter(application_fee_paid=(fee_paid.lower() == 'true'))
         if batch_id:
             qs = qs.filter(batch_id=batch_id)
-        return qs
+        return filter_applications_for_user(qs, self.request.user)
 
 class StandardPagination(PageNumberPagination):
     page_size = 50
@@ -665,7 +676,7 @@ def build_applications_report_queryset(request, *, apply_choice_filter: bool = T
                 id__in=application_ids_with_suspect_program_choices()
             )
 
-    return queryset.distinct()
+    return filter_applications_for_user(queryset.distinct(), request.user)
 
 # applicant detailed report
 def build_applications_detail_report_queryset(request, *, apply_choice_filter: bool = True):
@@ -738,7 +749,7 @@ def build_applications_detail_report_queryset(request, *, apply_choice_filter: b
         elif direct_entry_param == "false":
             queryset = queryset.filter(is_direct_entry=False)
 
-    return queryset.distinct()
+    return filter_applications_for_user(queryset.distinct(), request.user)
 
 
 class ApplicationChoiceStatsView(APIView):
@@ -794,6 +805,14 @@ class ListDirectEntryApplications(generics.ListAPIView):
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
     # pagination_class = StandardPagination
 
+    def check_permissions(self, request):
+        super().check_permissions(request)
+        if user_is_admissions_view_only(request.user):
+            self.permission_denied(
+                request,
+                message="Direct entry applicants are not available for view-only admissions access.",
+            )
+
     def get_queryset(self):
         return Application.objects.filter(is_direct_entry=True).select_related(
             'academic_level', 
@@ -811,11 +830,13 @@ class ListDirectEntryApplications(generics.ListAPIView):
         ).filter(
             ~Q(status__in=['draft', 'Admitted', 'admitted', 'rejected'])
         ).order_by('-created_at')
+        return filter_applications_for_user(qs, self.request.user)
 
 class RejectStudent(APIView):
     permission_classes = [IsAuthenticated]
 
     def patch(self, request, application_id):
+        assert_admissions_modify_access(request.user)
         if not user_can_reject_application(request.user):
             return Response(
                 {"detail": "You do not have permission to reject applications."},
@@ -825,6 +846,7 @@ class RejectStudent(APIView):
         try:
             with transaction.atomic():
                 application = Application.objects.select_related("applicant").get(pk=application_id)
+                assert_application_access(request.user, application)
                 application.status = "rejected"
                 application.save()
                 try:
@@ -847,7 +869,9 @@ class DeleteApplication(generics.RetrieveDestroyAPIView):
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
     def delete(self, request,*args, **kwargs):
+        assert_admissions_modify_access(request.user)
         instance = self.get_object()
+        assert_application_access(request.user, instance)
         instance.delete()
 
         return Response({"detail":"Application delete successfully"})
@@ -862,6 +886,7 @@ class SingleApplication(generics.RetrieveAPIView):
         try:
             application = Application.objects.select_related(
                 'applicant', 'batch', 'campus', 'academic_level', 'reviewed_by').get(pk=application_id)
+            assert_application_access(request.user, application)
 
             serializer = SingleApplicationSerializer(application)
             return Response(serializer.data, status=200)
@@ -875,6 +900,7 @@ class ChangeApplicationStatus(APIView):
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
     def patch(self, request, *args, **kwargs):
+        assert_admissions_modify_access(request.user)
         try:
             with transaction.atomic():
                 app_id = self.kwargs['pk']
@@ -885,6 +911,12 @@ class ChangeApplicationStatus(APIView):
                 try:
                     application = Application.objects.select_related(
                       'applicant', 'batch', 'campus', 'academic_level', 'reviewed_by').get(pk=app_id)
+                    assert_application_access(request.user, application)
+                    if ns == "accepted" and not user_can_approve_application(request.user):
+                        return Response(
+                            {"detail": "You do not have permission to approve applications."},
+                            status=status.HTTP_403_FORBIDDEN,
+                        )
                     application.status = ns
                     application.pending_reason = pr
                     application.save()
@@ -900,7 +932,9 @@ class EditApplicationProfile(APIView):
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
     def patch(self, request, application_id):
+        assert_admissions_modify_access(request.user)
         application = get_object_or_404(Application, pk=application_id)
+        assert_application_access(request.user, application)
         allowed_fields = {
             "first_name",
             "last_name",
@@ -1353,11 +1387,12 @@ class ListRejectedApplications(generics.ListAPIView):
     serializer_class = ListApplicationsSerializer
 
     def get_queryset(self):
-        return (
+        qs = (
             Application.objects.filter(status__iexact="rejected")
             .select_related("academic_level", "batch", "campus")
             .order_by("-updated_at", "-created_at")
         )
+        return filter_applications_for_user(qs, self.request.user)
 
 # ================================subjects================================================
 
@@ -1747,6 +1782,7 @@ class DeleteBatch(generics.RetrieveDestroyAPIView):
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
     def delete(self, request, *args, **kwargs):
+        assert_admissions_modify_access(request.user)
         instance = self.get_object()
         instance.delete()
 
@@ -2035,6 +2071,7 @@ class ReviewApplication(APIView):
             )
             .get(pk=application_id)
         )
+        assert_application_access(request.user, application)
 
         # Related queries
         olevel_results = OLevelResult.objects.filter(application=application).select_related('subject')
@@ -2113,15 +2150,24 @@ class DeleteAcademicLevel(generics.RetrieveDestroyAPIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 # ============================================faculties============================
-class ListFaculties(generics.ListCreateAPIView):
-    queryset = Faculty.objects.prefetch_related('campuses')
+class ListFaculties(generics.ListAPIView):
     serializer_class = FacultySerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+    def get_queryset(self):
+        return filter_faculties_for_user(
+            Faculty.objects.prefetch_related("campuses"),
+            self.request.user,
+        )
 
 class CreateFaculty(generics.CreateAPIView):
     queryset = Faculty.objects.all()
     serializer_class = FacultySerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+    def perform_create(self, serializer):
+        assert_admissions_modify_access(self.request.user)
+        serializer.save()
 
 class UpdateFaculty(generics.UpdateAPIView):
     queryset = Faculty.objects.all()
@@ -2129,6 +2175,7 @@ class UpdateFaculty(generics.UpdateAPIView):
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
     def update(self, request, *args, **kwargs):
+        assert_admissions_modify_access(request.user)
         instance = self.get_object()
         serializer = self.serializer_class(instance, data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -2142,6 +2189,7 @@ class DeleteFaculty(generics.RetrieveDestroyAPIView):
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
     def delete(self, request, *args, **kwargs):
+        assert_admissions_modify_access(request.user)
         instance = self.get_object()
         try:
             with transaction.atomic():
@@ -2168,6 +2216,7 @@ class ChangeFacultyStatus(APIView):
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
     def patch(self, request, *args, **kwargs):
+        assert_admissions_modify_access(request.user)
         faculty_id = self.kwargs['pk']
         newStatus = request.data.get('is_active')
         try:
@@ -2344,6 +2393,7 @@ class RevokeAdmittedStudent(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
+        assert_admissions_modify_access(request.user)
         if not (
             request.user.has_perm("admissions.revoke_admission")
             or request.user.has_perm("admissions.change_admittedstudent")
@@ -2351,6 +2401,7 @@ class RevokeAdmittedStudent(APIView):
             return Response({"detail": "You do not have permission to revoke admissions."}, status=403)
 
         admission = get_object_or_404(AdmittedStudent, pk=pk)
+        assert_admitted_student_access(request.user, admission)
         application = get_object_or_404(Application, pk=admission.application_id)
 
         reason = str(request.data.get("reason", "")).strip()
@@ -2396,10 +2447,12 @@ class RestoreAdmittedStudent(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
+        assert_admissions_modify_access(request.user)
         if not user_can_restore_revoked_admission(request.user):
             return Response({"detail": "You do not have permission to restore admissions."}, status=403)
 
         admission = get_object_or_404(AdmittedStudent, pk=pk)
+        assert_admitted_student_access(request.user, admission)
 
         with transaction.atomic():
             admission.is_revoked = False
@@ -2524,7 +2577,7 @@ class ListAdmittedStudents(generics.ListAPIView):
         if date_to:
             queryset = queryset.filter(admission_date__date__lte=date_to)
 
-        return queryset.distinct()
+        return filter_admitted_students_for_user(queryset.distinct(), self.request.user)
  
 class MarkPhysicalDocumentsVerified(APIView):
     permission_classes = [IsAuthenticated, VerifyPhysicalDocumentsPermission]
@@ -2631,6 +2684,9 @@ class UpdateAdmittedStudent(generics.UpdateAPIView):
 
     @transaction.atomic
     def perform_update(self, serializer):
+        assert_admissions_modify_access(self.request.user)
+        admission = serializer.instance
+        assert_admitted_student_access(self.request.user, admission)
         admission = serializer.save()   # This saves the AdmittedStudent instance
 
         try:
@@ -2656,6 +2712,11 @@ class CandidateAdmission(generics.RetrieveAPIView):
     lookup_field = "id"
     lookup_url_kwarg = "admission_id"
 
+    def get_object(self):
+        obj = super().get_object()
+        assert_admitted_student_access(self.request.user, obj)
+        return obj
+
 
 # delete admitted student
 class DeleteAdmittedStudent(generics.DestroyAPIView):
@@ -2664,7 +2725,9 @@ class DeleteAdmittedStudent(generics.DestroyAPIView):
     serializer_class = AdmittedStudentSerializer
 
     def destroy(self, request, *args, **kwargs):
+        assert_admissions_modify_access(request.user)
         admission = self.get_object()
+        assert_admitted_student_access(request.user, admission)
         application_id = admission.application_id
         with transaction.atomic():
             admission.delete()
@@ -2677,8 +2740,14 @@ class AdminDashboardStats(APIView):
     permission_classes = [CanViewAdmissionQueues]
 
     def get(self, request):
+        apps_base = filter_applications_for_user(Application.objects.all(), request.user)
+        admitted_base = filter_admitted_students_for_user(
+            AdmittedStudent.objects.filter(is_admitted=True),
+            request.user,
+        )
+
         # Main applications stats in one query
-        apps_stats = Application.objects.aggregate(
+        apps_stats = apps_base.aggregate(
             total_applications=Count('id'),
             online_applications=Count('id', filter=Q(is_direct_entry=False)),
             direct_applications=Count('id', filter=Q(is_direct_entry=True)),
@@ -2691,9 +2760,7 @@ class AdminDashboardStats(APIView):
         )
 
         # Admitted students
-        admitted_students = AdmittedStudent.objects.filter(
-            is_admitted=True
-        ).count()
+        admitted_students = admitted_base.count()
 
         # Batches stats
         batches_stats = Batch.objects.aggregate(
@@ -2945,6 +3012,7 @@ class AdminChangeRequestList(APIView):
         if change_type:
             qs = qs.filter(change_type=change_type)
 
+        qs = filter_admission_change_requests_for_user(qs, request.user)
         return Response(AdmissionChangeRequestSerializer(qs, many=True).data)
 
 

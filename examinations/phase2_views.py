@@ -23,6 +23,7 @@ def _enrollments_for_course(course_unit):
         StudentCourseUnitEnrollment.objects.filter(
             course_unit=course_unit,
             status="enrolled",
+            registration_date__isnull=False,
         )
         .select_related(
             "student",

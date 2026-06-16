@@ -195,6 +195,11 @@ class FeePlanRule(models.Model):
 
     installment_number = models.PositiveIntegerField(null=True, blank=True)
     due_date_days = models.IntegerField(null=True, blank=True)
+    billing_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Date this fee becomes visible and billable on the student portal.",
+    )
 
     payable_year_of_study = models.PositiveSmallIntegerField(
         null=True,

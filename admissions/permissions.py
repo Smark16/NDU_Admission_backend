@@ -15,12 +15,13 @@ ERP bridge (accounts.ErpAccessPolicy):
 from rest_framework.permissions import BasePermission
 
 from accounts.erp_drf_permissions import user_has_any_erp_perm
+from accounts.super_admin import user_is_super_admin
 
 
 def user_can_approve_application(user) -> bool:
     if not user.is_authenticated:
         return False
-    if user.is_superuser:
+    if user_is_super_admin(user):
         return True
     if user.has_perm("admissions.approve_application"):
         return True
@@ -32,7 +33,7 @@ def user_can_approve_application(user) -> bool:
 def user_can_reject_application(user) -> bool:
     if not user.is_authenticated:
         return False
-    if user.is_superuser:
+    if user_is_super_admin(user):
         return True
     if user.has_perm("admissions.reject_application"):
         return True
@@ -44,7 +45,7 @@ def user_can_reject_application(user) -> bool:
 def user_can_admit_applicant(user) -> bool:
     if not user.is_authenticated:
         return False
-    if user.is_superuser:
+    if user_is_super_admin(user):
         return True
     if user.has_perm("admissions.admit_applicant"):
         return True
@@ -57,7 +58,7 @@ def user_can_admit_applicant(user) -> bool:
 def user_can_manage_admission_change_requests(user) -> bool:
     if not user.is_authenticated:
         return False
-    if user.is_superuser:
+    if user_is_super_admin(user):
         return True
     if user.has_perm("admissions.manage_admission_change_requests"):
         return True
@@ -70,7 +71,7 @@ def user_can_edit_application_registration(user) -> bool:
     """Edit demographics / programme choices on an application (admin-side)."""
     if not user.is_authenticated:
         return False
-    if user.is_superuser:
+    if user_is_super_admin(user):
         return True
     if user.has_perm("admissions.edit_application_registration"):
         return True
@@ -84,7 +85,7 @@ def user_can_edit_application_registration(user) -> bool:
 def user_can_restore_revoked_admission(user) -> bool:
     if not user.is_authenticated:
         return False
-    if user.is_superuser:
+    if user_is_super_admin(user):
         return True
     if user.has_perm("admissions.restore_revoked_admission"):
         return True
@@ -100,7 +101,7 @@ class VerifyPhysicalDocumentsPermission(BasePermission):
         u = request.user
         if not u.is_authenticated:
             return False
-        if u.is_superuser:
+        if user_is_super_admin(u):
             return True
         return u.has_perm("admissions.verify_physical_documents")
 
@@ -114,7 +115,7 @@ class ExportVerificationRegisterPermission(BasePermission):
         u = request.user
         if not u.is_authenticated:
             return False
-        if u.is_superuser:
+        if user_is_super_admin(u):
             return True
         if u.has_perm("admissions.verify_physical_documents"):
             return True
@@ -161,7 +162,7 @@ class EditApplicationRegistrationPermission(BasePermission):
 def user_can_manage_id_cards(user) -> bool:
     if not user.is_authenticated:
         return False
-    if user.is_superuser:
+    if user_is_super_admin(user):
         return True
     if user.has_perm("admissions.manage_id_cards"):
         return True

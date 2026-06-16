@@ -11,6 +11,7 @@ from decimal import Decimal
 from django.db.models import Q
 
 from Programs.models import Program
+from .billing_visibility import parse_billing_date, resolve_billing_date_on_save
 from .models import FeeHead, FeePlan, FeePlanRule
 
 
@@ -90,7 +91,10 @@ def rule_amount_map(fee_plan_id: int, program_id: int, program_batch_id: int):
                 'tuition_currency_international': '',
                 'functional_international': None,
                 'functional_currency_international': '',
+                'billing_date': None,
             }
+        if r.billing_date and out[key]['billing_date'] is None:
+            out[key]['billing_date'] = r.billing_date
         code = (r.fee_head.code or '').upper()
         if code == 'TUITION_FEE' or r.fee_head.category == 'tuition':
             out[key]['tuition'] = r.amount
@@ -114,6 +118,7 @@ def upsert_rule(
     currency: str,
     amount_international=None,
     currency_international: str = '',
+    billing_date=None,
 ):
     qs = FeePlanRule.objects.filter(
         fee_plan=fee_plan,
@@ -122,12 +127,19 @@ def upsert_rule(
         fee_head=head,
     )
     ci = (currency_international or '').strip()[:3]
+    parsed_billing = resolve_billing_date_on_save(
+        billing_date=billing_date,
+        semester=sem,
+        program_batch=pb,
+        program=program,
+    )
     if qs.exists():
         r = qs.first()
         r.amount = amount
         r.currency = currency
         r.amount_international = amount_international
         r.currency_international = ci
+        r.billing_date = parsed_billing
         r.trigger_stage = 'semester_start'
         r.program = program
         r.save()
@@ -142,6 +154,7 @@ def upsert_rule(
         currency=currency,
         amount_international=amount_international,
         currency_international=ci,
+        billing_date=parsed_billing,
         trigger_stage='semester_start',
         is_active=True,
         order=1,

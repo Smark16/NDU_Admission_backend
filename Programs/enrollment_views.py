@@ -28,6 +28,14 @@ from rest_framework.views import APIView
 
 from admissions.models import AdmittedStudent
 
+from admissions.faculty_scope import (
+    assert_admitted_student_program_access,
+    assert_program_batch_access,
+    assert_program_in_user_faculties,
+    assert_student_programme_enrollment_access,
+    filter_programme_enrollments_for_user,
+)
+
 from .curriculum_inheritance import curriculum_owner_program
 from .models import (
     CourseUnit,
@@ -76,6 +84,8 @@ class AdminCreateEnrollmentView(APIView):
         except AdmittedStudent.DoesNotExist:
             return Response({'detail': 'Student not found.'}, status=status.HTTP_404_NOT_FOUND)
 
+        assert_admitted_student_program_access(request.user, student)
+
         if not student.is_admitted:
             return Response(
                 {'detail': 'Student must be admitted before academic enrollment can be created.'},
@@ -118,6 +128,9 @@ class AdminCreateEnrollmentView(APIView):
                 {'detail': 'ProgramBatch not found or does not belong to this programme.'},
                 status=status.HTTP_404_NOT_FOUND,
             )
+
+        assert_program_in_user_faculties(request.user, program)
+        assert_program_batch_access(request.user, program_batch)
 
         if student.admitted_program_id != program.id:
             return Response(
@@ -274,6 +287,8 @@ class AdminListEnrollmentsView(APIView):
         if batch_id:
             qs = qs.filter(program_batch_id=batch_id)
 
+        qs = filter_programme_enrollments_for_user(qs, request.user)
+
         serializer = StudentProgrammeEnrollmentSerializer(qs, many=True)
         return Response({
             'count': qs.count(),
@@ -286,12 +301,14 @@ class AdminEnrollmentDetailView(APIView):
     permission_classes = [AcademicEnrollmentAdminPermission]
 
     def _get(self, pk):
-        return get_object_or_404(
+        enrollment = get_object_or_404(
             StudentProgrammeEnrollment.objects.select_related(
                 'student__application', 'program', 'program_batch', 'enrolled_by'
             ),
             pk=pk,
         )
+        assert_student_programme_enrollment_access(self.request.user, enrollment)
+        return enrollment
 
     def get(self, request, pk):
         return Response(StudentProgrammeEnrollmentSerializer(self._get(pk)).data)

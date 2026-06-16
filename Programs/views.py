@@ -33,6 +33,11 @@ class ListPrograms(generics.ListAPIView):
     serializer_class = ListProgramsSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
+    def get_queryset(self):
+        from admissions.faculty_scope import filter_programs_for_user
+
+        return filter_programs_for_user(super().get_queryset(), self.request.user)
+
 # edit program
 class UpdateProgram(generics.UpdateAPIView):
     queryset = Program.objects.all()
@@ -141,11 +146,13 @@ class ListProgramsWithBatches(generics.ListAPIView):
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
     def get_queryset(self):
+        from admissions.faculty_scope import filter_programs_for_user
+
         has_batches = ProgramBatch.objects.filter(
             program=OuterRef('pk'),
             is_active=True,
         )
-        return Program.objects.select_related(
+        qs = Program.objects.select_related(
             'faculty',
             'academic_level',
         ).prefetch_related(
@@ -156,6 +163,7 @@ class ListProgramsWithBatches(generics.ListAPIView):
             has_batches=True,
             is_active=True,
         ).order_by('name')
+        return filter_programs_for_user(qs, self.request.user)
 
     def list(self, request, *args, **kwargs):
         queryset = self.get_queryset()

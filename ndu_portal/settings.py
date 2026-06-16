@@ -187,6 +187,11 @@ SITE_ID=1
 # Custom User Model
 AUTH_USER_MODEL = 'accounts.User'
 
+AUTHENTICATION_BACKENDS = [
+    'accounts.backends.StudentIdBackend',
+    'django.contrib.auth.backends.ModelBackend',
+]
+
 # Crispy Forms g
 CRISPY_ALLOWED_TEMPLATE_PACKS = "bootstrap5"
 CRISPY_TEMPLATE_PACK = "bootstrap5"

@@ -6,10 +6,13 @@ assigned via Django Groups (or user_permissions); being ``is_staff`` alone is no
 from rest_framework.permissions import BasePermission
 
 
+from accounts.super_admin import user_is_super_admin
+
+
 def user_has_any_erp_perm(user, *codenames: str) -> bool:
     if not user.is_authenticated:
         return False
-    if user.is_superuser:
+    if user_is_super_admin(user):
         return True
     return any(user.has_perm(f"accounts.{c}") for c in codenames)
 
@@ -19,7 +22,7 @@ class CanViewAdmissionsAnalytics(BasePermission):
         u = request.user
         if not u.is_authenticated:
             return False
-        if u.is_superuser:
+        if user_is_super_admin(u):
             return True
         if user_has_any_erp_perm(u, "access_reports", "access_admissions"):
             return True
@@ -37,7 +40,7 @@ class FinanceModuleAdminPermission(BasePermission):
         u = request.user
         if not u.is_authenticated:
             return False
-        if u.is_superuser:
+        if user_is_super_admin(u):
             return True
         return user_has_any_erp_perm(
             u,
@@ -65,7 +68,7 @@ class CanViewAdmissionQueues(BasePermission):
         u = request.user
         if not u.is_authenticated:
             return False
-        if u.is_superuser:
+        if user_is_super_admin(u):
             return True
         if user_has_any_erp_perm(u, *self._ERP_QUEUE):
             return True

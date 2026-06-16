@@ -305,7 +305,7 @@ class CourseUnitResult(models.Model):
 
             grade_scale = resolve_grade_scale(enrollment=self.enrollment)
         if grade_scale and self.final_mark is not None:
-            bands = list(scale.bands.all())
+            bands = list(grade_scale.bands.all())
             letter, gp = lookup_grade_band(self.final_mark, bands)
             self.grade_letter = letter or ""
             self.grade_point = gp
@@ -314,6 +314,18 @@ class CourseUnitResult(models.Model):
             self.grade_point = None
 
     def clean(self):
+        if self.ca_mark is not None and self.ca_mark > self.policy.ca_max:
+            raise ValidationError(
+                {
+                    "ca_mark": f"CA mark cannot exceed the policy maximum of {self.policy.ca_max}."
+                }
+            )
+        if self.exam_mark is not None and self.exam_mark > 100:
+            raise ValidationError(
+                {
+                    "exam_mark": "Exam mark cannot exceed 100."
+                }
+            )
         compute_course_result(
             ca_mark=self.ca_mark,
             exam_mark=self.exam_mark,

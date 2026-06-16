@@ -45,12 +45,15 @@ from .specialization_views import (
 )
 
 from .timetable_views import (
+    LecturerMyTimetablePdfView,
     LecturerMyTimetableView,
     RoomTypeListCreateView,
     SemesterTimetableBulkPublishView,
     SemesterTimetableView,
+    StudentMyTimetablePdfView,
     StudentMyTimetableView,
     TimetableSessionDetailView,
+    VenueBulkUploadView,
     VenueDetailView,
     VenueListCreateView,
     VenueSuggestCodeView,
@@ -166,6 +169,7 @@ urlpatterns = [
     # ----- timetable (semester-scoped on ProgramBatch) -----
     path('room_types', RoomTypeListCreateView.as_view(), name='room_type_list_create'),
     path('venues/suggest_code', VenueSuggestCodeView.as_view(), name='venue_suggest_code'),
+    path('venues/bulk_upload', VenueBulkUploadView.as_view(), name='venue_bulk_upload'),
     path('venues', VenueListCreateView.as_view(), name='venue_list_create'),
     path('venues/<int:pk>', VenueDetailView.as_view(), name='venue_detail'),
     path(
@@ -183,7 +187,9 @@ urlpatterns = [
         TimetableSessionDetailView.as_view(),
         name='timetable_session_detail',
     ),
+    path('student/my_timetable/pdf', StudentMyTimetablePdfView.as_view(), name='student_my_timetable_pdf'),
     path('student/my_timetable', StudentMyTimetableView.as_view(), name='student_my_timetable'),
+    path('lecturer/my_timetable/pdf', LecturerMyTimetablePdfView.as_view(), name='lecturer_my_timetable_pdf'),
     path('lecturer/my_timetable', LecturerMyTimetableView.as_view(), name='lecturer_my_timetable'),
 
     # ----- programme specialization track management -----

@@ -1,3 +1,4 @@
+from accounts.super_admin import user_is_super_admin
 from rest_framework.permissions import BasePermission
 
 ACCESS_GRADUATION = "accounts.access_graduation"
@@ -6,7 +7,7 @@ ACCESS_GRADUATION = "accounts.access_graduation"
 def _has(user, perm: str) -> bool:
     if not user or not user.is_authenticated:
         return False
-    if user.is_superuser:
+    if user_is_super_admin(user):
         return True
     return user.has_perm(perm)
 
@@ -14,7 +15,7 @@ def _has(user, perm: str) -> bool:
 def user_has_graduation_perm(user, *codenames: str) -> bool:
     if not user or not user.is_authenticated:
         return False
-    if user.is_superuser:
+    if user_is_super_admin(user):
         return True
     if _has(user, ACCESS_GRADUATION):
         return True

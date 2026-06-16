@@ -16,12 +16,15 @@ from .permissions import (
     CanEnterMarksOrAssignedLecturer,
     CanPublishResults,
     user_can_manage_course_marks,
+    user_can_publish_course,
 )
+from .services.mark_completeness import collect_incomplete_results
 from .services.policy_resolver import resolve_assessment_policy
 from .services.publish import publish_result, verify_result
 from .serializers import (
     AssessmentPolicySerializer,
     CourseUnitResultSerializer,
+    GradeBandSerializer,
     SaveMarksSerializer,
 )
 def _get_course_unit_or_404(course_unit_id):
@@ -123,6 +126,7 @@ class LecturerCourseMarksView(APIView):
             StudentCourseUnitEnrollment.objects.filter(
                 course_unit=course_unit,
                 status="enrolled",
+                registration_date__isnull=False,
             )
             .select_related("student", "student__application", "course_result")
             .order_by("student__reg_no")
@@ -151,6 +155,11 @@ class LecturerCourseMarksView(APIView):
             )
 
         enrolled_count = enrollments.count()
+        grade_bands = (
+            list(GradeBandSerializer(grade_scale.bands.order_by("order"), many=True).data)
+            if grade_scale
+            else []
+        )
         return Response(
             {
                 "course_unit_id": course_unit.id,
@@ -159,6 +168,7 @@ class LecturerCourseMarksView(APIView):
                 "policy": AssessmentPolicySerializer(policy).data,
                 "policy_academic_level": level_name,
                 "grading_scheme": grade_scale.name if grade_scale else None,
+                "grade_bands": grade_bands,
                 "enrolled_count": enrolled_count,
                 "rows": rows,
             }
@@ -229,6 +239,37 @@ class LecturerCourseMarksView(APIView):
                 result.ca_mark = row.get("ca_mark")
                 result.exam_mark = row.get("exam_mark")
                 result.entered_by = request.user
+                
+                # Validate CA mark does not exceed policy maximum
+                if result.ca_mark is not None and result.ca_mark < 0:
+                    errors.append(
+                        {"enrollment_id": eid, "detail": "CA mark cannot be negative."}
+                    )
+                    continue
+                if result.ca_mark is not None and result.ca_mark > policy.ca_max:
+                    errors.append(
+                        {
+                            "enrollment_id": eid,
+                            "detail": f"CA mark ({result.ca_mark}) cannot exceed policy maximum ({policy.ca_max}).",
+                        }
+                    )
+                    continue
+                
+                # Validate exam mark does not exceed 100
+                if result.exam_mark is not None and result.exam_mark < 0:
+                    errors.append(
+                        {"enrollment_id": eid, "detail": "Exam mark cannot be negative."}
+                    )
+                    continue
+                if result.exam_mark is not None and result.exam_mark > 100:
+                    errors.append(
+                        {
+                            "enrollment_id": eid,
+                            "detail": f"Exam mark ({result.exam_mark}) cannot exceed 100.",
+                        }
+                    )
+                    continue
+                
                 if result.status in (
                     CourseUnitResult.STATUS_PUBLISHED,
                     CourseUnitResult.STATUS_VERIFIED,
@@ -260,9 +301,15 @@ class PublishCourseMarksView(APIView):
 
     def post(self, request, course_unit_id):
         try:
-            _get_course_unit_or_404(course_unit_id)
+            course_unit = _get_course_unit_or_404(course_unit_id)
         except CourseUnit.DoesNotExist:
             return Response({"detail": "Course unit not found."}, status=404)
+
+        if not user_can_publish_course(request.user, course_unit):
+            return Response(
+                {"detail": "You do not have permission to publish marks for this course."},
+                status=403,
+            )
 
         force_raw = request.query_params.get("force")
         if force_raw is None and hasattr(request.data, "get"):
@@ -277,7 +324,17 @@ class PublishCourseMarksView(APIView):
             results = CourseUnitResult.objects.filter(
                 enrollment__course_unit_id=course_unit_id,
                 status__in=statuses,
-            ).select_related("enrollment")
+            ).select_related("enrollment", "enrollment__student", "policy")
+
+            incomplete = collect_incomplete_results(results)
+            if incomplete:
+                return Response(
+                    {
+                        "detail": "Cannot publish: some students have incomplete marks.",
+                        "incomplete": incomplete,
+                    },
+                    status=400,
+                )
 
             for result in results:
                 if result.status == CourseUnitResult.STATUS_DRAFT:

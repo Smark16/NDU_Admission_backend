@@ -8,26 +8,39 @@ DEFAULT_STUDENT_PASSWORD = "NDU@1234"
 
 
 def student_portal_username(reg_no: str) -> str:
+    """Portal login username derived from registration number (slashes → underscores)."""
     return str(reg_no).strip().replace("/", "_")
 
 
 def initial_student_password(reg_no: str) -> str:
-    cleaned = str(reg_no).strip()
-    return cleaned or DEFAULT_STUDENT_PASSWORD
+    """Default first-time portal password (same value emailed to students)."""
+    _ = reg_no  # kept for API compatibility; password is not derived from reg_no
+    return DEFAULT_STUDENT_PASSWORD
 
 
-def ensure_student_portal_account(admission, *, reset_password: bool = False) -> User | None:
-    """Create or link the ERP student login for an admitted student."""
+def ensure_student_portal_account(admission, *, reset_password: bool = False) -> tuple[User | None, bool]:
+    """
+    Create or link the ERP student login for an admitted student.
+
+    Returns (user, created) where created is True when a new User row was created.
+    Idempotent — safe to call from admission views and Celery.
+    """
     application = admission.application
     applicant = application.applicant
     username = student_portal_username(admission.reg_no)
     if not username:
         logger.warning("Student account skipped for admission %s: missing reg_no", admission.pk)
-        return None
+        return None, False
 
     student_user = getattr(admission, "student_user", None)
     if student_user is None:
         student_user = User.objects.filter(username__iexact=username).first()
+
+    was_applicant_account = bool(
+        student_user is not None
+        and student_user.pk == application.applicant_id
+        and student_user.is_applicant
+    )
 
     created = False
     if student_user is None:
@@ -45,6 +58,16 @@ def ensure_student_portal_account(admission, *, reset_password: bool = False) ->
         created = True
     else:
         updates: list[str] = []
+        canonical_username = student_portal_username(admission.reg_no)
+        if canonical_username and student_user.username != canonical_username:
+            conflict = (
+                User.objects.filter(username__iexact=canonical_username)
+                .exclude(pk=student_user.pk)
+                .exists()
+            )
+            if not conflict:
+                student_user.username = canonical_username
+                updates.append("username")
         if not student_user.is_student:
             student_user.is_student = True
             updates.append("is_student")
@@ -66,7 +89,7 @@ def ensure_student_portal_account(admission, *, reset_password: bool = False) ->
         if updates:
             student_user.save(update_fields=updates)
 
-    if created or reset_password:
+    if created or reset_password or was_applicant_account:
         student_user.set_password(initial_student_password(admission.reg_no))
         student_user.must_change_password = True
         student_user.save(update_fields=["password", "must_change_password"])
@@ -75,4 +98,4 @@ def ensure_student_portal_account(admission, *, reset_password: bool = False) ->
         admission.student_user = student_user
         admission.save(update_fields=["student_user", "updated_at"])
 
-    return student_user
+    return student_user, created

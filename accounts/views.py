@@ -1,6 +1,6 @@
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
-from rest_framework import generics, permissions, status
+from rest_framework import generics, permissions, status, serializers
 from rest_framework.parsers import JSONParser, FormParser, MultiPartParser
 from rest_framework.views import APIView
 from django.utils import timezone
@@ -8,6 +8,7 @@ from django.db.models import Q, Count
 from django.shortcuts import get_object_or_404
 from django.conf import settings
 from rest_framework_simplejwt.views import TokenObtainPairView
+from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.permissions import *
 from django.contrib.auth.models import Group, Permission
 from django.contrib.auth import authenticate
@@ -17,12 +18,15 @@ from .models import *
 from audit.utils import log_audit_event
 from django.db import transaction
 from django.db.models.deletion import ProtectedError
+from django.db.utils import IntegrityError
 
 from django.utils.http import urlsafe_base64_decode
 from django.shortcuts import redirect
 from django.contrib.auth.tokens import default_token_generator
 from django.core.cache import cache
 from .tasks import celery_send_password_reset_Link, celery_send_erp_password_reset_Link
+from .role_assignment import role_requires_faculty_assignment
+from .super_admin import user_is_super_admin
 
 # login view
 class ObtainTokenView(TokenObtainPairView):
@@ -45,6 +49,55 @@ class ObtainTokenView(TokenObtainPairView):
                 )
 
         return response
+
+# live session (permissions refresh without full re-login)
+class SessionView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from accounts.jwt_utils import session_payload
+
+        return Response(session_payload(request.user), status=status.HTTP_200_OK)
+
+
+class SwitchPortalModeView(APIView):
+    """
+    POST { portal_mode: 'admin' | 'lecturer' | 'student' }
+
+    Switches the active ERP portal view when the user has access to multiple portals.
+    Returns fresh JWT tokens with updated portal_mode claim.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        from accounts.jwt_utils import session_payload
+        from accounts.role_assignment import PORTAL_MODES, user_portal_modes
+
+        mode = (request.data.get("portal_mode") or "").strip().lower()
+        if mode not in PORTAL_MODES:
+            return Response(
+                {"detail": 'portal_mode must be "admin", "lecturer", or "student".'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        user = request.user
+        allowed = user_portal_modes(user)
+        if mode not in allowed:
+            return Response(
+                {"detail": f'You do not have access to the "{mode}" portal.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        user.portal_mode = mode
+        user.save(update_fields=["portal_mode"])
+
+        refresh = RefreshToken.for_user(user)
+        access = ObtainSerializer.get_token(user)
+        payload = session_payload(user)
+        payload["access"] = str(access.access_token)
+        payload["refresh"] = str(refresh)
+        return Response(payload, status=status.HTTP_200_OK)
 
 # register
 class RegisterView(generics.CreateAPIView):
@@ -76,11 +129,37 @@ class UpdateUser(generics.UpdateAPIView):
         # Never accept raw password writes through ModelSerializer; hash it properly.
         data = request.data.copy()
         new_role = (data.get("role") or "").strip()
+        roles_payload = data.pop("roles", None)
         if new_role.lower() == "student":
             return Response(
                 {"detail": "Student accounts are created from Admissions/Direct Admission, not User Management."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        faculty_ids = data.pop("faculties", None)
+        campus_ids = data.pop("campuses", None)
+        role_names_for_faculty: list[str] = []
+        if roles_payload is not None:
+            role_names_for_faculty = [
+                str(n).strip() for n in (roles_payload if isinstance(roles_payload, list) else []) if str(n).strip()
+            ]
+        elif new_role:
+            role_names_for_faculty = [new_role]
+        needs_faculty = any(role_requires_faculty_assignment(name) for name in role_names_for_faculty)
+        if needs_faculty:
+            faculty_label = ", ".join(role_names_for_faculty) or new_role
+            if faculty_ids is not None and len(faculty_ids) == 0:
+                if instance.faculties.exists():
+                    faculty_ids = None
+                else:
+                    return Response(
+                        {"faculties": f"Select at least one faculty for a {faculty_label} account."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+            elif faculty_ids is None and not instance.faculties.exists():
+                return Response(
+                    {"faculties": f"Select at least one faculty for a {faculty_label} account."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
         if str(data.get("is_student", "")).strip().lower() in {"true", "1", "yes"}:
             return Response(
                 {"detail": "Student flag cannot be set from User Management."},
@@ -89,29 +168,61 @@ class UpdateUser(generics.UpdateAPIView):
         new_password = (data.get("password") or "").strip()
         data.pop("password", None)
         data.pop("confirm_password", None)
+        if "staff_id" in data:
+            from accounts.serializers import normalize_staff_id
 
-        serializer = self.serializer_class(instance, data=data, partial=True)
-        serializer.is_valid(raise_exception=True)
-        serializer.save()
+            data["staff_id"] = normalize_staff_id(data.get("staff_id"))
+
+        try:
+            serializer = self.serializer_class(instance, data=data, partial=True)
+            serializer.is_valid(raise_exception=True)
+            serializer.save()
+        except IntegrityError as exc:
+            if "staff_id" in str(exc).lower():
+                return Response(
+                    {"staff_id": "That staff ID is already assigned to another user."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            raise
+
+        if campus_ids is not None:
+            instance.campuses.set(campus_ids)
+        if faculty_ids is not None:
+            instance.faculties.set(faculty_ids)
 
         if new_password:
             instance.set_password(new_password)
             instance.must_change_password = True
             instance.save(update_fields=["password", "must_change_password"])
 
-        # ── Lecturer role sync ────────────────────────────────────────────────
-        if new_role == "Lecturer" and not instance.is_lecturer:
-            instance.is_lecturer = True
-            instance.save(update_fields=["is_lecturer"])
-            lecturer_group, _ = Group.objects.get_or_create(name="Lecturer")
-            instance.groups.add(lecturer_group)
-        # ─────────────────────────────────────────────────────────────────────
+        if roles_payload is not None:
+            from accounts.role_assignment import set_user_roles
 
-        return Response(serializer.data, status=200)
+            try:
+                set_user_roles(instance, roles_payload)
+            except serializers.ValidationError as exc:
+                return Response(exc.detail, status=status.HTTP_400_BAD_REQUEST)
+            except IntegrityError as exc:
+                if "staff_id" in str(exc).lower():
+                    return Response(
+                        {"staff_id": "That staff ID is already assigned to another user."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                raise
+        elif new_role:
+            from accounts.role_assignment import assign_user_role
+
+            try:
+                assign_user_role(instance, new_role)
+            except serializers.ValidationError as exc:
+                return Response(exc.detail, status=status.HTTP_400_BAD_REQUEST)
+
+        instance.refresh_from_db()
+        return Response(self.serializer_class(instance).data, status=200)
     
 # get single user
 class getUser(generics.RetrieveAPIView):
-    queryset = User.objects.prefetch_related('groups', 'user_permissions', 'campuses')
+    queryset = User.objects.prefetch_related('groups', 'user_permissions', 'campuses', 'faculties')
     serializer_class = UserSerializer
     permission_classes = [IsAuthenticated]
 
@@ -127,7 +238,7 @@ class ListUsers(generics.ListAPIView):
 
     def get_queryset(self):
         qs = User.objects.filter(is_applicant=False).prefetch_related(
-            "groups", "user_permissions", "campuses"
+            "groups", "user_permissions", "campuses", "faculties"
         )
         no_group = (self.request.query_params.get("no_group") or "").lower()
         if no_group in ("1", "true", "yes"):
@@ -195,24 +306,28 @@ class AssignLecturerRole(APIView):
         flag = bool(request.data.get("is_lecturer"))
         try:
             user = User.objects.get(pk=user_id)
-            user.is_lecturer = flag
+            group, _ = Group.objects.get_or_create(name="Lecturer")
+            if flag:
+                from accounts.role_assignment import assign_user_role
+
+                assign_user_role(user, "Lecturer", replace=False)
+            else:
+                user.groups.remove(group)
+                from accounts.role_assignment import sync_user_role_flags
+
+                sync_user_role_flags(user)
             if "staff_id" in request.data:
                 user.staff_id = (request.data.get("staff_id") or "").strip() or None
             if flag and request.data.get("password"):
                 user.set_password(str(request.data.get("password")))
                 user.must_change_password = True
-            fields = ["is_lecturer"]
+            fields = []
             if "staff_id" in request.data:
                 fields.append("staff_id")
             if flag and request.data.get("password"):
                 fields.extend(["password", "must_change_password"])
-            user.save(update_fields=fields)
-
-            group, _ = Group.objects.get_or_create(name="Lecturer")
-            if flag:
-                user.groups.add(group)
-            else:
-                user.groups.remove(group)
+            if fields:
+                user.save(update_fields=fields)
 
             return Response(UserSerializer(user).data, status=200)
         except Exception as e:
@@ -564,20 +679,12 @@ class StudentFirstLoginChangePassword(APIView):
 
         # Issue fresh tokens so frontend can go straight to the portal
         from rest_framework_simplejwt.tokens import RefreshToken
+        from accounts.jwt_utils import apply_user_token_claims
+
         refresh = RefreshToken.for_user(user)
-        # Stamp custom claims (mirrors ObtainSerializer.get_token)
         for token in (refresh, refresh.access_token):
-            token['first_name']          = user.first_name
-            token['last_name']           = user.last_name
-            token['is_staff']            = user.is_staff
-            token['is_applicant']        = user.is_applicant
-            token['is_student']          = user.is_student
-            token['must_change_password'] = False          # explicitly cleared
-            token['role']                = user.groups.first().name if user.groups.exists() else None
-            token['phone']               = user.phone
-            token['email']               = user.email
-            token['username']            = user.username
-            token['permissions']         = list(user.get_all_permissions())
+            apply_user_token_claims(token, user)
+            token["must_change_password"] = False
 
         return Response({
             'detail': 'Password changed successfully.',
@@ -721,17 +828,29 @@ class ProspectiveAnnouncement(APIView):
 
 # ─── System Settings (NDU Portal) ────────────────────────────────────────────
 
+class PortalBrandingView(APIView):
+    """Public branding for login page (no auth required)."""
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        from .portal_branding import portal_branding_payload
+
+        settings_obj = SystemSettings.get_settings()
+        return Response(portal_branding_payload(settings_obj, request))
+
+
 class GetSystemSettings(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         settings_obj = SystemSettings.get_settings()
-        serializer = SystemSettingsSerializer(settings_obj)
+        serializer = SystemSettingsSerializer(settings_obj, context={"request": request})
         return Response(serializer.data)
 
 
 class UpdateSystemSettings(APIView):
     permission_classes = [IsAuthenticated]
+    parser_classes = [JSONParser, FormParser, MultiPartParser]
 
     def _format_validation_error(self, errors):
         if isinstance(errors, dict):
@@ -745,8 +864,19 @@ class UpdateSystemSettings(APIView):
         return "Invalid settings data."
 
     def _update(self, request):
+        if not (
+            user_is_super_admin(request.user)
+            or request.user.has_perm("accounts.access_system_settings")
+        ):
+            return Response({"detail": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
+
         settings_obj = SystemSettings.get_settings()
-        serializer = SystemSettingsSerializer(settings_obj, data=request.data, partial=True)
+        serializer = SystemSettingsSerializer(
+            settings_obj,
+            data=request.data,
+            partial=True,
+            context={"request": request},
+        )
         if serializer.is_valid():
             serializer.save(updated_by=request.user)
             return Response({'detail': 'Settings updated successfully.', **serializer.data})

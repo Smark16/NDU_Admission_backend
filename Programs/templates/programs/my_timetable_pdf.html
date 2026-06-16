@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+
+<html lang="en">
+
+<head>
+
+  <meta charset="utf-8" />
+
+  <title>{{ title }}</title>
+
+  <style>
+
+    @page {
+
+      size: A4 portrait;
+
+      margin: 1.2cm 1.4cm;
+
+    }
+
+    body {
+
+      font-family: Helvetica, Arial, sans-serif;
+
+      font-size: 10pt;
+
+      color: #222;
+
+    }
+
+    .header-table {
+
+      width: 100%;
+
+      border-collapse: collapse;
+
+      margin-bottom: 14px;
+
+    }
+
+    .header-table td {
+
+      vertical-align: middle;
+
+    }
+
+    .logo {
+
+      width: 70px;
+
+      height: 70px;
+
+    }
+
+    .uni-name {
+
+      font-size: 14pt;
+
+      font-weight: bold;
+
+      color: #7c1519;
+
+      letter-spacing: 0.5px;
+
+    }
+
+    .doc-title {
+
+      font-size: 12pt;
+
+      font-weight: bold;
+
+      margin-top: 4px;
+
+      color: #3e397b;
+
+    }
+
+    .meta {
+
+      font-size: 9pt;
+
+      color: #555;
+
+      margin-top: 2px;
+
+    }
+
+    .period-box {
+
+      margin: 0 0 12px 0;
+
+      padding: 8px 10px;
+
+      border: 1px solid #e0e0e0;
+
+      background: #f7f7fb;
+
+    }
+
+    .person {
+
+      margin: 12px 0 16px 0;
+
+      padding: 10px 12px;
+
+      border: 1px solid #ddd;
+
+      background: #fafafa;
+
+    }
+
+    .person-name {
+
+      font-size: 11pt;
+
+      font-weight: bold;
+
+    }
+
+    .day-heading {
+
+      font-size: 10.5pt;
+
+      font-weight: bold;
+
+      color: #7c1519;
+
+      margin: 14px 0 6px 0;
+
+      padding-bottom: 3px;
+
+      border-bottom: 2px solid #7c1519;
+
+    }
+
+    .day-dates {
+
+      font-size: 9pt;
+
+      font-weight: normal;
+
+      color: #555;
+
+    }
+
+    .sessions-table {
+
+      width: 100%;
+
+      border-collapse: collapse;
+
+      margin-bottom: 8px;
+
+    }
+
+    .sessions-table th {
+
+      background: #3e397b;
+
+      color: #fff;
+
+      font-size: 8.5pt;
+
+      text-align: left;
+
+      padding: 6px 5px;
+
+    }
+
+    .sessions-table td {
+
+      border-bottom: 1px solid #e5e5e5;
+
+      padding: 6px 5px;
+
+      font-size: 9pt;
+
+      vertical-align: top;
+
+    }
+
+    .course-code {
+
+      font-weight: bold;
+
+    }
+
+    .footer {
+
+      margin-top: 18px;
+
+      font-size: 8pt;
+
+      color: #666;
+
+      border-top: 1px solid #ddd;
+
+      padding-top: 8px;
+
+    }
+
+    .empty {
+
+      padding: 24px;
+
+      text-align: center;
+
+      color: #666;
+
+      border: 1px dashed #ccc;
+
+    }
+
+  </style>
+
+</head>
+
+<body>
+
+  <table class="header-table">
+
+    <tr>
+
+      {% if logo_b64 %}
+
+      <td style="width: 76px;">
+
+        <img class="logo" src="data:image/png;base64,{{ logo_b64 }}" alt="Logo" />
+
+      </td>
+
+      {% endif %}
+
+      <td>
+
+        <div class="uni-name">{{ university_name }}</div>
+
+        <div class="doc-title">{{ title }}</div>
+
+        <div class="meta">Generated {{ generated_at }}</div>
+
+      </td>
+
+    </tr>
+
+  </table>
+
+
+
+  {% if semester_periods %}
+
+  <div class="period-box">
+
+    {% for period in semester_periods %}
+
+    <div class="meta">{{ period }}</div>
+
+    {% endfor %}
+
+  </div>
+
+  {% endif %}
+
+
+
+  <div class="person">
+
+    <div class="person-name">{{ person_name }}</div>
+
+    <div class="meta">{{ person_subtitle }}</div>
+
+    {% for line in extra_lines %}
+
+    <div class="meta">{{ line }}</div>
+
+    {% endfor %}
+
+  </div>
+
+
+
+  {% if not day_sections %}
+
+  <div class="empty">No published timetable sessions found.</div>
+
+  {% else %}
+
+    {% for section in day_sections %}
+
+    <div class="day-heading">
+
+      {{ section.day_label }}
+
+      {% if section.date_label %}
+
+      <span class="day-dates"> · {{ section.date_label }}</span>
+
+      {% endif %}
+
+    </div>
+
+    <table class="sessions-table">
+
+      <thead>
+
+        <tr>
+
+          <th style="width: 12%;">Time</th>
+
+          <th style="width: 14%;">Dates</th>
+
+          <th style="width: 22%;">Course</th>
+
+          <th style="width: 16%;">Room</th>
+
+          <th style="width: 10%;">Type</th>
+
+          <th style="width: 12%;">Delivery</th>
+
+          <th style="width: 14%;">Lecturer(s)</th>
+
+        </tr>
+
+      </thead>
+
+      <tbody>
+
+        {% for s in section.sessions %}
+
+        <tr>
+
+          <td>{{ s.start_time }} – {{ s.end_time }}</td>
+
+          <td>{{ s.date_label|default:"—" }}</td>
+
+          <td>
+
+            <span class="course-code">{{ s.course_code }}</span><br />
+
+            {{ s.course_name }}
+
+            {% if s.semester_name %}
+
+            <br /><span style="font-size: 8pt; color: #666;">{{ s.semester_name }}</span>
+
+            {% endif %}
+
+          </td>
+
+          <td>{{ s.location }}</td>
+
+          <td>{{ s.session_type|capfirst }}</td>
+
+          <td>{{ s.delivery_label|default:s.delivery_mode }}</td>
+
+          <td>
+
+            {% if s.lecturers %}
+
+              {% for lec in s.lecturers %}{{ lec.name }}{% if not forloop.last %}, {% endif %}{% endfor %}
+
+            {% else %}
+
+              —
+
+            {% endif %}
+
+          </td>
+
+        </tr>
+
+        {% endfor %}
+
+      </tbody>
+
+    </table>
+
+    {% endfor %}
+
+  {% endif %}
+
+
+
+  <div class="footer">
+
+    {{ disclaimer }}<br />
+
+    Total sessions: {{ session_count }}
+
+  </div>
+
+</body>
+
+</html>
+

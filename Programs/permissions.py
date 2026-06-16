@@ -8,11 +8,12 @@ from __future__ import annotations
 
 from rest_framework.permissions import BasePermission, SAFE_METHODS
 
+from accounts.super_admin import user_is_super_admin
 from accounts.erp_drf_permissions import user_has_any_erp_perm
 
 
 def _superuser(user) -> bool:
-    return user.is_authenticated and getattr(user, "is_superuser", False)
+    return user.is_authenticated and user_is_super_admin(user)
 
 
 def user_can_configure_fee_plans(user) -> bool:
@@ -21,6 +22,10 @@ def user_can_configure_fee_plans(user) -> bool:
         return False
     if _superuser(user):
         return True
+    from admissions.faculty_scope import user_is_faculty_admin, user_is_faculty_dean
+
+    if user_is_faculty_dean(user) or user_is_faculty_admin(user):
+        return False
     return user_has_any_erp_perm(
         user,
         "configure_fee_plans",

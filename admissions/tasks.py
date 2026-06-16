@@ -61,140 +61,61 @@ def celery_admission_update(admission_id):
 @shared_task(bind=True, max_retries=5)
 def celery_create_student_account(self, admission_id, application_id):
     try:
+        from admissions.student_accounts import ensure_student_portal_account, DEFAULT_STUDENT_PASSWORD
+
         Admission = apps.get_model('admissions', 'AdmittedStudent')
-        Application = apps.get_model('admissions', 'Application')
+        admission = Admission.objects.select_related(
+            'application__applicant', 'student_user'
+        ).get(id=admission_id)
 
-        admission = Admission.objects.get(id=admission_id)
-        application = Application.objects.get(id=application_id)
+        user, created = ensure_student_portal_account(admission)
+        if user is None:
+            logger.warning("Student account not provisioned for admission %s", admission_id)
+            return
 
-        if admission.student_user_id:
-                return
-
-        student_username = str(admission.reg_no).strip()
-      
-        student_user, created = User.objects.get_or_create(
-                username=student_username,
-                defaults={
-                    'first_name': application.applicant.first_name or "",
-                    'last_name': application.applicant.last_name or "",
-                    'email': application.applicant.email,
-                    'is_student': True,
-                    'must_change_password': True,
-                    'allow_multi_campus_per_day': False,
-                        }
-                    )
         if created:
-                student_user.set_password('NDU@1234')
-                student_user.save()
-
-                celery_send_student_credentials_email.delay(
-                    student_user.id,
-                    password='NDU@1234'
-                )
-
-        admission.student_user = student_user
-        admission.save(update_fields=['student_user'])
+            celery_send_student_credentials_email.delay(
+                user.id,
+                password=DEFAULT_STUDENT_PASSWORD,
+            )
 
         celery_auto_enroll_students.delay(
             admission.id,
-            admission.admitted_by_id
+            admission.admitted_by_id,
         )
 
     except Exception as e:
-        logger.exception(f"Student account creation failed: {e }")
+        logger.exception(f"Student account creation failed: {e}")
+        raise self.retry(exc=e, countdown=60)
 
 # update student account
 @shared_task(bind=True, max_retries=5)
 def celery_update_student_account(self, admission_id, application_id):
     try:
+        from admissions.student_accounts import ensure_student_portal_account, DEFAULT_STUDENT_PASSWORD
+
         Admission = apps.get_model('admissions', 'AdmittedStudent')
-        Application = apps.get_model('admissions', 'Application')
-        User = apps.get_model('accounts', 'User')  
+        admission = Admission.objects.select_related(
+            'application__applicant', 'student_user'
+        ).get(id=admission_id)
 
-        admission = Admission.objects.select_related('application', 'student_user').get(id=admission_id)
-        application = Application.objects.get(id=application_id)
+        user, created = ensure_student_portal_account(admission, reset_password=True)
+        if user is None:
+            logger.warning("Student account update skipped for admission %s", admission_id)
+            return
 
-        student_username = str(admission.reg_no).strip()
+        celery_send_student_credentials_email.delay(
+            user.id,
+            password=DEFAULT_STUDENT_PASSWORD,
+        )
 
-        with transaction.atomic():
-            # === Case 1: User already linked ===
-            if admission.student_user:
-                user = admission.student_user
-                old_username = user.username
-
-                # Update user details
-                user.username = student_username
-                user.first_name = application.applicant.first_name or ""
-                user.last_name = application.applicant.last_name or ""
-                user.email = application.applicant.email
-                user.is_student = True
-                # Do NOT reset must_change_password unless it's a new account
-
-                # If username changed, we must save carefully
-                if old_username != student_username:
-                    # Optional: Check if new username already exists
-                    if User.objects.filter(username=student_username).exclude(id=user.id).exists():
-                        logger.warning(f"Username conflict: {student_username} already exists.")
-                        # You can decide to append something or raise error
-                        user.username = f"{student_username}_{admission.id}"
-
-                user.set_password('NDU@1234')
-                user.save()
-
-                transaction.on_commit(
-                        lambda:celery_send_student_credentials_email.delay(
-                            user.id, 
-                            password='NDU@1234'
-                        )
-                    )
-                    
-                logger.info(f"Updated existing student user: {user.username}")
-
-            # === Case 2: No user linked yet ===
-            else:
-                # Check if a user with this username already exists (edge case)
-                user = User.objects.filter(username=student_username).first()
-
-                if not user:
-                    user = User.objects.create(
-                        username=student_username,
-                        first_name=application.applicant.first_name or "",
-                        last_name=application.applicant.last_name or "",
-                        email=application.applicant.email,
-                        is_student=True,
-                        must_change_password=True,
-                    )
-                    user.set_password('NDU@1234')
-                    user.save()
-
-                    # Send credentials email only for newly created users
-                    transaction.on_commit(
-                        lambda:celery_send_student_credentials_email.delay(
-                            user.id, 
-                            password='NDU@1234'
-                        )
-                    )
-                    logger.info(f"Created new student user: {user.username}")
-                else:
-                    # Rare case: user exists but not linked
-                    user.is_student = True
-                    user.must_change_password = True
-                    user.save()
-
-                # Link user to admission
-                admission.student_user = user
-                admission.save(update_fields=['student_user'])
-
-            # Trigger auto enrollment
-            celery_auto_enroll_students.delay(admission.id, admission.admitted_by_id)
+        celery_auto_enroll_students.delay(admission.id, admission.admitted_by_id)
 
     except Admission.DoesNotExist:
         logger.error(f"AdmittedStudent with id {admission_id} not found")
-    except Application.DoesNotExist:
-        logger.error(f"Application with id {application_id} not found")
     except Exception as e:
         logger.exception(f"Student account update failed for admission {admission_id}: {e}")
-        raise self.retry(exc=e, countdown=60) 
+        raise self.retry(exc=e, countdown=60)
 
 # AutoEnroll Students
 @shared_task(bind=True, max_retries=5)

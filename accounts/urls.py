@@ -5,6 +5,8 @@ app_name = 'accounts'
 
 urlpatterns = [
     path("login", ObtainTokenView.as_view()),
+    path("session", SessionView.as_view()),
+    path("switch_portal_mode", SwitchPortalModeView.as_view()),
     path("register", RegisterView.as_view()),
     path('send_email', PasswordResetRequestView.as_view()),
     path('erp_send_email', HorizonPasswordResetRequestView.as_view()),
@@ -42,6 +44,7 @@ urlpatterns = [
     path('prospective_announcement', ProspectiveAnnouncement.as_view()),
 
     path('system_settings', GetSystemSettings.as_view()),
+    path('portal_branding', PortalBrandingView.as_view()),
     path('update_system_settings', UpdateSystemSettings.as_view()),
 
     path('system_usage_report', SystemUsageReport.as_view()),

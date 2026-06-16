@@ -13,6 +13,7 @@ from payments.models import FeePlanRule, StudentTuitionPayment, TuitionLedger
 from payments.other_fee_schedule_views import get_or_create_other_schedule_fee_plan
 from payments.student_payment_allocation import (
     COMMITMENT_FEE_THRESHOLD,
+    _line_is_billable,
     build_finance_allocation,
 )
 
@@ -206,6 +207,8 @@ def other_schedule_rows_and_due_by_currency(
     for line in alloc.demand_lines:
         if line.kind != "scheduled_other":
             continue
+        if not line.billing_reached:
+            continue
         if line.milestone_reached and line.balance > 0:
             due_by_ccy[line.currency] += line.balance
         rows.append(
@@ -216,6 +219,7 @@ def other_schedule_rows_and_due_by_currency(
                 "currency": line.currency,
                 "payable_year_of_study": line.payable_year,
                 "payable_term_number": line.payable_term,
+                "billing_date": line.extra.get("billing_date"),
                 "status": line.status,
                 "paid_amount": float(line.paid_amount),
                 "balance": float(line.balance),
@@ -278,6 +282,7 @@ def _tuition_structure_item_from_line(line) -> dict[str, Any]:
             "installment_number": None,
             "installment_display": inst_label,
             "due_date_days": None,
+            "billing_date": ex.get("billing_date"),
         }
     return {
         "rule_id": line.rule_id,
@@ -295,6 +300,7 @@ def _tuition_structure_item_from_line(line) -> dict[str, Any]:
         "installment_number": ex.get("installment_number"),
         "installment_display": _installment_display(ex),
         "due_date_days": ex.get("due_date_days"),
+        "billing_date": ex.get("billing_date"),
     }
 
 
@@ -304,6 +310,7 @@ def tuition_structure_dict(student: AdmittedStudent) -> dict:
         _tuition_structure_item_from_line(line)
         for line in alloc.demand_lines
         if line.kind in ("tuition_structure", "scheduled_other")
+        and _line_is_billable(line)
     ]
     batch = student.admitted_batch
     return {
@@ -358,6 +365,8 @@ def student_billing_lines(student: AdmittedStudent) -> list[dict[str, Any]]:
     alloc = build_finance_allocation(student)
     lines: list[dict[str, Any]] = []
     for line in alloc.demand_lines:
+        if not _line_is_billable(line):
+            continue
         if line.kind == "tuition_structure":
             ex = line.extra
             batch_name = ex.get("program_batch_name") or ""

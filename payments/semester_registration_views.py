@@ -272,6 +272,7 @@ class UpdateRegistrationSettings(APIView):
     def post(self, request):
         try:
             s = RegistrationSettings.get_settings()
+            prev_auto_enroll = getattr(s, "auto_enroll_on_admission", False)
 
             if "min_tuition_payment_percentage" in request.data:
                 s.min_tuition_payment_percentage = request.data["min_tuition_payment_percentage"]
@@ -299,23 +300,31 @@ class UpdateRegistrationSettings(APIView):
             s.updated_by = request.user
             s.save()
 
-            return Response(
-                {
-                    "message": "Settings updated successfully",
-                    "min_tuition_payment_percentage": float(s.min_tuition_payment_percentage),
-                    "registration_start_date": s.registration_start_date,
-                    "registration_end_date": s.registration_end_date,
-                    "require_admission_approval": s.require_admission_approval,
-                    "require_enrollment": s.require_enrollment,
-                    "require_programme_enrollment": s.require_programme_enrollment,
-                    "auto_enroll_on_admission": getattr(s, "auto_enroll_on_admission", False),
-                    "auto_assign_course_units_after_commitment": getattr(
-                        s, "auto_assign_course_units_after_commitment", True
-                    ),
-                    "skip_tuition_check": s.skip_tuition_check,
-                    "is_active": s.is_active,
-                }
-            )
+            backfill = None
+            if s.auto_enroll_on_admission and not prev_auto_enroll:
+                from .programme_enrollment_activation import activate_all_pending_programme_enrollments
+
+                backfill = activate_all_pending_programme_enrollments(activated_by=request.user)
+
+            response_body = {
+                "message": "Settings updated successfully",
+                "min_tuition_payment_percentage": float(s.min_tuition_payment_percentage),
+                "registration_start_date": s.registration_start_date,
+                "registration_end_date": s.registration_end_date,
+                "require_admission_approval": s.require_admission_approval,
+                "require_enrollment": s.require_enrollment,
+                "require_programme_enrollment": s.require_programme_enrollment,
+                "auto_enroll_on_admission": getattr(s, "auto_enroll_on_admission", False),
+                "auto_assign_course_units_after_commitment": getattr(
+                    s, "auto_assign_course_units_after_commitment", True
+                ),
+                "skip_tuition_check": s.skip_tuition_check,
+                "is_active": s.is_active,
+            }
+            if backfill:
+                response_body["pending_enrollments_activated"] = backfill
+
+            return Response(response_body)
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 

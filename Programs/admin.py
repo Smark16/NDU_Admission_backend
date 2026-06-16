@@ -182,6 +182,7 @@ class TimetableSessionAdmin(admin.ModelAdmin):
     list_display = [
         "id",
         "course_unit",
+        "session_date",
         "day_of_week",
         "start_time",
         "end_time",

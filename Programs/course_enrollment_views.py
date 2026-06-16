@@ -5,6 +5,11 @@ from django.utils import timezone
 
 from django.db.models import Q
 
+from admissions.faculty_scope import (
+    assert_course_unit_access,
+    assert_course_unit_enrollment_access,
+)
+
 from rest_framework import generics, status
 from Programs.permissions import AcademicEnrollmentAdminPermission
 from rest_framework.permissions import IsAuthenticated
@@ -18,7 +23,12 @@ class ListCourseUnitEnrollments(generics.ListAPIView):
     
     def get_queryset(self):
         course_unit_id = self.kwargs.get('course_unit_id')
-        from .models import StudentCourseUnitEnrollment
+        from .models import StudentCourseUnitEnrollment, CourseUnit
+        course_unit = CourseUnit.objects.select_related("program_batch__program").filter(
+            pk=course_unit_id
+        ).first()
+        if course_unit:
+            assert_course_unit_access(self.request.user, course_unit)
         return StudentCourseUnitEnrollment.objects.filter(
             course_unit_id=course_unit_id
         ).select_related('student', 'student__application', 'course_unit')
@@ -53,9 +63,13 @@ class GetAvailableStudentsForCourseUnit(APIView):
         from .models import CourseUnit, StudentCourseUnitEnrollment
         
         try:
-            course_unit = CourseUnit.objects.get(id=course_unit_id)
+            course_unit = CourseUnit.objects.select_related(
+                "program_batch__program"
+            ).get(id=course_unit_id)
         except CourseUnit.DoesNotExist:
             return Response({'detail': 'Course unit not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        assert_course_unit_access(request.user, course_unit)
         
         # Get the program batch from the course unit
         program_batch = course_unit.program_batch
@@ -97,9 +111,13 @@ class EnrollStudentsInCourseUnit(APIView):
             return Response({'detail': 'No student IDs provided'}, status=status.HTTP_400_BAD_REQUEST)
         
         try:
-            course_unit = CourseUnit.objects.get(id=course_unit_id)
+            course_unit = CourseUnit.objects.select_related(
+                "program_batch__program"
+            ).get(id=course_unit_id)
         except CourseUnit.DoesNotExist:
             return Response({'detail': 'Course unit not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        assert_course_unit_access(request.user, course_unit)
 
         program_batch = course_unit.program_batch
         if not program_batch:
@@ -286,6 +304,9 @@ class GetAvailableCoursesForRegistration(APIView):
         from admissions.models import AdmittedStudent
 
         user = request.user
+        from payments.models import RegistrationSettings
+
+        reg_settings = RegistrationSettings.get_settings()
 
         try:
             from django.db.models import Q
@@ -310,7 +331,8 @@ class GetAvailableCoursesForRegistration(APIView):
             spe = StudentProgrammeEnrollment.objects.select_related(
                 'program_batch', 'program', 'curriculum_version'
             ).get(student=student)
-            using_spe = spe.is_enrolled
+            # Use SPE curriculum when enrolled, or when commitment gate is disabled for testing.
+            using_spe = spe.is_enrolled or not reg_settings.require_programme_enrollment
         except StudentProgrammeEnrollment.DoesNotExist:
             pass
 
@@ -962,7 +984,10 @@ class RemoveStudentFromCourseUnit(APIView):
         from .models import StudentCourseUnitEnrollment
         
         try:
-            enrollment = StudentCourseUnitEnrollment.objects.get(id=enrollment_id)
+            enrollment = StudentCourseUnitEnrollment.objects.select_related(
+                "course_unit__program_batch__program"
+            ).get(id=enrollment_id)
+            assert_course_unit_enrollment_access(request.user, enrollment)
             student_id = enrollment.student.student_id
             enrollment.delete()
             return Response({
