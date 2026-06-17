@@ -44,6 +44,7 @@ jobs:
           python manage.py migrate accounts 0028_user_primary_campus --fake
           python manage.py migrate Programs --fake
           python manage.py migrate examinations --fake
+          python manage.py migrate accounts 0032_systemsettings_portal_branding --fake
         
           # Final migrate (this should now be safe)
           python manage.py migrate
