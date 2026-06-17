@@ -101,10 +101,10 @@ class RegisterSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = [
-            'id', 'email', 'password','confirm_password',
+            'id', 'email', 'password', 'confirm_password', 'roles',
             'first_name', 'last_name', 'last_login',
             'date_joined', 'role', 'campuses', 'faculties', 'phone',
-            'is_active', 'is_staff', 'is_applicant'
+            'is_active', 'is_staff', 'is_applicant',
         ]
         read_only_fields = ('id', 'last_login', 'date_joined')
 
