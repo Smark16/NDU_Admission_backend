@@ -23,11 +23,9 @@ from admissions.utils.program_choices import (
     PROGRAM_CHOICE_CONFIRMED_BY_APPLICANT,
 )
 
-
 def _application_full_name_upper(app):
     parts = [app.first_name or "", app.middle_name or "", app.last_name or ""]
     return " ".join(p.strip() for p in parts if p and p.strip()).upper()
-
 
 def _gender_short(app):
     g = (app.gender or "").strip().upper()
@@ -37,12 +35,10 @@ def _gender_short(app):
         return "M"
     return (app.gender or "").strip()
 
-
 def _admission_mode_label(app):
     if app.academic_level_id:
         return (app.academic_level.name or "").strip()
     return ""
-
 
 def _direct_admission_reason(adm):
     app = getattr(adm, "application", None)
@@ -798,6 +794,7 @@ class ExportApplicantsExcel(APIView):
             "BATCH",
             "ACADEMIC LEVEL",
             "STATUS",
+            "REASON",
             "APPLICATION DATE",
             "ENTRY TYPE",
         ]
@@ -822,6 +819,7 @@ class ExportApplicantsExcel(APIView):
                 app.batch.name if app.batch else "",
                 app.academic_level.name if app.academic_level else "",
                 app.status or "",
+                app.pending_reason or "No reason",
                 app.created_at.strftime("%Y-%m-%d %H:%M") if app.created_at else "",
                 "Direct Entry" if getattr(app, 'is_direct_entry', False) else "Online",
             ])
