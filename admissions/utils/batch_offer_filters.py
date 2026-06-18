@@ -38,3 +38,33 @@ def batch_offer_window_q():
             & (Q(offer_end_date__isnull=True) | Q(offer_end_date__gte=today))
         )
     )
+
+
+def open_application_window_q(*, today=None):
+    """Intakes whose applicant application window includes *today*."""
+    today = today or timezone.now().date()
+    return Q(application_start_date__lte=today, application_end_date__gte=today)
+
+
+def resolve_active_application_batch(*, today=None):
+    """
+    Return the portal's active application intake, or ``None``.
+
+    When several intakes are open, prefer non-QA production rows, then the oldest
+    by ``created_at`` (stable choice if only one should be active in production).
+    """
+    from admissions.models import Batch
+
+    today = today or timezone.now().date()
+    base = (
+        Batch.objects.filter(is_active=True)
+        .filter(batch_offer_window_q())
+        .filter(open_application_window_q(today=today))
+        .order_by("created_at")
+    )
+    batch = (
+        base.exclude(code__istartswith="QA-")
+        .exclude(name__icontains="[QA-INTAKE-BATCH]")
+        .first()
+    )
+    return batch or base.first()

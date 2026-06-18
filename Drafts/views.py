@@ -16,6 +16,34 @@ import json
 logger = logging.getLogger(__name__)
 
 
+def _other_institution_document_items(draft, request):
+    """Build API payload for all other-institution draft documents."""
+    items = []
+    for doc in draft.other_document_files.all():
+        items.append({
+            "id": doc.id,
+            "url": request.build_absolute_uri(doc.file.url),
+            "filename": doc.original_name or doc.file.name.split("/")[-1],
+            "legacy": False,
+        })
+    if draft.other_documents and not any(i.get("legacy") for i in items):
+        # Legacy single-file column (pre-multi-upload drafts)
+        items.append({
+            "id": None,
+            "url": request.build_absolute_uri(draft.other_documents.url),
+            "filename": draft.other_documents.name.split("/")[-1],
+            "legacy": True,
+        })
+    return items
+
+
+def _draft_for_user(user, batch_id):
+    draft = DraftApplication.objects.filter(applicant=user, batch_id=batch_id).order_by("-updated_at").first()
+    if draft:
+        return draft
+    return DraftApplication.objects.filter(applicant=user).order_by("-updated_at").first()
+
+
 def _optional_fk_id(value):
     if value is None:
         return None
@@ -195,7 +223,23 @@ def upload_draft_document(request):
             defaults={'status': 'draft'}
         )
 
-        # Remove old file before saving new one
+        if doc_type == 'otherInstitutionDocuments':
+            other_doc = DraftOtherDocument.objects.create(
+                draft=draft,
+                file=file,
+                original_name=file.name,
+            )
+            file_url = request.build_absolute_uri(other_doc.file.url)
+            return Response(
+                {
+                    'id': other_doc.id,
+                    'url': file_url,
+                    'filename': other_doc.original_name or file.name,
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        # Remove old file before saving new one (single-file document types)
         old_file = getattr(draft, field_name)
         if old_file:
             old_file.delete(save=False)
@@ -209,6 +253,37 @@ def upload_draft_document(request):
     except Exception as e:
         logger.error(f"Draft document upload failed: {e}", exc_info=True)
         return Response({'detail': f"Draft document upload failed: {e}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def delete_draft_other_document(request):
+    batch_id = _optional_fk_id(request.data.get('batch'))
+    doc_id = request.data.get('id')
+    legacy = str(request.data.get('legacy', '')).lower() in ('true', '1', 'yes')
+
+    draft = _draft_for_user(request.user, batch_id)
+    if not draft:
+        return Response({'detail': 'Draft not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+    try:
+        if legacy or not doc_id:
+            if draft.other_documents:
+                draft.other_documents.delete(save=False)
+                draft.other_documents = None
+                draft.save(update_fields=['other_documents'])
+            return Response({'detail': 'Document removed.'}, status=status.HTTP_200_OK)
+
+        other_doc = draft.other_document_files.filter(pk=doc_id).first()
+        if not other_doc:
+            return Response({'detail': 'Document not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        other_doc.file.delete(save=False)
+        other_doc.delete()
+        return Response({'detail': 'Document removed.'}, status=status.HTTP_200_OK)
+    except Exception as e:
+        logger.error(f"Draft other document delete failed: {e}", exc_info=True)
+        return Response({'detail': 'Failed to remove document.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 # GET DRAFT DATA
 @api_view(['GET'])
@@ -233,6 +308,7 @@ def get_draft_application(request):
 
         # Safe date formatting
         date_of_birth_str = draft.date_of_birth.strftime("%Y-%m-%d") if draft.date_of_birth else ""
+        other_doc_items = _other_institution_document_items(draft, request)
 
         data = {
             "applicant": draft.applicant_id,
@@ -289,7 +365,8 @@ def get_draft_application(request):
             "passportPhotoUrl": request.build_absolute_uri(draft.passport_photo.url) if draft.passport_photo else None,
             "oLevelDocumentsUrl": request.build_absolute_uri(draft.olevel_document.url) if draft.olevel_document else None,
             "aLevelDocumentsUrl": request.build_absolute_uri(draft.alevel_document.url) if draft.alevel_document else None,
-            "otherInstitutionDocumentsUrl": request.build_absolute_uri(draft.other_documents.url) if draft.other_documents else None,
+            "otherInstitutionDocumentsUrl": other_doc_items[0]["url"] if other_doc_items else None,
+            "otherInstitutionDocumentItems": other_doc_items,
         }
 
         return Response({

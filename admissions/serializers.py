@@ -49,6 +49,21 @@ class BatchSerializer(serializers.ModelSerializer):
                 attrs['academic_year'] = get_registered_academic_year_label(str(raw_year))
             except DjangoValidationError as exc:
                 raise serializers.ValidationError({'academic_year': str(exc)}) from exc
+
+        if 'programs' in attrs:
+            from admissions.intake_program_eligibility import validate_intake_program_selection
+
+            program_ids = [p.pk for p in attrs['programs']]
+            grandfather = set()
+            if inst is not None:
+                grandfather = set(inst.programs.values_list('id', flat=True))
+            messages = validate_intake_program_selection(
+                program_ids,
+                grandfather_ids=grandfather,
+            )
+            if messages:
+                raise serializers.ValidationError({'programs': messages})
+
         return attrs
 
     def to_representation(self, instance):

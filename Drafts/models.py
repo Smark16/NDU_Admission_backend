@@ -90,3 +90,21 @@ class DraftProgramChoice(models.Model):
 
     def __str__(self):
         return f"{self.draft.id} - Choice {self.choice_order}"
+
+
+class DraftOtherDocument(models.Model):
+    """Additional institution qualification documents (multiple per draft)."""
+    draft = models.ForeignKey(
+        DraftApplication,
+        on_delete=models.CASCADE,
+        related_name="other_document_files",
+    )
+    file = models.FileField(upload_to="draft_documents/other/")
+    original_name = models.CharField(max_length=255, blank=True)
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["uploaded_at", "id"]
+
+    def __str__(self):
+        return self.original_name or self.file.name

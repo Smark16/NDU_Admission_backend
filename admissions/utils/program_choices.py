@@ -49,6 +49,8 @@ def sync_application_program_choices(application, program_ids: list[int]) -> Non
     if not program_ids:
         raise ValueError("At least one programme is required.")
 
+    assert_applicant_may_select_programs(application, program_ids)
+
     unique_ids = []
     seen = set()
     for raw in program_ids:
@@ -164,18 +166,18 @@ def applicant_confirmed_program_choices(application) -> bool:
 
 
 def program_options_for_application(application) -> list[dict]:
-    """Programmes on the application's batch that match campus + academic level."""
+    """Programmes applicants may choose: intake + campus/level + active cohort in offer."""
+    from admissions.intake_program_eligibility import applicant_selectable_programs_qs
+
     batch = getattr(application, "batch", None)
     if batch is None:
         return []
-    campus_id = application.campus_id
-    level_id = application.academic_level_id
     out = []
-    for program in batch.programs.prefetch_related("campuses").all():
-        if level_id and program.academic_level_id != level_id:
-            continue
-        if campus_id and not program.campuses.filter(pk=campus_id).exists():
-            continue
+    for program in applicant_selectable_programs_qs(
+        batch,
+        campus_id=application.campus_id,
+        level_id=application.academic_level_id,
+    ):
         out.append(
             {
                 "id": program.id,
@@ -183,5 +185,66 @@ def program_options_for_application(application) -> list[dict]:
                 "code": getattr(program, "code", "") or "",
             }
         )
-    out.sort(key=lambda x: x["name"].lower())
+    return out
+
+
+def assert_staff_may_select_programs_for_direct_entry(application, program_ids: list[int]) -> None:
+    """Raise ValueError when programme ids are invalid for staff direct entry."""
+    from admissions.intake_program_eligibility import validate_staff_direct_entry_program_selection
+
+    batch = getattr(application, "batch", None)
+    if batch is None and getattr(application, "batch_id", None):
+        from admissions.models import Batch
+
+        batch = Batch.objects.filter(pk=application.batch_id).first()
+
+    messages = validate_staff_direct_entry_program_selection(
+        program_ids,
+        batch,
+        campus_id=application.campus_id,
+        level_id=application.academic_level_id,
+    )
+    if messages:
+        raise ValueError(messages[0])
+
+
+def assert_applicant_may_select_programs(application, program_ids: list[int]) -> None:
+    """Raise ValueError when programme ids are not open for this applicant."""
+    from admissions.intake_program_eligibility import validate_applicant_program_selection
+
+    messages = validate_applicant_program_selection(
+        program_ids,
+        getattr(application, "batch", None),
+        campus_id=application.campus_id,
+        level_id=application.academic_level_id,
+    )
+    if messages:
+        raise ValueError(messages[0])
+
+
+def parse_program_id_list(programs_input) -> list[int]:
+    """Parse programme id list from JSON string, list, or scalar."""
+    import json
+
+    if not programs_input:
+        return []
+    if isinstance(programs_input, str):
+        try:
+            programs_input = json.loads(programs_input)
+        except (json.JSONDecodeError, TypeError):
+            return []
+    if not isinstance(programs_input, (list, tuple)):
+        programs_input = [programs_input]
+
+    out: list[int] = []
+    seen: set[int] = set()
+    for raw in programs_input:
+        try:
+            pid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if pid <= 0 or pid in seen:
+            continue
+        seen.add(pid)
+        out.append(pid)
     return out

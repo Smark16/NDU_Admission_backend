@@ -89,6 +89,7 @@ urlpatterns = [
     path('batches/', views.ListBatch.as_view()),
     path('active_batch', views.GetActiveApplicationBatch.as_view()),
     path('active_admission_batch', views.GetActiveAdmissionBatch.as_view()),
+    path('intake_eligible_programs', views.IntakeEligibleProgramsView.as_view()),
     path('create_batch', views.CreateBatch.as_view()),
     path('edit_batch/<int:pk>', views.EditBatch.as_view()),
     path('delete_batch/<int:pk>', views.DeleteBatch.as_view()),

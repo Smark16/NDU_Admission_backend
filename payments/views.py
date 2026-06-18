@@ -308,6 +308,8 @@ class CheckPaymentStatus(APIView):
 # list payments
 class ListPayments(generics.ListAPIView):
     serializer_class = ApplicationPaymentSerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    queryset = ApplicationPayment.objects.all()
 
     def get_queryset(self):
         return ApplicationPayment.objects.select_related(

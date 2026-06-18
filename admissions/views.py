@@ -45,8 +45,11 @@ from .utils.program_choices import (
     PROGRAM_CHOICE_CONFIRMED_BY_APPLICANT,
     applicant_confirmed_program_choices,
     applicant_may_edit_program_choices,
+    assert_applicant_may_select_programs,
+    assert_staff_may_select_programs_for_direct_entry,
     clear_program_choices_confirmation,
     mark_program_choices_confirmed,
+    parse_program_id_list,
     program_options_for_application,
     sync_application_academic_level_from_programs,
     sync_application_program_choices,
@@ -71,7 +74,7 @@ from datetime import date
 
 from urllib.parse import quote
 from .utils.reg_no import generate_reg_no
-from .utils.batch_offer_filters import batch_offer_window_q
+from .utils.batch_offer_filters import batch_offer_window_q, resolve_active_application_batch
 
 # caching
 from django.core.cache import cache
@@ -104,6 +107,16 @@ def create_applications(request):
     serializer = CudApplicationSerializer(data=request.data, context={"request": request}, partial=True)
     serializer.is_valid(raise_exception=True)
     # serializer.validated_data.pop('programs', None)
+
+    program_ids = parse_program_id_list(request.data.get("programs"))
+    if program_ids:
+        try:
+            assert_applicant_may_select_programs(
+                Application(**serializer.validated_data),
+                program_ids,
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
 
     # === Parse & Validate O-Level and A-Level ONCE ===
     olevel_validated = []
@@ -220,67 +233,16 @@ def create_applications(request):
             # Save the main application first (so it gets an ID)
             application.save()
 
-            programs_input = request.data.get(
-                "programs"
-            )
-
-            if programs_input:
-
-                try:
-
-                    if isinstance(programs_input, str):
-
-                        program_list = json.loads(
-                            programs_input
-                        )
-
-                    else:
-
-                        program_list = programs_input
-
-                    choice_objects = []
-
-                    for index, program_id in enumerate(
-                        program_list
-                    ):
-
-                        try:
-
-                            pid = int(program_id)
-
-                            if pid > 0:
-
-                                choice_objects.append(
-
-                                    ApplicationProgramChoice(
-
-                                        application=application,
-
-                                        program_id=pid,
-
-                                        choice_order=index + 1
-                                    )
-                                )
-
-                        except (
-                            ValueError,
-                            TypeError
-                        ):
-
-                            continue
-
-                    if choice_objects:
-
-                        ApplicationProgramChoice.objects.bulk_create(
-                            choice_objects
-                        )
-
-                except Exception as e:
-
-                    logger.warning(
-                        f"Failed to save "
-                        f"program choices: {e}"
+            if program_ids:
+                choice_objects = [
+                    ApplicationProgramChoice(
+                        application=application,
+                        program_id=pid,
+                        choice_order=index + 1,
                     )
+                    for index, pid in enumerate(program_ids)
+                ]
+                ApplicationProgramChoice.objects.bulk_create(choice_objects)
 
             # Link payment to application
             if payment:
@@ -312,6 +274,14 @@ def create_applications(request):
                             file=draft.other_documents,
                             name=draft.other_documents.name.split('/')[-1],
                             document_type="Others"
+                        )
+
+                    for other_doc in draft.other_document_files.all():
+                        ApplicationDocument.objects.create(
+                            application=application,
+                            file=other_doc.file,
+                            name=(other_doc.original_name or other_doc.file.name.split('/')[-1])[:50],
+                            document_type="Others",
                         )
 
                 except Exception as copy_error:
@@ -400,6 +370,16 @@ def create_applications(request):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def create_direct_applications(request):
+    if not (
+        request.user.is_superuser
+        or user_has_any_erp_perm(request.user, "manage_direct_applications")
+        or request.user.has_perm("admissions.add_application")
+    ):
+        return Response(
+            {"detail": "You do not have permission for direct application entry."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
     MAX_FILE_SIZE = settings.FILE_UPLOAD_MAX_MEMORY_SIZE
 
     # ================= FILE VALIDATION =================
@@ -443,6 +423,16 @@ def create_direct_applications(request):
     validated.pop("entered_by", None)
     validated.pop("programs", None)
 
+    program_ids = parse_program_id_list(request.data.get("programs"))
+    preview_app = Application(**validated)
+    if program_ids:
+        try:
+            assert_staff_may_select_programs_for_direct_entry(preview_app, program_ids)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
+    elif not program_ids:
+        return Response({"detail": "Select at least one programme."}, status=400)
+
     account_password = "applicant@12345"
 
     try:
@@ -474,31 +464,15 @@ def create_direct_applications(request):
             application.save()
 
             # ================= PROGRAMS =================
-            programs_input = request.data.get("programs")
-
-            if programs_input:
-                if isinstance(programs_input, str):
-                    program_list = json.loads(programs_input)
-                else:
-                    program_list = programs_input
-
-                choices = []
-                for index, pid in enumerate(program_list, start=1):
-                    try:
-                        pid = int(pid)
-                        if pid > 0:
-                            choices.append(
-                                ApplicationProgramChoice(
-                                    application=application,
-                                    program_id=pid,
-                                    choice_order=index
-                                )
-                            )
-                    except Exception:
-                        continue
-
-                if choices:
-                    ApplicationProgramChoice.objects.bulk_create(choices)
+            if program_ids:
+                ApplicationProgramChoice.objects.bulk_create([
+                    ApplicationProgramChoice(
+                        application=application,
+                        program_id=pid,
+                        choice_order=index,
+                    )
+                    for index, pid in enumerate(program_ids, start=1)
+                ])
 
             # ================= O-LEVEL =================
             OLevelResult.objects.bulk_create([
@@ -556,10 +530,13 @@ def create_direct_applications(request):
             "application_id": application.id
         }, status=201)
 
+    except DRFValidationError as exc:
+        return Response(exc.detail, status=status.HTTP_400_BAD_REQUEST)
     except Exception as e:
         logger.error("Direct application failed: %s", str(e), exc_info=True)
+        detail = str(e).strip() or "Application failed. No data was saved."
         return Response(
-            {"detail": "Application failed. No data was saved."},
+            {"detail": detail},
             status=500
         )
     
@@ -574,7 +551,7 @@ class ListApplications(generics.ListAPIView):
             is_direct_entry=False
         ).select_related(
             "academic_level", "batch", "campus"
-        ).order_by('created_at')
+        ).order_by('-created_at')
 
         # Optional query-param filters so the frontend can narrow server-side
         status_filter = self.request.query_params.get('status')
@@ -613,7 +590,7 @@ def build_applications_report_queryset(request, *, apply_choice_filter: bool = T
             )
         )
         .filter(~Q(status__in=["draft", "Admitted", "admitted", "rejected"]))
-        .order_by("created_at")
+        .order_by("-created_at")
     )
 
     status = request.query_params.get("status")
@@ -698,7 +675,7 @@ def build_applications_detail_report_queryset(request, *, apply_choice_filter: b
             )
         )
         .filter(~Q(status__in=["draft"]))
-        .order_by("created_at")
+        .order_by("-created_at")
     )
 
     status = request.query_params.get("status")
@@ -782,7 +759,7 @@ class AllApplicationsReport(generics.ListAPIView):
 
     ordering_fields = ['created_at', 'id', 'status', 'first_name']
     filter_backends = [OrderingFilter]
-    ordering = ['created_at']
+    ordering = ['-created_at']
 
     def get_queryset(self):
         return build_applications_report_queryset(self.request, apply_choice_filter=True)
@@ -795,7 +772,7 @@ class AllApplicationDetailedReport(generics.ListAPIView):
 
     ordering_fields = ['created_at', 'id', 'status', 'first_name']
     filter_backends = [OrderingFilter]
-    ordering = ['created_at']
+    ordering = ['-created_at']
 
     def get_queryset(self):
         return build_applications_detail_report_queryset(self.request, apply_choice_filter=True)
@@ -1033,6 +1010,11 @@ class ChangeApplicationProgramme(APIView):
                 status=400
             )
 
+        try:
+            assert_applicant_may_select_programs(application, program_ids)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
+
         programs = Program.objects.filter(
             id__in=program_ids
         )
@@ -1250,7 +1232,14 @@ class ApplicantChangeApplicationProgramme(APIView):
                 "revoked_by", "offer_letter_generated_by", "admission"
             ),
             pk=application_id,
+            applicant=request.user,
         )
+
+        if not applicant_may_edit_program_choices(application):
+            return Response(
+                {"detail": "Programme choices cannot be changed for this application status."},
+                status=400,
+            )
 
         raw_program_ids = request.data.get("program_ids", [])
 
@@ -1282,6 +1271,11 @@ class ApplicantChangeApplicationProgramme(APIView):
                 {"detail": "Maximum of 3 programme choices allowed."},
                 status=400
             )
+
+        try:
+            assert_applicant_may_select_programs(application, program_ids)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
 
         programs = Program.objects.filter(
             id__in=program_ids
@@ -1750,6 +1744,37 @@ class DeleteDocumentAPIView(APIView):
 
 # ========================================================Batch=================================================
 
+class IntakeEligibleProgramsView(generics.ListAPIView):
+    """Programmes that may be added to an admission intake (active cohort in offer)."""
+
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    queryset = Batch.objects.all()
+
+    def list(self, request, *args, **kwargs):
+        from admissions.faculty_scope import filter_programs_for_user
+        from admissions.intake_program_eligibility import program_ids_with_active_cohort_offer
+        from Programs.models import Program
+        from Programs.serializers import ListProgramsSerializer
+
+        eligible_ids = program_ids_with_active_cohort_offer()
+        extra_raw = (request.query_params.get("include_program_ids") or "").strip()
+        if extra_raw:
+            for part in extra_raw.split(","):
+                part = part.strip()
+                if part.isdigit():
+                    eligible_ids.add(int(part))
+
+        qs = (
+            Program.objects.filter(id__in=eligible_ids, is_active=True)
+            .select_related("faculty", "academic_level")
+            .prefetch_related("campuses")
+            .order_by("name")
+        )
+        qs = filter_programs_for_user(qs, request.user)
+        data = ListProgramsSerializer(qs, many=True).data
+        return Response(data, status=status.HTTP_200_OK)
+
+
 #create batch
 class CreateBatch(generics.CreateAPIView):
     queryset = Batch.objects.all()
@@ -1810,20 +1835,29 @@ class GetActiveApplicationBatch(generics.ListAPIView):
             return Response(cached, status=status.HTTP_200_OK)
 
         try:
+            active = resolve_active_application_batch(today=now)
+            if not active:
+                return Response({
+                    "detail": "No active application batch found",
+                    "is_active": False
+                }, status=status.HTTP_404_NOT_FOUND)
+
             batch = (
                 Batch.objects
                 .select_related('created_by')
                 .prefetch_related('programs', 'programs__campuses')
-                .filter(batch_offer_window_q())
-                .get(
-                    application_start_date__lte=now,
-                    application_end_date__gte=now,
-                    is_active=True
-                )
+                .get(pk=active.pk)
             )
 
             serializer = self.get_serializer(batch)
             data = serializer.data
+            from admissions.intake_program_eligibility import applicant_selectable_programs_qs
+            from Programs.serializers import ProgramSerializer
+
+            data["programs"] = ProgramSerializer(
+                applicant_selectable_programs_qs(batch),
+                many=True,
+            ).data
 
             try:
                 cache.set(cache_key, data, timeout=60 * 60 * 24)
@@ -1846,7 +1880,7 @@ class GetActiveApplicationBatch(generics.ListAPIView):
 
 # active admission batch
 class GetActiveAdmissionBatch(generics.RetrieveAPIView):
-    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    permission_classes = [IsAuthenticated]
     queryset = Batch.objects.all()
     serializer_class = BatchSerializer
 
@@ -1854,18 +1888,24 @@ class GetActiveAdmissionBatch(generics.RetrieveAPIView):
         now = timezone.now().date()
 
         try:
-            # Optimized query
-            batch = (
+            base = (
                 Batch.objects
                 .select_related('created_by')
                 .prefetch_related('programs', 'programs__campuses')
                 .filter(is_active=True)
                 .filter(batch_offer_window_q())
                 .filter(
-                    Q(application_start_date__lte=now, application_end_date__gte=now) |
-                    Q(admission_start_date__lte=now, admission_end_date__gte=now)
-                ).first() 
+                    Q(application_start_date__lte=now, application_end_date__gte=now)
+                    | Q(admission_start_date__lte=now, admission_end_date__gte=now)
+                )
+                .order_by("created_at")
             )
+            active = (
+                base.exclude(code__istartswith="QA-")
+                .exclude(name__icontains="[QA-INTAKE-BATCH]")
+                .first()
+            )
+            batch = active or base.first()
 
             if not batch:
                 return Response({
