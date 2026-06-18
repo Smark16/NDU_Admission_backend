@@ -413,6 +413,42 @@ class AdmittedStudentSerializer(serializers.ModelSerializer):
                         'Selected academic batch must belong to the admitted programme.'
                     ),
                 })
+
+        application = attrs.get('application')
+        if application is None and self.instance is not None:
+            application = self.instance.application
+
+        campus = attrs.get('admitted_campus')
+        if campus is None and self.instance is not None:
+            campus = self.instance.admitted_campus
+
+        if application is not None:
+            if campus is not None and application.campus_id and campus.id != application.campus_id:
+                raise serializers.ValidationError({
+                    'admitted_campus': (
+                        "Campus must match the applicant's chosen campus on the application."
+                    ),
+                })
+
+            if program is not None:
+                allowed_ids = {
+                    p.id for p in ordered_programs_for_application(application)
+                }
+                if allowed_ids and program.id not in allowed_ids:
+                    raise serializers.ValidationError({
+                        'admitted_program': (
+                            'Programme must be one of the applicant\'s choices on the application.'
+                        ),
+                    })
+
+                if campus is not None and program.campuses.exists():
+                    if not program.campuses.filter(id=campus.id).exists():
+                        raise serializers.ValidationError({
+                            'admitted_program': (
+                                'This programme is not offered at the applicant\'s campus.'
+                            ),
+                        })
+
         return attrs
 
 class AdmittedStudentListSerializer(serializers.ModelSerializer):
