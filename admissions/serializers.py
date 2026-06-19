@@ -395,6 +395,10 @@ class AdmittedStudentSerializer(serializers.ModelSerializer):
         return admitted
 
     def validate(self, attrs):
+        program = attrs.get('admitted_program')
+        if program is None and self.instance is not None:
+            program = self.instance.admitted_program
+
         if 'intended_program_batch' in attrs:
             intended = attrs['intended_program_batch']
         elif self.instance is not None:
@@ -402,9 +406,14 @@ class AdmittedStudentSerializer(serializers.ModelSerializer):
         else:
             intended = None
 
-        program = attrs.get('admitted_program')
-        if program is None and self.instance is not None:
-            program = self.instance.admitted_program
+        # Programme changed — drop a cohort that belongs to the old programme.
+        if (
+            program is not None
+            and intended is not None
+            and intended.program_id != program.id
+        ):
+            intended = None
+            attrs['intended_program_batch'] = None
 
         if intended is not None and program is not None:
             if intended.program_id != program.id:
