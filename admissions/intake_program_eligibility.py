@@ -158,6 +158,7 @@ def validate_staff_direct_entry_program_selection(
     *,
     campus_id=None,
     level_id=None,
+    grandfather_ids: set[int] | None = None,
 ) -> list[str]:
     """Return errors when programme ids are not on the intake for direct entry."""
     if not program_ids:
@@ -165,6 +166,7 @@ def validate_staff_direct_entry_program_selection(
     if batch is None:
         return ["No admission intake is configured."]
 
+    grandfather = set(grandfather_ids or ())
     selectable = set(
         staff_direct_entry_programs_qs(
             batch,
@@ -172,7 +174,9 @@ def validate_staff_direct_entry_program_selection(
             level_id=level_id,
         ).values_list("id", flat=True)
     )
-    blocked = [pid for pid in program_ids if pid not in selectable]
+    blocked = [
+        pid for pid in program_ids if pid not in selectable and pid not in grandfather
+    ]
     if not blocked:
         return []
 

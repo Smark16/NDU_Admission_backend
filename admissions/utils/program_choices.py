@@ -44,12 +44,28 @@ def _order_field_name(choice_model=None):
 
 
 @transaction.atomic
-def sync_application_program_choices(application, program_ids: list[int]) -> None:
+def sync_application_program_choices(
+    application,
+    program_ids: list[int],
+    *,
+    staff: bool = False,
+    campus_id=None,
+    grandfather_ids: set[int] | None = None,
+) -> None:
     """Replace ordered programme choices and keep legacy M2M in sync."""
     if not program_ids:
         raise ValueError("At least one programme is required.")
 
-    assert_applicant_may_select_programs(application, program_ids)
+    if staff:
+        assert_staff_may_select_programs_for_direct_entry(
+            application,
+            program_ids,
+            campus_id=campus_id,
+            level_id=None,
+            grandfather_ids=grandfather_ids,
+        )
+    else:
+        assert_applicant_may_select_programs(application, program_ids)
 
     unique_ids = []
     seen = set()
@@ -188,7 +204,17 @@ def program_options_for_application(application) -> list[dict]:
     return out
 
 
-def assert_staff_may_select_programs_for_direct_entry(application, program_ids: list[int]) -> None:
+_UNSET = object()
+
+
+def assert_staff_may_select_programs_for_direct_entry(
+    application,
+    program_ids: list[int],
+    *,
+    campus_id=None,
+    level_id=_UNSET,
+    grandfather_ids: set[int] | None = None,
+) -> None:
     """Raise ValueError when programme ids are invalid for staff direct entry."""
     from admissions.intake_program_eligibility import validate_staff_direct_entry_program_selection
 
@@ -198,11 +224,17 @@ def assert_staff_may_select_programs_for_direct_entry(application, program_ids: 
 
         batch = Batch.objects.filter(pk=application.batch_id).first()
 
+    effective_campus = application.campus_id if campus_id is None else campus_id
+    effective_level = (
+        application.academic_level_id if level_id is _UNSET else level_id
+    )
+
     messages = validate_staff_direct_entry_program_selection(
         program_ids,
         batch,
-        campus_id=application.campus_id,
-        level_id=application.academic_level_id,
+        campus_id=effective_campus,
+        level_id=effective_level,
+        grandfather_ids=grandfather_ids,
     )
     if messages:
         raise ValueError(messages[0])

@@ -974,7 +974,7 @@ class ChangeApplicationProgramme(APIView):
             Application.objects.prefetch_related(
                 "program_choices__program"
             ).select_related(
-                "campus"
+                "campus", "batch"
             ),
             pk=application_id,
         )
@@ -1010,11 +1010,6 @@ class ChangeApplicationProgramme(APIView):
                 status=400
             )
 
-        try:
-            assert_applicant_may_select_programs(application, program_ids)
-        except ValueError as exc:
-            return Response({"detail": str(exc)}, status=400)
-
         programs = Program.objects.filter(
             id__in=program_ids
         )
@@ -1025,21 +1020,32 @@ class ChangeApplicationProgramme(APIView):
                 status=400
             )
 
-        # Optional campus update
+        # Optional campus update — resolve before programme validation
         campus_id = request.data.get("campus_id")
-
+        effective_campus_id = application.campus_id
         campus_changed = False
         if campus_id not in (None, "", "null"):
             try:
-                application.campus = Campus.objects.get(pk=int(campus_id))
+                effective_campus_id = int(campus_id)
+                application.campus = Campus.objects.get(pk=effective_campus_id)
                 campus_changed = True
             except (TypeError, ValueError, Campus.DoesNotExist):
                 return Response({"detail": "Invalid campus_id."}, status=400)
 
+        grandfather_ids = {
+            p.id for p in ordered_programs_for_application(application)
+        }
+
         level_changed = False
         new_level_name = None
         try:
-            sync_application_program_choices(application, program_ids)
+            sync_application_program_choices(
+                application,
+                program_ids,
+                staff=True,
+                campus_id=effective_campus_id,
+                grandfather_ids=grandfather_ids,
+            )
             level_changed, new_level_name = sync_application_academic_level_from_programs(
                 application, program_ids
             )
