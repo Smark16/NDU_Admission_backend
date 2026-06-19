@@ -422,32 +422,24 @@ class AdmittedStudentSerializer(serializers.ModelSerializer):
         if campus is None and self.instance is not None:
             campus = self.instance.admitted_campus
 
-        if application is not None:
-            if campus is not None and application.campus_id and campus.id != application.campus_id:
+        if application is not None and program is not None:
+            allowed_ids = {
+                p.id for p in ordered_programs_for_application(application)
+            }
+            if allowed_ids and program.id not in allowed_ids:
                 raise serializers.ValidationError({
-                    'admitted_campus': (
-                        "Campus must match the applicant's chosen campus on the application."
+                    'admitted_program': (
+                        'Programme must be one of the applicant\'s choices on the application.'
                     ),
                 })
 
-            if program is not None:
-                allowed_ids = {
-                    p.id for p in ordered_programs_for_application(application)
-                }
-                if allowed_ids and program.id not in allowed_ids:
+            if campus is not None and program.campuses.exists():
+                if not program.campuses.filter(id=campus.id).exists():
                     raise serializers.ValidationError({
                         'admitted_program': (
-                            'Programme must be one of the applicant\'s choices on the application.'
+                            'This programme is not offered at the selected campus.'
                         ),
                     })
-
-                if campus is not None and program.campuses.exists():
-                    if not program.campuses.filter(id=campus.id).exists():
-                        raise serializers.ValidationError({
-                            'admitted_program': (
-                                'This programme is not offered at the applicant\'s campus.'
-                            ),
-                        })
 
         return attrs
 
