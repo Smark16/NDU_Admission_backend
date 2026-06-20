@@ -23,6 +23,18 @@ from admissions.models import Application
 from payments.utils.school_pay_code import register_student_with_schoolpay
 from accounts.models import User
 from rest_framework.decorators import api_view, permission_classes
+
+
+def _application_fee_payer(request):
+    """Applicant account paying the fee — staff may pass applicant_id when assisting."""
+    raw_id = request.data.get("applicant_id") if hasattr(request, "data") else None
+    if raw_id in (None, ""):
+        raw_id = request.query_params.get("applicant_id")
+    if raw_id in (None, ""):
+        return request.user
+    from accounts.assist_application import get_assistable_applicant
+
+    return get_assistable_applicant(request.user, int(raw_id))
 from django.shortcuts import get_object_or_404
 
 logger = logging.getLogger(__name__)
@@ -84,8 +96,9 @@ class CancelPayment(APIView):
 
     def post(self, request):
         try:
+            payer = _application_fee_payer(request)
             ApplicationPayment.objects.filter(
-                user=request.user,
+                user=payer,
                 status='PENDING',
             ).update(status='FAILED')
 
@@ -109,6 +122,7 @@ class InitiatePayment(APIView):
         last_name = request.data.get('last_name')
         amount = request.data.get('amount')
         reason = "Application Fee"
+        payer = _application_fee_payer(request)
 
         if settings.DEBUG:
           callBackUrl = "https://320f-41-75-173-243.ngrok-free.app/api/payments/webhook/" 
@@ -117,14 +131,14 @@ class InitiatePayment(APIView):
 
         # EXPIRE OLD PAYMENTS
         ApplicationPayment.objects.filter(
-            user=request.user,
+            user=payer,
             status='PENDING',
             created_at__lt=timezone.now() - timedelta(minutes=10)
         ).update(status='FAILED')
 
         # PREVENT DUPLICATE PENDING PAYMENTS
         existing_payment = ApplicationPayment.objects.filter(
-            user=request.user,
+            user=payer,
             status='PENDING'
         ).first()
 
@@ -154,7 +168,7 @@ class InitiatePayment(APIView):
             )
 
         payment = ApplicationPayment.objects.create(
-            user=request.user,
+            user=payer,
             external_reference=ext_ref,
             payment_reference=response_data.get('paymentReference'),
             amount=amount,
@@ -241,15 +255,18 @@ class CheckPaymentStatus(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, payment_ref):
+        payer = _application_fee_payer(request)
 
         payment = ApplicationPayment.objects.filter(
             payment_reference=payment_ref,
-            user=request.user
+            user=payer
         ).first()
 
-        # Get or create draft
+        if not payment:
+            return Response({'detail': 'Payment not found.'}, status=status.HTTP_404_NOT_FOUND)
+
         draft = DraftApplication.objects.filter(
-                applicant=request.user,
+                applicant=payer,
             ).order_by('-updated_at').first()
 
         if payment.status == 'PAID':
