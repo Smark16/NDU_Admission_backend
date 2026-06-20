@@ -9,7 +9,8 @@ from admissions.permissions import user_can_admit_applicant
 from admissions.student_bulk_import import (
     build_student_import_template_csv,
     process_student_batch_import,
-    STUDENT_IMPORT_HEADERS,
+    STUDENT_IMPORT_OPTIONAL_HEADERS,
+    STUDENT_IMPORT_REQUIRED_HEADERS,
 )
 
 
@@ -35,7 +36,11 @@ class StudentBulkImportView(APIView):
     automatically from the active intake unless ``admission_batch_id`` is supplied.
 
     SchoolPay registration is on by default (register_schoolpay=true).
-    Legacy fee balances use POST /api/admissions/students/fee_balance_import (separate menu).
+
+    Optional CSV columns for continuing students (same file as student details):
+    current_year_of_study, current_term_number, fees_paid_ugx, fees_paid_reference,
+    fees_outstanding_ugx, admission_fee_paid. Legacy-only fee import remains available at
+    POST /api/admissions/students/fee_balance_import.
     """
 
     permission_classes = [IsAuthenticated]
@@ -96,7 +101,8 @@ class StudentBulkImportView(APIView):
         return Response(
             {
                 **result,
-                "required_columns": STUDENT_IMPORT_HEADERS,
+                "required_columns": STUDENT_IMPORT_REQUIRED_HEADERS,
+                "optional_columns": STUDENT_IMPORT_OPTIONAL_HEADERS,
             },
             status=status.HTTP_200_OK if result["failed"] == 0 else status.HTTP_207_MULTI_STATUS,
         )
