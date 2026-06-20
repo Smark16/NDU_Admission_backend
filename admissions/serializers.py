@@ -462,6 +462,7 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
     status = serializers.CharField(source='application.status', read_only=True)
     admission_letter_pdf = serializers.SerializerMethodField()
     physical_documents_verified_by_name = serializers.SerializerMethodField()
+    is_revoked = serializers.SerializerMethodField()
     # Optional registrar workflow (not on all DBs — default so UI stays usable)
     is_approved = serializers.SerializerMethodField()
     approved_by_name = serializers.SerializerMethodField()
@@ -536,6 +537,12 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
         if user is None:
             return None
         return user.get_full_name() or getattr(user, "username", None)
+
+    def get_is_revoked(self, obj):
+        app = obj.application
+        if app is None:
+            return False
+        return bool(getattr(app, "is_revoked", False))
 
     def get_admission_letter_pdf(self, obj):
         app = obj.application

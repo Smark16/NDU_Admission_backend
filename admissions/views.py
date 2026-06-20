@@ -2681,12 +2681,14 @@ class ListAdmittedStudents(generics.ListAPIView):
 class AdmittedStudentFilterOptionsView(APIView):
     """Lightweight distinct filter values for the admitted students directory."""
 
-    permission_classes = [IsAuthenticated, DjangoModelPermissions]
-
-    def get_queryset(self):
-        return AdmittedStudent.objects.filter(is_admitted=True)
+    permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        if not request.user.has_perm("admissions.view_admittedstudent"):
+            return Response(
+                {"detail": "You do not have permission to view admitted students."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         base = filter_admitted_students_for_user(
             AdmittedStudent.objects.filter(is_admitted=True),
             request.user,
