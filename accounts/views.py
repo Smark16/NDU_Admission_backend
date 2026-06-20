@@ -732,19 +732,15 @@ class AssistApplicationContextView(APIView):
 
     def get(self, request, pk):
         from Drafts.views import _draft_for_user
+        from Drafts.models import DraftApplication
         from accounts.assist_application import (
             draft_progress_payload,
             get_assistable_applicant,
-            prospective_status_label,
-        )
-        from accounts.prospective_students import (
-            prospective_applicant_queryset,
-            prospective_draft_started_at,
         )
 
         applicant = get_assistable_applicant(request.user, pk)
-        annotated = prospective_applicant_queryset().filter(pk=applicant.pk).first()
         draft = _draft_for_user(applicant, None)
+        has_portal_draft = DraftApplication.objects.filter(applicant=applicant).exists()
 
         return Response(
             {
@@ -754,10 +750,8 @@ class AssistApplicationContextView(APIView):
                     "email": applicant.email,
                     "phone": applicant.phone,
                 },
-                "status": prospective_status_label(annotated) if annotated else "Never Started",
-                "draft_started_at": prospective_draft_started_at(annotated)
-                if annotated
-                else None,
+                "status": "Draft Started" if (draft or has_portal_draft) else "Never Started",
+                "draft_started_at": draft.updated_at if draft else None,
                 "has_draft": draft is not None,
                 "progress": draft_progress_payload(draft),
             }

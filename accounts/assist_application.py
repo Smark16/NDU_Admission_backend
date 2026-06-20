@@ -5,10 +5,7 @@ from django.shortcuts import get_object_or_404
 
 from accounts.erp_drf_permissions import user_has_any_erp_perm
 from accounts.models import User
-from accounts.prospective_students import (
-    PROSPECTIVE_EXCLUDED_APPLICATION_STATUSES,
-    prospective_applicant_queryset,
-)
+from accounts.prospective_students import PROSPECTIVE_EXCLUDED_APPLICATION_STATUSES
 from accounts.super_admin import user_is_super_admin
 from admissions.models import Application
 
@@ -43,12 +40,6 @@ def get_assistable_applicant(staff, applicant_id: int) -> User:
         raise ValidationError(
             {"detail": "This applicant already has a submitted application."}
         )
-    if not prospective_applicant_queryset().filter(pk=applicant.pk).exists():
-        from rest_framework.exceptions import ValidationError
-
-        raise ValidationError(
-            {"detail": "This user is not on the prospective students list."}
-        )
     return applicant
 
 
@@ -63,7 +54,14 @@ def resolve_assisted_applicant(request):
     if raw_id in (None, ""):
         return request.user, None
 
-    applicant = get_assistable_applicant(request.user, int(raw_id))
+    try:
+        applicant_id = int(raw_id)
+    except (TypeError, ValueError):
+        from rest_framework.exceptions import ValidationError
+
+        raise ValidationError({"detail": "Invalid applicant_id."})
+
+    applicant = get_assistable_applicant(request.user, applicant_id)
     return applicant, request.user
 
 
