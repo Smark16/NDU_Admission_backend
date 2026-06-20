@@ -6,6 +6,15 @@ from django.db.models.functions import Coalesce
 
 from accounts.models import User
 
+
+def _last_audit_login_subquery():
+    from audit.models import AuditLog
+
+    return AuditLog.objects.filter(
+        user=OuterRef("pk"),
+        action="login",
+    ).order_by("-timestamp").values("timestamp")[:1]
+
 # Applicants leave the prospective list once they enter the review pipeline.
 PROSPECTIVE_EXCLUDED_APPLICATION_STATUSES = (
     "submitted",
@@ -52,6 +61,7 @@ def prospective_applicant_queryset():
                 Value("no_application"),
             ),
             draft_started_at=Subquery(latest_app_draft.values("created_at")[:1]),
+            audit_last_login=Subquery(_last_audit_login_subquery()),
         )
     )
 

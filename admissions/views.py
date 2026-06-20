@@ -86,6 +86,24 @@ logger = logging.getLogger(__name__)
 @permission_classes([IsAuthenticated])
 def create_applications(request):
     MAX_FILE_SIZE = settings.FILE_UPLOAD_MAX_MEMORY_SIZE
+    staff_user = None
+    raw_applicant_id = request.data.get("applicant_id")
+    if raw_applicant_id not in (None, ""):
+        from accounts.assist_application import get_assistable_applicant
+
+        staff_user = request.user
+        try:
+            request.user = get_assistable_applicant(staff_user, int(raw_applicant_id))
+        except Exception as exc:
+            from rest_framework.exceptions import PermissionDenied, ValidationError
+
+            if isinstance(exc, (PermissionDenied, ValidationError)):
+                detail = getattr(exc, "detail", str(exc))
+                if isinstance(detail, dict):
+                    detail = detail.get("detail", detail)
+                status_code = 403 if isinstance(exc, PermissionDenied) else 400
+                return Response({"detail": detail}, status=status_code)
+            raise
 
     # === File size validation ===
     for file_obj in request.FILES.getlist('documents', []):
@@ -177,7 +195,9 @@ def create_applications(request):
                         status="PAID",
                     )
                 except ApplicationPayment.DoesNotExist:
-                    return Response({"detail": "Invalid or unpaid payment reference"}, status=400)
+                    if not staff_user:
+                        return Response({"detail": "Invalid or unpaid payment reference"}, status=400)
+                    payment = None
 
                 if payment.application_id is not None:
                     logger.info(
@@ -211,7 +231,11 @@ def create_applications(request):
             except DraftApplication.DoesNotExist:
                 draft = None
 
-            
+            if staff_user and draft and draft.application_fee_paid and not payment:
+                application.application_fee_paid = True
+                application.application_reference = (
+                    draft.application_reference or ext_ref or ""
+                )
             if draft and draft.passport_photo:
                 try:
                     original_name = draft.passport_photo.name.split('/')[-1]
@@ -348,6 +372,16 @@ def create_applications(request):
                         "Application Submitted",
                         "Your application was successfully submitted"
                     )
+                    if staff_user:
+                        from audit.utils import log_audit_event
+
+                        log_audit_event(
+                            staff_user,
+                            "assist_application_submit",
+                            request.user,
+                            f"Staff submitted application on behalf of {request.user.email}",
+                            request,
+                        )
                 except Exception as task_error:
                     logger.exception(
                         "Application %s saved but post-submit tasks failed: %s",

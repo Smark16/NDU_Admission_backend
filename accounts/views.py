@@ -12,6 +12,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.permissions import *
 from django.contrib.auth.models import Group, Permission
 from django.contrib.auth import authenticate
+from django.contrib.auth.models import update_last_login
 from .serializers import *
 from .models import *
 
@@ -40,6 +41,7 @@ class ObtainTokenView(TokenObtainPairView):
             password = request.data.get("password")
             user = authenticate(username=username, password=password)
             if user:
+                update_last_login(None, user)
                 log_audit_event(
                     user,
                     'login',
@@ -714,7 +716,7 @@ class ProspectiveStudentsView(APIView):
                 'email': u.email,
                 'phone': u.phone,
                 'date_joined': u.date_joined,
-                'last_login': u.last_login,
+                'last_login': u.last_login or getattr(u, 'audit_last_login', None),
                 'status': prospective_status_label(u),
                 'draft_started_at': prospective_draft_started_at(u),
                 'days_since_joined': (timezone.now() - u.date_joined).days if u.date_joined else None,
@@ -722,6 +724,44 @@ class ProspectiveStudentsView(APIView):
             for u in prospective
         ]
         return Response({'count': len(data), 'results': data})
+
+
+class AssistApplicationContextView(APIView):
+    """Prospective student assist session — applicant profile + draft progress."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        from Drafts.views import _draft_for_user
+        from accounts.assist_application import (
+            draft_progress_payload,
+            get_assistable_applicant,
+            prospective_status_label,
+        )
+        from accounts.prospective_students import (
+            prospective_applicant_queryset,
+            prospective_draft_started_at,
+        )
+
+        applicant = get_assistable_applicant(request.user, pk)
+        annotated = prospective_applicant_queryset().filter(pk=applicant.pk).first()
+        draft = _draft_for_user(applicant, None)
+
+        return Response(
+            {
+                "applicant": {
+                    "id": applicant.id,
+                    "name": applicant.get_full_name() or applicant.email,
+                    "email": applicant.email,
+                    "phone": applicant.phone,
+                },
+                "status": prospective_status_label(annotated) if annotated else "Never Started",
+                "draft_started_at": prospective_draft_started_at(annotated)
+                if annotated
+                else None,
+                "has_draft": draft is not None,
+                "progress": draft_progress_payload(draft),
+            }
+        )
 
 
 class SendReminderEmail(APIView):

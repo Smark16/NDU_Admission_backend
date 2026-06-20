@@ -64,8 +64,10 @@ def _optional_fk_id(value):
 @permission_classes([IsAuthenticated])
 def save_draft_applications(request):
     try:
+        from accounts.assist_application import resolve_assisted_applicant
+
         data = request.data
-        user = request.user
+        user, staff_user = resolve_assisted_applicant(request)
 
         batch_id = _optional_fk_id(data.get('batch'))
 
@@ -183,6 +185,17 @@ def save_draft_applications(request):
 
         draft.save()
 
+        if staff_user:
+            from audit.utils import log_audit_event
+
+            log_audit_event(
+                staff_user,
+                "assist_draft_save",
+                user,
+                f"Staff saved draft for applicant {user.email}",
+                request,
+            )
+
         return Response({
             "message": "Draft saved successfully",
             "draft_id": draft.id,
@@ -198,6 +211,8 @@ def save_draft_applications(request):
 @permission_classes([IsAuthenticated])
 @parser_classes([MultiPartParser, FormParser])
 def upload_draft_document(request):
+    from accounts.assist_application import resolve_assisted_applicant
+
     FIELD_MAP = {
         'passportPhoto': 'passport_photo',
         'oLevelDocuments': 'olevel_document',
@@ -217,8 +232,9 @@ def upload_draft_document(request):
         return Response({'detail': 'Invalid document_type.'}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
+        acting_user, staff_user = resolve_assisted_applicant(request)
         draft, _ = DraftApplication.objects.get_or_create(
-            applicant=request.user,
+            applicant=acting_user,
             batch_id=batch_id,
             defaults={'status': 'draft'}
         )
@@ -247,6 +263,17 @@ def upload_draft_document(request):
         setattr(draft, field_name, file)
         draft.save()
 
+        if staff_user:
+            from audit.utils import log_audit_event
+
+            log_audit_event(
+                staff_user,
+                "assist_draft_upload",
+                acting_user,
+                f"Staff uploaded {doc_type} for applicant {acting_user.email}",
+                request,
+            )
+
         file_url = request.build_absolute_uri(getattr(draft, field_name).url)
         return Response({'url': file_url, 'filename': file.name}, status=status.HTTP_200_OK)
 
@@ -258,11 +285,14 @@ def upload_draft_document(request):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def delete_draft_other_document(request):
+    from accounts.assist_application import resolve_assisted_applicant
+
     batch_id = _optional_fk_id(request.data.get('batch'))
     doc_id = request.data.get('id')
     legacy = str(request.data.get('legacy', '')).lower() in ('true', '1', 'yes')
 
-    draft = _draft_for_user(request.user, batch_id)
+    acting_user, _staff_user = resolve_assisted_applicant(request)
+    draft = _draft_for_user(acting_user, batch_id)
     if not draft:
         return Response({'detail': 'Draft not found.'}, status=status.HTTP_404_NOT_FOUND)
 
@@ -290,14 +320,17 @@ def delete_draft_other_document(request):
 @permission_classes([IsAuthenticated])
 def get_draft_application(request):
     try:
+        from accounts.assist_application import resolve_assisted_applicant
+
+        acting_user, _staff_user = resolve_assisted_applicant(request)
         draft = DraftApplication.objects.filter(
-            applicant=request.user,
+            applicant=acting_user,
             batch__isnull=False
         ).order_by('-updated_at').first()
 
         if not draft:
             draft = DraftApplication.objects.filter(
-                applicant=request.user
+                applicant=acting_user
             ).order_by('-updated_at').first()
 
         if not draft:

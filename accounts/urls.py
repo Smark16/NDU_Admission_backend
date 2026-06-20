@@ -39,6 +39,7 @@ urlpatterns = [
     path('student/change_password', StudentFirstLoginChangePassword.as_view()),
 
     path('prospective_students', ProspectiveStudentsView.as_view()),
+    path('prospective_students/<int:pk>/assist', AssistApplicationContextView.as_view()),
     path('send_reminder/<int:pk>', SendReminderEmail.as_view()),
     path('delete_prospective/<int:pk>', DeleteProspectiveStudent.as_view()),
     path('prospective_announcement', ProspectiveAnnouncement.as_view()),
