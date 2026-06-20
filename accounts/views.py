@@ -699,29 +699,13 @@ class ProspectiveStudentsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        from admissions.models import Application
-        from django.db.models import OuterRef, Subquery, Value
-        from django.db.models.functions import Coalesce
-
-        submitted_statuses = ['submitted', 'under_review', 'accepted', 'Admitted', 'rejected']
-
-        latest_draft = Application.objects.filter(
-            applicant=OuterRef('pk'),
-            status='draft'
-        ).order_by('-created_at')
-
-        prospective = (
-            User.objects.filter(is_applicant=True)
-            .exclude(pk__in=Application.objects.filter(status__in=submitted_statuses).values('applicant'))
-            .annotate(
-                has_draft=Coalesce(
-                    Subquery(latest_draft.values('status')[:1]),
-                    Value('no_application')
-                ),
-                draft_started_at=Subquery(latest_draft.values('created_at')[:1]),
-            )
-            .order_by('-date_joined')
+        from accounts.prospective_students import (
+            prospective_applicant_queryset,
+            prospective_draft_started_at,
+            prospective_status_label,
         )
+
+        prospective = prospective_applicant_queryset().order_by("-date_joined")
 
         data = [
             {
@@ -731,8 +715,8 @@ class ProspectiveStudentsView(APIView):
                 'phone': u.phone,
                 'date_joined': u.date_joined,
                 'last_login': u.last_login,
-                'status': 'Draft Started' if u.has_draft == 'draft' else 'Never Started',
-                'draft_started_at': u.draft_started_at,
+                'status': prospective_status_label(u),
+                'draft_started_at': prospective_draft_started_at(u),
                 'days_since_joined': (timezone.now() - u.date_joined).days if u.date_joined else None,
             }
             for u in prospective
@@ -758,13 +742,16 @@ class DeleteProspectiveStudent(APIView):
 
     def delete(self, request, pk):
         from admissions.models import Application
-        submitted_statuses = ['submitted', 'under_review', 'accepted', 'Admitted', 'rejected']
+        from accounts.prospective_students import PROSPECTIVE_EXCLUDED_APPLICATION_STATUSES
+
         try:
             user = User.objects.get(pk=pk, is_applicant=True)
         except User.DoesNotExist:
             return Response({'detail': 'Prospective student not found.'}, status=status.HTTP_404_NOT_FOUND)
 
-        if Application.objects.filter(applicant=user, status__in=submitted_statuses).exists():
+        if Application.objects.filter(
+            applicant=user, status__in=PROSPECTIVE_EXCLUDED_APPLICATION_STATUSES
+        ).exists():
             return Response(
                 {'detail': 'Cannot delete — this user has a submitted application.'},
                 status=status.HTTP_400_BAD_REQUEST
@@ -778,7 +765,10 @@ class ProspectiveAnnouncement(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        from admissions.models import Application
+        from accounts.prospective_students import (
+            filter_prospective_queryset_by_status,
+            prospective_applicant_queryset,
+        )
         from ndu_portal.send_grid import send_configurable_email
 
         subject = (request.data.get('subject') or '').strip()
@@ -788,25 +778,8 @@ class ProspectiveAnnouncement(APIView):
         if not subject or not body:
             return Response({'detail': 'Subject and body are required.'}, status=400)
 
-        submitted_statuses = ['submitted', 'under_review', 'accepted', 'Admitted', 'rejected']
-
-        qs = User.objects.filter(
-            is_applicant=True,
-            is_active=True,
-        ).exclude(
-            pk__in=Application.objects.filter(
-                status__in=submitted_statuses
-            ).values('applicant')
-        )
-
-        if status_filter == 'Draft Started':
-            qs = qs.filter(
-                pk__in=Application.objects.filter(status='draft').values('applicant')
-            )
-        elif status_filter == 'Never Started':
-            qs = qs.exclude(
-                pk__in=Application.objects.values('applicant')
-            )
+        qs = prospective_applicant_queryset().filter(is_active=True)
+        qs = filter_prospective_queryset_by_status(qs, status_filter)
 
         recipients = list(qs.values('id', 'first_name', 'last_name', 'email'))
         if not recipients:
