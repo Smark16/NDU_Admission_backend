@@ -182,6 +182,7 @@ urlpatterns = [
     ),
     path('id_cards/generate', id_card_views.IdCardGenerateView.as_view(), name='id_cards_generate'),
     path('id_cards/<int:card_id>/preview-data', id_card_views.IdCardPreviewDataView.as_view(), name='id_cards_preview'),
+    path('id_cards/<int:card_id>/print.pdf', id_card_views.IdCardPrintPdfView.as_view(), name='id_cards_print_pdf'),
     path('id_cards/<int:card_id>/revoke', id_card_views.IdCardRevokeView.as_view(), name='id_cards_revoke'),
     path('id_cards/<int:card_id>/reissue', id_card_views.IdCardReissueView.as_view(), name='id_cards_reissue'),
     path('id_cards', id_card_views.IdCardListView.as_view(), name='id_cards_list'),
