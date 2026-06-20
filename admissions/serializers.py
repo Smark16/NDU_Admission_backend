@@ -461,6 +461,7 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
     academic_batch = serializers.SerializerMethodField()
     status = serializers.CharField(source='application.status', read_only=True)
     admission_letter_pdf = serializers.SerializerMethodField()
+    physical_documents_verified_by_name = serializers.SerializerMethodField()
     # Optional registrar workflow (not on all DBs — default so UI stays usable)
     is_approved = serializers.SerializerMethodField()
     approved_by_name = serializers.SerializerMethodField()
@@ -484,9 +485,14 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
             'is_registered',
             'application',
             'is_admitted',
+            'is_revoked',
             'admitted_by',
             'status',
             'admission_letter_pdf',
+            'physical_documents_verified',
+            'physical_documents_verified_at',
+            'physical_documents_verified_by_name',
+            'physical_documents_notes',
             'is_approved',
             'approved_by_name',
             'approved_at',
@@ -512,15 +518,24 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
         return obj.admitted_program.faculty.name
 
     def get_academic_batch(self, obj):
-        from Programs.program_batch_resolution import (
-            format_program_batch_display,
-            resolve_student_academic_cohort,
-        )
+        from Programs.program_batch_resolution import format_program_batch_display
 
-        cohort = resolve_student_academic_cohort(obj)
-        if cohort is not None:
-            return format_program_batch_display(cohort)
+        try:
+            enrollment = obj.programme_enrollment
+        except Exception:
+            enrollment = None
+        if enrollment is not None and enrollment.program_batch_id:
+            return format_program_batch_display(enrollment.program_batch)
+        intended = getattr(obj, "intended_program_batch", None)
+        if intended is not None and getattr(intended, "pk", None):
+            return format_program_batch_display(intended)
         return "—"
+
+    def get_physical_documents_verified_by_name(self, obj):
+        user = getattr(obj, "physical_documents_verified_by", None)
+        if user is None:
+            return None
+        return user.get_full_name() or getattr(user, "username", None)
 
     def get_admission_letter_pdf(self, obj):
         app = obj.application

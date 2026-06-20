@@ -2566,7 +2566,7 @@ class RestoreAdmittedStudent(APIView):
  
 # list Admitted students
 class ListAdmittedStudents(generics.ListAPIView):
-    queryset = AdmittedStudent.objects.select_related(
+    queryset = AdmittedStudent.objects.filter(is_admitted=True).select_related(
         'admitted_program__faculty',
         'admitted_batch',
         'admitted_campus',
@@ -2574,7 +2574,8 @@ class ListAdmittedStudents(generics.ListAPIView):
         'programme_enrollment__program_batch',
         'application__applicant',
         'admitted_by',
-    ).all()
+        'physical_documents_verified_by',
+    )
 
     serializer_class = AdmittedStudentListSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
@@ -2602,11 +2603,15 @@ class ListAdmittedStudents(generics.ListAPIView):
         search = self.request.query_params.get('search', '').strip()
         batch = self.request.query_params.get('batch')
         academic_batch = self.request.query_params.get('academic_batch')
+        academic_batch_id = self.request.query_params.get('academic_batch_id')
         campus = self.request.query_params.get('campus')
         faculty = self.request.query_params.get('faculty')
         program = self.request.query_params.get('program')
         is_registered = self.request.query_params.get('is_registered')
         is_approved = self.request.query_params.get('is_approved')
+        physical_documents_verified = self.request.query_params.get(
+            'physical_documents_verified'
+        )
         date_from = self.request.query_params.get('date_from')
         date_to = self.request.query_params.get('date_to')
 
@@ -2632,7 +2637,14 @@ class ListAdmittedStudents(generics.ListAPIView):
         if batch and batch != "all":
             queryset = queryset.filter(admitted_batch__name=batch)
 
-        if academic_batch and academic_batch != "all":
+        if academic_batch_id and academic_batch_id != "all":
+            try:
+                queryset = queryset.filter(
+                    intended_program_batch_id=int(academic_batch_id)
+                )
+            except (TypeError, ValueError):
+                pass
+        elif academic_batch and academic_batch != "all":
             queryset = queryset.filter(intended_program_batch__name=academic_batch)
 
         if campus and campus != "all":
@@ -2648,8 +2660,14 @@ class ListAdmittedStudents(generics.ListAPIView):
         if is_registered is not None and is_registered.lower() != "all":
             queryset = queryset.filter(is_registered=is_registered.lower() == "true")
 
-        # if is_approved is not None and is_approved.lower() != "all":
-        #     queryset = queryset.filter(is_approved=is_approved.lower() == "true")
+        if physical_documents_verified is not None and physical_documents_verified.lower() != "all":
+            queryset = queryset.filter(
+                physical_documents_verified=physical_documents_verified.lower() == "true"
+            )
+
+        if is_approved is not None and is_approved.lower() != "all":
+            if hasattr(AdmittedStudent, "is_approved"):
+                queryset = queryset.filter(is_approved=is_approved.lower() == "true")
 
         # Date filters
         if date_from:
@@ -2658,6 +2676,74 @@ class ListAdmittedStudents(generics.ListAPIView):
             queryset = queryset.filter(admission_date__date__lte=date_to)
 
         return filter_admitted_students_for_user(queryset.distinct(), self.request.user)
+
+
+class AdmittedStudentFilterOptionsView(APIView):
+    """Lightweight distinct filter values for the admitted students directory."""
+
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+    def get_queryset(self):
+        return AdmittedStudent.objects.filter(is_admitted=True)
+
+    def get(self, request):
+        base = filter_admitted_students_for_user(
+            AdmittedStudent.objects.filter(is_admitted=True),
+            request.user,
+        )
+        campuses = sorted(
+            {
+                name
+                for name in base.values_list("admitted_campus__name", flat=True)
+                if name
+            }
+        )
+        faculties = sorted(
+            {
+                name
+                for name in base.values_list("admitted_program__faculty__name", flat=True)
+                if name
+            }
+        )
+        programs = sorted(
+            {
+                name
+                for name in base.values_list("admitted_program__name", flat=True)
+                if name
+            }
+        )
+        batches = sorted(
+            {
+                name
+                for name in base.values_list("admitted_batch__name", flat=True)
+                if name
+            }
+        )
+        from Programs.models import ProgramBatch
+        from Programs.program_batch_resolution import format_program_batch_display
+
+        batch_ids = {
+            bid
+            for bid in base.values_list("intended_program_batch_id", flat=True)
+            if bid
+        }
+        academic_batches = []
+        for pb in ProgramBatch.objects.filter(pk__in=batch_ids).order_by("-start_date", "name"):
+            academic_batches.append(
+                {
+                    "id": pb.id,
+                    "label": format_program_batch_display(pb),
+                }
+            )
+        return Response(
+            {
+                "campuses": campuses,
+                "faculties": faculties,
+                "programs": programs,
+                "batches": batches,
+                "academic_batches": academic_batches,
+            }
+        )
  
 class MarkPhysicalDocumentsVerified(APIView):
     permission_classes = [IsAuthenticated, VerifyPhysicalDocumentsPermission]

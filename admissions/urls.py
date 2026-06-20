@@ -120,6 +120,11 @@ urlpatterns = [
     ),
     path('update_admission/<int:pk>/', views.UpdateAdmittedStudent.as_view()),
     path('list_admitted_students/',  views.ListAdmittedStudents.as_view()),
+    path(
+        'list_admitted_students/filter_options/',
+        views.AdmittedStudentFilterOptionsView.as_view(),
+        name='list_admitted_students_filter_options',
+    ),
     path('admitted_students/<int:pk>/revoke/', views.RevokeAdmittedStudent.as_view()),
     path('admitted_students/<int:pk>/restore/', views.RestoreAdmittedStudent.as_view()),
     path(
