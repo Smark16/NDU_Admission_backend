@@ -333,24 +333,34 @@ class AdmittedStudentSerializer(serializers.ModelSerializer):
 
     @staticmethod
     def _sync_programme_enrollment_batch(admitted):
-        """Keep academic enrollment cohort aligned with ``intended_program_batch``."""
+        """Keep academic enrollment cohort and specialization aligned with admission."""
         from Programs.models import StudentProgrammeEnrollment
 
         intended_id = admitted.intended_program_batch_id
-        if not intended_id:
-            return
+        spec_name = (
+            admitted.admitted_specialization.name
+            if admitted.admitted_specialization_id
+            else None
+        )
         try:
             spe = StudentProgrammeEnrollment.objects.get(student=admitted)
         except StudentProgrammeEnrollment.DoesNotExist:
             return
-        if spe.program_batch_id == intended_id and spe.program_id == admitted.admitted_program_id:
-            return
-        update_fields = ['program_batch', 'updated_at']
-        spe.program_batch_id = intended_id
-        if spe.program_id != admitted.admitted_program_id:
-            spe.program_id = admitted.admitted_program_id
-            update_fields.insert(0, 'program')
-        spe.save(update_fields=update_fields)
+        update_fields = []
+        if intended_id and (
+            spe.program_batch_id != intended_id
+            or spe.program_id != admitted.admitted_program_id
+        ):
+            spe.program_batch_id = intended_id
+            if spe.program_id != admitted.admitted_program_id:
+                spe.program_id = admitted.admitted_program_id
+            update_fields.extend(["program_batch", "program"])
+        if spec_name and spe.specialization != spec_name:
+            spe.specialization = spec_name
+            update_fields.append("specialization")
+        if update_fields:
+            update_fields.append("updated_at")
+            spe.save(update_fields=update_fields)
 
     def create(self, validated_data):
         from Programs.program_batch_resolution import resolve_default_program_batch_for_program
@@ -450,6 +460,31 @@ class AdmittedStudentSerializer(serializers.ModelSerializer):
                         ),
                     })
 
+        from admissions.admission_specialization import validate_admitted_specialization_for_program
+
+        admitted_specialization = attrs.get('admitted_specialization')
+        if admitted_specialization is None and self.instance is not None:
+            if 'admitted_specialization' not in attrs:
+                admitted_specialization = self.instance.admitted_specialization
+
+        if program is not None and not getattr(program, 'has_specialization', False):
+            attrs['admitted_specialization'] = None
+        elif program is not None:
+            if (
+                'admitted_program' in attrs
+                and self.instance is not None
+                and admitted_specialization is not None
+                and admitted_specialization.program_id != program.id
+            ):
+                attrs['admitted_specialization'] = None
+                admitted_specialization = None
+
+            spec_err = validate_admitted_specialization_for_program(
+                program, admitted_specialization
+            )
+            if spec_err:
+                raise serializers.ValidationError({'admitted_specialization': spec_err})
+
         return attrs
 
 class AdmittedStudentListSerializer(serializers.ModelSerializer):
@@ -467,6 +502,7 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
     is_approved = serializers.SerializerMethodField()
     approved_by_name = serializers.SerializerMethodField()
     approved_at = serializers.SerializerMethodField()
+    subject_combination = serializers.SerializerMethodField()
 
     class Meta:
         model = AdmittedStudent
@@ -478,6 +514,7 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
             'is_registered_with_schoolpay',
             'name',
             'program',
+            'subject_combination',
             'faculty',
             'campus',
             'batch',
@@ -510,6 +547,11 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
         
         full_name = f"{first} {middle} {last}".strip()
         return full_name if full_name else "Unnamed Student"
+
+    def get_subject_combination(self, obj):
+        from admissions.admission_specialization import admitted_subject_combination_label
+
+        return admitted_subject_combination_label(obj) or None
 
     def get_faculty(self, obj):
         if not obj.admitted_program:
@@ -583,6 +625,7 @@ class AdmissionDetailSerializer(serializers.ModelSerializer):
             'is_registered',
             'registration_date',
             'intended_program_batch',
+            'admitted_specialization',
         ]
 
     def to_representation(self, instance):
@@ -599,6 +642,16 @@ class AdmissionDetailSerializer(serializers.ModelSerializer):
             }
         else:
             response['intended_program_batch'] = None
+        spec = instance.admitted_specialization
+        if spec is not None:
+            response['admitted_specialization'] = {
+                'id': spec.id,
+                'name': spec.name,
+            }
+            response['subject_combination'] = spec.name
+        else:
+            response['admitted_specialization'] = None
+            response['subject_combination'] = None
         return response
     
 # notification serializers

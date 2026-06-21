@@ -118,6 +118,10 @@ urlpatterns = [
         'program_batches_options/<int:program_id>/',
         views.ListProgramBatchOptionsForAdmission.as_view(),
     ),
+    path(
+        'program_specializations/<int:program_id>/',
+        views.ProgramSpecializationsForAdmissionView.as_view(),
+    ),
     path('update_admission/<int:pk>/', views.UpdateAdmittedStudent.as_view()),
     path('list_admitted_students/',  views.ListAdmittedStudents.as_view()),
     path(

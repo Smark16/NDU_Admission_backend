@@ -398,6 +398,17 @@ class AdmittedStudent(models.Model):
             'The academic cohort this student should be placed in. Set at time of admission.'
         ),
     )
+    admitted_specialization = models.ForeignKey(
+        'Programs.ProgramSpecialization',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='admitted_students',
+        help_text=(
+            'Teaching subject combination / programme track selected at admission '
+            '(required for programmes with has_specialization=True).'
+        ),
+    )
     schoolpay_code = models.CharField(max_length=100, unique=True, null=True, blank=True)
     is_registered_with_schoolpay = models.BooleanField(default=False)
 

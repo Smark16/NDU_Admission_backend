@@ -14,6 +14,10 @@ from django.db.models import Q
 from django.utils import timezone
 
 from admissions.models import AdmittedStudent, Application
+from admissions.admission_specialization import (
+    offer_letter_combination_context,
+    validate_offer_letter_admission,
+)
 from OfferLetter.AdmissionLetter.models import OfferLetterTemplate
 from OfferLetter.AdmissionLetter.utils.letters import fill_pdf_template, render_docx_from_template
 from OfferLetter.AdmissionLetter.utils.offer_security import stamp_offer_letter_pdf
@@ -119,6 +123,7 @@ def build_offer_letter_context(applicant: Application, admission: AdmittedStuden
         "study_mode": admission.study_mode,
         "start_date": start_date_formatted,
         "hall_of_residence": hall,
+        **offer_letter_combination_context(admission),
     }
 
 
@@ -149,12 +154,23 @@ def generate_offer_letter_for_application(
 
     try:
         admission = AdmittedStudent.objects.select_related(
-            "admitted_program", "admitted_campus"
+            "admitted_program",
+            "admitted_campus",
+            "admitted_specialization",
         ).get(application=applicant, is_admitted=True)
     except AdmittedStudent.DoesNotExist:
         return {
             "ok": False,
             "detail": "No active admission record for this applicant.",
+            "status": "error",
+            "application_id": application_id,
+        }
+
+    combo_err = validate_offer_letter_admission(admission)
+    if combo_err:
+        return {
+            "ok": False,
+            "detail": combo_err,
             "status": "error",
             "application_id": application_id,
         }

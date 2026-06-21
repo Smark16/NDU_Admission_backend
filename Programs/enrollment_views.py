@@ -79,7 +79,10 @@ class AdminCreateEnrollmentView(APIView):
     def post(self, request, student_id):
         try:
             student = AdmittedStudent.objects.select_related(
-                'admitted_program', 'application', 'programme_enrollment'
+                'admitted_program',
+                'admitted_specialization',
+                'application',
+                'programme_enrollment',
             ).get(pk=student_id)
         except AdmittedStudent.DoesNotExist:
             return Response({'detail': 'Student not found.'}, status=status.HTTP_404_NOT_FOUND)
@@ -104,6 +107,11 @@ class AdminCreateEnrollmentView(APIView):
             if specialization_in_payload is not None
             else None
         )
+        if specialization is None and specialization_in_payload is None:
+            if student.admitted_specialization_id:
+                specialization = student.admitted_specialization.name
+            elif student.programme_enrollment_id and student.programme_enrollment.specialization:
+                specialization = normalize_specialization(student.programme_enrollment.specialization) or None
         notes            = request.data.get('notes', '')
 
         if not program_id:

@@ -2380,6 +2380,28 @@ class ListProgramBatchOptionsForAdmission(APIView):
         )
 
 
+class ProgramSpecializationsForAdmissionView(APIView):
+    """Teaching subject combinations for admit / edit admission forms."""
+
+    permission_classes = [IsAuthenticated, CanAdmitApplicant]
+
+    def get(self, request, program_id):
+        from Programs.models import Program, ProgramSpecialization
+        from Programs.serializers import ProgramSpecializationSerializer
+
+        program = get_object_or_404(Program, pk=program_id)
+        qs = ProgramSpecialization.objects.filter(program=program, is_active=True).order_by('name')
+        return Response(
+            {
+                'program_id': program.id,
+                'program_name': program.name,
+                'has_specialization': program.has_specialization,
+                'specializations': ProgramSpecializationSerializer(qs, many=True).data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
 # create admission
 class AdmitStudent(generics.CreateAPIView):
     queryset = AdmittedStudent.objects.all()
@@ -2570,6 +2592,7 @@ class ListAdmittedStudents(generics.ListAPIView):
         'admitted_program__faculty',
         'admitted_batch',
         'admitted_campus',
+        'admitted_specialization',
         'intended_program_batch',
         'programme_enrollment__program_batch',
         'application__applicant',
@@ -2873,6 +2896,7 @@ class CandidateAdmission(generics.RetrieveAPIView):
         'admitted_batch',
         'admitted_campus',
         'admitted_by',
+        'admitted_specialization',
         'intended_program_batch',
         # 'physical_documents_verified_by',
     ).prefetch_related('admitted_program__campuses')

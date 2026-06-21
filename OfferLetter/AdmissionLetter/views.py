@@ -147,8 +147,24 @@ class DeleteTemplate(generics.RetrieveDestroyAPIView):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def send_offer_letter(request, applicant_id):
+    from OfferLetter.AdmissionLetter.utils.offer_generation import (
+        build_offer_letter_context,
+        validate_offer_letter_admission,
+    )
+
     applicant = get_object_or_404(Application, pk=applicant_id)
-    admission = get_object_or_404(AdmittedStudent, application=applicant)
+    admission = get_object_or_404(
+        AdmittedStudent.objects.select_related(
+            "admitted_program",
+            "admitted_campus",
+            "admitted_specialization",
+        ),
+        application=applicant,
+    )
+
+    combo_err = validate_offer_letter_admission(admission)
+    if combo_err:
+        return Response({"detail": combo_err}, status=400)
 
     # 1. Choose template
     template = (
@@ -162,44 +178,7 @@ def send_offer_letter(request, applicant_id):
     if not template:
         return Response({"detail": "No template for this program is uploaded yet"}, status=400)
 
-    # 2. Build context
-    import random as _random
-
-    if template.start_date:
-        start_date_formatted = template.start_date.strftime("%B %d, %Y")
-    else:
-        start_date_formatted = "To Be Announced"
-
-    halls = ["AKIIBUA", "NJUKI", "MUTEESA", "KAKUNGULU", "YOKANA"]
-    if template.hall_of_residence == "RANDOM":
-        hall = _random.choice(halls)
-    elif template.hall_of_residence:
-        hall = template.hall_of_residence
-    else:
-        hall = "To Be Assigned"
-
-    # check title
-    title = (applicant.title or "").strip()
-    if not applicant.title:
-       if applicant.gender and applicant.gender.lower() == "male":
-           title = "MR."
-       elif applicant.gender and applicant.gender.lower() == "female":
-           title = "MS."    
-           
-    context = {
-        "full_name": f"{title} {(applicant.first_name or '').strip()} {(applicant.last_name or '').strip()} {(applicant.middle_name or '').strip()}".upper(),
-        "phone_number": applicant.phone or "",
-        "phone": applicant.phone or "",
-        "student_no": admission.student_id or "TBD",
-        "reg_no": admission.reg_no or "TBD",
-        "program_name": admission.admitted_program.name,
-        "min_years": admission.admitted_program.max_years,
-        "max_years": admission.admitted_program.min_years,
-        "campus": admission.admitted_campus,
-        "study_mode": admission.study_mode,
-        "start_date": start_date_formatted,
-        "hall_of_residence": hall,
-    }
+    context = build_offer_letter_context(applicant, admission, template)
 
     # 3. PDF template path: overlay text directly → no DOCX/LibreOffice needed
     if template.file_type == 'pdf':
