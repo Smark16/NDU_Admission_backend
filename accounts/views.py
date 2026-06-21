@@ -702,28 +702,55 @@ class ProspectiveStudentsView(APIView):
 
     def get(self, request):
         from accounts.prospective_students import (
-            prospective_applicant_queryset,
-            prospective_draft_started_at,
-            prospective_status_label,
+            annotate_prospective_list_fields,
+            apply_prospective_list_filters,
+            prospective_applicant_base_queryset,
+            prospective_list_stats,
+            serialize_prospective_student,
         )
 
-        prospective = prospective_applicant_queryset().order_by("-date_joined")
+        search = (request.query_params.get("search") or "").strip()
+        status = (request.query_params.get("status") or "all").strip()
+        date_from = (request.query_params.get("date_from") or "").strip()
+        date_to = (request.query_params.get("date_to") or "").strip()
+        page = max(int(request.query_params.get("page") or 1), 1)
+        page_size = min(max(int(request.query_params.get("page_size") or 50), 1), 200)
 
-        data = [
-            {
-                'id': u.id,
-                'name': u.get_full_name() or u.email,
-                'email': u.email,
-                'phone': u.phone,
-                'date_joined': u.date_joined,
-                'last_login': u.last_login or getattr(u, 'audit_last_login', None),
-                'status': prospective_status_label(u),
-                'draft_started_at': prospective_draft_started_at(u),
-                'days_since_joined': (timezone.now() - u.date_joined).days if u.date_joined else None,
-            }
-            for u in prospective
+        filtered = apply_prospective_list_filters(
+            prospective_applicant_base_queryset(),
+            search=search,
+            status=status,
+            date_from=date_from,
+            date_to=date_to,
+        )
+        total = filtered.count()
+        offset = (page - 1) * page_size
+
+        results = [
+            serialize_prospective_student(u)
+            for u in annotate_prospective_list_fields(filtered)
+            .only(
+                "id",
+                "first_name",
+                "last_name",
+                "email",
+                "phone",
+                "date_joined",
+                "last_login",
+                "username",
+            )
+            .order_by("-date_joined")[offset : offset + page_size]
         ]
-        return Response({'count': len(data), 'results': data})
+
+        payload = {
+            "count": total,
+            "page": page,
+            "page_size": page_size,
+            "results": results,
+        }
+        if page == 1:
+            payload["stats"] = prospective_list_stats()
+        return Response(payload)
 
 
 class AssistApplicationContextView(APIView):
@@ -801,7 +828,7 @@ class ProspectiveAnnouncement(APIView):
     def post(self, request):
         from accounts.prospective_students import (
             filter_prospective_queryset_by_status,
-            prospective_applicant_queryset,
+            prospective_applicant_base_queryset,
         )
         from ndu_portal.send_grid import send_configurable_email
 
@@ -812,7 +839,7 @@ class ProspectiveAnnouncement(APIView):
         if not subject or not body:
             return Response({'detail': 'Subject and body are required.'}, status=400)
 
-        qs = prospective_applicant_queryset().filter(is_active=True)
+        qs = prospective_applicant_base_queryset().filter(is_active=True)
         qs = filter_prospective_queryset_by_status(qs, status_filter)
 
         recipients = list(qs.values('id', 'first_name', 'last_name', 'email'))
