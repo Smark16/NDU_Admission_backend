@@ -40,6 +40,8 @@ from .override_views import (
 )
 
 from .specialization_views import (
+    ProgramSpecializationBulkImportTemplateView,
+    ProgramSpecializationBulkUploadView,
     ProgramSpecializationDetailView,
     ProgramSpecializationListCreateView,
 )
@@ -193,6 +195,16 @@ urlpatterns = [
     path('lecturer/my_timetable', LecturerMyTimetableView.as_view(), name='lecturer_my_timetable'),
 
     # ----- programme specialization track management -----
+    path(
+        'program/<int:program_id>/specializations/bulk_import_template',
+        ProgramSpecializationBulkImportTemplateView.as_view(),
+        name='program_specializations_bulk_import_template',
+    ),
+    path(
+        'program/<int:program_id>/specializations/bulk_upload',
+        ProgramSpecializationBulkUploadView.as_view(),
+        name='program_specializations_bulk_upload',
+    ),
     path(
         'program/<int:program_id>/specializations',
         ProgramSpecializationListCreateView.as_view(),
