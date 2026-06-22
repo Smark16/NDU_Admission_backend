@@ -35,13 +35,46 @@ class UserSerializer(serializers.ModelSerializer):
         return normalize_staff_id(value)
 
     def to_representation(self, instance):
-        response =  super().to_representation(instance)
-        response['campuses'] = CampusSerializer(instance.campuses.all(), many=True).data
-        response['faculties'] = [
+        response = super().to_representation(instance)
+        response.pop("password", None)
+        response["campuses"] = CampusSerializer(instance.campuses.all(), many=True).data
+        response["faculties"] = [
             {"id": f.id, "name": f.name, "code": f.code}
             for f in instance.faculties.all()
         ]
-        response['groups'] = RoleSerializer(instance.groups.all(), many=True).data
+        response["groups"] = RoleSerializer(instance.groups.all(), many=True).data
+        return response
+
+
+class ListUserSerializer(serializers.ModelSerializer):
+    """Lightweight user payload for admin list screens (no password hash)."""
+
+    class Meta:
+        model = User
+        fields = [
+            "id",
+            "first_name",
+            "last_name",
+            "email",
+            "username",
+            "staff_id",
+            "phone",
+            "role",
+            "is_active",
+            "is_staff",
+            "is_superuser",
+            "last_login",
+            "date_joined",
+        ]
+
+    def to_representation(self, instance):
+        response = super().to_representation(instance)
+        response["campuses"] = CampusSerializer(instance.campuses.all(), many=True).data
+        response["faculties"] = [
+            {"id": f.id, "name": f.name, "code": f.code}
+            for f in instance.faculties.all()
+        ]
+        response["groups"] = RoleSerializer(instance.groups.all(), many=True).data
         return response
     
 # login

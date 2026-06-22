@@ -105,7 +105,17 @@ class SwitchPortalModeView(APIView):
 class RegisterView(generics.CreateAPIView):
     queryset = User.objects.all()
     serializer_class = RegisterSerializer
-    permission_classes = [permissions.AllowAny] 
+    permission_classes = [permissions.AllowAny]
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        user = (
+            User.objects.prefetch_related("groups", "campuses", "faculties")
+            .get(pk=serializer.instance.pk)
+        )
+        return Response(ListUserSerializer(user).data, status=status.HTTP_201_CREATED)
 
     def perform_create(self, serializer):
         user = serializer.save()
@@ -220,7 +230,11 @@ class UpdateUser(generics.UpdateAPIView):
                 return Response(exc.detail, status=status.HTTP_400_BAD_REQUEST)
 
         instance.refresh_from_db()
-        return Response(self.serializer_class(instance).data, status=200)
+        instance = (
+            User.objects.prefetch_related("groups", "campuses", "faculties")
+            .get(pk=instance.pk)
+        )
+        return Response(ListUserSerializer(instance).data, status=200)
     
 # get single user
 class getUser(generics.RetrieveAPIView):
@@ -235,12 +249,14 @@ class getUser(generics.RetrieveAPIView):
     
 # list admin users
 class ListUsers(generics.ListAPIView):
-    serializer_class = UserSerializer
+    serializer_class = ListUserSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
     def get_queryset(self):
-        qs = User.objects.filter(is_applicant=False).prefetch_related(
-            "groups", "user_permissions", "campuses", "faculties"
+        qs = (
+            User.objects.filter(is_applicant=False)
+            .defer("password")
+            .prefetch_related("groups", "campuses", "faculties")
         )
         no_group = (self.request.query_params.get("no_group") or "").lower()
         if no_group in ("1", "true", "yes"):
