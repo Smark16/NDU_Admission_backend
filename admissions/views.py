@@ -3251,16 +3251,49 @@ def generate_reg_no_view(request):
         program_id = request.data.get("program")
         study_mode = request.data.get("study_mode")
         batch_id = request.data.get("batch")
+        application_id = request.data.get("application_id") or request.data.get("application")
 
-        if not campus_id or not program_id or not study_mode or not batch_id:
+        if not campus_id or not program_id or not study_mode:
             return Response(
-                {"error": "campus, program, study_mode and batch are required"},
-                status=status.HTTP_400_BAD_REQUEST
+                {"error": "campus, program, and study_mode are required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            parsed_batch_id = int(batch_id) if batch_id not in (None, "") else None
+        except (TypeError, ValueError):
+            return Response({"error": "batch must be an integer when provided"}, status=400)
+
+        try:
+            parsed_application_id = (
+                int(application_id) if application_id not in (None, "") else None
+            )
+        except (TypeError, ValueError):
+            return Response(
+                {"error": "application_id must be an integer when provided"},
+                status=400,
+            )
+
+        from .utils.batch_offer_filters import resolve_admission_intake_batch
+
+        try:
+            batch = resolve_admission_intake_batch(
+                batch_id=parsed_batch_id,
+                application_id=parsed_application_id,
+            )
+        except Batch.DoesNotExist:
+            return Response(
+                {
+                    "error": (
+                        "No admission intake batch found. Configure an active batch "
+                        "under Admission Intakes, or open this application from its intake."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         campus = Campus.objects.get(id=campus_id)
         program = Program.objects.get(id=program_id)
-        batch = Batch.objects.get(id=batch_id)
 
         reg_no = generate_reg_no(
             campus=campus,
@@ -3269,7 +3302,10 @@ def generate_reg_no_view(request):
             batch=batch,
         )
 
-        return Response({"reg_no": reg_no}, status=status.HTTP_200_OK)
+        return Response(
+            {"reg_no": reg_no, "batch_id": batch.id, "batch_name": batch.name},
+            status=status.HTTP_200_OK,
+        )
 
     except Campus.DoesNotExist:
         return Response({"error": "Invalid campus"}, status=404)
@@ -3280,7 +3316,7 @@ def generate_reg_no_view(request):
     except Exception as e:
         return Response(
             {"error": str(e)},
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
 # ══════════════════════════════════════════════════════════════════════════════
 # DIRECT APPLICATION ENTRY  (admin-side manual / legacy entry)

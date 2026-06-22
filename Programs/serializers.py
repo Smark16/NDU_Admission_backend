@@ -164,6 +164,8 @@ class ListProgramsSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'name', 'code', 'short_form', 'faculty', 'academic_level', 'academic_level_id',
             'campuses', 'min_years', 'max_years',
+            'calendar_type', 'minimum_graduation_load',
+            'has_specialization', 'specialization_entry_year', 'specialization_entry_term',
             'curriculum_mode', 'curriculum_source_program',
             'is_active','is_hec', 'created_at', 'updated_at',
         ]

@@ -99,9 +99,15 @@ class CudApplicationSerializer(serializers.ModelSerializer):
 class SingleApplicationSerializer(serializers.ModelSerializer):
     programs = serializers.SerializerMethodField()
     campus = CampusSerializer(read_only=True)
+    batch = serializers.SerializerMethodField()
 
     def get_programs(self, obj):
         return ProgramSerializer(ordered_programs_for_application(obj), many=True).data
+
+    def get_batch(self, obj):
+        if not obj.batch_id:
+            return None
+        return {"id": obj.batch_id, "name": obj.batch.name}
 
     class Meta:
         model = Application
@@ -117,6 +123,7 @@ class SingleApplicationSerializer(serializers.ModelSerializer):
             "gender",
             "programs",
             "campus",
+            "batch",
             "status",
         ]
 
@@ -621,6 +628,7 @@ class AdmissionDetailSerializer(serializers.ModelSerializer):
             'admission_notes',
             'admitted_program',
             'admitted_campus',
+            'admitted_batch',
             'application',
             'is_registered',
             'registration_date',
@@ -632,6 +640,11 @@ class AdmissionDetailSerializer(serializers.ModelSerializer):
         response = super().to_representation(instance)
         response['admitted_program'] = ProgramSerializer(instance.admitted_program).data
         response['admitted_campus'] = CampusSerializer(instance.admitted_campus).data
+        ab = instance.admitted_batch
+        if ab is not None:
+            response['admitted_batch'] = {'id': ab.id, 'name': ab.name}
+        else:
+            response['admitted_batch'] = None
         ipb = instance.intended_program_batch
         if ipb is not None:
             response['intended_program_batch'] = {
