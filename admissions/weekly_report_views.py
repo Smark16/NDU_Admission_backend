@@ -6,9 +6,9 @@ from rest_framework.views import APIView
 from admissions.email_templates import render_email_template
 from admissions.models import EmailTemplate, WeeklyReportRecipient, WeeklyReportSettings
 from admissions.serializers import WeeklyReportRecipientSerializer, WeeklyReportSettingsSerializer
-from admissions.tasks import celery_send_weekly_admissions_digest
 from admissions.utils.weekly_report import (
     build_weekly_report_metrics,
+    send_weekly_admissions_digest,
     send_weekly_digest_to_email,
     week_bounds_for,
 )
@@ -111,10 +111,26 @@ class WeeklyReportSendNowView(APIView):
                 {"detail": "Add at least one active recipient before sending."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        celery_send_weekly_admissions_digest.delay(request.user.id)
-        return Response(
-            {
-                "detail": f"Weekly digest queued for {active_count} active recipient(s).",
-            },
-            status=status.HTTP_202_ACCEPTED,
-        )
+        # Send immediately (same path as test email) so delivery does not depend on Celery worker.
+        result = send_weekly_admissions_digest(triggered_by_user_id=request.user.id)
+        http_status = status.HTTP_200_OK if result.get("ok") else status.HTTP_502_BAD_GATEWAY
+        return Response(result, status=http_status)
+
+
+class WeeklyReportRecipientTestSendView(APIView):
+    permission_classes = [CommunicationTemplatesPermission]
+
+    def post(self, request, pk):
+        recipient = WeeklyReportRecipient.objects.filter(pk=pk).first()
+        if not recipient:
+            return Response({"detail": "Recipient not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not recipient.is_active:
+            return Response({"detail": "Recipient is paused. Set to Active first."}, status=status.HTTP_400_BAD_REQUEST)
+
+        ok = send_weekly_digest_to_email(recipient.email)
+        if not ok:
+            return Response(
+                {"detail": f"Failed to send digest to {recipient.email}. Check server logs / SendGrid."},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        return Response({"detail": f"Test digest sent to {recipient.email}."}, status=status.HTTP_200_OK)

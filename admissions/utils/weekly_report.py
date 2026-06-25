@@ -122,11 +122,13 @@ def send_weekly_admissions_digest(*, triggered_by_user_id: int | None = None) ->
 
     sent = 0
     failed = 0
+    failed_emails: list[str] = []
     for email in recipients:
         if send_weekly_digest_to_email(email, metrics):
             sent += 1
         else:
             failed += 1
+            failed_emails.append(email)
 
     settings_row = WeeklyReportSettings.get_solo()
     settings_row.last_sent_at = timezone.now()
@@ -135,11 +137,16 @@ def send_weekly_admissions_digest(*, triggered_by_user_id: int | None = None) ->
         settings_row.updated_by_id = triggered_by_user_id
     settings_row.save(update_fields=["last_sent_at", "last_sent_summary", "updated_by", "updated_at"])
 
+    detail = f"Weekly digest sent to {sent} of {len(recipients)} recipients."
+    if failed_emails:
+        detail += f" Failed: {', '.join(failed_emails)}."
+
     return {
         "ok": failed == 0,
-        "detail": f"Weekly digest sent to {sent} of {len(recipients)} recipients.",
+        "detail": detail,
         "sent": sent,
         "failed": failed,
+        "failed_emails": failed_emails,
         "total": len(recipients),
         "week_start": metrics["week_start"],
         "week_end": metrics["week_end"],

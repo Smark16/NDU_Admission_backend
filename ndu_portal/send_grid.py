@@ -1,7 +1,11 @@
 from sendgrid import SendGridAPIClient
 from sendgrid.helpers.mail import Mail, Email, To, Content, MimeType
 from django.conf import settings
-from django.utils.html import strip_tags  
+from django.utils.html import strip_tags
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 def send_configurable_email(
     to_email: str,
@@ -10,6 +14,10 @@ def send_configurable_email(
     is_html: bool = False,
     plain_text_fallback: str | None = None,
 ) -> bool:
+    to_email = (to_email or "").strip()
+    if not to_email:
+        logger.warning("send_configurable_email: empty recipient")
+        return False
     try:
         sg = SendGridAPIClient(api_key=settings.SENDGRID_API_KEY)
 
@@ -22,20 +30,24 @@ def send_configurable_email(
         )
 
         if is_html:
-            # HTML version
             message.add_content(Content(MimeType.html, body))
-
-            # Generate plain-text fallback automatically if not provided
             if plain_text_fallback is None:
-                plain_text_fallback = strip_tags(body)  # removes HTML tags
+                plain_text_fallback = strip_tags(body)
             message.add_content(Content(MimeType.text, plain_text_fallback))
         else:
-            # Plain text only (your original behavior)
             message.add_content(Content(MimeType.text, body))
 
         response = sg.client.mail.send.post(request_body=message.get())
-        return response.status_code in (200, 202, 204)
+        ok = response.status_code in (200, 202, 204)
+        if not ok:
+            logger.error(
+                "SendGrid non-success for %s: status=%s body=%s",
+                to_email,
+                response.status_code,
+                getattr(response, "body", ""),
+            )
+        return ok
 
     except Exception as e:
-        print(f"SendGrid error: {e}")
+        logger.exception("SendGrid error sending to %s: %s", to_email, e)
         return False
