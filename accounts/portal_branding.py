@@ -5,7 +5,35 @@ from pathlib import Path
 
 from django.conf import settings
 
-DEFAULT_UNIVERSITY_NAME = "NDEJJE UNIVERSITY STEWARD ERP"
+DEFAULT_UNIVERSITY_NAME = "NDEJJE UNIVERSITY STEWARD"
+
+
+def get_university_display_name() -> str:
+    """Configured portal name from System Settings (singleton)."""
+    try:
+        from accounts.models import SystemSettings
+
+        name = (SystemSettings.get_settings().university_name or "").strip()
+        if name:
+            return name
+    except Exception:
+        pass
+    return DEFAULT_UNIVERSITY_NAME
+
+
+def get_offer_letter_footer_name() -> str:
+    """Lowercase system name for offer-letter PDF footers."""
+    return get_university_display_name().lower()
+
+
+def email_branding_context() -> dict:
+    """Inject into all transactional / report email templates."""
+    name = get_university_display_name()
+    return {
+        "university_name": name,
+        "portal_name": name,
+        "system_name": name,
+    }
 
 
 def _media_absolute_url(request, file_field) -> str | None:

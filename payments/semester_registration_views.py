@@ -15,6 +15,7 @@ from admissions.models import AdmittedStudent
 from Programs.models import ProgramBatch, Semester
 
 from .models import RegistrationSettings
+from accounts.portal_branding import get_university_display_name
 
 
 def _parse_optional_dt(val):
@@ -396,6 +397,6 @@ def verify_registration_card_public(request, student_id: str):
             "commitment_met": finance["commitment_met"],
             "commitment_paid_ugx": finance["commitment_paid_ugx"],
             "commitment_threshold": finance["commitment_threshold"],
-            "system": "Ndejje University — Horizon ERP",
+            "system": get_university_display_name(),
         }
     )

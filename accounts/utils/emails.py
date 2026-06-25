@@ -4,6 +4,18 @@ from django.template.loader import render_to_string
 from django.utils.http import urlsafe_base64_encode
 from django.utils.encoding import force_bytes
 from django.contrib.auth.tokens import default_token_generator
+from accounts.portal_branding import get_university_display_name
+
+
+def _uni() -> str:
+    return get_university_display_name()
+
+
+def _email_template_context(**extra):
+    name = _uni()
+    ctx = {"university_name": name, "portal_name": name, "system_name": name}
+    ctx.update(extra)
+    return ctx
 
 def send_account_email(user, password, subject="Account Created Successfully"):
     login_link = settings.LOGIN_URL
@@ -18,17 +30,20 @@ def send_account_email(user, password, subject="Account Created Successfully"):
 
     return send_configurable_email(user.email, subject, body)
 
-def send_application_reminder(user, subject="Complete Your Application — NDU Admissions"):
+def send_application_reminder(user, subject=None):
+    uni = _uni()
+    if subject is None:
+        subject = f"Complete Your Application — {uni}"
     login_link = settings.LOGIN_URL
     body = (
         f"Dear {user.first_name or user.email},\n\n"
-        f"We noticed that you created an account on the Ndejje University Admissions Portal "
+        f"We noticed that you created an account on the {uni} admissions portal "
         f"but have not yet submitted your application.\n\n"
         f"The admission window is still open. Log in now to complete and submit your application:\n"
         f"{login_link}\n\n"
         f"If you need any assistance, please contact the admissions office.\n\n"
         f"Best regards,\n"
-        f"NDU Admissions Team"
+        f"{uni} Admissions Team"
     )
     return send_configurable_email(user.email, subject, body)
 
@@ -36,10 +51,10 @@ def send_reset_password_link(user, subject="Password Reset Request"):
     uidb64 = urlsafe_base64_encode(force_bytes(user.pk))
     token = default_token_generator.make_token(user)
     reset_url = f"{settings.BACKEND_URL}/api/accounts/reset_password/{uidb64}/{token}/"
-    html_body = render_to_string('password_reset_email.html', {
-        'user': user,
-        'reset_url': reset_url,
-    })
+    html_body = render_to_string('password_reset_email.html', _email_template_context(
+        user=user,
+        reset_url=reset_url,
+    ))
     success = send_configurable_email(
         to_email=user.email,
         subject=subject,
@@ -53,10 +68,10 @@ def send_horizon_reset_password_link(user, subject="Password Reset Request"):
     uidb64 = urlsafe_base64_encode(force_bytes(user.pk))
     token = default_token_generator.make_token(user)
     reset_url = f"{settings.BACKEND_URL}/api/accounts/horizon_reset_password/{uidb64}/{token}/"
-    html_body = render_to_string('erp_password_reset.html', {
-        'user': user,
-        'reset_url': reset_url,
-    })
+    html_body = render_to_string('erp_password_reset.html', _email_template_context(
+        user=user,
+        reset_url=reset_url,
+    ))
     success = send_configurable_email(
         to_email=user.email,
         subject=subject,

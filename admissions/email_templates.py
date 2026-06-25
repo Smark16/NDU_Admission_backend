@@ -5,6 +5,7 @@ from django.utils.html import strip_tags
 
 from admissions.models import EmailTemplate
 
+_BRANDING_PLACEHOLDERS = ["university_name", "portal_name", "system_name"]
 
 EMAIL_TEMPLATE_DEFINITIONS: Dict[str, Dict[str, object]] = {
     EmailTemplate.KEY_APPLICATION_SUBMITTED: {
@@ -13,12 +14,13 @@ EMAIL_TEMPLATE_DEFINITIONS: Dict[str, Dict[str, object]] = {
         "subject_template": "Application Submitted Successfully!",
         "body_template_html": (
             "Dear {{full_name}},<br/><br/>"
-            "Your application has been successfully submitted to Ndejje University.<br/>"
+            "Your application has been successfully submitted to {{university_name}}.<br/>"
             "Application ID: {{application_id}}<br/>"
             "Submitted on: {{submitted_date}}<br/><br/>"
-            "Thank you,<br/>Ndejje University Admissions Team"
+            "Thank you,<br/>{{university_name}} Admissions Team"
         ),
         "placeholders": [
+            *_BRANDING_PLACEHOLDERS,
             "first_name",
             "last_name",
             "full_name",
@@ -29,7 +31,7 @@ EMAIL_TEMPLATE_DEFINITIONS: Dict[str, Dict[str, object]] = {
     EmailTemplate.KEY_ADMISSION_ACCEPTED: {
         "name": "Admission Accepted",
         "description": "Sent when a student is admitted.",
-        "subject_template": "Congratulations! You have been admitted to Ndejje University",
+        "subject_template": "Congratulations! You have been admitted to {{university_name}}",
         "body_template_html": (
             "Dear {{full_name}},<br/><br/>"
             "<strong>CONGRATULATIONS!</strong><br/><br/>"
@@ -41,9 +43,10 @@ EMAIL_TEMPLATE_DEFINITIONS: Dict[str, Dict[str, object]] = {
             "- Batch: {{batch_name}} ({{academic_year}})<br/><br/>"
             "Your provisional admission letter will be sent shortly.<br/><br/>"
             "We look forward to welcoming you!<br/><br/>"
-            "Admissions Office<br/>Ndejje University"
+            "Admissions Office<br/>{{university_name}}"
         ),
         "placeholders": [
+            *_BRANDING_PLACEHOLDERS,
             "first_name",
             "last_name",
             "full_name",
@@ -68,6 +71,7 @@ EMAIL_TEMPLATE_DEFINITIONS: Dict[str, Dict[str, object]] = {
             "If you did not expect this email, please ignore it."
         ),
         "placeholders": [
+            *_BRANDING_PLACEHOLDERS,
             "first_name",
             "last_name",
             "full_name",
@@ -86,15 +90,16 @@ EMAIL_TEMPLATE_DEFINITIONS: Dict[str, Dict[str, object]] = {
             "<strong>CONGRATULATIONS!</strong><br/><br/>"
             "We are delighted to inform you that your admission letter has been successfully sent to your portal.<br/><br/>"
             "Next Steps:<br/>"
-            "1. Log in to your portal to download your official admission letter<br/>"
+            "1. Log in to {{portal_name}} to download your official admission letter<br/>"
             "2. Confirm everything is ok and sign where necessary<br/>"
             "3. Complete registration before the deadline<br/><br/>"
-            "We look forward to welcoming you to the Ndejje University family!<br/><br/>"
-            "Warm regards,<br/>Admissions Office<br/>Ndejje University<br/>"
+            "We look forward to welcoming you!<br/><br/>"
+            "Warm regards,<br/>Admissions Office<br/>{{university_name}}<br/>"
             "Email: admissions@ndejjeuniversity.ac.ug<br/>"
             "Website: www.ndejjeuniversity.ac.ug"
         ),
         "placeholders": [
+            *_BRANDING_PLACEHOLDERS,
             "first_name",
             "last_name",
             "full_name",
@@ -105,11 +110,12 @@ EMAIL_TEMPLATE_DEFINITIONS: Dict[str, Dict[str, object]] = {
     EmailTemplate.KEY_WEEKLY_ADMISSIONS_DIGEST: {
         "name": "Weekly Admissions Digest",
         "description": "Project-health style summary emailed weekly to configured staff recipients.",
-        "subject_template": "NDU Admissions Weekly — {{week_start}} to {{week_end}}",
+        "subject_template": "{{portal_name}} — Weekly Admissions Report ({{week_start}} to {{week_end}})",
         "body_template_html": (
             "<p>Hello,</p>"
-            "<p>Here is your <strong>weekly admissions health report</strong> "
-            "for <strong>{{week_start}}</strong> to <strong>{{week_end}}</strong>.</p>"
+            "<p>Here is your <strong>weekly admissions health report</strong> from "
+            "<strong>{{portal_name}}</strong> for <strong>{{week_start}}</strong> to "
+            "<strong>{{week_end}}</strong>.</p>"
             "<table cellpadding=\"8\" cellspacing=\"0\" border=\"1\" "
             "style=\"border-collapse:collapse;font-family:Arial,sans-serif;font-size:14px;\">"
             "<tr style=\"background:#000080;color:#fff;\"><th align=\"left\">Metric</th><th align=\"right\">This week</th></tr>"
@@ -128,10 +134,11 @@ EMAIL_TEMPLATE_DEFINITIONS: Dict[str, Dict[str, object]] = {
             "<li>Admitted / accepted: {{total_admitted}}</li>"
             "<li>Rejected: {{total_rejected}}</li>"
             "</ul>"
-            "<p><a href=\"{{report_url}}\">Open All Applicants report in Horizon</a></p>"
+            "<p><a href=\"{{report_url}}\">Open All Applicants report in {{portal_name}}</a></p>"
             "<p style=\"color:#666;font-size:12px;\">Generated {{generated_at}}</p>"
         ),
         "placeholders": [
+            *_BRANDING_PLACEHOLDERS,
             "week_start",
             "week_end",
             "applications_received",
@@ -168,7 +175,17 @@ def render_template_string(template: str, context: Dict[str, object]) -> str:
     return _PLACEHOLDER_RE.sub(_replace, template or "")
 
 
+def _merge_email_context(context: Dict[str, object] | None) -> Dict[str, object]:
+    from accounts.portal_branding import email_branding_context
+
+    merged = email_branding_context()
+    if context:
+        merged.update(context)
+    return merged
+
+
 def render_email_template(key: str, context: Dict[str, object]) -> Tuple[str, str, str]:
+    merged = _merge_email_context(context)
     definition = get_template_definition(key)
     default_subject = str(definition.get("subject_template", ""))
     default_body = str(definition.get("body_template_html", ""))
@@ -177,8 +194,7 @@ def render_email_template(key: str, context: Dict[str, object]) -> Tuple[str, st
     subject_template = template.subject_template if template else default_subject
     body_template = template.body_template_html if template else default_body
 
-    subject = render_template_string(subject_template, context).strip() or default_subject
-    html_body = render_template_string(body_template, context).strip() or default_body
+    subject = render_template_string(subject_template, merged).strip() or default_subject
+    html_body = render_template_string(body_template, merged).strip() or default_body
     plain_text = strip_tags(html_body)
     return subject, html_body, plain_text
-

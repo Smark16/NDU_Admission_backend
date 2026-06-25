@@ -199,7 +199,13 @@ def generate_offer_letter_for_application(
             _issue_offer_letter_audit(applicant, user)
             verify_url = f"{verify_base}/verify-offer/{applicant.offer_letter_verification_token}"
             pdf_bytes = fill_pdf_template(template.file.path, context, template.field_positions)
-            sys_name = getattr(settings, "OFFER_LETTER_SYSTEM_FOOTER_NAME", "ndu university admissions")
+            from accounts.portal_branding import get_offer_letter_footer_name
+
+            sys_name = getattr(
+                settings,
+                "OFFER_LETTER_SYSTEM_FOOTER_NAME",
+                None,
+            ) or get_offer_letter_footer_name()
             gen_at = timezone.localtime(timezone.now()).strftime("%Y-%m-%d %H:%M %Z")
             printed_by = _printed_by_label(getattr(user, "id", None))
             pdf_bytes = stamp_offer_letter_pdf(

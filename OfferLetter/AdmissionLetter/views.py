@@ -190,7 +190,13 @@ def send_offer_letter(request, applicant_id):
             verify_url = f"{verify_base}/verify-offer/{applicant.offer_letter_verification_token}"
 
             pdf_bytes = fill_pdf_template(template.file.path, context, template.field_positions)
-            sys_name = getattr(settings, "OFFER_LETTER_SYSTEM_FOOTER_NAME", "ndu university admissions")
+            from accounts.portal_branding import get_offer_letter_footer_name
+
+            sys_name = getattr(
+                settings,
+                "OFFER_LETTER_SYSTEM_FOOTER_NAME",
+                None,
+            ) or get_offer_letter_footer_name()
             gen_at = timezone.localtime(timezone.now()).strftime("%Y-%m-%d %H:%M %Z")
             printed_by = _printed_by_label(getattr(request.user, "id", None))
             pdf_bytes = stamp_offer_letter_pdf(
@@ -582,6 +588,8 @@ def verify_offer_letter_public(request, token: str):
     if app.offer_letter_generated_by_id:
         u = app.offer_letter_generated_by
         printed = (u.get_full_name() or u.username or str(u.pk)).strip()
+    from accounts.portal_branding import get_offer_letter_footer_name
+
     return Response(
         {
             "valid": True,
@@ -594,8 +602,8 @@ def verify_offer_letter_public(request, token: str):
             else None,
             "printed_by": printed,
             "system": getattr(
-                settings, "OFFER_LETTER_SYSTEM_FOOTER_NAME", "ndu university admissions"
-            ),
+                settings, "OFFER_LETTER_SYSTEM_FOOTER_NAME", None
+            ) or get_offer_letter_footer_name(),
         }
     )
 

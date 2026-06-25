@@ -21,7 +21,9 @@ def send_configurable_email(
     try:
         sg = SendGridAPIClient(api_key=settings.SENDGRID_API_KEY)
 
-        from_email = Email('no-reply@ndu.ac.ug', "NDU Admissions Portal")
+        from accounts.portal_branding import get_university_display_name
+
+        from_email = Email("no-reply@ndu.ac.ug", get_university_display_name())
 
         message = Mail(
             from_email=from_email,
