@@ -82,7 +82,8 @@ def build_weekly_report_metrics(
     }
 
 
-def send_weekly_digest_to_email(to_email: str, metrics: dict[str, Any] | None = None) -> bool:
+def send_weekly_digest_to_email(to_email: str, metrics: dict[str, Any] | None = None) -> tuple[bool, str]:
+    """Returns (success, subject)."""
     if metrics is None:
         week_start, week_end = week_bounds_for()
         metrics = build_weekly_report_metrics(week_start, week_end)
@@ -91,13 +92,14 @@ def send_weekly_digest_to_email(to_email: str, metrics: dict[str, Any] | None = 
         EmailTemplate.KEY_WEEKLY_ADMISSIONS_DIGEST,
         metrics,
     )
-    return send_configurable_email(
+    ok = send_configurable_email(
         to_email=to_email,
         subject=subject,
         body=html_body,
         is_html=True,
         plain_text_fallback=plain_text,
     )
+    return ok, subject
 
 
 def send_weekly_admissions_digest(*, triggered_by_user_id: int | None = None) -> dict[str, Any]:
@@ -122,20 +124,26 @@ def send_weekly_admissions_digest(*, triggered_by_user_id: int | None = None) ->
 
     sent = 0
     failed = 0
+    sent_emails: list[str] = []
     failed_emails: list[str] = []
     for email in recipients:
-        if send_weekly_digest_to_email(email, metrics):
+        ok, _subject = send_weekly_digest_to_email(email, metrics)
+        if ok:
             sent += 1
+            sent_emails.append(email)
         else:
             failed += 1
             failed_emails.append(email)
 
     settings_row = WeeklyReportSettings.get_solo()
-    settings_row.last_sent_at = timezone.now()
+    sent_at = timezone.now()
+    settings_row.last_sent_at = sent_at
     settings_row.last_sent_summary = f"{sent}/{len(recipients)} delivered"
     if triggered_by_user_id:
         settings_row.updated_by_id = triggered_by_user_id
     settings_row.save(update_fields=["last_sent_at", "last_sent_summary", "updated_by", "updated_at"])
+
+    subject, _, _ = render_email_template(EmailTemplate.KEY_WEEKLY_ADMISSIONS_DIGEST, metrics)
 
     detail = f"Weekly digest sent to {sent} of {len(recipients)} recipients."
     if failed_emails:
@@ -146,8 +154,11 @@ def send_weekly_admissions_digest(*, triggered_by_user_id: int | None = None) ->
         "detail": detail,
         "sent": sent,
         "failed": failed,
+        "sent_emails": sent_emails,
         "failed_emails": failed_emails,
         "total": len(recipients),
         "week_start": metrics["week_start"],
         "week_end": metrics["week_end"],
+        "subject": subject,
+        "sent_at": sent_at.isoformat(),
     }

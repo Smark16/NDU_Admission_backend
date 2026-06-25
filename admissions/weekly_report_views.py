@@ -3,6 +3,8 @@ from Programs.permissions import CommunicationTemplatesPermission
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from django.utils import timezone
+
 from admissions.email_templates import render_email_template
 from admissions.models import EmailTemplate, WeeklyReportRecipient, WeeklyReportSettings
 from admissions.serializers import WeeklyReportRecipientSerializer, WeeklyReportSettingsSerializer
@@ -95,10 +97,19 @@ class WeeklyReportTestSendView(APIView):
         if not test_email:
             return Response({"detail": "email is required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        ok = send_weekly_digest_to_email(test_email)
+        ok, subject = send_weekly_digest_to_email(test_email)
         if not ok:
             return Response({"detail": "Failed to send test email."}, status=status.HTTP_502_BAD_GATEWAY)
-        return Response({"detail": f"Test digest sent to {test_email}."}, status=status.HTTP_200_OK)
+        return Response(
+            {
+                "ok": True,
+                "detail": f"Test digest sent to {test_email}.",
+                "sent_to": test_email,
+                "subject": subject,
+                "sent_at": timezone.now().isoformat(),
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 class WeeklyReportSendNowView(APIView):
@@ -127,10 +138,19 @@ class WeeklyReportRecipientTestSendView(APIView):
         if not recipient.is_active:
             return Response({"detail": "Recipient is paused. Set to Active first."}, status=status.HTTP_400_BAD_REQUEST)
 
-        ok = send_weekly_digest_to_email(recipient.email)
+        ok, subject = send_weekly_digest_to_email(recipient.email)
         if not ok:
             return Response(
                 {"detail": f"Failed to send digest to {recipient.email}. Check server logs / SendGrid."},
                 status=status.HTTP_502_BAD_GATEWAY,
             )
-        return Response({"detail": f"Test digest sent to {recipient.email}."}, status=status.HTTP_200_OK)
+        return Response(
+            {
+                "ok": True,
+                "detail": f"Test digest sent to {recipient.email}.",
+                "sent_to": recipient.email,
+                "subject": subject,
+                "sent_at": timezone.now().isoformat(),
+            },
+            status=status.HTTP_200_OK,
+        )
