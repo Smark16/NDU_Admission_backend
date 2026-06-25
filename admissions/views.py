@@ -785,6 +785,28 @@ class ApplicationChoiceStatsView(APIView):
             }
         )
 
+
+class AllApplicationsDetailReportStatsView(APIView):
+    """Aggregate counts for All Applicants report (same filters as detail list, no pagination)."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        base = build_applications_detail_report_queryset(request, apply_choice_filter=False)
+        stats = base.aggregate(
+            total=Count("id"),
+            submitted=Count(
+                "id",
+                filter=Q(status__in=["submitted", "under_review"]),
+            ),
+            admitted=Count(
+                "id",
+                filter=Q(status__in=["Admitted", "admitted", "accepted"]),
+            ),
+            rejected=Count("id", filter=Q(status__iexact="rejected")),
+            direct=Count("id", filter=Q(is_direct_entry=True)),
+        )
+        return Response(stats)
+
 # Applicants List
 class AllApplicationsReport(generics.ListAPIView):
     serializer_class = AllApplicationsReportSerializer

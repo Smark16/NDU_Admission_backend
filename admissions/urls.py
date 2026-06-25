@@ -41,6 +41,10 @@ urlpatterns = [
     path('all_applications_report/', views.AllApplicationsReport.as_view()),
 
     path('all_applications_detail_report/', views.AllApplicationDetailedReport.as_view()),
+    path(
+        'all_applications_detail_report_stats/',
+        views.AllApplicationsDetailReportStatsView.as_view(),
+    ),
     path('application_choice_stats/', views.ApplicationChoiceStatsView.as_view()),
     path('test_announcement', TestAnnouncementView.as_view()),
     path('send_announcement', SendAnnouncementView.as_view()),
