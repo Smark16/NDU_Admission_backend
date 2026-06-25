@@ -9,6 +9,14 @@ from admissions.email_template_views import (
     EmailTemplatePreviewView,
     EmailTemplateResetDefaultView,
 )
+from admissions.weekly_report_views import (
+    WeeklyReportPreviewView,
+    WeeklyReportRecipientDetailView,
+    WeeklyReportRecipientListCreateView,
+    WeeklyReportSendNowView,
+    WeeklyReportSettingsView,
+    WeeklyReportTestSendView,
+)
 
 from admissions.announcement_views import SendAnnouncementView, TestAnnouncementView
 from admissions.student_bulk_import_views import (
@@ -153,6 +161,14 @@ urlpatterns = [
     path('email_templates/<str:key>', EmailTemplateDetailView.as_view(), name='email_template_detail'),
     path('email_templates/<str:key>/preview', EmailTemplatePreviewView.as_view(), name='email_template_preview'),
     path('email_templates/<str:key>/reset', EmailTemplateResetDefaultView.as_view(), name='email_template_reset'),
+
+    # Weekly admissions digest (project-health email)
+    path('weekly_report/settings', WeeklyReportSettingsView.as_view(), name='weekly_report_settings'),
+    path('weekly_report/recipients', WeeklyReportRecipientListCreateView.as_view(), name='weekly_report_recipients'),
+    path('weekly_report/recipients/<int:pk>', WeeklyReportRecipientDetailView.as_view(), name='weekly_report_recipient_detail'),
+    path('weekly_report/preview', WeeklyReportPreviewView.as_view(), name='weekly_report_preview'),
+    path('weekly_report/test_send', WeeklyReportTestSendView.as_view(), name='weekly_report_test_send'),
+    path('weekly_report/send_now', WeeklyReportSendNowView.as_view(), name='weekly_report_send_now'),
 
     # Admission Change Requests
     path('change_requests/my', views.StudentChangeRequestListCreate.as_view(), name='student_change_requests'),

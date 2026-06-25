@@ -184,3 +184,16 @@ class EmailTemplateAdmin(admin.ModelAdmin):
     search_fields = ['name', 'key', 'subject_template']
     readonly_fields = ['created_at', 'updated_at']
 
+
+@admin.register(WeeklyReportSettings)
+class WeeklyReportSettingsAdmin(admin.ModelAdmin):
+    list_display = ['is_enabled', 'schedule_day', 'schedule_hour', 'last_sent_at', 'updated_at']
+    readonly_fields = ['last_sent_at', 'last_sent_summary', 'updated_at']
+
+
+@admin.register(WeeklyReportRecipient)
+class WeeklyReportRecipientAdmin(admin.ModelAdmin):
+    list_display = ['email', 'name', 'is_active', 'created_at']
+    list_filter = ['is_active']
+    search_fields = ['email', 'name']
+

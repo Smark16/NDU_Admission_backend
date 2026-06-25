@@ -225,7 +225,11 @@ CELERY_BEAT_SCHEDULE = {
     "sync-schoolpay-transactions-everyday": {
         "task": "payments.tasks.celery_sync_schoolpay_transactions",
         "schedule": crontab(minute="*/1")
-    }
+    },
+    "check-weekly-admissions-digest": {
+        "task": "admissions.tasks.celery_maybe_send_weekly_admissions_digest",
+        "schedule": crontab(minute="*/15"),
+    },
 }
 
 # school pay configuration

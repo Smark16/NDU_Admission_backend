@@ -774,6 +774,42 @@ class EmailTemplateUpdateSerializer(serializers.ModelSerializer):
         model = EmailTemplate
         fields = ["subject_template", "body_template_html", "is_active"]
 
+
+class WeeklyReportSettingsSerializer(serializers.ModelSerializer):
+    schedule_day_label = serializers.SerializerMethodField()
+
+    class Meta:
+        model = WeeklyReportSettings
+        fields = [
+            "is_enabled",
+            "schedule_day",
+            "schedule_day_label",
+            "schedule_hour",
+            "schedule_minute",
+            "last_sent_at",
+            "last_sent_summary",
+            "updated_at",
+        ]
+        read_only_fields = ["last_sent_at", "last_sent_summary", "updated_at"]
+
+    def get_schedule_day_label(self, obj):
+        return dict(WeeklyReportSettings.WEEKDAY_CHOICES).get(obj.schedule_day, "")
+
+
+class WeeklyReportRecipientSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = WeeklyReportRecipient
+        fields = [
+            "id",
+            "email",
+            "name",
+            "is_active",
+            "notes",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["created_at", "updated_at"]
+
 # ============================Program choices========================================
 class ApplicationProgramChoiceSerializer(serializers.ModelSerializer):
     program_name = serializers.CharField(source='program.name', read_only=True)

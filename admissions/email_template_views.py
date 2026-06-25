@@ -62,6 +62,11 @@ class EmailTemplatePreviewView(APIView):
             "reg_no": "NU/REG/1001",
             "portal_url": (getattr(settings, "FRONTEND_URL", "") or "http://localhost:3001").rstrip("/"),
         }
+        if key == EmailTemplate.KEY_WEEKLY_ADMISSIONS_DIGEST:
+            from admissions.utils.weekly_report import build_weekly_report_metrics, week_bounds_for
+
+            week_start, week_end = week_bounds_for()
+            sample_context = build_weekly_report_metrics(week_start, week_end)
         sample_context.update(request.data.get("context", {}))
 
         subject, html_body, plain_text = render_email_template(key, sample_context)

@@ -150,3 +150,36 @@ def celery_auto_enroll_students(self, admission_id, user_id):
         )
     except Exception as e:
         logger.exception(f"Auto-enrollment failed: {e}")
+
+
+@shared_task
+def celery_send_weekly_admissions_digest(triggered_by_user_id=None):
+    from admissions.utils.weekly_report import send_weekly_admissions_digest
+
+    return send_weekly_admissions_digest(triggered_by_user_id=triggered_by_user_id)
+
+
+@shared_task
+def celery_maybe_send_weekly_admissions_digest():
+    """Hourly check: send digest when schedule matches and not already sent this week."""
+    from admissions.models import WeeklyReportSettings
+    from admissions.utils.weekly_report import send_weekly_admissions_digest
+
+    settings_row = WeeklyReportSettings.get_solo()
+    if not settings_row.is_enabled:
+        return {"skipped": "disabled"}
+
+    now = timezone.localtime()
+    if now.weekday() != settings_row.schedule_day:
+        return {"skipped": "wrong_day"}
+    if now.hour != settings_row.schedule_hour:
+        return {"skipped": "wrong_hour"}
+    if now.minute < settings_row.schedule_minute:
+        return {"skipped": "before_minute"}
+
+    if settings_row.last_sent_at:
+        days_since = (now.date() - timezone.localtime(settings_row.last_sent_at).date()).days
+        if days_since < 6:
+            return {"skipped": "already_sent_this_week"}
+
+    return send_weekly_admissions_digest()

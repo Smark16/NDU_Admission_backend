@@ -102,6 +102,54 @@ EMAIL_TEMPLATE_DEFINITIONS: Dict[str, Dict[str, object]] = {
             "portal_url",
         ],
     },
+    EmailTemplate.KEY_WEEKLY_ADMISSIONS_DIGEST: {
+        "name": "Weekly Admissions Digest",
+        "description": "Project-health style summary emailed weekly to configured staff recipients.",
+        "subject_template": "NDU Admissions Weekly — {{week_start}} to {{week_end}}",
+        "body_template_html": (
+            "<p>Hello,</p>"
+            "<p>Here is your <strong>weekly admissions health report</strong> "
+            "for <strong>{{week_start}}</strong> to <strong>{{week_end}}</strong>.</p>"
+            "<table cellpadding=\"8\" cellspacing=\"0\" border=\"1\" "
+            "style=\"border-collapse:collapse;font-family:Arial,sans-serif;font-size:14px;\">"
+            "<tr style=\"background:#000080;color:#fff;\"><th align=\"left\">Metric</th><th align=\"right\">This week</th></tr>"
+            "<tr><td>Applications received</td><td align=\"right\"><strong>{{applications_received}}</strong> ({{applications_received_delta}} vs prior week)</td></tr>"
+            "<tr><td>Submitted</td><td align=\"right\">{{submitted}}</td></tr>"
+            "<tr><td>Under review</td><td align=\"right\">{{under_review}}</td></tr>"
+            "<tr><td>Admitted / accepted</td><td align=\"right\">{{admitted}}</td></tr>"
+            "<tr><td>Rejected</td><td align=\"right\">{{rejected}}</td></tr>"
+            "<tr><td>Direct entry</td><td align=\"right\">{{direct_entry}}</td></tr>"
+            "<tr><td>Online</td><td align=\"right\">{{online}}</td></tr>"
+            "</table>"
+            "<p style=\"margin-top:16px;\"><strong>All-time pipeline (non-draft)</strong></p>"
+            "<ul>"
+            "<li>Total applications: {{total_pipeline}}</li>"
+            "<li>Pending / in review: {{total_pending}}</li>"
+            "<li>Admitted / accepted: {{total_admitted}}</li>"
+            "<li>Rejected: {{total_rejected}}</li>"
+            "</ul>"
+            "<p><a href=\"{{report_url}}\">Open All Applicants report in Horizon</a></p>"
+            "<p style=\"color:#666;font-size:12px;\">Generated {{generated_at}}</p>"
+        ),
+        "placeholders": [
+            "week_start",
+            "week_end",
+            "applications_received",
+            "applications_received_delta",
+            "submitted",
+            "under_review",
+            "admitted",
+            "rejected",
+            "direct_entry",
+            "online",
+            "total_pipeline",
+            "total_pending",
+            "total_admitted",
+            "total_rejected",
+            "report_url",
+            "generated_at",
+        ],
+    },
 }
 
 _PLACEHOLDER_RE = re.compile(r"\{\{\s*([a-zA-Z0-9_]+)\s*\}\}")

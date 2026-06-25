@@ -137,7 +137,7 @@ class FeePlanConfigurationPermission(BasePermission):
 
 
 class CommunicationTemplatesPermission(BasePermission):
-    """Transactional email templates (admissions, system)."""
+    """Transactional email templates (admissions, system) and weekly digest."""
 
     message = "You do not have permission to manage communication templates."
 
@@ -147,9 +147,12 @@ class CommunicationTemplatesPermission(BasePermission):
             return False
         if _superuser(u):
             return True
+        if u.has_perm("admissions.view_emailtemplate"):
+            return True
         return user_has_any_erp_perm(
             u,
             "manage_communication_templates",
             "access_system_settings",
+            "access_user_management",
             "approve_admissions",
         )

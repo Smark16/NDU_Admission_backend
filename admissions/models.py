@@ -707,12 +707,14 @@ class EmailTemplate(models.Model):
     KEY_ADMISSION_ACCEPTED = "admission_accepted"
     KEY_ADMISSION_UPDATED = "admission_updated"
     KEY_OFFER_LETTER_SENT = "offer_letter_sent"
+    KEY_WEEKLY_ADMISSIONS_DIGEST = "weekly_admissions_digest"
 
     TEMPLATE_KEY_CHOICES = [
         (KEY_APPLICATION_SUBMITTED, "Application Submitted"),
         (KEY_ADMISSION_ACCEPTED, "Admission Accepted"),
         (KEY_ADMISSION_UPDATED, "Admission Updated"),
         (KEY_OFFER_LETTER_SENT, "Offer Letter Sent"),
+        (KEY_WEEKLY_ADMISSIONS_DIGEST, "Weekly Admissions Digest"),
     ]
 
     key = models.CharField(max_length=80, unique=True, choices=TEMPLATE_KEY_CHOICES)
@@ -740,10 +742,70 @@ class EmailTemplate(models.Model):
         return f"{self.name} ({self.key})"
 
 
+class WeeklyReportSettings(models.Model):
+    """Singleton-style configuration for the weekly admissions digest email."""
+
+    WEEKDAY_CHOICES = [
+        (0, "Monday"),
+        (1, "Tuesday"),
+        (2, "Wednesday"),
+        (3, "Thursday"),
+        (4, "Friday"),
+        (5, "Saturday"),
+        (6, "Sunday"),
+    ]
+
+    is_enabled = models.BooleanField(default=False)
+    schedule_day = models.PositiveSmallIntegerField(choices=WEEKDAY_CHOICES, default=0)
+    schedule_hour = models.PositiveSmallIntegerField(default=8)
+    schedule_minute = models.PositiveSmallIntegerField(default=0)
+    last_sent_at = models.DateTimeField(null=True, blank=True)
+    last_sent_summary = models.CharField(max_length=255, blank=True, default="")
+    updated_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="updated_weekly_report_settings",
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Weekly report settings"
+        verbose_name_plural = "Weekly report settings"
+
+    @classmethod
+    def get_solo(cls):
+        obj, _ = cls.objects.get_or_create(pk=1)
+        return obj
+
+    def __str__(self):
+        return "Weekly admissions digest settings"
 
 
+class WeeklyReportRecipient(models.Model):
+    """Staff email addresses that receive the weekly admissions health digest."""
 
+    email = models.EmailField(unique=True)
+    name = models.CharField(max_length=120, blank=True, default="")
+    is_active = models.BooleanField(default=True)
+    notes = models.CharField(max_length=255, blank=True, default="")
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="weekly_report_recipients_created",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
+    class Meta:
+        ordering = ["email"]
+        verbose_name = "Weekly report recipient"
+        verbose_name_plural = "Weekly report recipients"
 
-
+    def __str__(self):
+        label = self.name.strip() or self.email
+        return label
 
