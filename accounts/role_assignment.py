@@ -26,6 +26,7 @@ ADMISSIONS_STAFF_ROLE_NAMES = frozenset(
         "Document Verification Officer",
         "Admissions Reports Officer",
         "Student ID Officer",
+        "AR Data Clerk",
         "Faculty Dean",
         "Faculty Admin",
     }
@@ -70,6 +71,11 @@ def _normalized_role_names(role_names: list[str]) -> list[str]:
         seen.add(key)
         cleaned.append(name)
     return cleaned
+
+
+def user_has_non_lecturer_staff_group(user) -> bool:
+    """True when the user belongs to any staff group other than Lecturer."""
+    return user.groups.exclude(name__iexact=LECTURER_ROLE_NAME).exists()
 
 
 def user_has_lecturer_group(user) -> bool:
@@ -146,6 +152,7 @@ def sync_user_role_flags(user, *, save: bool = True) -> list[str]:
     assigned = [g.lower() for g in user.groups.values_list("name", flat=True)]
     has_staff_role = any(name in staff_names for name in assigned)
     in_lecturer_group = user_has_lecturer_group(user)
+    has_non_lecturer_group = user_has_non_lecturer_staff_group(user)
 
     has_course_units = False
     try:
@@ -154,7 +161,8 @@ def sync_user_role_flags(user, *, save: bool = True) -> list[str]:
         has_course_units = False
 
     is_lecturer = in_lecturer_group or has_course_units
-    is_staff = has_staff_role or in_lecturer_group
+    # Any non-Lecturer Django group is staff (covers custom roles such as AR Data Clerk).
+    is_staff = has_staff_role or in_lecturer_group or has_non_lecturer_group
 
     update_fields: list[str] = []
     if user.is_staff != is_staff:
@@ -171,6 +179,42 @@ def sync_user_role_flags(user, *, save: bool = True) -> list[str]:
 
     if save and update_fields:
         user.save(update_fields=update_fields)
+    return update_fields
+
+
+def _promote_staff_portal_identity(user) -> list[str]:
+    """
+    Staff clerks/officers should land in the admin portal, not student/applicant.
+
+    Lecturer-only accounts may keep is_student for dual student + lecturer portals.
+    """
+    update_fields: list[str] = []
+    lecturer_only = user_has_lecturer_portal_access(user) and not user_has_non_lecturer_staff_group(user)
+    if lecturer_only:
+        return update_fields
+
+    if not user.is_staff and not user_has_non_lecturer_staff_group(user):
+        return update_fields
+
+    if user.is_student:
+        user.is_student = False
+        update_fields.append("is_student")
+    if user.is_applicant:
+        user.is_applicant = False
+        update_fields.append("is_applicant")
+
+    modes = user_portal_modes(user)
+    if not modes:
+        return update_fields
+
+    preferred = resolve_portal_mode(user)
+    if preferred and user.portal_mode != preferred:
+        user.portal_mode = preferred
+        update_fields.append("portal_mode")
+    elif user.portal_mode == PORTAL_MODE_STUDENT and PORTAL_MODE_ADMIN in modes:
+        user.portal_mode = PORTAL_MODE_ADMIN
+        update_fields.append("portal_mode")
+
     return update_fields
 
 
@@ -199,12 +243,9 @@ def set_user_roles(user, role_names: list[str]):
         user.role = LECTURER_ROLE_NAME
 
     update_fields = ["role", "is_staff", "is_lecturer"]
-    modes = user_portal_modes(user)
-    if user.portal_mode and user.portal_mode not in modes:
-        user.portal_mode = resolve_portal_mode(user)
-        update_fields.append("portal_mode")
+    update_fields.extend(_promote_staff_portal_identity(user))
 
-    user.save(update_fields=update_fields)
+    user.save(update_fields=list(dict.fromkeys(update_fields)))
     return user
 
 
@@ -229,5 +270,7 @@ def assign_user_role(user, role_name: str, *, replace: bool = True):
     sync_user_role_flags(user, save=False)
     primary = primary_staff_role(user)
     user.role = primary or role_name
-    user.save(update_fields=["role", "is_staff", "is_lecturer"])
+    update_fields = ["role", "is_staff", "is_lecturer"]
+    update_fields.extend(_promote_staff_portal_identity(user))
+    user.save(update_fields=list(dict.fromkeys(update_fields)))
     return user
