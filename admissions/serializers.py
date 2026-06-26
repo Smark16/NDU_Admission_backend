@@ -145,6 +145,8 @@ class ListApplicationsSerializer(serializers.ModelSerializer):
     academic_level = serializers.CharField(source="academic_level.name", read_only=True)
     batch = serializers.CharField(source="batch.name", read_only=True)
     campus = serializers.CharField(source="campus.name", read_only=True)
+    reviewed_by = serializers.CharField(source="reviewed_by.full_name", read_only=True, allow_null=True)
+    revoked_by = serializers.CharField(source="revoked_by.full_name", read_only=True, allow_null=True)
 
     class Meta:
         model = Application
@@ -161,6 +163,12 @@ class ListApplicationsSerializer(serializers.ModelSerializer):
             "campus",
             "program_choices_confirmed_at",
             "program_choices_verification_sent_at",
+            "review_notes",
+            "reviewed_by",
+            "reviewed_at",
+            "is_revoked",
+            "revocation_reason",
+            "revoked_by",
         ]
 
 class AllApplicationsReportSerializer(serializers.ModelSerializer):
@@ -170,6 +178,8 @@ class AllApplicationsReportSerializer(serializers.ModelSerializer):
     programs = serializers.SerializerMethodField()
     faculty = serializers.SerializerMethodField()
     entered_by = serializers.SerializerMethodField()
+    reviewed_by = serializers.CharField(source="reviewed_by.full_name", read_only=True, allow_null=True)
+    revoked_by = serializers.CharField(source="revoked_by.full_name", read_only=True, allow_null=True)
 
     def get_academic_level(self, obj):
         return obj.academic_level.name if obj.academic_level else ""
@@ -225,6 +235,12 @@ class AllApplicationsReportSerializer(serializers.ModelSerializer):
             "created_at",
             "is_direct_entry",
             "entered_by",
+            "review_notes",
+            "reviewed_by",
+            "reviewed_at",
+            "is_revoked",
+            "revocation_reason",
+            "revoked_by",
         ]
 
 # detail serializer
@@ -238,6 +254,7 @@ class ApplicationDetailSerializer(serializers.ModelSerializer):
                   'batch', "nin", "passport_number","disabled", "has_olevel",'olevel_school', 'olevel_year',"olevel_index_number", "has_alevel", 'alevel_school', 'alevel_year', 'alevel_index_number', 
                   'address','middle_name', 'next_of_kin_name', 'next_of_kin_contact', 'next_of_kin_relationship', 'revoked_by', 'is_revoked','revocation_reason',"alevel_combination",
                   'status', 'application_fee_amount','application_fee_paid', 'created_at', 'reviewed_at', 'passport_photo','reviewed_by',
+                  'review_notes',
                   'program_choices_confirmed_at', 'program_choices_verification_sent_at']
 
     def to_representation(self, instance):

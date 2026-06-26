@@ -613,6 +613,8 @@ def build_applications_report_queryset(request, *, apply_choice_filter: bool = T
             "campus",
             "applicant",
             "entered_by",
+            "reviewed_by",
+            "revoked_by",
         )
         .prefetch_related(
             Prefetch(
@@ -875,13 +877,21 @@ class RejectStudent(APIView):
                 {"detail": "You do not have permission to reject applications."},
                 status=status.HTTP_403_FORBIDDEN,
             )
-        _rejection_reason = request.data.get("rejection_reason", "No reason provided")
+        _rejection_reason = str(request.data.get("rejection_reason", "") or "").strip() or "No reason provided"
         try:
             with transaction.atomic():
                 application = Application.objects.select_related("applicant").get(pk=application_id)
                 assert_application_access(request.user, application)
                 application.status = "rejected"
-                application.save()
+                application.review_notes = _rejection_reason
+                application.reviewed_by = request.user
+                application.reviewed_at = timezone.now()
+                application.save(update_fields=[
+                    "status",
+                    "review_notes",
+                    "reviewed_by",
+                    "reviewed_at",
+                ])
                 try:
                     celery_send_rejection_email.delay(
                         application.id,
@@ -1445,7 +1455,7 @@ class ListRejectedApplications(generics.ListAPIView):
     def get_queryset(self):
         qs = (
             Application.objects.filter(status__iexact="rejected")
-            .select_related("academic_level", "batch", "campus")
+            .select_related("academic_level", "batch", "campus", "reviewed_by", "revoked_by")
             .order_by("-updated_at", "-created_at")
         )
         return filter_applications_for_user(qs, self.request.user)

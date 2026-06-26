@@ -85,6 +85,23 @@ class ApplicationAdmin(admin.ModelAdmin):
     list_filter = ['status', 'application_fee_paid', 'campus', 'batch', 'created_at']
     search_fields = ['first_name', 'last_name', 'email', 'phone']
     readonly_fields = ['created_at', 'updated_at']
+    fieldsets = (
+        (None, {
+            'fields': (
+                'applicant', 'first_name', 'last_name', 'middle_name', 'email', 'phone',
+                'status', 'batch', 'campus', 'academic_level',
+            ),
+        }),
+        ('Payment', {
+            'fields': ('application_fee_paid', 'application_fee_amount', 'application_reference', 'payment_proof'),
+        }),
+        ('Review / rejection', {
+            'fields': ('reviewed_by', 'reviewed_at', 'review_notes', 'pending_reason'),
+        }),
+        ('Revocation', {
+            'fields': ('is_revoked', 'revoked_by', 'revoked_at', 'revocation_reason'),
+        }),
+    )
     ordering = ['-created_at']
 
 @admin.register(ApplicationProgramChoice)
