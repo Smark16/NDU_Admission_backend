@@ -6,7 +6,7 @@ Query params: batch_id, campus_id, academic_level_id, date_from, date_to
 AdmittedStudent breakdowns also respect academic_level_id and application created_at dates.
 """
 from django.db.models import Count, Sum, Q, F, Value, Max, Case, When, CharField
-from django.db.models.functions import TruncMonth, TruncDate, Trim, Lower, Coalesce, NullIf
+from django.db.models.functions import TruncMonth, Trim, Lower, Coalesce
 from django.utils.dateparse import parse_date
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -16,6 +16,7 @@ from accounts.erp_drf_permissions import CanViewAdmissionsAnalytics
 
 from .models import Application, AdmittedStudent, Batch, AcademicLevel
 from .utils.batch_offer_filters import batch_offer_window_q
+from .utils.school_name_normalize import aggregate_top_schools
 from accounts.models import Campus
 from payments.models import ApplicationPayment
 from django.db.utils import ProgrammingError
@@ -29,34 +30,6 @@ except (ImportError, ProgrammingError):
 
 
 LOCAL_NATIONALITIES = {"Uganda", "Kenya", "Tanzania", "Rwanda", "Burundi", "South Sudan"}
-
-_INVALID_SCHOOL_TOKENS = frozenset(
-    {"", "n/a", "na", "none", "-", "--", "null", "nil", "tbd", "pending", "n.a.", "n.a"}
-)
-
-
-def _looks_like_centre_or_index_only(text: str) -> bool:
-    """True if the string has no letters (digits, punctuation, spaces only) — treat as centre/ref, not a school name."""
-    t = (text or "").strip()
-    if not t:
-        return True
-    return not any(ch.isalpha() for ch in t)
-
-
-def _display_top_school_label(group_key: str, sample_school: str, sample_index: str) -> str:
-    """Pick a readable label for the chart/CSV; grouping is already normalized in SQL."""
-    ss = (sample_school or "").strip()
-    ix = (sample_index or "").strip()
-    ix_l = ix.lower()
-    if ix_l in _INVALID_SCHOOL_TOKENS:
-        ix = ""
-    if ss and not _looks_like_centre_or_index_only(ss):
-        return ss
-    if ix and ix_l not in _INVALID_SCHOOL_TOKENS:
-        return f"A-Level centre / index: {ix}"
-    if ss:
-        return ss
-    return group_key or "Unknown"
 
 
 def _display_gender_label(group_key: str) -> str:
@@ -222,44 +195,9 @@ class AnalyticsDashboardView(APIView):
             .order_by("-count")[:10]
         )
 
-        # ── Top 10 A-Level schools / centres (background grouping) ─────────────
-        # Applicants often type centre numbers or mixed text. We do NOT rely on raw
-        # names only: group_key = lower(trim(school)) if present else lower(trim(index)).
-        # Case-insensitive name merge; centre-only school text still buckets with index fallback.
-        _school_qs = submitted_qs.annotate(
-            _st=Trim("alevel_school"),
-            _ix=Trim("alevel_index_number"),
-        ).annotate(
-            _group_key=Coalesce(
-                NullIf(Lower(F("_st")), Value("")),
-                NullIf(Lower(F("_ix")), Value("")),
-                Value("__skip__"),
-            )
-        ).exclude(_group_key__in=["__skip__", *list(_INVALID_SCHOOL_TOKENS)])
-
-        top_schools_rows = list(
-            _school_qs.values("_group_key")
-            .annotate(
-                count=Count("id"),
-                sample_school=Max("_st"),
-                sample_index=Max("_ix"),
-            )
-            .order_by("-count")[:10]
-        )
-        top_schools = []
-        for r in top_schools_rows:
-            gk = (r.get("_group_key") or "").strip()
-            if not gk or gk.lower() in _INVALID_SCHOOL_TOKENS:
-                continue
-            top_schools.append(
-                {
-                    "school_name": _display_top_school_label(
-                        gk, r.get("sample_school") or "", r.get("sample_index") or ""
-                    ),
-                    "count": r["count"],
-                    "group_key": gk,
-                }
-            )
+        # ── Top 10 A-Level schools / centres (normalized grouping) ─────────────
+        # Merges Mengo ss / MENGO SS / mengo, Lubiri ss, Ndejje ss, etc.
+        top_schools = aggregate_top_schools(submitted_qs, limit=10)
 
         # ── Gender Breakdown (pie) ────────────────────────────────────────────
         # Group case-insensitively; merge F/female/FEMALE and M/male/MALE.
