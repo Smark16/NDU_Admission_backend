@@ -16,6 +16,10 @@ from .admin_ledger_views import (
     AdminTuitionLedgerTransactionsView,
 )
 
+from .registration_lookup_views import (
+    AdminRegistrationLookupDetailView,
+    AdminRegistrationLookupSearchView,
+)
 from .semester_registration_views import (
     CheckRegistrationEligibility,
     DownloadStudentOfferLetterPdf,
@@ -77,6 +81,16 @@ urlpatterns = [
         name='admin_tuition_ledger_student_detail',
     ),
     path('admin/tuition_ledger/transactions', AdminTuitionLedgerTransactionsView.as_view(), name='admin_tuition_ledger_transactions'),
+    path(
+        'admin/registration_lookup',
+        AdminRegistrationLookupSearchView.as_view(),
+        name='admin_registration_lookup_search',
+    ),
+    path(
+        'admin/registration_lookup/<int:student_id>',
+        AdminRegistrationLookupDetailView.as_view(),
+        name='admin_registration_lookup_detail',
+    ),
     path('student/tuition_structure', GetStudentTuitionStructure.as_view(), name='get_student_tuition_structure'),
     path('student/payment_status', GetStudentPaymentStatus.as_view(), name='get_student_payment_status'),
     path(
