@@ -5,7 +5,7 @@ Query params: batch_id, campus_id, academic_level_id, date_from, date_to
 
 AdmittedStudent breakdowns also respect academic_level_id and application created_at dates.
 """
-from django.db.models import Count, Sum, Q, F, Value, Max
+from django.db.models import Count, Sum, Q, F, Value, Max, Case, When, CharField
 from django.db.models.functions import TruncMonth, TruncDate, Trim, Lower, Coalesce, NullIf
 from django.utils.dateparse import parse_date
 from rest_framework.views import APIView
@@ -57,6 +57,20 @@ def _display_top_school_label(group_key: str, sample_school: str, sample_index: 
     if ss:
         return ss
     return group_key or "Unknown"
+
+
+def _display_gender_label(group_key: str) -> str:
+    """Readable chart/CSV label from a normalized gender bucket key."""
+    gk = (group_key or "").strip().lower()
+    if not gk:
+        return "Unknown"
+    if gk == "female":
+        return "Female"
+    if gk == "male":
+        return "Male"
+    if gk == "other":
+        return "Other"
+    return group_key.strip().title()
 
 
 class AnalyticsDashboardView(APIView):
@@ -248,11 +262,28 @@ class AnalyticsDashboardView(APIView):
             )
 
         # ── Gender Breakdown (pie) ────────────────────────────────────────────
-        gender_breakdown = list(
-            submitted_qs.values("gender")
+        # Group case-insensitively; merge F/female/FEMALE and M/male/MALE.
+        gender_breakdown_rows = list(
+            submitted_qs.annotate(
+                _gender_raw=Lower(Trim(Coalesce(F("gender"), Value("")))),
+            )
+            .annotate(
+                gender_key=Case(
+                    When(_gender_raw__in=["f", "female"], then=Value("female")),
+                    When(_gender_raw__in=["m", "male"], then=Value("male")),
+                    When(_gender_raw="other", then=Value("other")),
+                    default=F("_gender_raw"),
+                    output_field=CharField(),
+                ),
+            )
+            .values("gender_key")
             .annotate(count=Count("id"))
             .order_by("-count")
         )
+        gender_breakdown = [
+            {"gender": _display_gender_label(r["gender_key"]), "count": r["count"]}
+            for r in gender_breakdown_rows
+        ]
 
         # ── Nationality Type: Local vs International ───────────────────────────
         local_count = submitted_qs.filter(
