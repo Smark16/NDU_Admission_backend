@@ -16,6 +16,12 @@ from .admin_ledger_views import (
     AdminTuitionLedgerTransactionsView,
 )
 
+from .application_fee_exception_views import (
+    ApplicationFeeExceptionsView,
+    ReconcileApplicationFeePaymentView,
+    SyncUnpaidApplicationFeeView,
+    VerifyApplicationFeePaymentView,
+)
 from .registration_lookup_views import (
     AdminRegistrationLookupDetailView,
     AdminRegistrationLookupSearchView,
@@ -151,6 +157,28 @@ urlpatterns = [
     path('check_payment_status/<str:payment_ref>/', CheckPaymentStatus.as_view()),
     path('register_with_schoolpay/<int:student_id>/', generate_paycode, name='register_with_schoolpay'),
     path('cancel_pending_payment/', CancelPayment.as_view(), name='cancel_payment'),
+
+    # application-fee reconciliation (staff)
+    path(
+        'application-fee-exceptions/',
+        ApplicationFeeExceptionsView.as_view(),
+        name='application-fee-exceptions',
+    ),
+    path(
+        'application-fee-exceptions/<int:payment_id>/verify/',
+        VerifyApplicationFeePaymentView.as_view(),
+        name='application-fee-verify',
+    ),
+    path(
+        'application-fee-exceptions/<int:payment_id>/reconcile/',
+        ReconcileApplicationFeePaymentView.as_view(),
+        name='application-fee-reconcile',
+    ),
+    path(
+        'application-fee-exceptions/applications/<int:application_id>/sync/',
+        SyncUnpaidApplicationFeeView.as_view(),
+        name='application-fee-sync-application',
+    ),
 
     # payments
     path('list_payments', ListPayments.as_view()),
