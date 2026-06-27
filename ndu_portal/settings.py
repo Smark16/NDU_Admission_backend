@@ -218,10 +218,6 @@ CELERY_BEAT_SCHEDULE = {
         "task": "Drafts.tasks.auto_process_drafts_deletion",
         "schedule": crontab(minute="*/5"),
     },
-    "process_failed_payments" : {
-       "task": "payments.tasks.auto_delete_failed_payments",
-       "schedule": crontab(minute="*/5"),
-    },
     "sync-schoolpay-transactions-everyday": {
         "task": "payments.tasks.celery_sync_schoolpay_transactions",
         "schedule": crontab(minute="*/1")

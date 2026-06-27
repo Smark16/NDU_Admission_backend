@@ -6,29 +6,38 @@ from payments.models import ApplicationPayment
 from payments.utils.Transaction_sync import (
     fetch_transactions_by_range, reconcile_transactions
 )
+from payments.utils.application_payment_status import (
+    reconcile_stale_pending_application_payments,
+)
+
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 @shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=10)
 def auto_process_delayed_payments(self):
-    expired_time = timezone.now() - timedelta(minutes=10)
+    """
+    Reconcile stale PENDING application-fee payments with SchoolPay.
+    Does not mark FAILED unless the gateway confirms failure.
+    """
+    results = reconcile_stale_pending_application_payments()
+    return (
+        f"{results['paid']} paid, {results['failed']} failed, "
+        f"{results['still_pending']} still pending, {results['errors']} errors"
+    )
 
-    updated_count = ApplicationPayment.objects.filter(
-        status='PENDING',
-        created_at__lt=expired_time
-    ).update(status='FAILED')
 
-    return f"{updated_count} payments marked as FAILED"
-
-# delete failed payments
 @shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=10)
 def auto_delete_failed_payments(self):
-    expired_time = timezone.now() - timedelta(minutes=10)
+    """
+    Disabled: failed application payments are kept for finance reconciliation.
+    """
+    logger.info(
+        "auto_delete_failed_payments skipped (retention enabled for reconciliation)"
+    )
+    return "0 payments deleted (task disabled)"
 
-    updated_count = ApplicationPayment.objects.filter(
-        status='FAILED',
-        created_at__lt=expired_time
-    ).delete()
-
-    return f"{updated_count} payments have been deleted"
 
 # sync payments from schoolpay
 @shared_task(
