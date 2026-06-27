@@ -11,6 +11,7 @@ from accounts.erp_drf_permissions import FinanceModuleAdminPermission
 from admissions.models import Application
 from payments.models import ApplicationPayment
 from payments.utils.application_payment_status import (
+    clear_pending_application_payment,
     mark_application_payment_paid,
     reconcile_pending_application_payment,
     sync_draft_and_application_on_paid,
@@ -52,6 +53,7 @@ def _serialize_payment(payment: ApplicationPayment, *, stale=False):
         "is_stale_pending": stale,
         "application_id": application.id if application else None,
         "application_status": application.status if application else None,
+        "applicant_id": payment.user_id,
         "batch_name": batch_name,
     }
 
@@ -188,6 +190,49 @@ class ReconcileApplicationFeePaymentView(APIView):
                 "detail": "Payment marked as reconciled.",
                 "payment": _serialize_payment(payment),
                 "reconciled_by": request.user.email,
+            }
+        )
+
+
+class ClearPendingApplicationFeePaymentView(APIView):
+    """
+    Verify with SchoolPay, then mark a stale PENDING payment FAILED so the applicant can retry.
+    If SchoolPay reports PAID, the payment is completed instead of cleared.
+    """
+
+    permission_classes = [IsAuthenticated, FinanceModuleAdminPermission]
+
+    def post(self, request, payment_id):
+        payment = ApplicationPayment.objects.filter(pk=payment_id).first()
+        if not payment:
+            return Response({"detail": "Payment not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        outcome, payment = clear_pending_application_payment(payment)
+        payment.refresh_from_db()
+
+        messages = {
+            "paid": "SchoolPay confirms PAID — payment completed (not cleared).",
+            "cleared": "Pending payment cleared. Applicant can start a new payment.",
+            "not_pending": "Payment is no longer pending.",
+            "error": "Could not verify with SchoolPay. Try again shortly.",
+        }
+
+        if outcome == "error":
+            return Response(
+                {"detail": messages[outcome], "outcome": outcome},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        return Response(
+            {
+                "detail": messages.get(outcome, "Done."),
+                "outcome": outcome,
+                "payment": _serialize_payment(
+                    payment,
+                    stale=payment.status == "PENDING"
+                    and payment.created_at
+                    and payment.created_at < timezone.now() - timedelta(minutes=10),
+                ),
             }
         )
 

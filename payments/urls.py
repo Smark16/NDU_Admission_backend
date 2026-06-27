@@ -18,6 +18,7 @@ from .admin_ledger_views import (
 
 from .application_fee_exception_views import (
     ApplicationFeeExceptionsView,
+    ClearPendingApplicationFeePaymentView,
     ReconcileApplicationFeePaymentView,
     SyncUnpaidApplicationFeeView,
     VerifyApplicationFeePaymentView,
@@ -173,6 +174,11 @@ urlpatterns = [
         'application-fee-exceptions/<int:payment_id>/reconcile/',
         ReconcileApplicationFeePaymentView.as_view(),
         name='application-fee-reconcile',
+    ),
+    path(
+        'application-fee-exceptions/<int:payment_id>/clear-pending/',
+        ClearPendingApplicationFeePaymentView.as_view(),
+        name='application-fee-clear-pending',
     ),
     path(
         'application-fee-exceptions/applications/<int:application_id>/sync/',

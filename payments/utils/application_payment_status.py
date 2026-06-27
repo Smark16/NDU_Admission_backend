@@ -185,3 +185,29 @@ def reconcile_stale_pending_application_payments(
             results["still_pending"] += 1
 
     return results
+
+
+def clear_pending_application_payment(payment: ApplicationPayment, *, verify_first=True):
+    """
+    Abandon a stale PENDING payment so the applicant can retry.
+    Verifies with SchoolPay first — will not clear if gateway reports PAID.
+
+    Returns: ('paid' | 'cleared' | 'not_pending' | 'error', payment)
+    """
+    payment.refresh_from_db()
+    if payment.status != "PENDING":
+        return "not_pending", payment
+
+    if verify_first:
+        outcome = reconcile_pending_application_payment(payment)
+        payment.refresh_from_db()
+        if outcome == "paid":
+            return "paid", payment
+        if outcome == "error":
+            return "error", payment
+
+    if payment.status == "PENDING":
+        payment.status = "FAILED"
+        payment.save(update_fields=["status"])
+
+    return "cleared", payment

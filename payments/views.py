@@ -16,6 +16,7 @@ from django.views.decorators.http import require_POST
 from .models import ApplicationFee, ApplicationPayment, StudentTuitionPayment
 from .utils.schoolpay import SchoolPayClient
 from .utils.application_payment_status import (
+    clear_pending_application_payment,
     mark_application_payment_paid,
     reconcile_stale_pending_application_payments,
     schoolpay_application_fee_callback_url,
@@ -99,13 +100,54 @@ class CancelPayment(APIView):
     def post(self, request):
         try:
             payer = _application_fee_payer(request)
-            ApplicationPayment.objects.filter(
+            pending_qs = ApplicationPayment.objects.filter(
                 user=payer,
                 status='PENDING',
-            ).update(status='FAILED')
+            ).order_by('-created_at')
+
+            if not pending_qs.exists():
+                return Response({
+                    'detail': "No pending payment to clear.",
+                    'cleared': 0,
+                    'paid': 0,
+                })
+
+            cleared = 0
+            paid = 0
+            errors = 0
+            for payment in pending_qs:
+                outcome, _ = clear_pending_application_payment(payment)
+                if outcome == 'paid':
+                    paid += 1
+                elif outcome == 'cleared':
+                    cleared += 1
+                elif outcome == 'error':
+                    errors += 1
+
+            if paid and not cleared:
+                detail = (
+                    "SchoolPay confirms payment received — marked PAID. "
+                    "Applicant can continue the application."
+                )
+            elif cleared:
+                detail = (
+                    f"Cleared {cleared} pending payment(s). "
+                    "Applicant can start a new payment."
+                )
+            elif errors:
+                return Response({
+                    'detail': "Could not verify with SchoolPay. Try again shortly.",
+                    'cleared': 0,
+                    'paid': paid,
+                    'errors': errors,
+                }, status=502)
+            else:
+                detail = "Pending payment cancelled successfully"
 
             return Response({
-                'detail': "Pending payment cancelled successfully"
+                'detail': detail,
+                'cleared': cleared,
+                'paid': paid,
             })
         
         except Exception as e:

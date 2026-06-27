@@ -785,6 +785,25 @@ class AssistApplicationContextView(APIView):
         draft = _draft_for_user(applicant, None)
         has_portal_draft = DraftApplication.objects.filter(applicant=applicant).exists()
 
+        from payments.models import ApplicationPayment
+
+        pending_payment = (
+            ApplicationPayment.objects.filter(user=applicant, status="PENDING")
+            .order_by("-created_at")
+            .first()
+        )
+        pending_payload = None
+        if pending_payment:
+            pending_payload = {
+                "id": pending_payment.id,
+                "external_reference": pending_payment.external_reference,
+                "payment_reference": pending_payment.payment_reference,
+                "amount": str(pending_payment.amount),
+                "created_at": pending_payment.created_at.isoformat()
+                if pending_payment.created_at
+                else None,
+            }
+
         return Response(
             {
                 "applicant": {
@@ -797,6 +816,7 @@ class AssistApplicationContextView(APIView):
                 "draft_started_at": draft.updated_at if draft else None,
                 "has_draft": draft is not None,
                 "progress": draft_progress_payload(draft),
+                "pending_payment": pending_payload,
             }
         )
 
