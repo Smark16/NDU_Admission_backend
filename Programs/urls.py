@@ -28,6 +28,7 @@ from .enrollment_views import (
     AdminCreateEnrollmentView,
     AdminEnrollmentDetailView,
     AdminListEnrollmentsView,
+    AdminStudentEnrollmentEligibilityView,
     MyAvailableSpecializationsView,
     MyEnrollmentView,
     MyExpectedCoursesView,
@@ -217,6 +218,11 @@ urlpatterns = [
     ),
 
     # ----- academic enrollment (commitment fee → access) -----
+    path(
+        'admin/student/<int:student_id>/enrollment_eligibility',
+        AdminStudentEnrollmentEligibilityView.as_view(),
+        name='admin_student_enrollment_eligibility',
+    ),
     path(
         'admin/student/<int:student_id>/enroll',
         AdminCreateEnrollmentView.as_view(),

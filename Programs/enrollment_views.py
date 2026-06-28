@@ -62,10 +62,28 @@ from .specialization_rules import (
     resolve_specialization_for_program,
 )
 
+from payments.admin_enrollment_requirements import (
+    admin_programme_enrollment_activation_block,
+    admin_programme_enrollment_eligibility,
+)
+
 
 # ===========================================================================
 # Admin views
 # ===========================================================================
+
+class AdminStudentEnrollmentEligibilityView(APIView):
+    """Return whether staff may activate academic enrollment for a student."""
+    permission_classes = [AcademicEnrollmentAdminPermission]
+
+    def get(self, request, student_id):
+        student = get_object_or_404(
+            AdmittedStudent.objects.select_related("application"),
+            pk=student_id,
+        )
+        assert_admitted_student_program_access(request.user, student)
+        return Response(admin_programme_enrollment_eligibility(student))
+
 
 class AdminCreateEnrollmentView(APIView):
     """Create (or re-activate) academic enrollment for a student.
@@ -228,6 +246,12 @@ class AdminCreateEnrollmentView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        activation_block = admin_programme_enrollment_activation_block(
+            student, target_status=enroll_status
+        )
+        if activation_block:
+            return Response({'detail': activation_block}, status=status.HTTP_400_BAD_REQUEST)
+
         # Idempotent create-or-update
         enrollment, created = StudentProgrammeEnrollment.objects.get_or_create(
             student=student,
@@ -333,6 +357,11 @@ class AdminEnrollmentDetailView(APIView):
 
         # If status is being changed to 'enrolled', record who did it
         if data.get('status') == 'enrolled' and enrollment.status != 'enrolled':
+            activation_block = admin_programme_enrollment_activation_block(
+                enrollment.student, target_status='enrolled'
+            )
+            if activation_block:
+                return Response({'detail': activation_block}, status=status.HTTP_400_BAD_REQUEST)
             # enrolled_at is auto-stamped in model.save()
             data['enrolled_by'] = request.user.id
 
