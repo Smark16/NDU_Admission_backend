@@ -39,7 +39,11 @@ from django.db.utils import OperationalError
 from .tasks import celery_send_application_email, celery_application_notification, celery_admission_email, celery_admission_update, celery_create_student_account, celery_send_rejection_email, celery_update_student_account
 from accounts.tasks import celery_send_account_email
 from payments.utils.school_pay_code import register_student_with_schoolpay
-from .utils.trigger_background_tasks import trigger_background_tasks
+from .utils.trigger_background_tasks import trigger_background_tasks, queue_admission_notification_emails
+from .utils.student_portal_provisioning import (
+    StudentPortalProvisioningError,
+    provision_student_portal_on_admission,
+)
 from .utils.application_programs_display import ordered_programs_for_application
 from .utils.program_choices import (
     PROGRAM_CHOICE_CONFIRMED_BY_APPLICANT,
@@ -2511,13 +2515,17 @@ class AdmitStudent(generics.CreateAPIView):
                         "SchoolPay registration failed during admission"
                     )
 
-                # Student Account Creation and auto Enrollment
+                provision_student_portal_on_admission(admission.id, send_credentials_email=False)
                 transaction.on_commit(
-                    lambda: trigger_background_tasks(admission.id, application.id),
+                    lambda app_id=application.id, adm_id=admission.id: queue_admission_notification_emails(
+                        adm_id, app_id
+                    )
                 )
-            
+
                 return Response(self.serializer_class(admission).data, status=201)
 
+        except StudentPortalProvisioningError as e:
+            return Response({"detail": str(e)}, status=400)
         except Exception as e:
             logger.exception("Admission failed")
             return Response({"detail": str(e)}, status=400)
@@ -2605,6 +2613,11 @@ class RestoreAdmittedStudent(APIView):
                 ]
             )
             Application.objects.filter(id=admission.application_id).update(status="Admitted")
+
+        try:
+            provision_student_portal_on_admission(admission.id)
+        except StudentPortalProvisioningError as e:
+            return Response({"detail": str(e)}, status=400)
 
         refreshed = (
             AdmittedStudent.objects.select_related(
@@ -3617,10 +3630,11 @@ class DirectAdmissionEntryView(APIView):
                         "SchoolPay registration failed during admission"
                     )
 
-
-                # Queue background tasks AFTER successful commit
+                provision_student_portal_on_admission(admitted_student.id, send_credentials_email=False)
                 transaction.on_commit(
-                    lambda: trigger_background_tasks(admitted_student.id, application.id)
+                    lambda app_id=application.id, adm_id=admitted_student.id: queue_admission_notification_emails(
+                        adm_id, app_id
+                    )
                 )
 
                 return Response({
@@ -3632,6 +3646,8 @@ class DirectAdmissionEntryView(APIView):
                     'schoolpay_code': admitted_student.schoolpay_code,
                 }, status=status.HTTP_201_CREATED)
 
+        except StudentPortalProvisioningError as e:
+            return Response({'detail': str(e)}, status=400)
         except ValueError as ve:
             return Response({'detail': str(ve)}, status=400)
         except Exception as e:

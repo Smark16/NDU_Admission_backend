@@ -241,7 +241,7 @@ def send_offer_letter(request, applicant_id):
 
     # 🔥 Encode and send to Celery
     encoded_docx = base64.b64encode(docx_bytes).decode("utf-8")
-    convert_and_save_pdf_task.delay(encoded_docx, applicant.id)
+    convert_and_save_pdf_task.delay(encoded_docx, applicant.id, send_email=True)
 
 
     return Response({
@@ -262,7 +262,9 @@ def resend_offer_letter(request, applicant_id):
             status=400,
         )
 
-    # send_offerletter_email.delay(applicant.id)
+    send_offerletter_email.delay(applicant.id)
+    applicant.offer_letter_status = "email_sent"
+    applicant.save(update_fields=["offer_letter_status"])
     return Response(
         {"detail": "Offer letter email queued successfully.", "status": "queued"},
         status=200,
@@ -533,7 +535,13 @@ def bulk_send_offer_letters(request):
         if not cleaned_ids:
             return Response({"detail": "No valid applicant IDs provided."}, status=400)
 
-    send_email = _bool_request_flag(request.data.get("send_email"), default=False)
+    if "send_email" in request.data:
+        send_email = _bool_request_flag(request.data.get("send_email"), default=False)
+    elif all_eligible:
+        send_email = False
+    else:
+        # Selected application_ids: generate if needed and email by default.
+        send_email = True
     force_async = _bool_request_flag(request.data.get("async"), default=False)
     use_async = force_async or all_eligible or len(cleaned_ids) > BULK_SYNC_THRESHOLD
 

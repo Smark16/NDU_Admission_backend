@@ -123,14 +123,25 @@ def send_admission_update(admission, subject="Admission updated Successfully"):
     return send_configurable_email(admission.application.email, subject, body)
 
 def send_student_login_credentials(user, password, subject="Account Created Successfully"):
-    from accounts.portal_branding import email_branding_context
+    from accounts.portal_branding import email_branding_context, get_erp_frontend_url
 
-    login_url = f"{settings.ERP_FRONTEND_URL}"
+    reg_no = ""
+    try:
+        from admissions.models import AdmittedStudent
+
+        admission = AdmittedStudent.objects.filter(student_user=user).first()
+        if admission and admission.reg_no:
+            reg_no = admission.reg_no.strip()
+    except Exception:
+        pass
+
+    login_url = get_erp_frontend_url()
     html_body = render_to_string('student_login.html', {
         **email_branding_context(),
         'user': user,
         'login_url': login_url,
-        'password': password
+        'password': password,
+        'reg_no': reg_no,
     })
     success = send_configurable_email(
         to_email=user.email,

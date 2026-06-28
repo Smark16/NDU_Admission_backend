@@ -1,14 +1,9 @@
 from celery import shared_task
 from django.apps import apps
 from django.utils import timezone
-from payments.models import RegistrationSettings
-from Programs.models import StudentProgrammeEnrollment
-from Programs.program_batch_resolution import resolve_default_program_batch_for_program
 
 from .utils.email import send_application_email, send_admission_email, send_admission_update, send_student_login_credentials, send_rejection_email
 from .utils.notification import create_notification
-from django.db import transaction
-from accounts.models import User
 import logging
 
 logger = logging.getLogger(__name__)
@@ -60,12 +55,19 @@ def celery_admission_update(admission_id):
 
 @shared_task(bind=True, max_retries=5)
 def celery_create_student_account(self, admission_id, application_id):
-    try:
-        from admissions.student_accounts import ensure_student_portal_account, DEFAULT_STUDENT_PASSWORD
+    """
+    Legacy Celery entry point — provisioning is synchronous on admission.
 
-        Admission = apps.get_model('admissions', 'AdmittedStudent')
+    Re-runs ensure + auto-enroll if a worker retry is needed; credentials email only on create.
+    """
+    try:
+        from admissions.student_accounts import DEFAULT_STUDENT_PASSWORD, ensure_student_portal_account
+        from admissions.utils.email import send_student_login_credentials
+        from admissions.utils.student_portal_provisioning import auto_enroll_admitted_student
+
+        Admission = apps.get_model("admissions", "AdmittedStudent")
         admission = Admission.objects.select_related(
-            'application__applicant', 'student_user'
+            "application__applicant", "student_user"
         ).get(id=admission_id)
 
         user, created = ensure_student_portal_account(admission)
@@ -74,15 +76,9 @@ def celery_create_student_account(self, admission_id, application_id):
             return
 
         if created:
-            celery_send_student_credentials_email.delay(
-                user.id,
-                password=DEFAULT_STUDENT_PASSWORD,
-            )
+            send_student_login_credentials(user, DEFAULT_STUDENT_PASSWORD)
 
-        celery_auto_enroll_students.delay(
-            admission.id,
-            admission.admitted_by_id,
-        )
+        auto_enroll_admitted_student(admission, admission.admitted_by_id)
 
     except Exception as e:
         logger.exception(f"Student account creation failed: {e}")
@@ -118,38 +114,22 @@ def celery_update_student_account(self, admission_id, application_id):
         raise self.retry(exc=e, countdown=60)
 
 # AutoEnroll Students
+def auto_enroll_admitted_student_task(admission_id, user_id):
+    """Celery wrapper — prefer admissions.utils.student_portal_provisioning.auto_enroll_admitted_student."""
+    from admissions.utils.student_portal_provisioning import auto_enroll_admitted_student
+
+    Admission = apps.get_model("admissions", "AdmittedStudent")
+    admission = Admission.objects.get(id=admission_id)
+    auto_enroll_admitted_student(admission, user_id)
+
+
 @shared_task(bind=True, max_retries=5)
 def celery_auto_enroll_students(self, admission_id, user_id):
-    Admission = apps.get_model('admissions', 'AdmittedStudent')
-    User = apps.get_model('accounts', 'User')
-
-    admission = Admission.objects.get(id=admission_id)
-    user = User.objects.get(id=user_id)
     try:
-        reg_settings = RegistrationSettings.get_settings()
-
-        today = timezone.now().date()
-        program_batch = admission.intended_program_batch or resolve_default_program_batch_for_program(
-            admission.admitted_program,
-            today=today,
-            admission_batch=admission.admitted_batch,
-        )
-
-        if program_batch:
-            StudentProgrammeEnrollment.objects.get_or_create(
-                student=admission,
-                defaults={
-                    'program': admission.admitted_program,
-                    'program_batch': program_batch,
-                    'current_year_of_study': 1,
-                    'current_term_number': 1,
-                    'status': "enrolled" if reg_settings.auto_enroll_on_admission else "pending",
-                    'enrolled_by': user if reg_settings.auto_enroll_on_admission else None,
-                    'enrolled_at': timezone.now() if reg_settings.auto_enroll_on_admission else None,
-                }
-        )
+        auto_enroll_admitted_student_task(admission_id, user_id)
     except Exception as e:
         logger.exception(f"Auto-enrollment failed: {e}")
+        raise self.retry(exc=e, countdown=60)
 
 
 @shared_task

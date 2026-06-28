@@ -32,7 +32,7 @@ def send_offerletter_email(application_id):
     offerletter_email(application)
 
 @shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=True, retry_kwargs={"max_retries": 3})
-def convert_and_save_pdf_task(self, encoded_docx, applicant_id):
+def convert_and_save_pdf_task(self, encoded_docx, applicant_id, send_email=True):
     # 🔥 Always ensure fresh DB connection in Celery worker
     close_old_connections()
 
@@ -92,10 +92,10 @@ def convert_and_save_pdf_task(self, encoded_docx, applicant_id):
         applicant.status = "Admitted"
         applicant.save(update_fields=["admission_letter_pdf", "status"])
 
-        # Step 4: Send email
-        # send_offerletter_email.delay(applicant.id)
+        if send_email:
+            send_offerletter_email.delay(applicant.id)
 
-        applicant.offer_letter_status = "email_sent"
+        applicant.offer_letter_status = "email_sent" if send_email else "pdf_ready"
         applicant.offer_letter_progress = 100
         applicant.save(update_fields=["offer_letter_status", "offer_letter_progress"])
 

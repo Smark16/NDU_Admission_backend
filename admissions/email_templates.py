@@ -83,20 +83,36 @@ EMAIL_TEMPLATE_DEFINITIONS: Dict[str, Dict[str, object]] = {
     },
     EmailTemplate.KEY_OFFER_LETTER_SENT: {
         "name": "Offer Letter Sent",
-        "description": "Sent when an offer/admission letter is made available in portal.",
-        "subject_template": "Admission letter sent successfully",
+        "description": "Sent when an offer/admission letter is ready to download from the student portal.",
+        "subject_template": "Your admission letter is ready - {{university_name}}",
         "body_template_html": (
             "Dear {{full_name_upper}},<br/><br/>"
             "<strong>CONGRATULATIONS!</strong><br/><br/>"
-            "We are delighted to inform you that your admission letter has been successfully sent to your portal.<br/><br/>"
-            "Next Steps:<br/>"
-            "1. Log in to {{portal_name}} to download your official admission letter<br/>"
-            "2. Confirm everything is ok and sign where necessary<br/>"
-            "3. Complete registration before the deadline<br/><br/>"
+            "Your official admission letter is now available on the "
+            "<strong>{{portal_name}}</strong> student portal.<br/><br/>"
+            "<strong>How to download your letter</strong><br/>"
+            "1. Open the student portal: "
+            "<a href=\"{{portal_url}}\">{{portal_url}}</a><br/>"
+            "2. Log in using your <strong>student portal</strong> account (not your old applicant login):<br/>"
+            "&nbsp;&nbsp;&bull; <strong>Registration number:</strong> {{reg_no}} "
+            "(enter exactly as shown, with forward slashes)<br/>"
+            "&nbsp;&nbsp;&bull; <strong>Password:</strong> {{default_password}} "
+            "(change this after your first login if prompted)<br/>"
+            "3. On your dashboard, click <strong>Download Offer Letter</strong>.<br/><br/>"
+            "<strong>Your admission details</strong><br/>"
+            "Registration number: {{reg_no}}<br/>"
+            "Student number: {{student_id}}<br/>"
+            "Programme: {{program}}<br/><br/>"
+            "Please download your letter, review it, sign where required, and complete "
+            "registration before the deadline stated on the letter.<br/><br/>"
+            "If you cannot log in, email "
+            "<a href=\"mailto:admissions@ndejjeuniversity.ac.ug\">admissions@ndejjeuniversity.ac.ug</a> "
+            "with your full name and registration number.<br/><br/>"
             "We look forward to welcoming you!<br/><br/>"
-            "Warm regards,<br/>Admissions Office<br/>{{university_name}}<br/>"
-            "Email: admissions@ndejjeuniversity.ac.ug<br/>"
-            "Website: www.ndejjeuniversity.ac.ug"
+            "Warm regards,<br/>"
+            "Admissions Office<br/>"
+            "{{university_name}}<br/>"
+            "Website: <a href=\"https://www.ndejjeuniversity.ac.ug\">www.ndejjeuniversity.ac.ug</a>"
         ),
         "placeholders": [
             *_BRANDING_PLACEHOLDERS,
@@ -105,6 +121,10 @@ EMAIL_TEMPLATE_DEFINITIONS: Dict[str, Dict[str, object]] = {
             "full_name",
             "full_name_upper",
             "portal_url",
+            "default_password",
+            "reg_no",
+            "student_id",
+            "program",
         ],
     },
     EmailTemplate.KEY_WEEKLY_ADMISSIONS_DIGEST: {

@@ -1,38 +1,33 @@
 import logging
 
-from admissions.tasks import celery_admission_email, celery_create_student_account
-from admissions.student_accounts import ensure_student_portal_account, DEFAULT_STUDENT_PASSWORD
+from admissions.tasks import celery_admission_email
+from admissions.utils.student_portal_provisioning import provision_student_portal_on_admission
 
 logger = logging.getLogger(__name__)
 
 
-def provision_student_portal_account_sync(admission_id: int) -> None:
-    """
-    Create/link the student portal user immediately on admission.
-
-    Celery may be offline; without this step many admitted students have no login at all.
-    """
+def send_admission_portal_credentials(admission_id: int) -> None:
+    """Send login credentials after commit (used from on_commit hooks)."""
     from admissions.models import AdmittedStudent
+    from admissions.student_accounts import DEFAULT_STUDENT_PASSWORD
+    from admissions.utils.email import send_student_login_credentials
 
-    try:
-        admission = AdmittedStudent.objects.select_related(
-            "application__applicant", "student_user"
-        ).get(pk=admission_id)
-        user, created = ensure_student_portal_account(admission)
-        if user and created:
-            from admissions.tasks import celery_send_student_credentials_email
+    admission = AdmittedStudent.objects.select_related("student_user").filter(pk=admission_id).first()
+    if not admission or not admission.student_user_id:
+        return
+    send_student_login_credentials(admission.student_user, DEFAULT_STUDENT_PASSWORD)
 
-            celery_send_student_credentials_email.delay(user.id, password=DEFAULT_STUDENT_PASSWORD)
-    except AdmittedStudent.DoesNotExist:
-        logger.error("provision_student_portal_account_sync: admission %s not found", admission_id)
-    except Exception:
-        logger.exception(
-            "Synchronous student portal provisioning failed for admission %s",
-            admission_id,
-        )
+
+def queue_admission_notification_emails(admission_id: int, application_id: int) -> None:
+    send_admission_portal_credentials(admission_id)
+    celery_admission_email.delay(application_id, admission_id)
 
 
 def trigger_background_tasks(admission_id, application_id):
-    provision_student_portal_account_sync(admission_id)
-    celery_admission_email.delay(application_id, admission_id)
-    celery_create_student_account.delay(admission_id, application_id)
+    """
+    Provision the student portal account synchronously, then queue admission email.
+
+    Account creation must succeed before this returns; Celery is only used for email.
+    """
+    provision_student_portal_on_admission(admission_id, send_credentials_email=False)
+    queue_admission_notification_emails(admission_id, application_id)

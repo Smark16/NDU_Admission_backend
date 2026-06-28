@@ -10,9 +10,10 @@
     
     <p>Dear {{ user.first_name }} {{ user.last_name }},</p>
     
-    <p>Your account has been created successfully.</p>
+    <p>Your student portal account has been created successfully.</p>
 
-    <p><strong>Username:</strong> {{ user.username }}</p>
+    <p><strong>Registration number (use this to log in):</strong> {{ reg_no|default:user.username }}</p>
+    <p><em>Enter your registration number exactly as shown, including forward slashes (/) — not underscores.</em></p>
     <p><strong>Password:</strong> {{ password }}</p>
 
     <p style="text-align: center; margin: 30px 0;">

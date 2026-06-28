@@ -33,10 +33,10 @@ def _queue_offer_letter_email(application_id: int) -> None:
     send_offerletter_email.delay(application_id)
 
 
-def _queue_docx_to_pdf(encoded_docx: str, application_id: int) -> None:
+def _queue_docx_to_pdf(encoded_docx: str, application_id: int, *, send_email: bool = True) -> None:
     from OfferLetter.AdmissionLetter.tasks import convert_and_save_pdf_task
 
-    convert_and_save_pdf_task.delay(encoded_docx, application_id)
+    convert_and_save_pdf_task.delay(encoded_docx, application_id, send_email=send_email)
 
 
 def resolve_verify_base(request=None, origin: str | None = None) -> str:
@@ -256,7 +256,7 @@ def generate_offer_letter_for_application(
     applicant.save()
 
     encoded_docx = base64.b64encode(docx_bytes).decode("utf-8")
-    _queue_docx_to_pdf(encoded_docx, applicant.id)
+    _queue_docx_to_pdf(encoded_docx, applicant.id, send_email=send_email)
 
     return {
         "ok": True,

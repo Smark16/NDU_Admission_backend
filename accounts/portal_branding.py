@@ -6,6 +6,15 @@ from pathlib import Path
 from django.conf import settings
 
 DEFAULT_UNIVERSITY_NAME = "NDEJJE UNIVERSITY STEWARD"
+DEFAULT_ERP_FRONTEND_URL = "https://erp.ndejje.ndu.ac.ug"
+
+
+def get_erp_frontend_url() -> str:
+    """Public student/staff ERP URL for emails and links (no trailing slash)."""
+    url = (getattr(settings, "ERP_FRONTEND_URL", "") or "").strip().rstrip("/")
+    if url:
+        return url
+    return DEFAULT_ERP_FRONTEND_URL
 
 
 def get_university_display_name() -> str:
@@ -33,6 +42,7 @@ def email_branding_context() -> dict:
         "university_name": name,
         "portal_name": name,
         "system_name": name,
+        "portal_url": get_erp_frontend_url(),
     }
 
 
