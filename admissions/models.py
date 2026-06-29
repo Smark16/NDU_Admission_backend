@@ -160,13 +160,23 @@ class Application(models.Model):
     date_of_birth = models.DateField()
     gender = models.CharField(max_length=20)
     nationality = models.CharField(max_length=100)
+    applicant_category = models.CharField(
+        max_length=20,
+        choices=[
+            ("local", "Local"),
+            ("international", "International"),
+        ],
+        default="local",
+    )
     phone = models.CharField(max_length=20)
     email = models.EmailField()
     address = models.TextField(max_length=255, blank=True, null=True)
     nin = models.CharField(max_length=20, blank=True, null=True)
     passport_number = models.CharField(max_length=20, blank=True, null=True)
     disabled = models.CharField(max_length=5, null=True, blank=True)
-    
+    is_refugee = models.BooleanField(default=False)
+    refugee_status_proof = models.FileField(upload_to='refugee_proofs/', blank=True, null=True)
+
     # Next of Kin Information
     next_of_kin_name = models.CharField(max_length=200)
     next_of_kin_contact = models.CharField(max_length=25)

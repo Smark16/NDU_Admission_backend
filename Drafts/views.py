@@ -89,6 +89,10 @@ def save_draft_applications(request):
         draft.middle_name = data.get('middleName', '')
         draft.gender = data.get('gender', '')
         draft.nationality = data.get('nationality', '')
+        from admissions.applicant_category import category_from_nationality, normalize_applicant_category
+
+        raw_category = normalize_applicant_category(data.get('applicantCategory'))
+        draft.applicant_category = raw_category or category_from_nationality(draft.nationality)
         draft.nin = data.get('nin', '')
         draft.title = data.get('title', '')
         draft.passport_number = data.get('passportNumber', '')
@@ -96,6 +100,10 @@ def save_draft_applications(request):
         draft.email = data.get('email', '')
         draft.address = data.get('address', '')
         draft.disabled = data.get('disabled', '')
+        draft.is_refugee = str(data.get('isRefugee', '')).lower() == 'yes'
+        if not draft.is_refugee and draft.refugee_status_proof:
+            draft.refugee_status_proof.delete(save=False)
+            draft.refugee_status_proof = None
         
         draft.nextOfKinName = data.get('nextOfKinName', '')
         draft.next_of_kin_contact = data.get('nextOfKinContact', '')
@@ -218,6 +226,7 @@ def upload_draft_document(request):
         'oLevelDocuments': 'olevel_document',
         'aLevelDocuments': 'alevel_document',
         'otherInstitutionDocuments': 'other_documents',
+        'refugeeStatusProof': 'refugee_status_proof',
     }
 
     doc_type = request.data.get('document_type')
@@ -353,12 +362,14 @@ def get_draft_application(request):
             "title": draft.title or "",
             "gender": draft.gender or "",
             "nationality": draft.nationality or "",
+            "applicantCategory": draft.applicant_category or "local",
             "nin": draft.nin or "",
             "passportNumber": draft.passport_number or "",
             "phone": draft.phone or "",
             "email": draft.email or "",
             "address": draft.address or "",
             "disabled": draft.disabled or "",
+            "isRefugee": "yes" if draft.is_refugee else "no",
 
             # === NEXT OF KIN - FIXED ===
             "nextOfKinName": getattr(draft, 'nextOfKinName', '') or "",
@@ -396,6 +407,7 @@ def get_draft_application(request):
 
             # Document URLs
             "passportPhotoUrl": request.build_absolute_uri(draft.passport_photo.url) if draft.passport_photo else None,
+            "refugeeStatusProofUrl": request.build_absolute_uri(draft.refugee_status_proof.url) if draft.refugee_status_proof else None,
             "oLevelDocumentsUrl": request.build_absolute_uri(draft.olevel_document.url) if draft.olevel_document else None,
             "aLevelDocumentsUrl": request.build_absolute_uri(draft.alevel_document.url) if draft.alevel_document else None,
             "otherInstitutionDocumentsUrl": other_doc_items[0]["url"] if other_doc_items else None,

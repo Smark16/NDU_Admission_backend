@@ -280,6 +280,8 @@ CORS_ALLOWED_ORIGINS = [
     "http://137.63.139.78",
     "http://localhost:5173",
     "http://127.0.0.1:5173",
+    "http://localhost:5174",
+    "http://127.0.0.1:5174",
     "https://admissions.ndu.ac.ug",
     "http://localhost:3001",
     "https://erp.ndejje.ndu.ac.ug",
@@ -293,6 +295,7 @@ CORS_ALLOWED_ORIGINS = [
 CORS_ALLOWED_ORIGIN_REGEXES = [
     r"^https?://([a-z0-9-]+\.)*ndu\.ac\.ug$",
     r"^http://137\.63\.139\.78$",
+    r"^http://(localhost|127\.0\.0\.1):\d+$",
 ]
 
 # Important for debugging

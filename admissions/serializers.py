@@ -133,8 +133,8 @@ class ApplicationSerializer(serializers.ModelSerializer):
     reviewed_by = serializers.CharField(source='reviewed_by.full_name', read_only=True, allow_null=True)
     class Meta:
         model = Application
-        fields = ['id', 'first_name', 'last_name','middle_name', 'date_of_birth', 'gender', 'nationality', 'phone', 'email',
-                  'batch', 'campus', "nin", "passport_number","disabled", 'olevel_school', 'olevel_year', 'alevel_school', 'alevel_year', 'address',
+        fields = ['id', 'first_name', 'last_name','middle_name', 'date_of_birth', 'gender', 'nationality', 'applicant_category', 'phone', 'email',
+                  'batch', 'campus', "nin", "passport_number","disabled", 'is_refugee', 'refugee_status_proof', 'olevel_school', 'olevel_year', 'alevel_school', 'alevel_year', 'address',
                   'middle_name', 'next_of_kin_name', 'next_of_kin_contact', 'next_of_kin_relationship', 'reviewed_by', 'applicant', 'status',
                   'title', 'alevel_combination', 'alevel_index_number', 'olevel_index_number','application_fee_amount', 'created_at', 'address', 'passport_photo',
                   'has_olevel', 'has_alevel']
@@ -225,6 +225,9 @@ class AllApplicationsReportSerializer(serializers.ModelSerializer):
             "last_name",
             "email",
             "gender",
+            "nationality",
+            "applicant_category",
+            "is_refugee",
             "academic_level",
             "batch",
             "campus",
@@ -250,8 +253,8 @@ class ApplicationDetailSerializer(serializers.ModelSerializer):
     batch = serializers.CharField(source='batch.name', read_only=True)
     class Meta:
         model = Application
-        fields = ['id', 'first_name', 'last_name','middle_name', 'date_of_birth', 'gender', 'nationality', 'phone', 'email',
-                  'batch', "nin", "passport_number","disabled", "has_olevel",'olevel_school', 'olevel_year',"olevel_index_number", "has_alevel", 'alevel_school', 'alevel_year', 'alevel_index_number', 
+        fields = ['id', 'first_name', 'last_name','middle_name', 'date_of_birth', 'gender', 'nationality', 'applicant_category', 'phone', 'email',
+                  'batch', "nin", "passport_number","disabled", "is_refugee", "refugee_status_proof", "has_olevel",'olevel_school', 'olevel_year',"olevel_index_number", "has_alevel", 'alevel_school', 'alevel_year', 'alevel_index_number', 
                   'address','middle_name', 'next_of_kin_name', 'next_of_kin_contact', 'next_of_kin_relationship', 'revoked_by', 'is_revoked','revocation_reason',"alevel_combination",
                   'status', 'application_fee_amount','application_fee_paid', 'created_at', 'reviewed_at', 'passport_photo','reviewed_by',
                   'review_notes',

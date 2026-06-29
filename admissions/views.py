@@ -258,6 +258,24 @@ def create_applications(request):
             else:
                 return Response({"detail": "Passport photo is required"}, status=400)
 
+            is_refugee = bool(serializer.validated_data.get('is_refugee'))
+            if is_refugee:
+                if draft and draft.refugee_status_proof:
+                    try:
+                        original_name = draft.refugee_status_proof.name.split('/')[-1]
+                        application.refugee_status_proof.save(
+                            original_name,
+                            draft.refugee_status_proof.file,
+                            save=False,
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to copy refugee status proof from draft: {e}")
+                        return Response({"detail": "Failed to process refugee status proof"}, status=400)
+                elif 'refugee_status_proof' in request.FILES:
+                    application.refugee_status_proof = request.FILES['refugee_status_proof']
+                else:
+                    return Response({"detail": "Refugee status proof is required"}, status=400)
+
             # Save the main application first (so it gets an ID)
             application.save()
 
@@ -609,6 +627,25 @@ class StandardPagination(PageNumberPagination):
     max_page_size = 200
 
 # Applicant lists
+def apply_application_demographic_filters(queryset, request):
+  """Filter by applicant category (local/international), country name, and refugee status."""
+  from admissions.applicant_category import normalize_applicant_category
+
+  nationality = (request.query_params.get("nationality") or "").strip()
+  applicant_category = normalize_applicant_category(request.query_params.get("applicant_category"))
+  is_refugee = (request.query_params.get("is_refugee") or "").strip().lower()
+
+  if applicant_category:
+      queryset = queryset.filter(applicant_category=applicant_category)
+  elif nationality and nationality.lower() != "all":
+      queryset = queryset.filter(nationality__icontains=nationality)
+  if is_refugee in ("true", "yes", "1"):
+      queryset = queryset.filter(is_refugee=True)
+  elif is_refugee in ("false", "no", "0"):
+      queryset = queryset.filter(is_refugee=False)
+  return queryset
+
+
 def build_applications_report_queryset(request, *, apply_choice_filter: bool = True):
     queryset = (
         Application.objects.select_related(
@@ -673,6 +710,8 @@ def build_applications_report_queryset(request, *, apply_choice_filter: bool = T
         queryset = queryset.filter(created_at__date__gte=date_from)
     if date_to:
         queryset = queryset.filter(created_at__date__lte=date_to)
+
+    queryset = apply_application_demographic_filters(queryset, request)
 
     if choice_confirmation and choice_confirmation != "all":
         cc = choice_confirmation.strip().lower()
@@ -758,6 +797,7 @@ def build_applications_detail_report_queryset(request, *, apply_choice_filter: b
         queryset = queryset.filter(created_at__date__gte=date_from)
     if date_to:
         queryset = queryset.filter(created_at__date__lte=date_to)
+    queryset = apply_application_demographic_filters(queryset, request)
     if direct_entry_param is not None:
         direct_entry_param = str(direct_entry_param).lower().strip()
         
