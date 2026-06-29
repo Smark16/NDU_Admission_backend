@@ -18,13 +18,14 @@ logger = logging.getLogger(__name__)
 @shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=10)
 def auto_process_delayed_payments(self):
     """
-    Reconcile stale PENDING application-fee payments with SchoolPay.
-    Does not mark FAILED unless the gateway confirms failure.
+    Reconcile PENDING application-fee payments older than 10 minutes with SchoolPay.
+    Auto-clears abandoned initiations (no PIN entered) so applicants can retry.
     """
     results = reconcile_stale_pending_application_payments()
     return (
         f"{results['paid']} paid, {results['failed']} failed, "
-        f"{results['still_pending']} still pending, {results['errors']} errors"
+        f"{results['cleared']} cleared, {results['still_pending']} still pending, "
+        f"{results['errors']} errors"
     )
 
 

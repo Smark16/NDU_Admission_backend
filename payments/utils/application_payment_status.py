@@ -155,8 +155,11 @@ def reconcile_stale_pending_application_payments(
     client=None,
 ):
     """
-    For PENDING payments older than stale_minutes, verify with SchoolPay before failing.
-    Only marks FAILED when the gateway reports FAILED/CANCELLED.
+    For PENDING payments older than stale_minutes:
+    1. Poll SchoolPay — mark PAID if money was received.
+    2. Mark FAILED if the gateway reports FAILED/CANCELLED.
+    3. Otherwise auto-abandon (mark FAILED locally) so the applicant can retry.
+       Covers initiations where the applicant never entered their Mobile Money PIN.
     """
     cutoff = timezone.now() - timedelta(minutes=stale_minutes)
     qs = queryset
@@ -171,15 +174,33 @@ def reconcile_stale_pending_application_payments(
     if client is None:
         client = SchoolPayClient()
 
-    results = {"paid": 0, "failed": 0, "still_pending": 0, "errors": 0}
+    results = {"paid": 0, "failed": 0, "cleared": 0, "still_pending": 0, "errors": 0}
 
     for payment in qs.iterator():
         outcome = reconcile_pending_application_payment(payment, client=client)
-        if outcome == "paid":
+        payment.refresh_from_db()
+
+        if outcome == "paid" or payment.status == "PAID":
             results["paid"] += 1
-        elif outcome == "failed":
+            continue
+        if outcome == "failed" or payment.status == "FAILED":
             results["failed"] += 1
-        elif outcome == "error":
+            continue
+
+        if payment.status != "PENDING":
+            continue
+
+        # Gateway still pending, API error, or unverifiable — abandon after stale window.
+        abandon_outcome, _ = clear_pending_application_payment(
+            payment,
+            verify_first=False,
+        )
+        payment.refresh_from_db()
+        if abandon_outcome == "cleared":
+            results["cleared"] += 1
+        elif abandon_outcome == "paid":
+            results["paid"] += 1
+        elif abandon_outcome == "error":
             results["errors"] += 1
         else:
             results["still_pending"] += 1

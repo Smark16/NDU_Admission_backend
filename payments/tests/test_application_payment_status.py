@@ -162,7 +162,20 @@ class ApplicationPaymentStatusTests(TestCase):
         results = reconcile_stale_pending_application_payments(client=mock_client)
         self.assertEqual(results["paid"], 1)
         self.assertEqual(results["failed"], 0)
+        self.assertEqual(results["cleared"], 0)
         self.assertEqual(results["still_pending"], 0)
+
+    def test_stale_reconcile_auto_clears_abandoned_pending(self):
+        mock_client = MagicMock()
+        mock_client.check_status.return_value = {
+            "returnCode": 0,
+            "status": "PENDING",
+        }
+        results = reconcile_stale_pending_application_payments(client=mock_client)
+        self.payment.refresh_from_db()
+        self.assertEqual(results["cleared"], 1)
+        self.assertEqual(results["paid"], 0)
+        self.assertEqual(self.payment.status, "FAILED")
 
     def test_webhook_marks_payment_paid(self):
         request = RequestFactory().post(
@@ -226,12 +239,19 @@ class ApplicationPaymentStatusTests(TestCase):
 
     @patch(
         "payments.tasks.reconcile_stale_pending_application_payments",
-        return_value={"paid": 1, "failed": 0, "still_pending": 2, "errors": 0},
+        return_value={
+            "paid": 1,
+            "failed": 0,
+            "cleared": 2,
+            "still_pending": 0,
+            "errors": 0,
+        },
     )
     def test_celery_delayed_task_uses_reconcile(self, mock_reconcile):
         result = auto_process_delayed_payments()
         mock_reconcile.assert_called_once()
         self.assertIn("1 paid", result)
+        self.assertIn("2 cleared", result)
 
     def test_celery_delete_task_is_disabled(self):
         ApplicationPayment.objects.filter(pk=self.payment.pk).update(status="FAILED")
