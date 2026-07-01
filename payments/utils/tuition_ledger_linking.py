@@ -64,22 +64,21 @@ def relink_tuition_ledgers_for_student(student: AdmittedStudent) -> int:
     if not codes:
         return 0
 
-    updated = 0
     qs = TuitionLedger.objects.filter(student_payment_code__in=codes).filter(
         Q(student__isnull=True) | ~Q(student_id=student.pk)
     )
-    for ledger in qs.iterator():
-        ledger.student = student
-        update_fields = ["student"]
-        if student.student_user_id and ledger.user_id is None:
-            ledger.user = student.student_user
-            update_fields.append("user")
-        ledger.save(update_fields=update_fields)
-        updated += 1
+    ledgers = list(qs.only("id", "user_id", "student_id"))
+    if not ledgers:
+        return 0
 
-    if updated:
-        sync_admission_fee_paid_from_ledger(student)
-    return updated
+    for ledger in ledgers:
+        ledger.student_id = student.pk
+        if student.student_user_id and ledger.user_id is None:
+            ledger.user_id = student.student_user_id
+
+    TuitionLedger.objects.bulk_update(ledgers, ["student", "user"])
+    sync_admission_fee_paid_from_ledger(student)
+    return len(ledgers)
 
 
 def sync_admission_fee_paid_from_ledger(student: AdmittedStudent) -> bool:

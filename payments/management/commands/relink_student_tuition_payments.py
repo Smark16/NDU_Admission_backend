@@ -30,6 +30,16 @@ class Command(BaseCommand):
             action="store_true",
             help="Re-link every admitted student (slow).",
         )
+        parser.add_argument(
+            "--only-changes",
+            action="store_true",
+            help="With --all, print only students that were relinked or changed.",
+        )
+        parser.add_argument(
+            "--verbose",
+            action="store_true",
+            help="With --all, print every student (very long).",
+        )
 
     def handle(self, *args, **options):
         lookup = (options.get("lookup") or "").strip()
@@ -38,27 +48,55 @@ class Command(BaseCommand):
             return
 
         if options["all"]:
-            qs = AdmittedStudent.objects.filter(is_admitted=True).order_by("id")
-        else:
-            qs = AdmittedStudent.objects.filter(
-                Q(student_id__iexact=lookup)
-                | Q(schoolpay_code__iexact=lookup)
-                | Q(reg_no__iexact=lookup)
+            student_ids = list(
+                AdmittedStudent.objects.filter(is_admitted=True)
+                .order_by("id")
+                .values_list("id", flat=True)
             )
-            if not qs.exists():
+        else:
+            student_ids = list(
+                AdmittedStudent.objects.filter(
+                    Q(student_id__iexact=lookup)
+                    | Q(schoolpay_code__iexact=lookup)
+                    | Q(reg_no__iexact=lookup)
+                ).values_list("id", flat=True)
+            )
+            if not student_ids:
                 self.stderr.write(self.style.ERROR(f"No admitted student for: {lookup!r}"))
                 return
 
+        only_changes = options["only_changes"] or (
+            options["all"] and not options["verbose"]
+        )
         total_linked = 0
-        for student in qs.iterator():
+        processed = 0
+
+        for student_id in student_ids:
+            student = (
+                AdmittedStudent.objects.select_related("student_user")
+                .filter(pk=student_id)
+                .first()
+            )
+            if student is None:
+                continue
+
             before = commitment_payment_summary(student)
             linked = relink_tuition_ledgers_for_student(student)
             student.refresh_from_db(fields=["admission_fee_paid", "admission_fee_paid_at"])
             after = commitment_payment_summary(student)
+            processed += 1
+            total_linked += linked
+
+            commitment_changed = (
+                before["commitment_paid_ugx"] != after["commitment_paid_ugx"]
+                or before["commitment_met"] != after["commitment_met"]
+            )
+            if only_changes and linked == 0 and not commitment_changed:
+                continue
+
             ledger_count = tuition_ledger_queryset_for_student(student).filter(
                 transaction_completion_status="Completed"
             ).count()
-            total_linked += linked
             self.stdout.write(
                 f"{student.reg_no} | codes={sorted(payment_codes_for_student(student))} | "
                 f"ledgers={ledger_count} | relinked={linked} | "
@@ -66,4 +104,8 @@ class Command(BaseCommand):
                 f"met={after['commitment_met']}"
             )
 
-        self.stdout.write(self.style.SUCCESS(f"Done. ledger_rows_relinked={total_linked}"))
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"Done. students_processed={processed} ledger_rows_relinked={total_linked}"
+            )
+        )
