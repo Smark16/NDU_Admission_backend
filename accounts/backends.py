@@ -41,8 +41,18 @@ class StudentIdBackend(ModelBackend):
                 .select_related("student_user")
                 .first()
             )
-            if admission and admission.student_user_id:
-                return admission.student_user
+            if admission:
+                if admission.student_user_id:
+                    return admission.student_user
+                if admission.is_admitted:
+                    try:
+                        from admissions.student_accounts import ensure_student_portal_account
+
+                        user, _created = ensure_student_portal_account(admission)
+                        if user is not None:
+                            return user
+                    except Exception:
+                        pass
 
             sanitized = student_portal_username(ident)
             if sanitized and sanitized.lower() != ident.lower():

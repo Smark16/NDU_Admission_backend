@@ -2556,6 +2556,7 @@ class AdmitStudent(generics.CreateAPIView):
                     )
 
                 provision_student_portal_on_admission(admission.id, send_credentials_email=True)
+                admission.refresh_from_db()
                 transaction.on_commit(
                     lambda app_id=application.id, adm_id=admission.id: queue_admission_notification_emails(
                         adm_id, app_id
@@ -3671,6 +3672,7 @@ class DirectAdmissionEntryView(APIView):
                     )
 
                 provision_student_portal_on_admission(admitted_student.id, send_credentials_email=True)
+                admitted_student.refresh_from_db()
                 transaction.on_commit(
                     lambda app_id=application.id, adm_id=admitted_student.id: queue_admission_notification_emails(
                         adm_id, app_id

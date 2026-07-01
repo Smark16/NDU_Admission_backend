@@ -83,7 +83,10 @@ def provision_student_portal_on_admission(
         )
 
     had_linked_user = bool(admission.student_user_id)
-    user, created = ensure_student_portal_account(admission)
+    user, created = ensure_student_portal_account(
+        admission,
+        reset_password=not had_linked_user,
+    )
     if user is None:
         raise StudentPortalProvisioningError(
             "Student portal account could not be created. Check the registration number."
@@ -101,3 +104,29 @@ def provision_student_portal_on_admission(
 
     auto_enroll_admitted_student(admission, admission.admitted_by_id)
     admission.refresh_from_db(fields=["student_user"])
+    assert_student_portal_ready(admission)
+
+
+def assert_student_portal_ready(admission) -> None:
+    """Raise if the admitted student cannot sign in to the student portal."""
+    from admissions.student_accounts import student_portal_username
+
+    user = admission.student_user
+    if user is None:
+        raise StudentPortalProvisioningError(
+            f"Portal account was not linked for admission {admission.pk}."
+        )
+    if not user.is_active:
+        raise StudentPortalProvisioningError(
+            f"Portal account for {admission.reg_no} is inactive."
+        )
+    if not user.is_student:
+        raise StudentPortalProvisioningError(
+            f"Portal account for {admission.reg_no} is not marked as a student."
+        )
+    expected_username = student_portal_username(admission.reg_no)
+    if expected_username and user.username.lower() != expected_username.lower():
+        raise StudentPortalProvisioningError(
+            f"Portal username mismatch for {admission.reg_no}: "
+            f"expected {expected_username}, got {user.username}."
+        )

@@ -1,8 +1,9 @@
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer, TokenRefreshSerializer
 from rest_framework_simplejwt.tokens import RefreshToken
-from django.contrib.auth.models import Group, Permission
+from django.contrib.auth.models import Group, Permission, update_last_login
 from django.contrib.auth.password_validation import validate_password
+from django.db.models import Q
 from .models import User, Campus, Profile, SystemSettings
 from admissions.models import Faculty
 from .jwt_utils import apply_user_token_claims
@@ -79,11 +80,78 @@ class ListUserSerializer(serializers.ModelSerializer):
     
 # login
 class ObtainSerializer(TokenObtainPairSerializer):
+    """JWT login — resolves registration numbers and provisions missing portal users."""
+
     @classmethod
     def get_token(cls, user):
         token = super().get_token(user)
         apply_user_token_claims(token, user)
         return token
+
+    def validate(self, attrs):
+        from django.contrib.auth import authenticate, get_user_model
+        from rest_framework import exceptions
+        from rest_framework_simplejwt.settings import api_settings as jwt_settings
+
+        from admissions.models import AdmittedStudent
+        from admissions.student_accounts import student_portal_username
+        from admissions.utils.student_portal_provisioning import (
+            StudentPortalProvisioningError,
+            provision_student_portal_on_admission,
+        )
+
+        username_field = get_user_model().USERNAME_FIELD
+        username = (attrs.get(username_field) or "").strip()
+        password = attrs.get("password") or ""
+
+        def try_auth(ident: str):
+            if not ident:
+                return None
+            kw = {username_field: ident, "password": password}
+            try:
+                kw["request"] = self.context["request"]
+            except KeyError:
+                pass
+            return authenticate(**kw)
+
+        user = try_auth(username)
+        alt_username = student_portal_username(username) if username else ""
+
+        if user is None and alt_username and alt_username.lower() != username.lower():
+            user = try_auth(alt_username)
+
+        if user is None and username:
+            admission = (
+                AdmittedStudent.objects.filter(
+                    Q(reg_no__iexact=username) | Q(reg_no__iexact=alt_username)
+                )
+                .select_related("student_user")
+                .first()
+            )
+            if admission and admission.is_admitted and not admission.student_user_id:
+                try:
+                    provision_student_portal_on_admission(
+                        admission.id, send_credentials_email=False
+                    )
+                except StudentPortalProvisioningError:
+                    pass
+                user = try_auth(username) or try_auth(alt_username)
+
+        if not jwt_settings.USER_AUTHENTICATION_RULE(user):
+            raise exceptions.AuthenticationFailed(
+                self.error_messages["no_active_account"],
+                "no_active_account",
+            )
+
+        self.user = user
+        refresh = self.get_token(self.user)
+        data = {
+            "refresh": str(refresh),
+            "access": str(refresh.access_token),
+        }
+        if jwt_settings.UPDATE_LAST_LOGIN:
+            update_last_login(None, self.user)
+        return data
 
 
 class NduTokenRefreshSerializer(TokenRefreshSerializer):
