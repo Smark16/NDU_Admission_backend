@@ -13,6 +13,7 @@ from admissions.models import AdmittedStudent
 from payments.models import FeePlanRule, StudentTuitionPayment, TuitionLedger
 from payments.billing_visibility import billing_date_iso, billing_date_reached
 from payments.student_fee_pricing import effective_amount_currency, is_international_student
+from payments.utils.tuition_ledger_linking import tuition_ledger_queryset_for_student
 
 COMMITMENT_FEE_THRESHOLD = Decimal("150000")
 
@@ -76,8 +77,8 @@ def payment_credits_by_currency(student: AdmittedStudent) -> dict[str, Decimal]:
         ccy = _norm_ccy(p.currency)
         out[ccy] += p.amount or Decimal("0")
 
-    for row in TuitionLedger.objects.filter(
-        student=student, transaction_completion_status="Completed"
+    for row in tuition_ledger_queryset_for_student(student).filter(
+        transaction_completion_status="Completed"
     ):
         ref = (row.schoolpay_receipt_number or row.source_channel_transaction_id or "").strip()
         key = f"led:{ref}" if ref else f"led:id:{row.id}"

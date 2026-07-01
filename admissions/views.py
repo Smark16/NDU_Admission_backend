@@ -2966,6 +2966,10 @@ class UpdateAdmittedStudent(generics.UpdateAPIView):
         assert_admitted_student_access(self.request.user, admission)
         admission = serializer.save()   # This saves the AdmittedStudent instance
 
+        from payments.utils.tuition_ledger_linking import relink_tuition_ledgers_for_student
+
+        relink_tuition_ledgers_for_student(admission)
+
         try:
             # Always trigger both tasks when admission is updated
             celery_admission_update.delay(admission.id)

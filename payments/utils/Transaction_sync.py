@@ -1,19 +1,19 @@
 from decimal import Decimal
 from django.utils.dateparse import parse_datetime
-from django.utils import timezone
 
 from payments.models import TuitionLedger
 from payments.programme_enrollment_activation import (
     try_activate_programme_enrollment_after_payment,
 )
-from admissions.models import AdmittedStudent
+from payments.utils.tuition_ledger_linking import (
+    find_admitted_student_by_payment_code,
+    sync_admission_fee_paid_from_ledger,
+)
 
 import hashlib
 import requests
 from django.conf import settings
 from payments.utils.schoolpay_auth import schoolpay_api_root
-
-ADMISSION_FEE_AMOUNT = Decimal("150000")
 
 # request hash
 def generate_request_hash(date_string):
@@ -89,16 +89,8 @@ def reconcile_transactions(data):
             "studentPaymentCode"
         )
 
-        # FIND STUDENT
-        student = (
-            AdmittedStudent.objects
-            .select_related("student_user", "application", 
-                 "admitted_program", "admitted_batch", "admitted_campus", "admitted_by")
-            .filter(
-                student_id=payment_code
-            )
-            .first()
-        )
+        # FIND STUDENT (payment code may match student_id, schoolpay_code, or reg_no)
+        student = find_admitted_student_by_payment_code(payment_code)
 
         # CREATE TRANSACTION SAFELY
         ledger, created = (
@@ -170,26 +162,27 @@ def reconcile_transactions(data):
             )
         )
 
-        # Existing receipt: still attempt enrollment (backlog / missed activation)
+        # Existing receipt: relink, sync flags, and retry enrollment if needed.
         if not created:
-            if (
-                student
-                and ledger.transaction_completion_status == "Completed"
-            ):
+            if student and ledger.transaction_completion_status == "Completed":
+                if ledger.student_id != student.pk:
+                    ledger.student = student
+                    if student.student_user_id and ledger.user_id is None:
+                        ledger.user = student.student_user
+                    ledger.save(update_fields=["student", "user"])
+                sync_admission_fee_paid_from_ledger(student)
                 try_activate_programme_enrollment_after_payment(student)
             continue
 
         # RECONCILIATION + academic enrollment when commitment is met
         if student and ledger.transaction_completion_status == "Completed":
-            if ledger.amount >= ADMISSION_FEE_AMOUNT and not student.admission_fee_paid:
-                student.admission_fee_paid = True
-                student.admission_fee_paid_at = timezone.now()
-                student.save(
-                    update_fields=[
-                        "admission_fee_paid",
-                        "admission_fee_paid_at",
-                    ]
-                )
+            if ledger.student_id != student.pk:
+                ledger.student = student
+                if student.student_user_id and ledger.user_id is None:
+                    ledger.user = student.student_user
+                ledger.save(update_fields=["student", "user"])
+
+            sync_admission_fee_paid_from_ledger(student)
 
             if not ledger.reconciled:
                 ledger.reconciled = True
