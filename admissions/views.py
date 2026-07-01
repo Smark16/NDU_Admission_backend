@@ -39,7 +39,7 @@ from django.db.utils import OperationalError
 from .tasks import celery_send_application_email, celery_application_notification, celery_admission_email, celery_admission_update, celery_create_student_account, celery_send_rejection_email, celery_update_student_account
 from accounts.tasks import celery_send_account_email
 from payments.utils.school_pay_code import register_student_with_schoolpay
-from .utils.trigger_background_tasks import trigger_background_tasks, queue_admission_notification_emails
+from .utils.trigger_background_tasks import queue_admission_notification_emails
 from .utils.student_portal_provisioning import (
     StudentPortalProvisioningError,
     provision_student_portal_on_admission,
@@ -2555,7 +2555,7 @@ class AdmitStudent(generics.CreateAPIView):
                         "SchoolPay registration failed during admission"
                     )
 
-                provision_student_portal_on_admission(admission.id, send_credentials_email=False)
+                provision_student_portal_on_admission(admission.id, send_credentials_email=True)
                 transaction.on_commit(
                     lambda app_id=application.id, adm_id=admission.id: queue_admission_notification_emails(
                         adm_id, app_id
@@ -3670,7 +3670,7 @@ class DirectAdmissionEntryView(APIView):
                         "SchoolPay registration failed during admission"
                     )
 
-                provision_student_portal_on_admission(admitted_student.id, send_credentials_email=False)
+                provision_student_portal_on_admission(admitted_student.id, send_credentials_email=True)
                 transaction.on_commit(
                     lambda app_id=application.id, adm_id=admitted_student.id: queue_admission_notification_emails(
                         adm_id, app_id

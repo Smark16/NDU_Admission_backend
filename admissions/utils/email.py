@@ -122,18 +122,28 @@ def send_admission_update(admission, subject="Admission updated Successfully"):
         )
     return send_configurable_email(admission.application.email, subject, body)
 
-def send_student_login_credentials(user, password, subject="Account Created Successfully"):
+def send_student_login_credentials(user, password, subject="Account Created Successfully", *, admission=None):
     from accounts.portal_branding import email_branding_context, get_erp_frontend_url
 
     reg_no = ""
-    try:
-        from admissions.models import AdmittedStudent
+    if admission is None:
+        try:
+            from admissions.models import AdmittedStudent
 
-        admission = AdmittedStudent.objects.filter(student_user=user).first()
-        if admission and admission.reg_no:
-            reg_no = admission.reg_no.strip()
-    except Exception:
-        pass
+            admission = AdmittedStudent.objects.select_related("application").filter(
+                student_user=user
+            ).first()
+        except Exception:
+            admission = None
+
+    if admission and admission.reg_no:
+        reg_no = admission.reg_no.strip()
+
+    to_email = (user.email or "").strip()
+    if not to_email and admission and admission.application_id:
+        to_email = (admission.application.email or "").strip()
+    if not to_email:
+        return False
 
     login_url = get_erp_frontend_url()
     html_body = render_to_string('student_login.html', {
@@ -143,14 +153,12 @@ def send_student_login_credentials(user, password, subject="Account Created Succ
         'password': password,
         'reg_no': reg_no,
     })
-    success = send_configurable_email(
-        to_email=user.email,
+    return send_configurable_email(
+        to_email=to_email,
         subject=subject,
         body=html_body,
-        is_html=True,                 
+        is_html=True,
     )
-
-    return success
 
 # rejection email
 def send_rejection_email(application, msg, subject="Application Update: Admission Decision"):

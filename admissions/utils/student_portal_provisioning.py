@@ -90,7 +90,9 @@ def provision_student_portal_on_admission(
         )
 
     if send_credentials_email and (created or not had_linked_user):
-        sent = send_student_login_credentials(user, DEFAULT_STUDENT_PASSWORD)
+        sent = send_student_login_credentials(
+            user, DEFAULT_STUDENT_PASSWORD, admission=admission
+        )
         if not sent:
             logger.warning(
                 "Portal account created for admission %s but credentials email failed.",

@@ -76,7 +76,9 @@ def celery_create_student_account(self, admission_id, application_id):
             return
 
         if created:
-            send_student_login_credentials(user, DEFAULT_STUDENT_PASSWORD)
+            send_student_login_credentials(
+                user, DEFAULT_STUDENT_PASSWORD, admission=admission
+            )
 
         auto_enroll_admitted_student(admission, admission.admitted_by_id)
 

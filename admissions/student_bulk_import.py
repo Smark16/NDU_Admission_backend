@@ -16,7 +16,11 @@ from admissions.models import AcademicLevel, AdmittedStudent, Application, Batch
 from admissions.serializers import AdmittedStudentSerializer
 from admissions.utils.program_choices import sync_application_program_choices
 from admissions.utils.reference import generate_reference
-from admissions.utils.trigger_background_tasks import trigger_background_tasks
+from admissions.utils.trigger_background_tasks import queue_admission_notification_emails
+from admissions.utils.student_portal_provisioning import (
+    StudentPortalProvisioningError,
+    provision_student_portal_on_admission,
+)
 from payments.utils.school_pay_code import _schoolpay_phone
 from Programs.models import Program, ProgramBatch
 from Programs.specialization_rules import resolve_specialization_for_program
@@ -574,8 +578,15 @@ def _import_one_row(
         specialization=specialization,
     )
 
+    try:
+        provision_student_portal_on_admission(admitted.id, send_credentials_email=True)
+    except StudentPortalProvisioningError as exc:
+        raise ValueError(str(exc)) from exc
+
     transaction.on_commit(
-        lambda aid=admitted.id, app_id=application.id: trigger_background_tasks(aid, app_id)
+        lambda aid=admitted.id, app_id=application.id: queue_admission_notification_emails(
+            aid, app_id
+        )
     )
     admitted._import_paycode = paycode  # noqa: SLF001
     admitted._import_extensions = ext  # noqa: SLF001
