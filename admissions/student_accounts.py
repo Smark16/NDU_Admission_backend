@@ -29,7 +29,8 @@ def student_has_post_admission_portal_access(admission) -> bool:
         return False
     admission_dt = admission.admission_date
     if admission_dt is None:
-        return True
+        # Without an admission timestamp we cannot infer ERP access from last_login alone.
+        return False
     last_login = user.last_login
     if last_login.tzinfo is None and admission_dt.tzinfo is not None:
         from django.utils import timezone as tz
