@@ -12,6 +12,62 @@ from payments.models import TuitionLedger
 ADMISSION_FEE_AMOUNT = Decimal("150000")
 
 
+def wallet_payment_codes_for_student(student: AdmittedStudent) -> set[str]:
+    """SchoolPay wallet identifiers only (reg. no. may change)."""
+    codes: set[str] = set()
+    for raw in (student.student_id, student.schoolpay_code):
+        value = (raw or "").strip()
+        if value:
+            codes.add(value)
+    return codes
+
+
+def completed_ledger_total_ugx(codes: set[str]) -> Decimal:
+    if not codes:
+        return Decimal("0")
+    total = Decimal("0")
+    for row in TuitionLedger.objects.filter(
+        student_payment_code__in=codes,
+        transaction_completion_status="Completed",
+    ).only("amount"):
+        total += row.amount or Decimal("0")
+    return total
+
+
+def student_payment_code_locked(student: AdmittedStudent) -> bool:
+    """True when completed SchoolPay ledger credits exist on the wallet code."""
+    return completed_ledger_total_ugx(wallet_payment_codes_for_student(student)) > 0
+
+
+def schoolpay_wallet_api_fields(student: AdmittedStudent) -> dict:
+    locked = student_payment_code_locked(student)
+    wallet_codes = wallet_payment_codes_for_student(student)
+    total = completed_ledger_total_ugx(wallet_codes)
+    code = (student.student_id or student.schoolpay_code or "").strip()
+    warning = ""
+    if locked and code:
+        warning = (
+            f"SchoolPay code {code} has recorded payments (UGX {total:,.0f}). "
+            "Do not change the payment code. You may still update programme and reg. number."
+        )
+    return {
+        "schoolpay_payment_code_locked": locked,
+        "schoolpay_ledger_total_ugx": float(total),
+        "schoolpay_payment_warning": warning,
+    }
+
+
+def should_register_student_with_schoolpay(student: AdmittedStudent) -> bool:
+    """Skip new SchoolPay wallet creation when a paid wallet code already exists."""
+    if student.is_registered_with_schoolpay:
+        return False
+    if student_payment_code_locked(student):
+        return False
+    if (student.student_id or "").strip():
+        return False
+    return True
+
+
 def payment_codes_for_student(student: AdmittedStudent) -> set[str]:
     """All identifiers SchoolPay may have used for this student's wallet."""
     codes: set[str] = set()

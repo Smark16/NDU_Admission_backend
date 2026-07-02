@@ -176,9 +176,15 @@ def register_student_with_schoolpay(admitted_student):
             }
 
         admitted_student.student_id = paycode
+        admitted_student.schoolpay_code = paycode
         admitted_student.is_registered_with_schoolpay = True
         admitted_student.save(
-            update_fields=["student_id", "is_registered_with_schoolpay", "updated_at"]
+            update_fields=[
+                "student_id",
+                "schoolpay_code",
+                "is_registered_with_schoolpay",
+                "updated_at",
+            ]
         )
 
         return {

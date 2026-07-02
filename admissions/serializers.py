@@ -512,7 +512,35 @@ class AdmittedStudentSerializer(serializers.ModelSerializer):
             if spec_err:
                 raise serializers.ValidationError({'admitted_specialization': spec_err})
 
+        if self.instance is not None:
+            from payments.utils.tuition_ledger_linking import student_payment_code_locked
+
+            if student_payment_code_locked(self.instance):
+                locked_msg = (
+                    "This SchoolPay payment code has recorded payments and cannot be changed."
+                )
+                for field in ("student_id", "schoolpay_code"):
+                    if field not in attrs:
+                        continue
+                    new_value = (attrs.get(field) or "").strip()
+                    old_value = (getattr(self.instance, field) or "").strip()
+                    if new_value != old_value:
+                        raise serializers.ValidationError({field: locked_msg})
+                if "is_registered_with_schoolpay" in attrs and not attrs[
+                    "is_registered_with_schoolpay"
+                ]:
+                    raise serializers.ValidationError({
+                        "is_registered_with_schoolpay": locked_msg,
+                    })
+
         return attrs
+
+    def to_representation(self, instance):
+        from payments.utils.tuition_ledger_linking import schoolpay_wallet_api_fields
+
+        data = super().to_representation(instance)
+        data.update(schoolpay_wallet_api_fields(instance))
+        return data
 
 class AdmittedStudentListSerializer(serializers.ModelSerializer):
     name = serializers.SerializerMethodField()
@@ -530,6 +558,9 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
     approved_by_name = serializers.SerializerMethodField()
     approved_at = serializers.SerializerMethodField()
     subject_combination = serializers.SerializerMethodField()
+    schoolpay_payment_code_locked = serializers.SerializerMethodField()
+    schoolpay_ledger_total_ugx = serializers.SerializerMethodField()
+    schoolpay_payment_warning = serializers.SerializerMethodField()
 
     class Meta:
         model = AdmittedStudent
@@ -561,6 +592,9 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
             'is_approved',
             'approved_by_name',
             'approved_at',
+            'schoolpay_payment_code_locked',
+            'schoolpay_ledger_total_ugx',
+            'schoolpay_payment_warning',
         ]
 
     def get_name(self, obj):
@@ -634,6 +668,20 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
     def get_approved_at(self, obj):
         return getattr(obj, "approved_at", None)
 
+    def _wallet_fields(self, obj):
+        from payments.utils.tuition_ledger_linking import schoolpay_wallet_api_fields
+
+        return schoolpay_wallet_api_fields(obj)
+
+    def get_schoolpay_payment_code_locked(self, obj):
+        return self._wallet_fields(obj)["schoolpay_payment_code_locked"]
+
+    def get_schoolpay_ledger_total_ugx(self, obj):
+        return self._wallet_fields(obj)["schoolpay_ledger_total_ugx"]
+
+    def get_schoolpay_payment_warning(self, obj):
+        return self._wallet_fields(obj)["schoolpay_payment_warning"]
+
 # admission detail serializer
 class AdmissionDetailSerializer(serializers.ModelSerializer):
     class Meta:
@@ -685,6 +733,9 @@ class AdmissionDetailSerializer(serializers.ModelSerializer):
         else:
             response['admitted_specialization'] = None
             response['subject_combination'] = None
+        from payments.utils.tuition_ledger_linking import schoolpay_wallet_api_fields
+
+        response.update(schoolpay_wallet_api_fields(instance))
         return response
     
 # notification serializers

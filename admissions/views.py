@@ -2530,11 +2530,21 @@ class AdmitStudent(generics.CreateAPIView):
                     return
 
                 # CRITICAL: Update status immediately
-                Application.objects.filter(id=application.id).update(status="Admitted")
+                Application.objects.filter(id=application.id).update(
+                    status="Admitted",
+                    is_revoked=False,
+                    revoked_at=None,
+                    revoked_by_id=None,
+                    revocation_reason="",
+                )
+
+                from payments.utils.tuition_ledger_linking import (
+                    relink_tuition_ledgers_for_student,
+                    should_register_student_with_schoolpay,
+                )
 
                 try:
-                    if not admission.is_registered_with_schoolpay:
-
+                    if should_register_student_with_schoolpay(admission):
                         result = register_student_with_schoolpay(admission)
 
                         logger.info(
@@ -2554,6 +2564,8 @@ class AdmitStudent(generics.CreateAPIView):
                     logger.exception(
                         "SchoolPay registration failed during admission"
                     )
+
+                relink_tuition_ledgers_for_student(admission)
 
                 provision_student_portal_on_admission(admission.id, send_credentials_email=True)
                 admission.refresh_from_db()
@@ -2592,7 +2604,6 @@ class RevokeAdmittedStudent(APIView):
             return Response({"detail": "Revocation reason is required."}, status=400)
 
         with transaction.atomic():
-            # Delete actual files from storage
             if application.admission_letter_pdf:
                 application.admission_letter_pdf.delete(save=False)
 
@@ -2604,10 +2615,8 @@ class RevokeAdmittedStudent(APIView):
             application.revoked_by = request.user
             application.revocation_reason = reason
             application.status = "revoked"
-            # Clear database fields
             application.admission_letter_pdf = None
             application.admission_letter_docx = None
-
             application.save(
                 update_fields=[
                     "is_revoked",
@@ -2616,14 +2625,26 @@ class RevokeAdmittedStudent(APIView):
                     "revocation_reason",
                     "admission_letter_pdf",
                     "admission_letter_docx",
-                    "status"
+                    "status",
                 ]
             )
-           
-        User.objects.filter(username=admission.reg_no).delete()
-        admission.delete()
 
-        return Response({"detail":"Candidate has been removed from Admitted Students"}, status=200)
+            admission.is_admitted = False
+            admission.save(update_fields=["is_admitted", "updated_at"])
+
+            if admission.student_user_id:
+                User.objects.filter(pk=admission.student_user_id).update(is_active=False)
+
+        from payments.utils.tuition_ledger_linking import student_payment_code_locked
+
+        return Response(
+            {
+                "detail": "Admission revoked. Student record and SchoolPay payments are preserved.",
+                "admission_id": admission.id,
+                "schoolpay_payment_code_locked": student_payment_code_locked(admission),
+            },
+            status=200,
+        )
 
 # restore student 
 class RestoreAdmittedStudent(APIView):
@@ -2636,27 +2657,37 @@ class RestoreAdmittedStudent(APIView):
 
         admission = get_object_or_404(AdmittedStudent, pk=pk)
         assert_admitted_student_access(request.user, admission)
+        application = admission.application
 
         with transaction.atomic():
-            admission.is_revoked = False
             admission.is_admitted = True
-            admission.revoked_at = None
-            admission.revoked_by = None
-            admission.revocation_reason = ""
-            admission.save(
-                update_fields=[
-                    "is_revoked",
-                    "is_admitted",
-                    # "revoked_at",
-                    # "revoked_by",
-                    # "revocation_reason",
-                    "updated_at",
-                ]
-            )
-            Application.objects.filter(id=admission.application_id).update(status="Admitted")
+            admission.save(update_fields=["is_admitted", "updated_at"])
+
+            if application is not None:
+                application.is_revoked = False
+                application.revoked_at = None
+                application.revoked_by = None
+                application.revocation_reason = ""
+                application.status = "Admitted"
+                application.save(
+                    update_fields=[
+                        "is_revoked",
+                        "revoked_at",
+                        "revoked_by",
+                        "revocation_reason",
+                        "status",
+                    ]
+                )
+
+            if admission.student_user_id:
+                User.objects.filter(pk=admission.student_user_id).update(is_active=True)
+
+        from payments.utils.tuition_ledger_linking import relink_tuition_ledgers_for_student
+
+        relink_tuition_ledgers_for_student(admission)
 
         try:
-            provision_student_portal_on_admission(admission.id)
+            provision_student_portal_on_admission(admission.id, send_credentials_email=False)
         except StudentPortalProvisioningError as e:
             return Response({"detail": str(e)}, status=400)
 
@@ -2666,7 +2697,6 @@ class RestoreAdmittedStudent(APIView):
                 "admitted_program__faculty",
                 "admitted_batch",
                 "admitted_campus",
-                # "revoked_by",
             )
             .get(pk=admission.pk)
         )
