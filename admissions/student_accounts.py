@@ -124,6 +124,9 @@ def ensure_student_portal_account(admission, *, reset_password: bool = False) ->
         if not student_user.last_name and applicant.last_name:
             student_user.last_name = applicant.last_name
             updates.append("last_name")
+        if not student_user.is_active:
+            student_user.is_active = True
+            updates.append("is_active")
         if updates:
             student_user.save(update_fields=updates)
 
