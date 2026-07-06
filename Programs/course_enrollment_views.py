@@ -10,7 +10,7 @@ from admissions.faculty_scope import (
     assert_course_unit_enrollment_access,
 )
 
-from payments.admin_enrollment_requirements import programme_enrollment_access_block
+from payments.admin_enrollment_requirements import batch_course_enrollment_block
 
 from rest_framework import generics, status
 from Programs.permissions import AcademicEnrollmentAdminPermission
@@ -79,28 +79,40 @@ class GetAvailableStudentsForCourseUnit(APIView):
             return Response({'detail': 'Course unit is not associated with a program batch'}, status=status.HTTP_400_BAD_REQUEST)
         
         program = program_batch.program
-        admitted_students = _admitted_students_for_program_batch(program, program_batch).filter(
-            programme_enrollment__status="enrolled"
-        )
-        
+        cohort_students = _admitted_students_for_program_batch(program, program_batch)
+
         # Get already enrolled student IDs
         enrolled_student_ids = StudentCourseUnitEnrollment.objects.filter(
             course_unit=course_unit
         ).values_list('student_id', flat=True)
-        
-        # Filter out already enrolled students
-        available_students = admitted_students.exclude(id__in=enrolled_student_ids)
-        
+
+        available_students = cohort_students.exclude(id__in=enrolled_student_ids)
+
         data = []
+        blocked_count = 0
         for student in available_students:
+            block = batch_course_enrollment_block(student)
+            if block:
+                blocked_count += 1
+                continue
             data.append({
                 'id': student.id,
                 'student_id': student.student_id,
                 'reg_no': student.reg_no,
                 'name': student.full_name,
             })
-        
-        return Response(data, status=status.HTTP_200_OK)
+
+        return Response({
+            'results': data,
+            'eligible_count': len(data),
+            'cohort_count': cohort_students.count(),
+            'blocked_count': blocked_count,
+            'requirement_note': (
+                'Students must have academic programme enrollment activated (Enrolled) '
+                'and commitment fee confirmed (UGX 150,000 paid or admission fee marked paid) '
+                'before they can be added to course units in this batch.'
+            ),
+        }, status=status.HTTP_200_OK)
 
 class EnrollStudentsInCourseUnit(APIView):
     """Enroll one or more students in a course unit"""
@@ -131,11 +143,8 @@ class EnrollStudentsInCourseUnit(APIView):
             )
         program = program_batch.program
 
-        allowed_ids = set(
-            _admitted_students_for_program_batch(program, program_batch)
-            .filter(programme_enrollment__status="enrolled")
-            .values_list("id", flat=True)
-        )
+        cohort_qs = _admitted_students_for_program_batch(program, program_batch)
+        cohort_ids = set(cohort_qs.values_list("id", flat=True))
         
         enrolled = []
         errors = []
@@ -144,15 +153,15 @@ class EnrollStudentsInCourseUnit(APIView):
             for student_id in student_ids:
                 try:
                     student = AdmittedStudent.objects.select_related("programme_enrollment").get(id=student_id)
-                    if student.id not in allowed_ids:
+                    if student.id not in cohort_ids:
                         errors.append(
                             f"Student {student.student_id} is not in this programme batch "
                             f"(intended cohort or programme enrollment must match)."
                         )
                         continue
-                    access_block = programme_enrollment_access_block(student)
-                    if access_block:
-                        errors.append(f"Student {student.student_id}: {access_block}")
+                    block = batch_course_enrollment_block(student)
+                    if block:
+                        errors.append(f"Student {student.student_id}: {block}")
                         continue
                     # Check if already enrolled
                     if StudentCourseUnitEnrollment.objects.filter(

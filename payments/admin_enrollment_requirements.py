@@ -25,6 +25,18 @@ def programme_enrollment_access_block(student: AdmittedStudent) -> str | None:
     return None
 
 
+def batch_course_enrollment_block(student: AdmittedStudent) -> str | None:
+    """Gate batch/course-unit enrollment: active programme enrollment + commitment fee."""
+    access = programme_enrollment_access_block(student)
+    if access:
+        return access
+    return admin_programme_enrollment_activation_block(student, target_status="enrolled")
+
+
+def student_eligible_for_batch_course_enrollment(student: AdmittedStudent) -> bool:
+    return batch_course_enrollment_block(student) is None
+
+
 def admin_programme_enrollment_activation_block(
     student: AdmittedStudent,
     *,
