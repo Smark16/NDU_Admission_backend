@@ -34,6 +34,7 @@ from .enrollment_views import (
     MyExpectedCoursesView,
     MySelectSpecializationView,
 )
+from .enrollment_report_views import EnrollmentReportExcelView, EnrollmentReportListView
 from .override_views import (
     EnrollmentOverrideListCreate,
     OverrideDetailView,
@@ -232,6 +233,16 @@ urlpatterns = [
         'admin/enrollments',
         AdminListEnrollmentsView.as_view(),
         name='admin_list_enrollments',
+    ),
+    path(
+        'reports/enrollments',
+        EnrollmentReportListView.as_view(),
+        name='enrollment_report_list',
+    ),
+    path(
+        'reports/enrollments/export',
+        EnrollmentReportExcelView.as_view(),
+        name='enrollment_report_export',
     ),
     path(
         'admin/enrollment/<int:pk>',
