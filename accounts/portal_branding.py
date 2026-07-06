@@ -49,10 +49,13 @@ def email_branding_context() -> dict:
 def _media_absolute_url(request, file_field) -> str | None:
     if not file_field or not getattr(file_field, "name", None):
         return None
-    url = file_field.url
-    if request is not None:
-        return request.build_absolute_uri(url)
-    return url
+    try:
+        url = file_field.url
+        if request is not None:
+            return request.build_absolute_uri(url)
+        return url
+    except Exception:
+        return None
 
 
 def _image_mime_for_path(path: Path) -> str:
@@ -128,10 +131,14 @@ def load_portal_logo_data_uri() -> str:
 
 def portal_branding_payload(settings_obj, request=None) -> dict:
     name = (getattr(settings_obj, "university_name", None) or "").strip()
+    try:
+        portal_logo = getattr(settings_obj, "portal_logo", None)
+        login_cover = getattr(settings_obj, "login_cover_image", None)
+    except Exception:
+        portal_logo = None
+        login_cover = None
     return {
         "university_name": name or DEFAULT_UNIVERSITY_NAME,
-        "portal_logo_url": _media_absolute_url(request, getattr(settings_obj, "portal_logo", None)),
-        "login_cover_url": _media_absolute_url(
-            request, getattr(settings_obj, "login_cover_image", None)
-        ),
+        "portal_logo_url": _media_absolute_url(request, portal_logo),
+        "login_cover_url": _media_absolute_url(request, login_cover),
     }

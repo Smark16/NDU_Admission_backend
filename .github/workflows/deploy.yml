@@ -52,6 +52,7 @@ jobs:
 
           # Ensure confirmation columns exist if 0027 was only faked
           python manage.py ensure_program_choice_confirmation_columns
+          python manage.py ensure_portal_branding_columns
           
           python manage.py collectstatic --noinput
         

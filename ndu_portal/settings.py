@@ -294,6 +294,7 @@ CORS_ALLOWED_ORIGINS = [
 # More flexible option - Recommended for your case
 CORS_ALLOWED_ORIGIN_REGEXES = [
     r"^https?://([a-z0-9-]+\.)*ndu\.ac\.ug$",
+    r"^https?://erp\.ndejje\.ndu\.ac\.ug$",
     r"^http://137\.63\.139\.78$",
     r"^http://(localhost|127\.0\.0\.1):\d+$",
 ]
