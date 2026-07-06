@@ -341,142 +341,77 @@ class ViewFacultyAdmissions(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        admitted_students = list(
-            AdmittedStudent.objects
-            .select_related("application", "admitted_program", "admitted_campus", "admitted_batch")
-            .filter(is_admitted=True)
+        from .faculty_admissions_report import paginated_admitted_students_report
+
+        return Response(paginated_admitted_students_report(request), status=200)
+
+
+class AdmissionsReportFilterOptionsView(APIView):
+    """Filter metadata for admission reports (intakes, campuses, faculties, programmes)."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from accounts.models import Campus
+        from accounts.serializers import CampusSerializer
+        from admissions.faculty_scope import filter_faculties_for_user
+        from admissions.models import Batch, Faculty
+        from admissions.serializers import FacultySerializer
+        from Programs.models import Program
+        from Programs.serializers import ListProgramsSerializer
+
+        batches = Batch.objects.order_by("-academic_year", "name")
+        academic_years = sorted(
+            {b.academic_year for b in batches if b.academic_year},
+            reverse=True,
+        )
+        intakes = [
+            {
+                "id": b.id,
+                "academic_year": b.academic_year,
+                "admission_period": b.name,
+            }
+            for b in batches
+        ]
+        campuses = CampusSerializer(
+            Campus.objects.filter(is_active=True).order_by("name"),
+            many=True,
+        ).data
+        faculties = FacultySerializer(
+            filter_faculties_for_user(
+                Faculty.objects.prefetch_related("campuses").filter(is_active=True),
+                request.user,
+            ),
+            many=True,
+        ).data
+        programs = ListProgramsSerializer(
+            Program.objects.filter(is_active=True)
+            .select_related("faculty", "academic_level")
+            .prefetch_related("campuses")
+            .order_by("short_form", "name"),
+            many=True,
+        ).data
+        study_modes = sorted(
+            {
+                sm
+                for sm in AdmittedStudent.objects.filter(is_admitted=True).values_list(
+                    "study_mode", flat=True
+                )
+                if sm
+            }
+        )
+        return Response(
+            {
+                "academic_years": academic_years,
+                "intakes": intakes,
+                "campuses": campuses,
+                "faculties": faculties,
+                "programs": programs,
+                "study_modes": study_modes,
+            },
+            status=200,
         )
 
-        if not admitted_students:
-            return Response([])
-
-        app_ids = [adm.application_id for adm in admitted_students]
-
-        # 1. Programs
-        # program_data = defaultdict(list)
-        # for prog in Program.objects.filter(application_programs__id__in=app_ids)\
-        #         .values("application_programs__id", "name"):
-        #     program_data[prog["application_programs__id"]].append(prog["name"])
-         # ==================== 1. PROGRAM CHOICES (FIXED) ====================
-        program_data = defaultdict(list)
-        for choice in ApplicationProgramChoice.objects.filter(
-            application_id__in=app_ids
-        ).select_related("program").order_by("choice_order"):
-            program_data[choice.application_id].append(choice.program.name)
-
-        # 2. O-Level
-        olevel_data = defaultdict(list)
-        for res in OLevelResult.objects.filter(application_id__in=app_ids)\
-                .select_related("subject")\
-                .values("application_id", "subject__code", "grade"):
-            olevel_data[res["application_id"]].append(f"{res['subject__code']}:{res['grade']}")
-
-        # 3. A-Level
-        alevel_for_pp_sp = defaultdict(list)
-        alevel_scores = defaultdict(list)
-        for res in ALevelResult.objects.filter(application_id__in=app_ids)\
-                .select_related("subject")\
-                .values("application_id", "subject__code", "grade"):
-            app_id = res["application_id"]
-            alevel_for_pp_sp[app_id].append({"subject_name": res["subject__code"], "grade": res["grade"]})
-            alevel_scores[app_id].append(f"{res['subject__code']}:{res['grade']}")
-
-        # 4. Additional Qualifications - String Only
-        qualifications_data = defaultdict(list)
-        for qual in AdditionalQualifications.objects.filter(application_id__in=app_ids)\
-                .values(
-                    "application_id",
-                    "additional_qualification_institution",
-                    "additional_qualification_type",
-                    "additional_qualification_year",
-                    "class_of_award"
-                ):
-            qualifications_data[qual["application_id"]].append(qual)
-
-        # 5. Build Response
-        grouped = defaultdict(lambda: {"academic_year": "", "admission_period": "", "students": []})
-
-        for adm in admitted_students:
-            app = adm.application
-            batch = adm.admitted_batch
-            key = f"{batch.academic_year}-{batch.name}"
-
-            if key not in grouped:
-                grouped[key] = {
-                    "academic_year": batch.academic_year,
-                    "admission_period": batch.name,
-                    "students": [],
-                }
-
-            programs = program_data.get(app.id, [])
-            course_applied_for = programs[0] if programs else ""
-            other_choices = ", ".join(programs[1:]) if len(programs) > 1 else ""
-
-            olevel_scores = "; ".join(olevel_data[app.id])
-            alevel_scores_str = "; ".join(alevel_scores[app.id])
-
-            pp, sp = calculate_pp_sp(alevel_for_pp_sp[app.id])
-            principal_sub = f"{pp}PP, {sp}SP"
-
-            # === Additional Qualifications as Strings (Safe & Dynamic) ===
-            quals = qualifications_data.get(app.id, [])
-
-            # Create readable combined string
-            other_qual_parts = []
-            institutions = []
-            class_of_awards = []
-
-            for q in quals:
-                if q.get("additional_qualification_institution"):
-                    qual_str = f"{q['additional_qualification_institution']} - {q.get('additional_qualification_type','')} ({q.get('additional_qualification_year','')}) - {q.get('class_of_award','')}"
-                    other_qual_parts.append(qual_str)
-                    institutions.append(q['additional_qualification_institution'])
-                    class_of_awards.append(q.get('class_of_award', ''))
-
-            other_qual_str = " | ".join(other_qual_parts) if other_qual_parts else "None"
-
-            # Join multiple institutions and awards with commas
-            institution_str = ", ".join(institutions) if institutions else ""
-            class_of_award_str = ", ".join([c for c in class_of_awards if c]) if class_of_awards else ""
-
-            # Final Student Dictionary - All Strings
-            grouped[key]["students"].append({
-                "id": adm.id,
-                "student_names": f"{app.first_name} {app.last_name}",
-                "gender": app.gender,
-                "nationality": app.nationality,
-                "contact_address": app.address or "",
-                "course_applied_for": course_applied_for,
-                "other_choices": other_choices,
-                "program": adm.admitted_program.name if adm.admitted_program else "",
-                "study_mode": getattr(adm, 'study_mode', ""),
-                "campus": adm.admitted_campus.name if adm.admitted_campus else "",
-
-                "olevel_school": app.olevel_school or "",
-                "olevel_year": app.olevel_year or "",
-                "olevel_index_number": app.olevel_index_number or "",
-                "olevel_scores": olevel_scores,
-
-                "alevel_school": app.alevel_school or "",
-                "alevel_year": app.alevel_year or "",
-                "alevel_index_number": app.alevel_index_number or "",
-                "alevel_combination": app.alevel_combination or "",
-                "alevel_scores": alevel_scores_str,
-                "principal_subsidiaries": principal_sub,
-
-                # All strings as requested
-                "other_qualifications": other_qual_str,
-                "institution": institution_str,           # All institutions combined
-                "class_of_award": class_of_award_str,     # All class of awards combined
-
-                "course_admitted_for": adm.admitted_program.name if adm.admitted_program else "",
-                "remarks": adm.admission_notes or "",
-                "payments": "PAID" if app.application_fee_paid else "NOT PAID",
-                "admission_date": adm.admission_date.strftime("%Y-%m-%d") if adm.admission_date else "",
-                "origin": "APPLIED ONLINE",
-            })
-
-        return Response(list(grouped.values()), status=200)
     
 # excel reports
 class ExportFacultyAdmissionsExcel(APIView):
@@ -497,34 +432,9 @@ class ExportFacultyAdmissionsExcel(APIView):
         # --------------------------------------------------------------
         # 2. MAIN QUERY
         # --------------------------------------------------------------
-        qs = AdmittedStudent.objects.select_related(
-            "application",
-            "admitted_program",
-            "admitted_program__faculty",
-            "admitted_campus",
-            "admitted_batch",
-            # "physical_documents_verified_by",
-        ).filter(is_admitted=True)
+        from .faculty_admissions_report import faculty_admissions_filtered_qs
 
-        if academic_year:
-            qs = qs.filter(admitted_batch__academic_year=academic_year)
-        if admission_period:
-            qs = qs.filter(admitted_batch__name__icontains=admission_period)
-        if campus_id:
-            qs = qs.filter(admitted_campus_id=campus_id)
-        if program_id:
-            qs = qs.filter(admitted_program_id=program_id)
-        if faculty_id:
-            qs = qs.filter(admitted_program__faculty_id=faculty_id)
-        if documents_verified in ("1", "true", "yes"):
-            qs = qs.filter(physical_documents_verified=True)
-        elif documents_verified in ("0", "false", "no"):
-            qs = qs.filter(physical_documents_verified=False)
-        if is_registered in ("1", "true", "yes"):
-            qs = qs.filter(is_registered=True)
-        elif is_registered in ("0", "false", "no"):
-            qs = qs.filter(is_registered=False)
-
+        qs = faculty_admissions_filtered_qs(request)
         admitted_students = list(qs)
         app_ids = [adm.application_id for adm in admitted_students]
 

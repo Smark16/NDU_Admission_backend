@@ -1032,6 +1032,61 @@ class AllApplicationsDetailReportStatsView(APIView):
         )
         return Response(stats)
 
+
+class ApplicationReportFilterOptionsView(APIView):
+    """Filter metadata for the All Applicants report."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from accounts.models import Campus
+        from accounts.serializers import CampusSerializer
+        from admissions.faculty_scope import filter_faculties_for_user
+        from Programs.models import Program
+        from Programs.serializers import ListProgramsSerializer
+
+        base = build_applications_detail_report_queryset(request, apply_choice_filter=False)
+
+        batches = sorted(
+            {name for name in base.values_list("batch__name", flat=True) if name}
+        )
+        academic_years = sorted(
+            {y for y in base.values_list("batch__academic_year", flat=True) if y},
+            reverse=True,
+        )
+        levels = sorted(
+            {name for name in base.values_list("academic_level__name", flat=True) if name}
+        )
+        campuses = CampusSerializer(
+            Campus.objects.filter(is_active=True).order_by("name"),
+            many=True,
+        ).data
+        faculties = FacultySerializer(
+            filter_faculties_for_user(
+                Faculty.objects.prefetch_related("campuses").filter(is_active=True),
+                request.user,
+            ),
+            many=True,
+        ).data
+        programs = ListProgramsSerializer(
+            Program.objects.filter(is_active=True)
+            .select_related("faculty", "academic_level")
+            .prefetch_related("campuses")
+            .order_by("short_form", "name"),
+            many=True,
+        ).data
+        return Response(
+            {
+                "academic_years": academic_years,
+                "batches": batches,
+                "levels": levels,
+                "campuses": campuses,
+                "faculties": faculties,
+                "programs": programs,
+            }
+        )
+
+
 # Applicants List
 class AllApplicationsReport(generics.ListAPIView):
     serializer_class = AllApplicationsReportSerializer
