@@ -487,14 +487,17 @@ class AdmittedStudentSerializer(serializers.ModelSerializer):
                         ),
                     })
 
-        from admissions.admission_specialization import validate_admitted_specialization_for_program
+        from admissions.admission_specialization import (
+            program_requires_admission_specialization,
+            validate_admitted_specialization_for_program,
+        )
 
         admitted_specialization = attrs.get('admitted_specialization')
         if admitted_specialization is None and self.instance is not None:
             if 'admitted_specialization' not in attrs:
                 admitted_specialization = self.instance.admitted_specialization
 
-        if program is not None and not getattr(program, 'has_specialization', False):
+        if program is not None and not program_requires_admission_specialization(program):
             attrs['admitted_specialization'] = None
         elif program is not None:
             if (

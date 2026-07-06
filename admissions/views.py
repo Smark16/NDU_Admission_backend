@@ -2676,11 +2676,14 @@ class ProgramSpecializationsForAdmissionView(APIView):
 
         program = get_object_or_404(Program, pk=program_id)
         qs = ProgramSpecialization.objects.filter(program=program, is_active=True).order_by('name')
+        from admissions.admission_specialization import program_requires_admission_specialization
+
         return Response(
             {
                 'program_id': program.id,
                 'program_name': program.name,
                 'has_specialization': program.has_specialization,
+                'requires_admission_specialization': program_requires_admission_specialization(program),
                 'specializations': ProgramSpecializationSerializer(qs, many=True).data,
             },
             status=status.HTTP_200_OK,
@@ -3933,6 +3936,9 @@ class DirectAdmissionEntryView(APIView):
                 direct_reason = (d.get("direct_admission_reason") or "").strip()
                 admission_notes = f"Direct admission reason: {direct_reason}" if direct_reason else ""
 
+                raw_spec = d.get("admitted_specialization")
+                admitted_specialization_id = _optional_int_id(raw_spec) if raw_spec not in (None, "") else None
+
                 admission_payload = {
                     "application": application.pk,
                     "reg_no": provided_reg_no,
@@ -3946,6 +3952,8 @@ class DirectAdmissionEntryView(APIView):
                     "intended_program_batch": intended_val,
                     "admission_notes": admission_notes,
                 }
+                if admitted_specialization_id is not None:
+                    admission_payload["admitted_specialization"] = admitted_specialization_id
                 adm_serializer = AdmittedStudentSerializer(data=admission_payload)
                 try:
                     adm_serializer.is_valid(raise_exception=True)
