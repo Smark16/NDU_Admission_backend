@@ -32,7 +32,7 @@ from rest_framework.parsers import MultiPartParser, FormParser
 from django.utils import timezone
 from rest_framework.decorators import api_view, permission_classes
 from django.conf import settings
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models.deletion import ProtectedError
 from django.db.utils import OperationalError
 # from .utils.validate_photo import validate_passport_photo
@@ -169,6 +169,25 @@ def _idempotent_submit_response(payment, applicant_user, ext_ref):
     return None
 
 
+def _clear_unsubmitted_application_reference(reference, *, exclude_pk=None):
+    """Free a payment reference held by an abandoned non-submitted application row."""
+    ref = _normalize_payment_reference(reference)
+    if not ref:
+        return
+    qs = Application.objects.filter(application_reference=ref).exclude(
+        status__in=SUBMITTED_APPLICATION_STATUSES
+    )
+    if exclude_pk is not None:
+        qs = qs.exclude(pk=exclude_pk)
+    if qs.exists():
+        cleared = qs.update(application_reference=None)
+        logger.info(
+            "Cleared application_reference=%s from %s unsubmitted application(s)",
+            ref,
+            cleared,
+        )
+
+
 def _release_stale_payment_application_link(payment, *, staff_user):
     """
     Re-link a PAID payment to a new submission only when the prior link is missing or not submitted.
@@ -184,6 +203,14 @@ def _release_stale_payment_application_link(payment, *, staff_user):
 
     if not staff_user:
         return existing
+
+    if existing:
+        _clear_unsubmitted_application_reference(
+            payment.external_reference,
+            exclude_pk=existing.pk,
+        )
+        existing.application_reference = None
+        existing.save(update_fields=["application_reference"])
 
     payment.application = None
     payment.save(update_fields=["application"])
@@ -401,6 +428,8 @@ def create_applications(request):
                     return Response({"detail": "Refugee status proof is required"}, status=400)
 
             # Save the main application first (so it gets an ID)
+            if application.application_reference:
+                _clear_unsubmitted_application_reference(application.application_reference)
             application.save()
 
             choice_objects = [
@@ -546,6 +575,22 @@ def create_applications(request):
                 "application_id": application.id,
             }, status=status.HTTP_201_CREATED)
 
+        except IntegrityError as e:
+            logger.error("Application creation integrity error: %s", str(e), exc_info=True)
+            if "application_reference" in str(e).lower() or "unique" in str(e).lower():
+                return Response(
+                    {
+                        "detail": (
+                            "This payment reference is already linked to another application. "
+                            "Refresh the page and try again, or contact admissions support."
+                        )
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+            return Response(
+                {"detail": "A database conflict prevented submission. Please try again."},
+                status=status.HTTP_409_CONFLICT,
+            )
         except Exception as e:
             logger.error("Application creation failed: %s", str(e), exc_info=True)
             return Response({"detail": "An error occurred while processing your application."}, status=500)
