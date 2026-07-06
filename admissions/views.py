@@ -60,6 +60,7 @@ from .utils.program_choices import (
 )
 from .utils.program_choice_integrity import application_has_suspect_program_choices
 from payments.models import ApplicationPayment
+from payments.utils.application_payment_status import confirmed_application_fee_payment
 from Drafts.models import DraftApplication
 from django.db.models import Q, Prefetch, Count, Value
 from django.db.models.functions import Concat
@@ -373,24 +374,29 @@ def create_applications(request):
             if staff_user:
                 application.entered_by = staff_user
 
+            if staff_user and (payment is None or payment.status != "PAID"):
+                payment = confirmed_application_fee_payment(
+                    applicant_user,
+                    external_reference=ext_ref,
+                    draft=draft,
+                )
+
+            if staff_user and (payment is None or payment.status != "PAID"):
+                return Response(
+                    {
+                        "detail": (
+                            "Application fee payment must be confirmed (PAID) before submit. "
+                            "Complete payment on the applicant's phone or clear any pending payment."
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
             if payment:
                 application.application_fee_paid = True
                 application.application_fee_amount = payment.amount
                 application.application_reference = payment.external_reference
 
-            if staff_user and draft and draft.application_fee_paid and not payment:
-                application.application_fee_paid = True
-                application.application_reference = (
-                    draft.application_reference or ext_ref or ""
-                )
-                recovered = _lookup_paid_application_payment(
-                    applicant_user,
-                    application.application_reference,
-                )
-                if recovered:
-                    payment = recovered
-                    application.application_fee_amount = recovered.amount
-                    application.application_reference = recovered.external_reference
             if draft and draft.passport_photo:
                 try:
                     original_name = draft.passport_photo.name.split('/')[-1]
@@ -3756,8 +3762,59 @@ class DirectApplicationEntryView(APIView):
             logger.exception('DirectApplicationEntryView error')
             return Response({'detail': str(e)}, status=500)
 
+
+def _optional_int_id(value):
+    if value in (None, ""):
+        return None
+    try:
+        pk = int(value)
+    except (TypeError, ValueError):
+        return None
+    return pk if pk > 0 else None
+
+
+def _resolve_batch_for_direct_admission(batch_id):
+    """Resolve intake batch from request id or fall back to the active admission batch."""
+    pk = _optional_int_id(batch_id)
+    if pk:
+        batch = Batch.objects.filter(pk=pk).first()
+        if batch:
+            return batch
+
+    now = timezone.now().date()
+    base = (
+        Batch.objects.filter(is_active=True)
+        .filter(batch_offer_window_q())
+        .filter(
+            Q(application_start_date__lte=now, application_end_date__gte=now)
+            | Q(admission_start_date__lte=now, admission_end_date__gte=now)
+        )
+        .order_by("created_at")
+    )
+    return base.exclude(code__istartswith="QA-").exclude(name__icontains="[QA-INTAKE-BATCH]").first() or base.first()
+
+
+def _validation_error_response(errors):
+    if isinstance(errors, dict) and errors:
+        first_key = next(iter(errors))
+        first_val = errors[first_key]
+        if isinstance(first_val, list):
+            first_message = str(first_val[0])
+        else:
+            first_message = str(first_val)
+        return Response(
+            {
+                "detail": first_message,
+                "errors": errors,
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    return Response({"detail": "Invalid request."}, status=status.HTTP_400_BAD_REQUEST)
+
+
 class DirectAdmissionEntryView(APIView):
     permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request):
         if not user_can_admit_applicant(request.user):
@@ -3771,24 +3828,29 @@ class DirectAdmissionEntryView(APIView):
         # ====================== 1. VALIDATION ======================
         required_fields = [
             'first_name', 'last_name', 'date_of_birth', 'gender', 'nationality',
-            'phone', 'email'
+            'phone', 'email', 'campus', 'academic_level', 'program', 'reg_no', 'study_mode',
         ]
 
-        errors = {field: 'This field is required.' for field in required_fields if not d.get(field)}
-        
+        errors = {field: 'This field is required.' for field in required_fields if not str(d.get(field, '')).strip()}
         if errors:
-            return Response(errors, status=status.HTTP_400_BAD_REQUEST)
+            return _validation_error_response(errors)
 
         # ====================== 2. FETCH RELATED OBJECTS ======================
         try:
-            campus = Campus.objects.get(id=d['campus'])
-            program = Program.objects.get(id=d['program'])
-            academic_level = AcademicLevel.objects.get(id=d['academic_level'])
-            batch = Batch.objects.get(id=d.get('batch')) 
-        except (Campus.DoesNotExist, Program.DoesNotExist, AcademicLevel.DoesNotExist, Batch.DoesNotExist) as e:
-            return Response({'detail': f'Invalid reference: {str(e)}'}, status=400)
+            campus = Campus.objects.get(id=_optional_int_id(d.get('campus')))
+            program = Program.objects.get(id=_optional_int_id(d.get('program')))
+            academic_level = AcademicLevel.objects.get(id=_optional_int_id(d.get('academic_level')))
+        except (Campus.DoesNotExist, Program.DoesNotExist, AcademicLevel.DoesNotExist):
+            return Response({'detail': 'Invalid campus, programme, or academic level.'}, status=400)
 
-        email = d['email'].strip().lower()
+        batch = _resolve_batch_for_direct_admission(d.get('batch'))
+        if batch is None:
+            return Response(
+                {'detail': 'No active intake batch found. Select an intake in batch management or try again later.'},
+                status=400,
+            )
+
+        email = str(d['email']).strip().lower()
 
         # ====================== 3. MAIN TRANSACTION ======================
         try:
@@ -3826,11 +3888,13 @@ class DirectAdmissionEntryView(APIView):
                 # --- 3.2 Create Application ---
                 application = Application.objects.create(
                     applicant=applicant_user,
-                    batch=batch if 'batch' in d else None,
+                    batch=batch,
                     campus=campus,
                     academic_level=academic_level,
                     source=Application.SOURCE_DIRECT,
-                    status='Admitted',                   
+                    is_direct_entry=True,
+                    entered_by=request.user,
+                    status='Admitted',
                     application_reference=generate_reference(),
                     first_name=d['first_name'].strip(),
                     last_name=d['last_name'].strip(),
@@ -3843,10 +3907,11 @@ class DirectAdmissionEntryView(APIView):
                     address=d.get('address', '').strip(),
                     nin=d.get('nin', '').strip(),
                     passport_number=d.get('passport_number', '').strip(),
-                    next_of_kin_name=d.get('next_of_kin_name', '').strip(),
-                    next_of_kin_contact=d.get('next_of_kin_contact', '').strip(),
-                    next_of_kin_relationship=d.get('next_of_kin_relationship', '').strip(),
+                    next_of_kin_name=d.get('next_of_kin_name', '').strip() or 'N/A',
+                    next_of_kin_contact=d.get('next_of_kin_contact', '').strip() or 'N/A',
+                    next_of_kin_relationship=d.get('next_of_kin_relationship', '').strip() or 'N/A',
                 )
+                sync_application_program_choices(application, [program.id])
 
                 # --- 3.3 Create AdmittedStudent ---
                 provided_reg_no = d.get('reg_no', '').strip()
@@ -3865,6 +3930,9 @@ class DirectAdmissionEntryView(APIView):
                     except (TypeError, ValueError):
                         raise ValueError("intended_program_batch must be an integer or empty.")
 
+                direct_reason = (d.get("direct_admission_reason") or "").strip()
+                admission_notes = f"Direct admission reason: {direct_reason}" if direct_reason else ""
+
                 admission_payload = {
                     "application": application.pk,
                     "reg_no": provided_reg_no,
@@ -3876,13 +3944,19 @@ class DirectAdmissionEntryView(APIView):
                     "admission_date": timezone.now(),
                     "admitted_by": request.user.pk,
                     "intended_program_batch": intended_val,
-                    "admission_notes": (d.get("admission_notes") or "").strip(),
+                    "admission_notes": admission_notes,
                 }
                 adm_serializer = AdmittedStudentSerializer(data=admission_payload)
                 try:
                     adm_serializer.is_valid(raise_exception=True)
                 except DRFValidationError as exc:
-                    return Response(exc.detail, status=status.HTTP_400_BAD_REQUEST)
+                    detail = exc.detail
+                    if isinstance(detail, dict):
+                        first_key = next(iter(detail))
+                        first_val = detail[first_key]
+                        message = first_val[0] if isinstance(first_val, list) else str(first_val)
+                        return Response({"detail": str(message), "errors": detail}, status=status.HTTP_400_BAD_REQUEST)
+                    return Response({"detail": str(detail)}, status=status.HTTP_400_BAD_REQUEST)
                 admitted_student = adm_serializer.save()
 
                 try:
