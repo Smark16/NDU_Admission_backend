@@ -111,6 +111,9 @@ def _upsert_programme_enrollment_from_import(
     specialization: str | None = None,
 ) -> dict:
     from Programs.models import StudentProgrammeEnrollment
+    from payments.admin_enrollment_requirements import (
+        admin_programme_enrollment_activation_block,
+    )
 
     curriculum_version = _resolve_curriculum_version(program, program_batch)
     if curriculum_version is None:
@@ -118,6 +121,11 @@ def _upsert_programme_enrollment_from_import(
             "No curriculum version is configured for this programme — "
             "cannot set current year/semester."
         )
+
+    activation_block = admin_programme_enrollment_activation_block(
+        admitted, target_status="enrolled"
+    )
+    enroll_status = "enrolled" if activation_block is None else "pending"
 
     enrollment, created = StudentProgrammeEnrollment.objects.get_or_create(
         student=admitted,
@@ -128,8 +136,8 @@ def _upsert_programme_enrollment_from_import(
             "current_year_of_study": year_of_study,
             "current_term_number": term_number,
             "specialization": specialization,
-            "status": "enrolled",
-            "enrolled_by": admitted_by,
+            "status": enroll_status,
+            "enrolled_by": admitted_by if enroll_status == "enrolled" else None,
             "notes": "Bulk import — continuing student position.",
         },
     )
@@ -139,8 +147,13 @@ def _upsert_programme_enrollment_from_import(
         enrollment.curriculum_version = curriculum_version
         enrollment.current_year_of_study = year_of_study
         enrollment.current_term_number = term_number
-        enrollment.status = "enrolled"
-        enrollment.enrolled_by = admitted_by
+        if activation_block is None:
+            enrollment.status = "enrolled"
+            enrollment.enrolled_by = admitted_by
+        elif enrollment.status == "pending":
+            pass
+        else:
+            enrollment.status = enroll_status
         if specialization:
             enrollment.specialization = specialization
         enrollment.save()
@@ -148,6 +161,8 @@ def _upsert_programme_enrollment_from_import(
     return {
         "enrollment_set": True,
         "enrollment_created": created,
+        "enrollment_status": enrollment.status,
+        "enrollment_blocked": activation_block,
         "current_year_of_study": year_of_study,
         "current_term_number": term_number,
     }
@@ -182,6 +197,13 @@ def _apply_import_extensions(
     }
 
     position = _parse_optional_position(row, program)
+    if row_has_legacy_fee_data(row):
+        fee_result = apply_legacy_fee_balances(
+            admitted, row, admitted_by=admitted_by
+        )
+        result.update(fee_result)
+        result["extensions_applied"] = True
+
     if position is not None:
         year, term = position
         enrollment_info = _upsert_programme_enrollment_from_import(
@@ -194,13 +216,6 @@ def _apply_import_extensions(
             specialization=specialization,
         )
         result.update(enrollment_info)
-        result["extensions_applied"] = True
-
-    if row_has_legacy_fee_data(row):
-        fee_result = apply_legacy_fee_balances(
-            admitted, row, admitted_by=admitted_by
-        )
-        result.update(fee_result)
         result["extensions_applied"] = True
 
     return result

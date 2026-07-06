@@ -13,12 +13,13 @@ class StudentPortalProvisioningError(Exception):
 
 
 def auto_enroll_admitted_student(admission, acting_user_id: int | None) -> None:
-    from payments.models import RegistrationSettings
     from Programs.models import StudentProgrammeEnrollment
     from Programs.program_batch_resolution import resolve_default_program_batch_for_program
+    from payments.admin_enrollment_requirements import (
+        admin_programme_enrollment_activation_block,
+    )
 
     try:
-        reg_settings = RegistrationSettings.get_settings()
         today = timezone.now().date()
         program_batch = admission.intended_program_batch or resolve_default_program_batch_for_program(
             admission.admitted_program,
@@ -33,6 +34,11 @@ def auto_enroll_admitted_student(admission, acting_user_id: int | None) -> None:
         User = get_user_model()
         acting_user = User.objects.filter(pk=acting_user_id).first() if acting_user_id else None
 
+        activation_block = admin_programme_enrollment_activation_block(
+            admission, target_status="enrolled"
+        )
+        enroll_status = "enrolled" if activation_block is None else "pending"
+
         StudentProgrammeEnrollment.objects.get_or_create(
             student=admission,
             defaults={
@@ -40,9 +46,9 @@ def auto_enroll_admitted_student(admission, acting_user_id: int | None) -> None:
                 "program_batch": program_batch,
                 "current_year_of_study": 1,
                 "current_term_number": 1,
-                "status": "enrolled" if reg_settings.auto_enroll_on_admission else "pending",
-                "enrolled_by": acting_user if reg_settings.auto_enroll_on_admission else None,
-                "enrolled_at": timezone.now() if reg_settings.auto_enroll_on_admission else None,
+                "status": enroll_status,
+                "enrolled_by": acting_user if enroll_status == "enrolled" else None,
+                "enrolled_at": timezone.now() if enroll_status == "enrolled" else None,
             },
         )
     except Exception:

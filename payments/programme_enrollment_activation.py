@@ -227,24 +227,26 @@ def activate_programme_enrollment_after_commitment_payment(
 
 
 def activate_all_pending_programme_enrollments(*, activated_by=None) -> dict:
-    """Promote every pending StudentProgrammeEnrollment to enrolled (testing / auto-enroll toggle)."""
+    """Promote pending enrollments to enrolled only when commitment fee is met."""
     from Programs.models import StudentProgrammeEnrollment
 
     pending = StudentProgrammeEnrollment.objects.filter(status="pending").select_related("student")
     activated = 0
+    skipped = 0
     course_units_assigned = 0
     for enrollment in pending:
-        enrollment.status = "enrolled"
-        if activated_by is not None:
-            enrollment.enrolled_by = activated_by
-        note = "Auto-enrolled (registration settings: auto-enroll on admission)."
-        enrollment.notes = f"{enrollment.notes}\n{note}".strip() if enrollment.notes else note
-        enrollment.save()
-        activated += 1
-        assign_result = _auto_assign_current_semester_course_units(enrollment)
-        course_units_assigned += assign_result.get("course_units_auto_assigned", 0) or 0
+        result = activate_programme_enrollment_after_commitment_payment(
+            enrollment.student,
+            activated_by=activated_by,
+        )
+        if result.get("activated"):
+            activated += 1
+            course_units_assigned += result.get("course_units_auto_assigned", 0) or 0
+        else:
+            skipped += 1
 
     return {
         "activated_count": activated,
+        "skipped_count": skipped,
         "course_units_auto_assigned": course_units_assigned,
     }

@@ -10,6 +10,8 @@ from admissions.faculty_scope import (
     assert_course_unit_enrollment_access,
 )
 
+from payments.admin_enrollment_requirements import programme_enrollment_access_block
+
 from rest_framework import generics, status
 from Programs.permissions import AcademicEnrollmentAdminPermission
 from rest_framework.permissions import IsAuthenticated
@@ -77,7 +79,9 @@ class GetAvailableStudentsForCourseUnit(APIView):
             return Response({'detail': 'Course unit is not associated with a program batch'}, status=status.HTTP_400_BAD_REQUEST)
         
         program = program_batch.program
-        admitted_students = _admitted_students_for_program_batch(program, program_batch)
+        admitted_students = _admitted_students_for_program_batch(program, program_batch).filter(
+            programme_enrollment__status="enrolled"
+        )
         
         # Get already enrolled student IDs
         enrolled_student_ids = StudentCourseUnitEnrollment.objects.filter(
@@ -128,7 +132,9 @@ class EnrollStudentsInCourseUnit(APIView):
         program = program_batch.program
 
         allowed_ids = set(
-            _admitted_students_for_program_batch(program, program_batch).values_list("id", flat=True)
+            _admitted_students_for_program_batch(program, program_batch)
+            .filter(programme_enrollment__status="enrolled")
+            .values_list("id", flat=True)
         )
         
         enrolled = []
@@ -143,6 +149,10 @@ class EnrollStudentsInCourseUnit(APIView):
                             f"Student {student.student_id} is not in this programme batch "
                             f"(intended cohort or programme enrollment must match)."
                         )
+                        continue
+                    access_block = programme_enrollment_access_block(student)
+                    if access_block:
+                        errors.append(f"Student {student.student_id}: {access_block}")
                         continue
                     # Check if already enrolled
                     if StudentCourseUnitEnrollment.objects.filter(
