@@ -1,7 +1,7 @@
 """Programme enrollment report — list + Excel export for faculty admins."""
 from __future__ import annotations
 
-from django.db.models import Q
+from django.db.models import Count, Q
 from django.http import HttpResponse
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -30,13 +30,24 @@ def _parse_enrollment_report_params(request):
     }
 
 
+def _parse_pagination(request):
+    try:
+        page = max(1, int(request.query_params.get("page", 1)))
+    except (TypeError, ValueError):
+        page = 1
+    try:
+        page_size = min(200, max(1, int(request.query_params.get("page_size", 50))))
+    except (TypeError, ValueError):
+        page_size = 50
+    return page, page_size
+
+
 def _enrollment_report_queryset(params, user):
     qs = (
         StudentProgrammeEnrollment.objects.select_related(
             "student",
             "student__application",
             "student__admitted_campus",
-            "student__admitted_program",
             "program",
             "program__faculty",
             "program_batch",
@@ -79,6 +90,14 @@ def _enrollment_report_queryset(params, user):
         )
 
     return filter_programme_enrollments_for_user(qs, user)
+
+
+def _status_counts_for_queryset(qs) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in qs.values("status").annotate(c=Count("id")):
+        key = row["status"] or "unknown"
+        counts[key] = row["c"]
+    return counts
 
 
 def _enrollment_report_row(enrollment: StudentProgrammeEnrollment) -> dict:
@@ -212,17 +231,21 @@ class EnrollmentReportListView(APIView):
 
     def get(self, request):
         params = _parse_enrollment_report_params(request)
-        enrollments = list(_enrollment_report_queryset(params, request.user))
-        results = [_enrollment_report_row(e) for e in enrollments]
+        page, page_size = _parse_pagination(request)
+        qs = _enrollment_report_queryset(params, request.user)
 
-        status_counts: dict[str, int] = {}
-        for row in results:
-            key = row["status"] or "unknown"
-            status_counts[key] = status_counts.get(key, 0) + 1
+        total = qs.count()
+        status_counts = _status_counts_for_queryset(qs)
+        offset = (page - 1) * page_size
+        enrollments = qs[offset : offset + page_size]
+        results = [_enrollment_report_row(e) for e in enrollments]
 
         return Response(
             {
-                "count": len(results),
+                "count": total,
+                "page": page,
+                "page_size": page_size,
+                "total_pages": (total + page_size - 1) // page_size if page_size else 0,
                 "filter_summary": _filter_summary_blurb(params),
                 "status_counts": status_counts,
                 "results": results,
@@ -238,8 +261,7 @@ class EnrollmentReportExcelView(APIView):
 
     def get(self, request):
         params = _parse_enrollment_report_params(request)
-        enrollments = list(_enrollment_report_queryset(params, request.user))
-        rows = [_enrollment_report_excel_row(_enrollment_report_row(e)) for e in enrollments]
+        qs = _enrollment_report_queryset(params, request.user)
 
         n_cols = len(EXCEL_HEADERS)
         wb = Workbook()
@@ -258,9 +280,10 @@ class EnrollmentReportExcelView(APIView):
         t1.font = title_font
         t1.alignment = Alignment(horizontal="center", vertical="center")
 
+        total = qs.count()
         sub = _filter_summary_blurb(params)
-        if rows:
-            sub = f"{sub} · {len(rows)} record(s)"
+        if total:
+            sub = f"{sub} · {total} record(s)"
         ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=n_cols)
         t2 = ws.cell(row=2, column=1, value=sub)
         t2.font = subtitle_font
@@ -277,18 +300,10 @@ class EnrollmentReportExcelView(APIView):
                 12, min(28, len(str(header)) + 2)
             )
 
-        for row in rows:
-            ws.append(row)
+        for enrollment in qs.iterator(chunk_size=250):
+            ws.append(_enrollment_report_excel_row(_enrollment_report_row(enrollment)))
 
-        data_start = header_row + 1
-        for row in ws.iter_rows(
-            min_row=data_start, max_row=ws.max_row, min_col=1, max_col=n_cols
-        ):
-            for cell in row:
-                cell.alignment = Alignment(horizontal="left", vertical="center")
-                cell.border = thin_border
-
-        ws.freeze_panes = ws.cell(row=data_start, column=1).coordinate
+        ws.freeze_panes = ws.cell(row=header_row + 1, column=1).coordinate
 
         response = HttpResponse(
             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
