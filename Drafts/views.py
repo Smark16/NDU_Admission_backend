@@ -144,8 +144,22 @@ def save_draft_applications(request):
             draft.additional_qualifications = []
 
         # ====================== BOOLEAN & OTHER ======================
-        draft.application_fee_paid = str(data.get('application_fee_paid', 'false')).lower() == 'true'
-        draft.application_reference = data.get('externalReference', '')
+        from payments.utils.application_payment_status import confirmed_application_fee_payment
+
+        if staff_user:
+            confirmed = confirmed_application_fee_payment(
+                user,
+                external_reference=data.get("externalReference"),
+                draft=draft,
+            )
+            draft.application_fee_paid = confirmed is not None
+            if confirmed:
+                draft.application_reference = confirmed.external_reference
+        else:
+            draft.application_fee_paid = (
+                str(data.get("application_fee_paid", "false")).lower() == "true"
+            )
+            draft.application_reference = data.get("externalReference", "")
         draft.status = data.get('status', 'draft')
 
         # Programs (ManyToMany)
@@ -351,6 +365,9 @@ def get_draft_application(request):
         # Safe date formatting
         date_of_birth_str = draft.date_of_birth.strftime("%Y-%m-%d") if draft.date_of_birth else ""
         other_doc_items = _other_institution_document_items(draft, request)
+        from payments.utils.application_payment_status import confirmed_application_fee_payment
+
+        confirmed_payment = confirmed_application_fee_payment(acting_user, draft=draft)
 
         data = {
             "applicant": draft.applicant_id,
@@ -401,8 +418,12 @@ def get_draft_application(request):
             # Additional Qualifications
             "additionalQualifications": draft.additional_qualifications if isinstance(draft.additional_qualifications, list) else [],
 
-            "application_fee_paid": draft.application_fee_paid,
-            "externalReference": draft.application_reference or "",
+            "application_fee_paid": confirmed_payment is not None,
+            "externalReference": (
+                confirmed_payment.external_reference
+                if confirmed_payment
+                else (draft.application_reference or "")
+            ),
             "status": draft.status,
 
             # Document URLs

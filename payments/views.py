@@ -115,10 +115,12 @@ class CancelPayment(APIView):
             cleared = 0
             paid = 0
             errors = 0
+            paid_reference = ""
             for payment in pending_qs:
-                outcome, _ = clear_pending_application_payment(payment)
+                outcome, updated = clear_pending_application_payment(payment)
                 if outcome == 'paid':
                     paid += 1
+                    paid_reference = updated.external_reference or paid_reference
                 elif outcome == 'cleared':
                     cleared += 1
                 elif outcome == 'error':
@@ -148,6 +150,7 @@ class CancelPayment(APIView):
                 'detail': detail,
                 'cleared': cleared,
                 'paid': paid,
+                'external_reference': paid_reference,
             })
         
         except Exception as e:

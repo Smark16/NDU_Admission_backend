@@ -16,6 +16,46 @@ logger = logging.getLogger(__name__)
 
 GATEWAY_FAILED_STATUSES = frozenset({"FAILED", "CANCELLED"})
 
+SUBMITTED_APPLICATION_STATUSES = frozenset(
+    {"submitted", "under_review", "accepted", "Admitted", "admitted"}
+)
+
+
+def _normalize_payment_reference(value):
+    if value in (None, ""):
+        return None
+    ref = str(value).strip()
+    return ref or None
+
+
+def confirmed_application_fee_payment(applicant_user, *, external_reference=None, draft=None):
+    """
+    Return a PAID application-fee payment that may be used for submit.
+
+    Ignores draft.application_fee_paid flags — only SchoolPay-confirmed PAID rows count.
+    Skips payments already linked to a submitted application.
+    """
+    refs = set()
+    ref = _normalize_payment_reference(external_reference)
+    if ref:
+        refs.add(ref)
+    if draft and draft.application_reference:
+        normalized = _normalize_payment_reference(draft.application_reference)
+        if normalized:
+            refs.add(normalized)
+
+    qs = ApplicationPayment.objects.filter(user=applicant_user, status="PAID")
+    if refs:
+        qs = qs.filter(external_reference__in=refs)
+
+    for payment in qs.order_by("-created_at"):
+        if not payment.application_id:
+            return payment
+        application = Application.objects.filter(pk=payment.application_id).first()
+        if application is None or application.status not in SUBMITTED_APPLICATION_STATUSES:
+            return payment
+    return None
+
 
 def schoolpay_application_fee_callback_url(request=None):
     """Public webhook URL for SchoolPay application-fee callbacks."""

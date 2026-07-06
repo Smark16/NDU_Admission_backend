@@ -804,6 +804,10 @@ class AssistApplicationContextView(APIView):
                 else None,
             }
 
+        from payments.utils.application_payment_status import confirmed_application_fee_payment
+
+        confirmed_payment = confirmed_application_fee_payment(applicant, draft=draft)
+
         return Response(
             {
                 "applicant": {
@@ -817,6 +821,10 @@ class AssistApplicationContextView(APIView):
                 "has_draft": draft is not None,
                 "progress": draft_progress_payload(draft),
                 "pending_payment": pending_payload,
+                "application_fee_confirmed": confirmed_payment is not None,
+                "confirmed_external_reference": (
+                    confirmed_payment.external_reference if confirmed_payment else ""
+                ),
             }
         )
 
