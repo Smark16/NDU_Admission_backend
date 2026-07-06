@@ -26,11 +26,28 @@ def programme_enrollment_access_block(student: AdmittedStudent) -> str | None:
 
 
 def batch_course_enrollment_block(student: AdmittedStudent) -> str | None:
-    """Gate batch/course-unit enrollment: active programme enrollment + commitment fee."""
-    access = programme_enrollment_access_block(student)
-    if access:
-        return access
-    return admin_programme_enrollment_activation_block(student, target_status="enrolled")
+    """
+    Gate admin batch/course-unit enrollment.
+
+    Uses RegistrationSettings (same policy as student registration gates) so staff
+    toggles are respected. Commitment fee is enforced only when
+    require_programme_enrollment is enabled.
+    """
+    settings = RegistrationSettings.get_settings()
+
+    if settings.require_admission_approval and not student.is_admitted:
+        return "Student must be admitted before they can be enrolled in batch courses."
+
+    if settings.require_programme_enrollment:
+        access = programme_enrollment_access_block(student)
+        if access:
+            return access
+        return admin_programme_enrollment_activation_block(student, target_status="enrolled")
+
+    if settings.require_enrollment and not student.admitted_batch_id:
+        return "Student must be assigned to an admission intake batch before batch course enrollment."
+
+    return None
 
 
 def student_eligible_for_batch_course_enrollment(student: AdmittedStudent) -> bool:

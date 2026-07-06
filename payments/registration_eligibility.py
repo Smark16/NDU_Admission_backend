@@ -15,36 +15,14 @@ from .student_fee_pricing import is_international_student, paid_by_currency
 from .student_payment_allocation import build_finance_allocation
 
 
-def build_registration_eligibility_payload(student: AdmittedStudent) -> dict:
-    settings = RegistrationSettings.get_settings()
-
-    # Always include enrollment status in the response
-    enroll_info = get_programme_enrollment_status(student)
-
-    # ── Gate 1 + 2: settings window + admission/enrollment gates ──────────────
-    msg = settings_block_message(settings) or enrollment_block(student, settings)
-    if msg:
-        return {
-            "is_eligible": False,
-            "percentage_paid": 0.0,
-            "minimum_required": float(settings.min_tuition_payment_percentage),
-            "total_required": 0.0,
-            "total_paid": 0.0,
-            "balance": 0.0,
-            "display_currency": "UGX",
-            "tuition_check_skipped": settings.skip_tuition_check,
-            "message": msg,
-            **enroll_info,
-        }
-
-    # ── Gate 3 (optional): tuition payment threshold ──────────────────────────
-    # If skip_tuition_check is True, bypass the payment % gate entirely.
+def _compute_tuition_eligibility(student: AdmittedStudent, settings: RegistrationSettings) -> dict:
+    """Tuition % gate only — independent of commitment / programme enrollment gates."""
     if settings.skip_tuition_check:
         international = is_international_student(student)
         paid_by = paid_by_currency(student)
         total_paid = float(sum(paid_by.values(), Decimal("0")))
         return {
-            "is_eligible": True,
+            "tuition_eligible": True,
             "percentage_paid": 100.0,
             "minimum_required": float(settings.min_tuition_payment_percentage),
             "total_required": 0.0,
@@ -52,11 +30,9 @@ def build_registration_eligibility_payload(student: AdmittedStudent) -> dict:
             "balance": 0.0,
             "display_currency": "USD" if international else "UGX",
             "tuition_check_skipped": True,
-            "message": "Tuition payment threshold is currently disabled. You may register.",
-            **enroll_info,
+            "tuition_message": "Tuition payment threshold is currently disabled. You may register.",
         }
 
-    # ── Normal path: compute tuition % and check against threshold ─────────────
     alloc = build_finance_allocation(student)
     international = alloc.international
     req_by = alloc.required_by_currency
@@ -65,7 +41,7 @@ def build_registration_eligibility_payload(student: AdmittedStudent) -> dict:
 
     if not req_by:
         return {
-            "is_eligible": True,
+            "tuition_eligible": True,
             "percentage_paid": 100.0,
             "minimum_required": float(settings.min_tuition_payment_percentage),
             "total_required": 0.0,
@@ -73,8 +49,7 @@ def build_registration_eligibility_payload(student: AdmittedStudent) -> dict:
             "balance": 0.0,
             "display_currency": "USD" if international else "UGX",
             "tuition_check_skipped": False,
-            "message": "No semester tuition rules apply yet; you may register when courses are available.",
-            **enroll_info,
+            "tuition_message": "No semester tuition rules apply yet; you may register when courses are available.",
         }
 
     primary_ccy = alloc.primary_currency
@@ -102,7 +77,7 @@ def build_registration_eligibility_payload(student: AdmittedStudent) -> dict:
         pay_msg = "You meet the minimum tuition payment for registration."
 
     return {
-        "is_eligible": payment_ok,
+        "tuition_eligible": payment_ok,
         "percentage_paid": round(pct, 1),
         "minimum_required": float(settings.min_tuition_payment_percentage),
         "total_required": float(tr),
@@ -110,6 +85,41 @@ def build_registration_eligibility_payload(student: AdmittedStudent) -> dict:
         "balance": float(alloc.balance),
         "display_currency": primary_ccy,
         "tuition_check_skipped": False,
-        "message": pay_msg,
+        "tuition_message": pay_msg,
+    }
+
+
+def build_registration_eligibility_payload(student: AdmittedStudent) -> dict:
+    settings = RegistrationSettings.get_settings()
+    enroll_info = get_programme_enrollment_status(student)
+    tuition = _compute_tuition_eligibility(student, settings)
+
+    block_messages: list[str] = []
+    settings_msg = settings_block_message(settings)
+    if settings_msg:
+        block_messages.append(settings_msg)
+
+    enroll_msg = enrollment_block(student, settings)
+    if enroll_msg:
+        block_messages.append(enroll_msg)
+
+    if not tuition["tuition_eligible"]:
+        block_messages.append(tuition["tuition_message"])
+
+    is_eligible = len(block_messages) == 0
+    message = block_messages[0] if block_messages else tuition["tuition_message"]
+
+    return {
+        "is_eligible": is_eligible,
+        "percentage_paid": tuition["percentage_paid"],
+        "minimum_required": tuition["minimum_required"],
+        "total_required": tuition["total_required"],
+        "total_paid": tuition["total_paid"],
+        "balance": tuition["balance"],
+        "display_currency": tuition["display_currency"],
+        "tuition_check_skipped": tuition["tuition_check_skipped"],
+        "tuition_eligible": tuition["tuition_eligible"],
+        "message": message,
+        "block_messages": block_messages,
         **enroll_info,
     }

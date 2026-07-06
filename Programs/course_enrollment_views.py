@@ -81,6 +81,24 @@ class GetAvailableStudentsForCourseUnit(APIView):
         program = program_batch.program
         cohort_students = _admitted_students_for_program_batch(program, program_batch)
 
+        from payments.models import RegistrationSettings
+        from payments.admin_enrollment_requirements import batch_course_enrollment_block
+
+        reg_settings = RegistrationSettings.get_settings()
+        if reg_settings.require_programme_enrollment:
+            requirement_note = (
+                "Batch course enrollment requires academic programme enrollment (Enrolled) "
+                "and commitment fee confirmed, because "
+                "'Require active academic programme enrollment' is enabled in Registration Settings."
+            )
+        else:
+            requirement_note = (
+                "Batch course enrollment follows Registration Settings. "
+                "Commitment fee is not required for batch enrollment while "
+                "'Require active academic programme enrollment' is off. "
+                "Student course registration still uses the minimum tuition % you configured."
+            )
+
         # Get already enrolled student IDs
         enrolled_student_ids = StudentCourseUnitEnrollment.objects.filter(
             course_unit=course_unit
@@ -107,11 +125,9 @@ class GetAvailableStudentsForCourseUnit(APIView):
             'eligible_count': len(data),
             'cohort_count': cohort_students.count(),
             'blocked_count': blocked_count,
-            'requirement_note': (
-                'Students must have academic programme enrollment activated (Enrolled) '
-                'and commitment fee confirmed (UGX 150,000 paid or admission fee marked paid) '
-                'before they can be added to course units in this batch.'
-            ),
+            'requirement_note': requirement_note,
+            'require_programme_enrollment': reg_settings.require_programme_enrollment,
+            'min_tuition_payment_percentage': float(reg_settings.min_tuition_payment_percentage),
         }, status=status.HTTP_200_OK)
 
 class EnrollStudentsInCourseUnit(APIView):
@@ -718,6 +734,10 @@ class GetStudentEnrolledCourses(APIView):
 
         finance = student_finance_totals(admitted_student)
 
+        from payments.registration_eligibility import build_registration_eligibility_payload
+
+        registration = build_registration_eligibility_payload(admitted_student)
+
         return Response({
             'student_id': admitted_student.student_id,
             'reg_no': admitted_student.reg_no,
@@ -733,6 +753,12 @@ class GetStudentEnrolledCourses(APIView):
             'balance': finance['balance'],
             'display_currency': finance['display_currency'],
             'commitment_met': finance['commitment_met'],
+            'registration_eligible': registration.get('is_eligible'),
+            'registration_minimum_required': registration.get('minimum_required'),
+            'registration_percentage_paid': registration.get('percentage_paid'),
+            'registration_message': registration.get('message'),
+            'registration_block_messages': registration.get('block_messages', []),
+            'tuition_eligible': registration.get('tuition_eligible'),
             'current_year_of_study': current_year,
             'current_term_number': current_term,
             'enrolled_courses': active_courses,
