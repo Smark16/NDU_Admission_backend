@@ -853,6 +853,7 @@ def build_applications_report_queryset(request, *, apply_choice_filter: bool = T
     gender = request.query_params.get("gender")
     academic_level = request.query_params.get("academic_level")
     batch = request.query_params.get("batch")
+    academic_year = request.query_params.get("academic_year")
     campus = request.query_params.get("campus")
     program = request.query_params.get("program")
     faculty = request.query_params.get("faculty")
@@ -879,6 +880,8 @@ def build_applications_report_queryset(request, *, apply_choice_filter: bool = T
         queryset = queryset.filter(academic_level__name=academic_level)
     if batch and batch != "all":
         queryset = queryset.filter(batch__name=batch)
+    if academic_year and academic_year != "all":
+        queryset = queryset.filter(batch__academic_year=academic_year)
     if campus and campus != "all":
         queryset = queryset.filter(campus__name=campus)
     if program and program != "all":
@@ -940,6 +943,7 @@ def build_applications_detail_report_queryset(request, *, apply_choice_filter: b
     gender = request.query_params.get("gender")
     academic_level = request.query_params.get("academic_level")
     batch = request.query_params.get("batch")
+    academic_year = request.query_params.get("academic_year")
     campus = request.query_params.get("campus")
     program = request.query_params.get("program")
     faculty = request.query_params.get("faculty")
@@ -966,6 +970,8 @@ def build_applications_detail_report_queryset(request, *, apply_choice_filter: b
         queryset = queryset.filter(academic_level__name=academic_level)
     if batch and batch != "all":
         queryset = queryset.filter(batch__name=batch)
+    if academic_year and academic_year != "all":
+        queryset = queryset.filter(batch__academic_year=academic_year)
     if campus and campus != "all":
         queryset = queryset.filter(campus__name=campus)
     if program and program != "all":
