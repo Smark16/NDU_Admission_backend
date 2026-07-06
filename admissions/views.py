@@ -85,11 +85,117 @@ from django.core.cache import cache
 
 logger = logging.getLogger(__name__)
 
+SUBMITTED_APPLICATION_STATUSES = frozenset(
+    {"submitted", "under_review", "accepted", "Admitted", "admitted"}
+)
+
+
+def _draft_for_applicant(applicant, batch_id):
+    """Resolve the portal draft used when copying files into a submitted application."""
+    if batch_id:
+        draft = (
+            DraftApplication.objects.filter(applicant=applicant, batch_id=batch_id)
+            .order_by("-updated_at")
+            .first()
+        )
+        if draft:
+            return draft
+    return DraftApplication.objects.filter(applicant=applicant).order_by("-updated_at").first()
+
+
+def _normalize_payment_reference(value):
+    if value in (None, ""):
+        return None
+    ref = str(value).strip()
+    return ref or None
+
+
+def _lookup_paid_application_payment(applicant_user, external_reference, *, lock=False):
+    """Find a PAID application-fee payment for this applicant and reference."""
+    ref = _normalize_payment_reference(external_reference)
+    if not ref:
+        return None
+    qs = ApplicationPayment.objects.filter(
+        external_reference=ref,
+        user=applicant_user,
+        status="PAID",
+    )
+    if lock:
+        return qs.select_for_update().first()
+    return qs.first()
+
+
+def _resolve_paid_payment_for_submit(applicant_user, ext_ref, draft, *, staff_user):
+    """
+    Resolve a PAID application-fee payment without changing rules for self-service applicants.
+
+    Regular applicants: only the external_reference sent on submit is accepted.
+    Staff assist: may also use the draft's stored reference when payment was already confirmed.
+    """
+    payment = _lookup_paid_application_payment(
+        applicant_user,
+        ext_ref,
+        lock=True,
+    )
+    if payment or not staff_user:
+        return payment
+
+    if draft and draft.application_reference:
+        payment = _lookup_paid_application_payment(
+            applicant_user,
+            draft.application_reference,
+            lock=True,
+        )
+    return payment
+
+
+def _idempotent_submit_response(payment, applicant_user, ext_ref):
+    existing = Application.objects.filter(pk=payment.application_id).first()
+    if existing and existing.status in SUBMITTED_APPLICATION_STATUSES:
+        logger.info(
+            "Idempotent submit replay accepted for user=%s ext_ref=%s app_id=%s",
+            applicant_user.id,
+            ext_ref,
+            payment.application_id,
+        )
+        return Response(
+            {
+                "detail": "Application already submitted successfully.",
+                "application_id": payment.application_id,
+                "idempotent_replay": True,
+            },
+            status=status.HTTP_200_OK,
+        )
+    return None
+
+
+def _release_stale_payment_application_link(payment, *, staff_user):
+    """
+    Re-link a PAID payment to a new submission only when the prior link is missing or not submitted.
+
+    Self-service applicants keep the existing rule: a used payment reference cannot be reused.
+    """
+    if not payment.application_id:
+        return None
+
+    existing = Application.objects.filter(pk=payment.application_id).first()
+    if existing and existing.status in SUBMITTED_APPLICATION_STATUSES:
+        return existing
+
+    if not staff_user:
+        return existing
+
+    payment.application = None
+    payment.save(update_fields=["application"])
+    return None
+
+
 # ===========================applications ===========================================
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def create_applications(request):
     MAX_FILE_SIZE = settings.FILE_UPLOAD_MAX_MEMORY_SIZE
+    applicant_user = request.user
     staff_user = None
     raw_applicant_id = request.data.get("applicant_id")
     if raw_applicant_id not in (None, ""):
@@ -97,7 +203,7 @@ def create_applications(request):
 
         staff_user = request.user
         try:
-            request.user = get_assistable_applicant(staff_user, int(raw_applicant_id))
+            applicant_user = get_assistable_applicant(staff_user, int(raw_applicant_id))
         except Exception as exc:
             from rest_framework.exceptions import PermissionDenied, ValidationError
 
@@ -131,14 +237,18 @@ def create_applications(request):
     # serializer.validated_data.pop('programs', None)
 
     program_ids = parse_program_id_list(request.data.get("programs"))
-    if program_ids:
-        try:
-            assert_applicant_may_select_programs(
-                Application(**serializer.validated_data),
-                program_ids,
-            )
-        except ValueError as exc:
-            return Response({"detail": str(exc)}, status=400)
+    if not program_ids:
+        return Response(
+            {"detail": "At least one programme choice is required."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    try:
+        assert_applicant_may_select_programs(
+            Application(**serializer.validated_data),
+            program_ids,
+        )
+    except ValueError as exc:
+        return Response({"detail": str(exc)}, status=400)
 
     # === Parse & Validate O-Level and A-Level ONCE ===
     olevel_validated = []
@@ -187,59 +297,73 @@ def create_applications(request):
     with transaction.atomic():
         try:
             files = request.FILES
-            ext_ref = request.data.get("external_reference")
+            ext_ref = _normalize_payment_reference(request.data.get("external_reference"))
+            draft = _draft_for_applicant(applicant_user, request.data.get("batch"))
             payment = None
 
-            # === Idempotency check for payment ===
-            if ext_ref:
-                try:
-                    payment = ApplicationPayment.objects.select_for_update().get(
-                        external_reference=ext_ref,
-                        user=request.user,
-                        status="PAID",
+            # === Payment resolution (self-service rules unchanged) ===
+            if ext_ref or staff_user:
+                payment = _resolve_paid_payment_for_submit(
+                    applicant_user,
+                    ext_ref,
+                    draft,
+                    staff_user=bool(staff_user),
+                )
+                if ext_ref and payment is None and not staff_user:
+                    return Response(
+                        {"detail": "Invalid or unpaid payment reference"},
+                        status=status.HTTP_400_BAD_REQUEST,
                     )
-                except ApplicationPayment.DoesNotExist:
-                    if not staff_user:
-                        return Response({"detail": "Invalid or unpaid payment reference"}, status=400)
-                    payment = None
 
-                if payment.application_id is not None:
-                    logger.info(
-                        "Idempotent submit replay accepted for user=%s ext_ref=%s app_id=%s",
-                        request.user.id, ext_ref, payment.application_id
+                if payment:
+                    idempotent = _idempotent_submit_response(
+                        payment,
+                        applicant_user,
+                        payment.external_reference,
                     )
-                    return Response({
-                        "detail": "Application already submitted successfully.",
-                        "application_id": payment.application_id,
-                        "idempotent_replay": True
-                    }, status=status.HTTP_200_OK)
+                    if idempotent is not None:
+                        return idempotent
+
+                    stale = _release_stale_payment_application_link(
+                        payment,
+                        staff_user=bool(staff_user),
+                    )
+                    if stale and not staff_user:
+                        return Response(
+                            {
+                                "detail": "This payment reference has already been used.",
+                                "application_id": stale.id,
+                            },
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
 
             # === Create Application object ===
             application = Application(**serializer.validated_data)
-            application.applicant = request.user
+            application.applicant = applicant_user
             application.status = "submitted"
             application.has_olevel = str(request.data.get('has_olevel', '')).lower() in ('true', '1', 'yes')
             application.has_alevel = str(request.data.get('has_alevel', '')).lower() in ('true', '1', 'yes')
+            if staff_user:
+                application.entered_by = staff_user
 
             if payment:
                 application.application_fee_paid = True
                 application.application_fee_amount = payment.amount
                 application.application_reference = payment.external_reference
-            
-            draft = None
-            try:
-                draft = DraftApplication.objects.get(
-                    applicant=request.user,
-                    batch_id=request.data.get('batch')
-                )
-            except DraftApplication.DoesNotExist:
-                draft = None
 
             if staff_user and draft and draft.application_fee_paid and not payment:
                 application.application_fee_paid = True
                 application.application_reference = (
                     draft.application_reference or ext_ref or ""
                 )
+                recovered = _lookup_paid_application_payment(
+                    applicant_user,
+                    application.application_reference,
+                )
+                if recovered:
+                    payment = recovered
+                    application.application_fee_amount = recovered.amount
+                    application.application_reference = recovered.external_reference
             if draft and draft.passport_photo:
                 try:
                     original_name = draft.passport_photo.name.split('/')[-1]
@@ -279,16 +403,20 @@ def create_applications(request):
             # Save the main application first (so it gets an ID)
             application.save()
 
-            if program_ids:
-                choice_objects = [
-                    ApplicationProgramChoice(
-                        application=application,
-                        program_id=pid,
-                        choice_order=index + 1,
-                    )
-                    for index, pid in enumerate(program_ids)
-                ]
-                ApplicationProgramChoice.objects.bulk_create(choice_objects)
+            choice_objects = [
+                ApplicationProgramChoice(
+                    application=application,
+                    program_id=pid,
+                    choice_order=index + 1,
+                )
+                for index, pid in enumerate(program_ids)
+            ]
+            ApplicationProgramChoice.objects.bulk_create(choice_objects)
+
+            if staff_user:
+                from .utils.program_choices import mark_program_choices_settled_by_admin
+
+                mark_program_choices_settled_by_admin(application, save=True)
 
             # Link payment to application
             if payment:
@@ -390,7 +518,7 @@ def create_applications(request):
                 try:
                     celery_send_application_email.delay(application.id)
                     celery_application_notification.delay(
-                        request.user.id,
+                        applicant_user.id,
                         "Application Submitted",
                         "Your application was successfully submitted"
                     )
@@ -400,8 +528,8 @@ def create_applications(request):
                         log_audit_event(
                             staff_user,
                             "assist_application_submit",
-                            request.user,
-                            f"Staff submitted application on behalf of {request.user.email}",
+                            applicant_user,
+                            f"Staff submitted application on behalf of {applicant_user.email}",
                             request,
                         )
                 except Exception as task_error:
@@ -1802,30 +1930,60 @@ class UpdateAdditionalQualififcations(APIView):
         serializer = AdditionalQualifficationsSerializer(created, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
+def _user_can_manage_application_documents(user, application):
+    if not user or not user.is_authenticated:
+        return False
+    if application.applicant_id == user.id:
+        return True
+    if user.is_superuser:
+        return True
+    if (
+        user.has_perm("admissions.change_application")
+        or user_has_any_erp_perm(
+            user,
+            "approve_admissions",
+            "manage_direct_applications",
+            "admit_applicant",
+        )
+    ):
+        assert_application_access(user, application)
+        return True
+    return False
+
+
 #==================================================Update Documents=======================================
 class UpdateDocumentAPIView(APIView):
     permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
 
     def patch(self, request, doc_id):
-        document = get_object_or_404(ApplicationDocument, id=doc_id)
+        document = get_object_or_404(
+            ApplicationDocument.objects.select_related("application"),
+            id=doc_id,
+        )
+        if not _user_can_manage_application_documents(request.user, document.application):
+            return Response({"detail": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
 
         file = request.FILES.get('file')
         if file:
             document.file = file
-            document.name = file.name  # Update name
+            document.name = file.name[:25]
 
         if 'document_type' in request.data:
             document.document_type = request.data['document_type']
 
         document.save()
-        return Response({"detail": "Document updated successfully"}, status=status.HTTP_200_OK)
+        return Response(DocumentSerializer(document).data, status=status.HTTP_200_OK)
 
 #==========================Upload documnts===============================================
 class UploadDocumentAPIView(APIView):
     permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request, application_id):
         application = get_object_or_404(Application, id=application_id)
+        if not _user_can_manage_application_documents(request.user, application):
+            return Response({"detail": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
 
         file = request.FILES.get('file')
         if not file:
@@ -1837,24 +1995,24 @@ class UploadDocumentAPIView(APIView):
 
         document = ApplicationDocument.objects.create(
             application=application,
-            name=file.name,                
+            name=file.name[:25],
             document_type=document_type,
             file=file,
         )
 
-        return Response({
-            "id": document.id,
-            "name": document.name,
-            "document_type": document.document_type,
-            "uploaded_at": document.uploaded_at,
-        }, status=status.HTTP_201_CREATED)
+        return Response(DocumentSerializer(document).data, status=status.HTTP_201_CREATED)
 
 #==================================Delete documents================================================
 class DeleteDocumentAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
     def delete(self, request, doc_id):
-        document = get_object_or_404(ApplicationDocument, id=doc_id)
+        document = get_object_or_404(
+            ApplicationDocument.objects.select_related("application"),
+            id=doc_id,
+        )
+        if not _user_can_manage_application_documents(request.user, document.application):
+            return Response({"detail": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
         document.delete()
         return Response({"detail": "Document deleted"}, status=status.HTTP_204_NO_CONTENT)
 
