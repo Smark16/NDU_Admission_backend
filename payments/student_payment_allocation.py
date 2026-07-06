@@ -316,6 +316,70 @@ def build_finance_allocation(student: AdmittedStudent) -> FinanceAllocation:
     )
 
 
+def tuition_registration_totals(
+    student: AdmittedStudent,
+    *,
+    current_term_only: bool = True,
+) -> dict[str, Any]:
+    """
+    Tuition amounts for the registration % gate.
+
+    Uses allocated paid_amount on tuition_structure lines (not the raw credit pool),
+    optionally scoped to the student's current year/term.
+    """
+    from payments.student_portal_finance import _student_curriculum_year_term
+
+    alloc = build_finance_allocation(student)
+    cy, ct = _student_curriculum_year_term(student)
+
+    lines = [
+        ln
+        for ln in alloc.demand_lines
+        if ln.kind == "tuition_structure" and _line_is_billable(ln)
+    ]
+    if current_term_only:
+        scoped: list[DemandLine] = []
+        for ln in lines:
+            y = ln.extra.get("semester_year_of_study")
+            t = ln.extra.get("semester_term_number")
+            if y is None or t is None:
+                scoped.append(ln)
+            elif int(y) == cy and int(t) == ct:
+                scoped.append(ln)
+        lines = scoped
+
+    by_currency: dict[str, dict[str, Decimal]] = {}
+    for ln in lines:
+        ccy = _norm_ccy(ln.currency)
+        bucket = by_currency.setdefault(
+            ccy, {"required": Decimal("0"), "paid": Decimal("0")}
+        )
+        bucket["required"] += ln.amount
+        bucket["paid"] += ln.paid_amount
+
+    if by_currency:
+        primary = max(by_currency.keys(), key=lambda k: float(by_currency[k]["required"]))
+    else:
+        primary = "USD" if is_international_student(student) else "UGX"
+
+    primary_bucket = by_currency.get(primary, {"required": Decimal("0"), "paid": Decimal("0")})
+    req = primary_bucket["required"]
+    paid = primary_bucket["paid"]
+    pct = float((paid / req * Decimal("100"))) if req > 0 else 0.0
+
+    return {
+        "has_tuition_rules": bool(lines),
+        "line_count": len(lines),
+        "by_currency": by_currency,
+        "primary_currency": primary,
+        "total_required": req,
+        "total_paid_on_tuition": paid,
+        "percentage_paid": round(pct, 1),
+        "current_year_of_study": cy,
+        "current_term_number": ct,
+    }
+
+
 def allocation_rule_paid(allocation: FinanceAllocation, rule_id: int, currency: str) -> Decimal:
     ccy = _norm_ccy(currency)
     for line in allocation.demand_lines:

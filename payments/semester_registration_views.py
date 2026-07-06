@@ -214,6 +214,18 @@ class RegisterForCourses(APIView):
                 },
                 status=status.HTTP_403_FORBIDDEN,
             )
+        if not payload.get("tuition_check_skipped") and not payload.get("tuition_eligible"):
+            return Response(
+                {
+                    "detail": payload.get("message")
+                    or (
+                        f"Pay at least {payload.get('minimum_required', 60):.0f}% "
+                        "of your current semester tuition before registering."
+                    ),
+                    "eligibility": payload,
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
         course_unit_ids = request.data.get("course_unit_ids") or []
         if not course_unit_ids:
             return Response({"detail": "No course unit IDs provided"}, status=status.HTTP_400_BAD_REQUEST)
