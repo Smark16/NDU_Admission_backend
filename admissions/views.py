@@ -3026,6 +3026,7 @@ class ListAdmittedStudents(generics.ListAPIView):
         )
         date_from = self.request.query_params.get('date_from')
         date_to = self.request.query_params.get('date_to')
+        commitment_met = self.request.query_params.get('commitment_met')
 
         # Search across multiple fields
         if search:
@@ -3086,6 +3087,24 @@ class ListAdmittedStudents(generics.ListAPIView):
             queryset = queryset.filter(admission_date__date__gte=date_from)
         if date_to:
             queryset = queryset.filter(admission_date__date__lte=date_to)
+
+        if commitment_met is not None and str(commitment_met).lower() not in ("all", ""):
+            from payments.commitment_queryset import (
+                annotate_commitment_ugx_paid,
+                filter_by_commitment_met,
+            )
+
+            raw = str(commitment_met).lower()
+            if raw in ("1", "true", "yes"):
+                queryset = filter_by_commitment_met(queryset, True)
+            elif raw in ("0", "false", "no"):
+                queryset = filter_by_commitment_met(queryset, False)
+            else:
+                queryset = annotate_commitment_ugx_paid(queryset)
+        else:
+            from payments.commitment_queryset import annotate_commitment_ugx_paid
+
+            queryset = annotate_commitment_ugx_paid(queryset)
 
         return filter_admitted_students_for_user(queryset.distinct(), self.request.user)
 

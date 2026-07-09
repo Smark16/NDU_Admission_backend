@@ -564,6 +564,10 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
     schoolpay_payment_code_locked = serializers.SerializerMethodField()
     schoolpay_ledger_total_ugx = serializers.SerializerMethodField()
     schoolpay_payment_warning = serializers.SerializerMethodField()
+    commitment_met = serializers.SerializerMethodField()
+    commitment_paid_ugx = serializers.SerializerMethodField()
+    commitment_balance = serializers.SerializerMethodField()
+    commitment_threshold = serializers.SerializerMethodField()
 
     class Meta:
         model = AdmittedStudent
@@ -595,9 +599,14 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
             'is_approved',
             'approved_by_name',
             'approved_at',
+            'admission_fee_paid',
             'schoolpay_payment_code_locked',
             'schoolpay_ledger_total_ugx',
             'schoolpay_payment_warning',
+            'commitment_met',
+            'commitment_paid_ugx',
+            'commitment_balance',
+            'commitment_threshold',
         ]
 
     def get_name(self, obj):
@@ -684,6 +693,39 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
 
     def get_schoolpay_payment_warning(self, obj):
         return self._wallet_fields(obj)["schoolpay_payment_warning"]
+
+    def _commitment_totals(self, obj):
+        from decimal import Decimal
+
+        from payments.student_payment_allocation import COMMITMENT_FEE_THRESHOLD
+        from payments.student_portal_finance import commitment_payment_summary
+
+        annotated = getattr(obj, "commitment_paid_ugx", None)
+        if annotated is not None:
+            ugx_credit = Decimal(str(annotated))
+            admission_paid = bool(getattr(obj, "admission_fee_paid", False))
+            commitment_paid = min(ugx_credit, COMMITMENT_FEE_THRESHOLD)
+            commitment_met = commitment_paid >= COMMITMENT_FEE_THRESHOLD or admission_paid
+            commitment_balance = max(COMMITMENT_FEE_THRESHOLD - commitment_paid, Decimal("0"))
+            return {
+                "commitment_met": commitment_met,
+                "commitment_paid_ugx": float(commitment_paid),
+                "commitment_balance": float(commitment_balance),
+                "commitment_threshold": float(COMMITMENT_FEE_THRESHOLD),
+            }
+        return commitment_payment_summary(obj)
+
+    def get_commitment_met(self, obj):
+        return self._commitment_totals(obj)["commitment_met"]
+
+    def get_commitment_paid_ugx(self, obj):
+        return self._commitment_totals(obj)["commitment_paid_ugx"]
+
+    def get_commitment_balance(self, obj):
+        return self._commitment_totals(obj)["commitment_balance"]
+
+    def get_commitment_threshold(self, obj):
+        return self._commitment_totals(obj)["commitment_threshold"]
 
 # admission detail serializer
 class AdmissionDetailSerializer(serializers.ModelSerializer):
