@@ -21,6 +21,7 @@ from .student_portal_finance import (
     student_billing_lines,
     student_finance_totals,
 )
+from .commitment_queryset import filter_by_commitment_met
 
 
 def _parse_page(value, default: int = 1) -> int:
@@ -344,64 +345,23 @@ class AdminTuitionLedgerStudentsView(APIView):
                 "application",
                 "programme_enrollment",
             )
-            .annotate(
-                paid_ugx=Coalesce(
-                    Sum(
-                        "tuition_payments__amount",
-                        filter=Q(
-                            tuition_payments__status="completed",
-                            tuition_payments__currency="UGX",
-                        ),
-                    ),
-                    Value(0),
-                    output_field=DecimalField(max_digits=12, decimal_places=2),
-                ),
-                completed_payment_count=Count(
-                    "tuition_payments",
-                    filter=Q(tuition_payments__status="completed"),
-                    distinct=True,
-                ),
-                pending_payment_count=Count(
-                    "tuition_payments",
-                    filter=Q(tuition_payments__status="pending"),
-                    distinct=True,
-                ),
-                last_paid_at=Max(
-                    "tuition_payments__paid_at",
-                    filter=Q(tuition_payments__status="completed"),
-                ),
-            )
             .filter(_student_search_filter(search))
-            .order_by("-last_paid_at", "student_id")
+            .order_by("student_id", "-id")
         )
         qs = _apply_student_cohort_filters(qs, cohort)
 
-        if commitment_met is True:
-            qs = qs.filter(paid_ugx__gte=COMMITMENT_FEE_THRESHOLD)
-        elif commitment_met is False:
-            qs = qs.filter(paid_ugx__lt=COMMITMENT_FEE_THRESHOLD)
+        if commitment_met is not None:
+            qs = filter_by_commitment_met(qs, commitment_met)
 
         total = qs.count()
         offset = (page - 1) * page_size
         rows = [_student_row(student) for student in qs[offset : offset + page_size]]
 
         summary_qs = _apply_student_cohort_filters(
-            AdmittedStudent.objects.filter(is_admitted=True).annotate(
-                paid_ugx=Coalesce(
-                    Sum(
-                        "tuition_payments__amount",
-                        filter=Q(
-                            tuition_payments__status="completed",
-                            tuition_payments__currency="UGX",
-                        ),
-                    ),
-                    Value(0),
-                    output_field=DecimalField(max_digits=12, decimal_places=2),
-                ),
-            ),
+            AdmittedStudent.objects.filter(is_admitted=True),
             cohort,
         )
-        commitment_met_count = summary_qs.filter(paid_ugx__gte=COMMITMENT_FEE_THRESHOLD).count()
+        commitment_met_count = filter_by_commitment_met(summary_qs, True).count()
         payment_totals = _apply_transaction_cohort_filters(
             StudentTuitionPayment.objects.filter(status="completed"),
             cohort,
