@@ -42,25 +42,15 @@
 
       vertical-align: middle;
 
+      text-align: center;
+
     }
 
     .logo {
 
-      width: 70px;
+      width: 150px;
 
-      height: 70px;
-
-    }
-
-    .uni-name {
-
-      font-size: 14pt;
-
-      font-weight: bold;
-
-      color: #7c1519;
-
-      letter-spacing: 0.5px;
+      height: 150px;
 
     }
 
@@ -70,7 +60,7 @@
 
       font-weight: bold;
 
-      margin-top: 4px;
+      margin-top: 8px;
 
       color: #3e397b;
 
@@ -222,19 +212,13 @@
 
     <tr>
 
-      {% if logo_b64 %}
-
-      <td style="width: 76px;">
-
-        <img class="logo" src="data:image/png;base64,{{ logo_b64 }}" alt="Logo" />
-
-      </td>
-
-      {% endif %}
-
       <td>
 
-        <div class="uni-name">{{ university_name }}</div>
+        {% if logo_b64 %}
+
+        <img class="logo" src="data:image/png;base64,{{ logo_b64 }}" alt="University logo" />
+
+        {% endif %}
 
         <div class="doc-title">{{ title }}</div>
 

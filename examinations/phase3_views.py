@@ -24,6 +24,7 @@ from .permissions import (
 from .serializers import CourseUnitResultSerializer
 from .services.import_marks import import_marks_for_course, parse_marks_workbook
 from .services.mark_completeness import collect_incomplete_results
+from .services.marks_window import assert_marks_entry_allowed
 from .services.publish import publish_result, sync_enrollment_from_result, verify_result
 from .services.provisional_results_pdf import (
     render_provisional_results_html,
@@ -165,6 +166,10 @@ class ImportCourseMarksView(APIView):
                 {"detail": "You are not assigned to this course."},
                 status=403,
             )
+        try:
+            assert_marks_entry_allowed(course_unit, user=request.user)
+        except PermissionError as exc:
+            return Response({"detail": str(exc)}, status=403)
         upload = request.FILES.get("file")
         if not upload:
             return Response({"detail": "Upload an Excel file as 'file'."}, status=400)
@@ -266,8 +271,10 @@ class ResultsReportView(APIView):
         fail_count = published.filter(is_pass=False).count()
 
         courses = []
-        if semester_id or program_batch_id:
+        if semester_id or program_batch_id or course_unit_id:
             cu_qs = CourseUnit.objects.filter(is_active=True)
+            if course_unit_id:
+                cu_qs = cu_qs.filter(id=course_unit_id)
             if semester_id:
                 cu_qs = cu_qs.filter(semester_id=semester_id)
             if program_batch_id:

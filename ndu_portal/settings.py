@@ -53,7 +53,11 @@ LOCAL_APPS = [
     'graduation',
     'Drafts',
     'OfferLetter.AdmissionLetter',
-    'OfferLetter.AdmissionReports'
+    'OfferLetter.AdmissionReports',
+    'hr.staff.apps.StaffConfig',
+    'hr.hiring.apps.HiringConfig',
+    'hr.leave.apps.LeaveConfig',
+    'hr.appraisal.apps.AppraisalConfig',
 ]
 
 MIDDLEWARE = [

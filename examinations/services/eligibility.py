@@ -14,6 +14,7 @@ def evaluate_exam_eligibility(
     policy: AssessmentPolicy | None = None,
     result: CourseUnitResult | None = None,
     allow_admin_override: bool = False,
+    allow_failed_published_retake: bool = False,
 ) -> dict:
     """
     Returns eligibility for end-of-semester exam sitting.
@@ -27,7 +28,15 @@ def evaluate_exam_eligibility(
     reasons: list[str] = []
     blockers: list[str] = []
 
-    if enrollment.status != "enrolled":
+    failed_published = (
+        result is not None
+        and result.status == CourseUnitResult.STATUS_PUBLISHED
+        and result.is_pass is False
+    )
+
+    if enrollment.status != "enrolled" and not (
+        allow_failed_published_retake and failed_published
+    ):
         blockers.append(f"Course enrollment status is '{enrollment.status}', not enrolled.")
 
     student = enrollment.student
@@ -46,12 +55,6 @@ def evaluate_exam_eligibility(
         )
     else:
         reasons.append(f"CA {ca_mark} meets the sit threshold (≥ {min_ca}).")
-
-    failed_published = (
-        result is not None
-        and result.status == CourseUnitResult.STATUS_PUBLISHED
-        and result.is_pass is False
-    )
 
     eligible = len(blockers) == 0
     if allow_admin_override:
@@ -80,7 +83,11 @@ def sitting_row_for_enrollment(
 ) -> dict:
     """Serialize one student row for a sitting list."""
     student: AdmittedStudent = enrollment.student
-    eligibility = evaluate_exam_eligibility(enrollment, policy=policy)
+    eligibility = evaluate_exam_eligibility(
+        enrollment,
+        policy=policy,
+        allow_failed_published_retake=session_type in {"retake", "supplementary"},
+    )
     result = getattr(enrollment, "course_result", None)
 
     return {

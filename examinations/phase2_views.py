@@ -10,7 +10,7 @@ from rest_framework.views import APIView
 from admissions.models import AdmittedStudent
 from Programs.models import CourseUnit, StudentCourseUnitEnrollment
 
-from .models import ExamRetakeRegistration, ExamSession
+from .models import CourseUnitResult, ExamRetakeRegistration, ExamSession
 from .permissions import CanManageExamSchedule, CanManageRetakes, CanViewAllResults
 from .serializers import ExamRetakeRegistrationSerializer, ExamSessionSerializer
 from .services.eligibility import evaluate_exam_eligibility, sitting_row_for_enrollment
@@ -23,6 +23,25 @@ def _enrollments_for_course(course_unit):
         StudentCourseUnitEnrollment.objects.filter(
             course_unit=course_unit,
             status="enrolled",
+            registration_date__isnull=False,
+        )
+        .select_related(
+            "student",
+            "student__application",
+            "course_result",
+            "course_unit",
+            "course_unit__program_batch__program__academic_level",
+        )
+        .order_by("student__reg_no")
+    )
+
+
+def _retake_candidate_enrollments_for_course(course_unit):
+    return (
+        StudentCourseUnitEnrollment.objects.filter(
+            course_unit=course_unit,
+            course_result__status=CourseUnitResult.STATUS_PUBLISHED,
+            course_result__is_pass=False,
             registration_date__isnull=False,
         )
         .select_related(
@@ -109,7 +128,13 @@ class CourseSittingListView(APIView):
 
         rows = []
         eligible_count = 0
-        for enr in _enrollments_for_course(course_unit):
+        enrollments = (
+            _retake_candidate_enrollments_for_course(course_unit)
+            if session_type in (ExamSession.TYPE_RETAKE, ExamSession.TYPE_SUPPLEMENTARY)
+            else _enrollments_for_course(course_unit)
+        )
+
+        for enr in enrollments:
             if enr.student.application and enr.student.application.is_revoked:
                 continue
             row_policy = resolve_assessment_policy(enrollment=enr) or policy
@@ -175,7 +200,7 @@ class ExamSessionSittingListView(APIView):
                 "enrollment__course_result",
             )
             if not retakes.exists() and session.session_type == ExamSession.TYPE_RETAKE:
-                for enr in _enrollments_for_course(session.course_unit):
+                for enr in _retake_candidate_enrollments_for_course(session.course_unit):
                     if enr.student.application and enr.student.application.is_revoked:
                         continue
                     el = evaluate_exam_eligibility(enr, policy=policy)
@@ -238,11 +263,20 @@ class CourseRetakeRegistrationsView(APIView):
             return Response({"detail": "enrollment_id is required."}, status=400)
 
         enrollment = get_object_or_404(
-            StudentCourseUnitEnrollment,
+            StudentCourseUnitEnrollment.objects.select_related("course_result"),
             pk=enrollment_id,
             course_unit=course_unit,
-            status="enrolled",
         )
+        result = getattr(enrollment, "course_result", None)
+        if not (
+            result
+            and result.status == CourseUnitResult.STATUS_PUBLISHED
+            and result.is_pass is False
+        ):
+            return Response(
+                {"detail": "Only students with failed published results can be registered for retake."},
+                status=400,
+            )
 
         if ExamRetakeRegistration.objects.filter(
             enrollment=enrollment,

@@ -13,7 +13,8 @@ from tempfile import NamedTemporaryFile
 
 from admissions.models import Application
 from .utils.letters import convert_docx_to_pdf_bytes
-from .utils.offer_generation import generate_offer_letter_for_application, resolve_verify_base 
+from .utils.offer_generation import generate_offer_letter_for_application, resolve_verify_base
+from .utils.bulk_report import append_bulk_report_row
 
 logger = logging.getLogger(__name__)
 
@@ -167,15 +168,21 @@ def bulk_generate_offer_letters_task(
     save_bulk_offer_letter_job(job_id, job)
 
     for index, application_id in enumerate(application_ids, start=1):
+        close_old_connections()
         try:
             app = Application.objects.filter(pk=application_id).only("id", "admission_letter_pdf").first()
+            has_pdf = bool(app and app.admission_letter_pdf and getattr(app.admission_letter_pdf, "name", None))
             if not app:
                 job["failed"] = job.get("failed", 0) + 1
-                errors = job.setdefault("errors", [])
-                if len(errors) < 100:
-                    errors.append({"id": application_id, "detail": "Applicant not found."})
-            elif skip_if_pdf_exists and app.admission_letter_pdf:
+                append_bulk_report_row(job, application_id, "failed", "Applicant not found.")
+            elif skip_if_pdf_exists and has_pdf:
                 job["reused"] = job.get("reused", 0) + 1
+                append_bulk_report_row(
+                    job,
+                    application_id,
+                    "reused_existing_pdf",
+                    "PDF already on file; skipped regeneration.",
+                )
                 if send_email:
                     send_offerletter_email.delay(application_id)
             else:
@@ -189,21 +196,41 @@ def bulk_generate_offer_letters_task(
                 if result.get("ok"):
                     if result.get("status") == "skipped":
                         job["reused"] = job.get("reused", 0) + 1
+                        append_bulk_report_row(
+                            job,
+                            application_id,
+                            "reused_existing_pdf",
+                            result.get("detail") or "Existing PDF reused.",
+                        )
+                    elif result.get("status") == "processing":
+                        job["generated"] = job.get("generated", 0) + 1
+                        append_bulk_report_row(
+                            job,
+                            application_id,
+                            "processing",
+                            "DOCX rendered; PDF conversion queued in background.",
+                        )
                     else:
                         job["generated"] = job.get("generated", 0) + 1
+                        append_bulk_report_row(
+                            job,
+                            application_id,
+                            "generated",
+                            result.get("detail") or "Offer letter PDF generated.",
+                        )
                 else:
                     job["failed"] = job.get("failed", 0) + 1
-                    errors = job.setdefault("errors", [])
-                    if len(errors) < 100:
-                        errors.append(
-                            {"id": application_id, "detail": result.get("detail", "Generation failed.")}
-                        )
+                    append_bulk_report_row(
+                        job,
+                        application_id,
+                        "failed",
+                        result.get("detail", "Generation failed."),
+                    )
         except Exception as exc:
             logger.error("Bulk offer letter failed for application %s: %s", application_id, exc, exc_info=True)
             job["failed"] = job.get("failed", 0) + 1
-            errors = job.setdefault("errors", [])
-            if len(errors) < 100:
-                errors.append({"id": application_id, "detail": "Unexpected server error."})
+            message = str(exc).strip() or exc.__class__.__name__
+            append_bulk_report_row(job, application_id, "failed", f"Unexpected server error: {message[:400]}")
 
         job["processed"] = index
         if index % 25 == 0 or index == len(application_ids):
@@ -211,6 +238,11 @@ def bulk_generate_offer_letters_task(
 
     job["status"] = "complete"
     job["finished_at"] = timezone.now().isoformat()
+    job["errors"] = [
+        {"id": r["application_id"], "detail": r.get("detail") or "Generation failed."}
+        for r in job.get("report_rows", [])
+        if r.get("outcome") == "failed"
+    ]
     save_bulk_offer_letter_job(job_id, job)
     return {
         "job_id": job_id,

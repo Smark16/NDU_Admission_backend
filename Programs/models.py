@@ -1340,6 +1340,144 @@ class TimetableSession(models.Model):
                     )
 
 
+class LectureAttendanceSession(models.Model):
+    """One class meeting where attendance was taken (course unit + calendar date)."""
+
+    course_unit = models.ForeignKey(
+        CourseUnit,
+        on_delete=models.CASCADE,
+        related_name="attendance_sessions",
+    )
+    session_date = models.DateField()
+    timetable_session = models.ForeignKey(
+        TimetableSession,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="attendance_sessions",
+        help_text="Optional link when a published timetable slot matches this date.",
+    )
+    venue_label = models.CharField(max_length=160, blank=True, default="")
+    notes = models.TextField(blank=True, default="")
+    taken_by = models.ForeignKey(
+        "accounts.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="lecture_attendance_sessions_taken",
+    )
+    check_in_opened_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the lecturer opened student self-check-in for this class.",
+    )
+    check_in_closes_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When student self-check-in closes. Lecturer may still edit marks after this.",
+    )
+    check_in_closed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the lecturer manually closed student self-check-in (if earlier than closes_at).",
+    )
+    check_in_duration_minutes = models.PositiveSmallIntegerField(
+        default=30,
+        help_text="Planned self-check-in window length (minutes). Recommended 20–30 for large classes.",
+    )
+    locked_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-session_date", "-id"]
+        unique_together = [("course_unit", "session_date")]
+        verbose_name = "Lecture attendance session"
+        verbose_name_plural = "Lecture attendance sessions"
+        permissions = [
+            ("take_lecture_attendance", "Can take lecture attendance"),
+            ("manage_faculty_lecture_attendance", "Can manage faculty lecture attendance"),
+        ]
+
+    def __str__(self):
+        return f"{self.course_unit.code} @ {self.session_date}"
+
+    @property
+    def student_check_in_open(self) -> bool:
+        """True while students may self-mark present in the portal."""
+        from django.utils import timezone
+
+        if self.locked_at or not self.check_in_opened_at:
+            return False
+        now = timezone.now()
+        if self.check_in_closed_at and self.check_in_closed_at <= now:
+            return False
+        if self.check_in_closes_at and self.check_in_closes_at <= now:
+            return False
+        return True
+
+
+class LectureAttendanceRecord(models.Model):
+    """Per-student mark for one attendance session."""
+
+    STATUS_PRESENT = "present"
+    STATUS_ABSENT = "absent"
+    STATUS_LATE = "late"
+    STATUS_EXCUSED = "excused"
+    STATUS_CHOICES = [
+        (STATUS_PRESENT, "Present"),
+        (STATUS_ABSENT, "Absent"),
+        (STATUS_LATE, "Late"),
+        (STATUS_EXCUSED, "Excused"),
+    ]
+
+    SOURCE_LECTURER = "lecturer"
+    SOURCE_STUDENT = "student"
+    SOURCE_ADMIN = "admin"
+    SOURCE_PAPER = "paper"
+    SOURCE_CHOICES = [
+        (SOURCE_LECTURER, "Lecturer"),
+        (SOURCE_STUDENT, "Student self-check-in"),
+        (SOURCE_ADMIN, "Faculty / admin"),
+        (SOURCE_PAPER, "Paper register"),
+    ]
+
+    attendance_session = models.ForeignKey(
+        LectureAttendanceSession,
+        on_delete=models.CASCADE,
+        related_name="records",
+    )
+    student = models.ForeignKey(
+        "admissions.AdmittedStudent",
+        on_delete=models.CASCADE,
+        related_name="lecture_attendance_records",
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_ABSENT,
+    )
+    remark = models.CharField(max_length=255, blank=True, default="")
+    marked_via = models.CharField(
+        max_length=20,
+        choices=SOURCE_CHOICES,
+        default=SOURCE_LECTURER,
+        blank=True,
+    )
+    checked_in_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["student__reg_no", "student__student_id"]
+        unique_together = [("attendance_session", "student")]
+        verbose_name = "Lecture attendance record"
+        verbose_name_plural = "Lecture attendance records"
+
+    def __str__(self):
+        return f"{self.student_id} {self.status} ({self.attendance_session_id})"
+
+
 # --- Existing: bulk program upload (unchanged) ---
 
 

@@ -42,6 +42,7 @@ from .tasks import (
     convert_and_save_pdf_task,
 )
 from .utils.offer_generation import generate_offer_letter_for_application, resolve_verify_base
+from .utils.bulk_report import append_bulk_report_row, build_bulk_offer_letter_csv
 import base64
 
 BULK_SYNC_THRESHOLD = 25
@@ -147,109 +148,33 @@ class DeleteTemplate(generics.RetrieveDestroyAPIView):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def send_offer_letter(request, applicant_id):
-    from OfferLetter.AdmissionLetter.utils.offer_generation import (
-        build_offer_letter_context,
-        validate_offer_letter_admission,
+    verify_base = _offer_verify_public_base(request)
+    result = generate_offer_letter_for_application(
+        int(applicant_id),
+        request.user,
+        verify_base=verify_base,
+        send_email=True,
+        skip_if_pdf_exists=False,
     )
+    if not result.get("ok"):
+        status_code = status.HTTP_400_BAD_REQUEST
+        if "failed" in (result.get("detail") or "").lower():
+            status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+        return Response({"detail": result.get("detail", "Offer letter generation failed.")}, status=status_code)
 
     applicant = get_object_or_404(Application, pk=applicant_id)
-    admission = get_object_or_404(
-        AdmittedStudent.objects.select_related(
-            "admitted_program",
-            "admitted_campus",
-            "admitted_specialization",
-        ),
-        application=applicant,
-    )
-
-    combo_err = validate_offer_letter_admission(admission)
-    if combo_err:
-        return Response({"detail": combo_err}, status=400)
-
-    # 1. Choose template
-    template = (
-        OfferLetterTemplate.objects
-        .filter(programs__id=admission.admitted_program_id)
-        .filter(status="active")
-        .order_by('-uploaded_at')
-        .first()
-    )
-
-    if not template:
-        return Response({"detail": "No template for this program is uploaded yet"}, status=400)
-
-    context = build_offer_letter_context(applicant, admission, template)
-
-    # 3. PDF template path: overlay text directly → no DOCX/LibreOffice needed
-    if template.file_type == 'pdf':
-        if not template.field_positions:
-            return Response({"detail": "PDF template has no field positions configured. Use 'Map Fields' first."}, status=400)
-        try:
-            _issue_offer_letter_audit(applicant, request.user)
-            verify_base = _offer_verify_public_base(request)
-            verify_url = f"{verify_base}/verify-offer/{applicant.offer_letter_verification_token}"
-
-            pdf_bytes = fill_pdf_template(template.file.path, context, template.field_positions)
-            from accounts.portal_branding import get_offer_letter_footer_name
-
-            sys_name = getattr(
-                settings,
-                "OFFER_LETTER_SYSTEM_FOOTER_NAME",
-                None,
-            ) or get_offer_letter_footer_name()
-            gen_at = timezone.localtime(timezone.now()).strftime("%Y-%m-%d %H:%M %Z")
-            printed_by = _printed_by_label(getattr(request.user, "id", None))
-            pdf_bytes = stamp_offer_letter_pdf(
-                pdf_bytes,
-                verify_url=verify_url,
-                printed_by=printed_by,
-                system_name=sys_name,
-                generated_at=gen_at,
-            )
-        except Exception as e:
-            logger.error(f"PDF fill failed for applicant {applicant_id}: {e}")
-            return Response({"detail": "PDF template filling failed."}, status=500)
-
-        pdf_filename = f"OfferLetter_{applicant.id}.pdf"
-        applicant.admission_letter_pdf.save(pdf_filename, ContentFile(pdf_bytes))
-        applicant.status = "Admitted"
-        applicant.offer_letter_status = "email_sent"
-        applicant.offer_letter_progress = 100
-        applicant.save()
-        send_offerletter_email.delay(applicant.id)
-        return Response({
-            "detail": "Offer letter generated from PDF template.",
-            "status": "complete",
-            "pdf_url": applicant.admission_letter_pdf.url,
-            "verify_url": verify_url,
-        })
-
-    # 4. DOCX template: render then convert in background
-    try:
-        docx_bytes = render_docx_from_template(template.file.path, context)
-    except Exception as e:
-        logger.error(f"DOCX rendering failed for applicant {applicant_id}: {e}")
-        return Response({"detail": "DOCX template rendering failed"}, status=500)
-
-    _issue_offer_letter_audit(applicant, request.user)
-    verify_base = _offer_verify_public_base(request)
-    verify_url = f"{verify_base}/verify-offer/{applicant.offer_letter_verification_token}"
-
-    docx_filename = f"OfferLetter_{applicant.id}.docx"
-    applicant.admission_letter_docx.save(docx_filename, ContentFile(docx_bytes))
-    applicant.save()
-
-    # 🔥 Encode and send to Celery
-    encoded_docx = base64.b64encode(docx_bytes).decode("utf-8")
-    convert_and_save_pdf_task.delay(encoded_docx, applicant.id, send_email=True)
-
-
-    return Response({
-        "detail": "Offer letter DOCX saved. PDF generation, status update, and email are starting in the background.",
-        "status": "processing",
-        "docx_url": applicant.admission_letter_docx.url,
-        "verify_url": verify_url,
-    })
+    payload = {
+        "detail": result.get("detail"),
+        "status": result.get("status"),
+        "application_id": applicant.id,
+    }
+    if applicant.offer_letter_verification_token:
+        payload["verify_url"] = f"{verify_base}/verify-offer/{applicant.offer_letter_verification_token}"
+    if applicant.admission_letter_pdf and getattr(applicant.admission_letter_pdf, "name", None):
+        payload["pdf_url"] = applicant.admission_letter_pdf.url
+    if applicant.admission_letter_docx and getattr(applicant.admission_letter_docx, "name", None):
+        payload["docx_url"] = applicant.admission_letter_docx.url
+    return Response(payload, status=status.HTTP_200_OK)
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
@@ -278,12 +203,73 @@ def _active_template_program_ids() -> set[int]:
     )
 
 
+def _missing_offer_letter_pdf_q() -> Q:
+    return Q(application__admission_letter_pdf__isnull=True) | Q(
+        application__admission_letter_pdf=""
+    )
+
+
+def _has_offer_letter_pdf_q() -> Q:
+    return (
+        Q(application__admission_letter_pdf__isnull=False)
+        & ~Q(application__admission_letter_pdf="")
+    )
+
+
+def _parse_optional_int(value) -> int | None:
+    if value in (None, "", "all"):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_offer_letter_scope(source) -> dict:
+    """Normalize scope filters from query params or request body."""
+    batch_name = (source.get("batch") or source.get("admitted_batch_name") or "").strip()
+    program_name = (source.get("program") or source.get("program_name") or "").strip()
+    return {
+        "admitted_batch_id": _parse_optional_int(source.get("admitted_batch_id")),
+        "admitted_batch_name": batch_name or None,
+        "program_id": _parse_optional_int(source.get("program_id")),
+        "program_name": program_name or None,
+        "academic_batch_id": _parse_optional_int(source.get("academic_batch_id")),
+    }
+
+
+def _apply_offer_letter_scope_filters(qs, scope: dict):
+    if scope.get("admitted_batch_id"):
+        qs = qs.filter(admitted_batch_id=scope["admitted_batch_id"])
+    if scope.get("admitted_batch_name"):
+        qs = qs.filter(admitted_batch__name=scope["admitted_batch_name"])
+    if scope.get("program_id"):
+        qs = qs.filter(admitted_program_id=scope["program_id"])
+    if scope.get("program_name"):
+        qs = qs.filter(admitted_program__name__icontains=scope["program_name"])
+    if scope.get("academic_batch_id"):
+        qs = qs.filter(intended_program_batch_id=scope["academic_batch_id"])
+    return qs
+
+
+def _admitted_students_in_scope(scope: dict):
+    qs = AdmittedStudent.objects.filter(
+        is_admitted=True,
+        application__is_revoked=False,
+    )
+    return _apply_offer_letter_scope_filters(qs, scope)
+
+
 def _eligible_offer_letter_application_ids(
     *,
     only_missing_pdf: bool = False,
     include_existing_pdf: bool = True,
     admitted_batch_id: int | None = None,
     program_id: int | None = None,
+    admitted_batch_name: str | None = None,
+    program_name: str | None = None,
+    academic_batch_id: int | None = None,
+    scope: dict | None = None,
 ) -> list[int]:
     """
     Admitted, non-revoked students whose programme has an active offer-letter template.
@@ -292,30 +278,83 @@ def _eligible_offer_letter_application_ids(
     if not program_ids:
         return []
 
+    scope = scope or {
+        "admitted_batch_id": admitted_batch_id,
+        "admitted_batch_name": admitted_batch_name,
+        "program_id": program_id,
+        "program_name": program_name,
+        "academic_batch_id": academic_batch_id,
+    }
+
     qs = AdmittedStudent.objects.filter(
         is_admitted=True,
         application__is_revoked=False,
         admitted_program_id__in=program_ids,
     )
-    if admitted_batch_id:
-        qs = qs.filter(admitted_batch_id=admitted_batch_id)
-    if program_id:
-        qs = qs.filter(admitted_program_id=program_id)
+    qs = _apply_offer_letter_scope_filters(qs, scope)
 
     if only_missing_pdf:
-        qs = qs.filter(
-            Q(application__admission_letter_pdf__isnull=True)
-            | Q(application__admission_letter_pdf="")
-        )
+        qs = qs.filter(_missing_offer_letter_pdf_q())
     elif not include_existing_pdf:
-        qs = qs.filter(
-            Q(application__admission_letter_pdf__isnull=True)
-            | Q(application__admission_letter_pdf="")
-        )
+        qs = qs.filter(_missing_offer_letter_pdf_q())
 
     return list(
         qs.order_by("application_id").values_list("application_id", flat=True).distinct()
     )
+
+
+def _offer_letter_scope_summary(scope: dict, *, only_missing_pdf: bool = True) -> dict:
+    """Counts for admin bulk-generation preview."""
+    program_ids = _active_template_program_ids()
+    admitted_in_scope = _admitted_students_in_scope(scope)
+    admitted_total = admitted_in_scope.count()
+
+    if not program_ids:
+        return {
+            "programs_with_templates": 0,
+            "admitted_in_scope": admitted_total,
+            "eligible_to_process": 0,
+            "eligible_with_template_total": 0,
+            "already_have_pdf": 0,
+            "without_template": admitted_total,
+            "only_missing_pdf": only_missing_pdf,
+            "application_ids_sample": [],
+            "scope": scope,
+        }
+
+    with_template = _apply_offer_letter_scope_filters(
+        AdmittedStudent.objects.filter(
+            is_admitted=True,
+            application__is_revoked=False,
+            admitted_program_id__in=program_ids,
+        ),
+        scope,
+    )
+    eligible_with_template_total = with_template.count()
+    already_have_pdf = with_template.filter(_has_offer_letter_pdf_q()).count()
+    eligible_to_process = (
+        with_template.filter(_missing_offer_letter_pdf_q()).count()
+        if only_missing_pdf
+        else eligible_with_template_total
+    )
+    without_template = admitted_total - eligible_with_template_total
+
+    eligible_ids = _eligible_offer_letter_application_ids(
+        only_missing_pdf=only_missing_pdf,
+        scope=scope,
+    )
+
+    return {
+        "programs_with_templates": len(program_ids),
+        "admitted_in_scope": admitted_total,
+        "eligible_to_process": len(eligible_ids),
+        "eligible_with_template_total": eligible_with_template_total,
+        "already_have_pdf": already_have_pdf,
+        "without_template": max(without_template, 0),
+        "only_missing_pdf": only_missing_pdf,
+        "application_ids_sample": eligible_ids[:20],
+        "scope": scope,
+    }
 
 
 def _bool_request_flag(value, default=False):
@@ -336,10 +375,25 @@ def _process_bulk_offer_letters_sync(
     generated = 0
     reused_pdf = 0
     failed = 0
-    errors = []
+    job_id = uuid.uuid4().hex
+    job: dict = {
+        "job_id": job_id,
+        "status": "running",
+        "total": len(application_ids),
+        "processed": 0,
+        "generated": 0,
+        "reused": 0,
+        "failed": 0,
+        "report_rows": [],
+        "send_email": send_email,
+        "only_missing_pdf": only_missing_pdf,
+        "started_by": getattr(request.user, "id", None),
+        "created_at": timezone.now().isoformat(),
+        "async": False,
+    }
     verify_base = resolve_verify_base(request)
 
-    for applicant_id in application_ids:
+    for index, applicant_id in enumerate(application_ids, start=1):
         result = generate_offer_letter_for_application(
             applicant_id,
             request.user,
@@ -350,26 +404,66 @@ def _process_bulk_offer_letters_sync(
         if result.get("ok"):
             if result.get("status") == "skipped":
                 reused_pdf += 1
+                append_bulk_report_row(
+                    job,
+                    applicant_id,
+                    "reused_existing_pdf",
+                    result.get("detail") or "Existing PDF reused.",
+                )
+            elif result.get("status") == "processing":
+                generated += 1
+                append_bulk_report_row(
+                    job,
+                    applicant_id,
+                    "processing",
+                    "DOCX rendered; PDF conversion queued in background.",
+                )
             else:
                 generated += 1
+                append_bulk_report_row(
+                    job,
+                    applicant_id,
+                    "generated",
+                    result.get("detail") or "Offer letter PDF generated.",
+                )
         else:
             failed += 1
-            errors.append({"id": applicant_id, "detail": result.get("detail", "Generation failed.")})
+            append_bulk_report_row(
+                job,
+                applicant_id,
+                "failed",
+                result.get("detail", "Generation failed."),
+            )
+        job["processed"] = index
 
     total = len(application_ids)
+    job["status"] = "complete"
+    job["finished_at"] = timezone.now().isoformat()
+    job["generated"] = generated
+    job["reused"] = reused_pdf
+    job["failed"] = failed
+    job["errors"] = [
+        {"id": r["application_id"], "detail": r.get("detail") or "Generation failed."}
+        for r in job.get("report_rows", [])
+        if r.get("outcome") == "failed"
+    ]
+    save_bulk_offer_letter_job(job_id, job)
+
     return {
         "detail": (
             f"Processed {total} applicants. Generated: {generated}, "
             f"Reused existing PDF: {reused_pdf}, Failed: {failed}."
         ),
         "async": False,
+        "job_id": job_id,
+        "report_url": f"/api/offer_letter/bulk_job_report/{job_id}",
         "summary": {
             "total": total,
             "generated_and_queued": generated,
             "reused_existing_pdf_and_queued": reused_pdf,
             "failed": failed,
         },
-        "errors": errors[:50],
+        "errors": job["errors"][:50],
         "status_code": 200 if failed == 0 else 207,
     }
 
@@ -391,6 +485,7 @@ def _queue_bulk_offer_letters_async(
         "reused": 0,
         "failed": 0,
         "errors": [],
+        "report_rows": [],
         "send_email": send_email,
         "only_missing_pdf": only_missing_pdf,
         "started_by": getattr(request.user, "id", None),
@@ -414,6 +509,7 @@ def _queue_bulk_offer_letters_async(
         "job_id": job_id,
         "total": len(application_ids),
         "status_url": f"/api/offer_letter/bulk_job_status/{job_id}",
+        "report_url": f"/api/offer_letter/bulk_job_report/{job_id}",
         "status_code": 202,
     }
 
@@ -427,50 +523,8 @@ def bulk_eligible_offer_letters_preview(request):
         "true",
         "yes",
     )
-    admitted_batch_id = request.query_params.get("admitted_batch_id")
-    program_id = request.query_params.get("program_id")
-    try:
-        batch_id = int(admitted_batch_id) if admitted_batch_id else None
-    except (TypeError, ValueError):
-        batch_id = None
-    try:
-        prog_id = int(program_id) if program_id else None
-    except (TypeError, ValueError):
-        prog_id = None
-
-    program_ids = _active_template_program_ids()
-    eligible_ids = _eligible_offer_letter_application_ids(
-        only_missing_pdf=only_missing,
-        admitted_batch_id=batch_id,
-        program_id=prog_id,
-    )
-    all_eligible_ids = _eligible_offer_letter_application_ids(
-        only_missing_pdf=False,
-        admitted_batch_id=batch_id,
-        program_id=prog_id,
-    )
-
-    admitted_total = AdmittedStudent.objects.filter(
-        is_admitted=True,
-        application__is_revoked=False,
-    )
-    if batch_id:
-        admitted_total = admitted_total.filter(admitted_batch_id=batch_id)
-    if prog_id:
-        admitted_total = admitted_total.filter(admitted_program_id=prog_id)
-
-    no_template = admitted_total.exclude(admitted_program_id__in=program_ids).count()
-
-    return Response(
-        {
-            "programs_with_templates": len(program_ids),
-            "eligible_to_process": len(eligible_ids),
-            "eligible_with_template_total": len(all_eligible_ids),
-            "without_template": no_template,
-            "only_missing_pdf": only_missing,
-            "application_ids_sample": eligible_ids[:20],
-        }
-    )
+    scope = _parse_offer_letter_scope(request.query_params)
+    return Response(_offer_letter_scope_summary(scope, only_missing_pdf=only_missing))
 
 
 @api_view(['POST'])
@@ -488,21 +542,10 @@ def bulk_send_offer_letters(request):
         only_missing_pdf = only_missing_pdf.lower() in ("1", "true", "yes")
 
     if all_eligible:
-        batch_id = request.data.get("admitted_batch_id")
-        prog_id = request.data.get("program_id")
-        try:
-            batch_id = int(batch_id) if batch_id not in (None, "") else None
-        except (TypeError, ValueError):
-            batch_id = None
-        try:
-            prog_id = int(prog_id) if prog_id not in (None, "") else None
-        except (TypeError, ValueError):
-            prog_id = None
-
+        scope = _parse_offer_letter_scope(request.data)
         cleaned_ids = _eligible_offer_letter_application_ids(
             only_missing_pdf=only_missing_pdf,
-            admitted_batch_id=batch_id,
-            program_id=prog_id,
+            scope=scope,
         )
         if not cleaned_ids:
             return Response(
@@ -570,7 +613,40 @@ def bulk_offer_letter_job_status(request, job_id):
     job = load_bulk_offer_letter_job(job_id)
     if not job:
         return Response({"detail": "Bulk job not found or expired."}, status=404)
-    return Response(job)
+    if not job.get("errors") and job.get("report_rows"):
+        job = {
+            **job,
+            "errors": [
+                {"id": r["application_id"], "detail": r.get("detail") or "Generation failed."}
+                for r in job["report_rows"]
+                if r.get("outcome") == "failed"
+            ],
+        }
+    payload = {**job, "report_url": f"/api/offer_letter/bulk_job_report/{job_id}"}
+    return Response(payload)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def bulk_offer_letter_job_report(request, job_id):
+    """Download CSV report for a bulk offer-letter job (all rows or errors only)."""
+    from django.http import HttpResponse
+
+    job = load_bulk_offer_letter_job(job_id)
+    if not job:
+        return Response({"detail": "Bulk job not found or expired."}, status=404)
+
+    errors_only = request.query_params.get("type", "all").lower() in (
+        "errors",
+        "failed",
+        "error",
+    )
+    csv_text = build_bulk_offer_letter_csv(job, errors_only=errors_only)
+    suffix = "errors" if errors_only else "full"
+    filename = f"offer_letter_bulk_{job_id[:8]}_{suffix}.csv"
+    response = HttpResponse(csv_text, content_type="text/csv; charset=utf-8")
+    response["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return response
 
 
 @api_view(["GET"])
@@ -616,6 +692,97 @@ def verify_offer_letter_public(request, token: str):
     )
 
 # offer letter status
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def diagnose_offer_letter_readiness(request, application_id):
+    """Pre-flight checks — same rules as bulk/single generation."""
+    from admissions.admission_specialization import validate_offer_letter_admission
+    from OfferLetter.AdmissionLetter.utils.offer_generation import (
+        _active_template_for_program,
+        _has_stored_offer_letter_pdf,
+        _resolve_admission_for_offer_letter,
+    )
+
+    applicant = Application.objects.filter(pk=application_id).first()
+    if not applicant:
+        return Response(
+            {"application_id": application_id, "ready": False, "checks": [{"ok": False, "detail": "Applicant not found."}]},
+            status=404,
+        )
+
+    checks: list[dict] = []
+    if applicant.is_revoked:
+        checks.append({"ok": False, "code": "revoked", "detail": "Application admission is revoked."})
+
+    admission = _resolve_admission_for_offer_letter(applicant)
+    if admission is None:
+        checks.append({"ok": False, "code": "admission", "detail": "No AdmittedStudent record linked to this application."})
+    else:
+        checks.append(
+            {
+                "ok": bool(admission.is_admitted),
+                "code": "is_admitted",
+                "detail": "Active admission flag is set." if admission.is_admitted else "is_admitted is false on AdmittedStudent.",
+            }
+        )
+        combo_err = validate_offer_letter_admission(admission)
+        if combo_err:
+            checks.append({"ok": False, "code": "combination", "detail": combo_err})
+        else:
+            checks.append({"ok": True, "code": "combination", "detail": "Teaching combination / specialization OK."})
+
+        template = _active_template_for_program(admission.admitted_program_id)
+        if template is None:
+            checks.append({"ok": False, "code": "template", "detail": "No active offer-letter template for this programme."})
+        else:
+            checks.append(
+                {
+                    "ok": True,
+                    "code": "template",
+                    "detail": f"Active template #{template.id} ({template.file_type}).",
+                }
+            )
+            if template.file_type == "pdf" and not template.field_positions:
+                checks.append(
+                    {
+                        "ok": False,
+                        "code": "pdf_fields",
+                        "detail": "PDF template has no field positions configured.",
+                    }
+                )
+            try:
+                with template.file.open("rb") as handle:
+                    handle.read(1)
+                checks.append({"ok": True, "code": "template_file", "detail": "Template file is readable from storage."})
+            except Exception as exc:
+                checks.append(
+                    {
+                        "ok": False,
+                        "code": "template_file",
+                        "detail": f"Template file not readable: {exc}",
+                    }
+                )
+
+    if _has_stored_offer_letter_pdf(applicant):
+        checks.append(
+            {
+                "ok": True,
+                "code": "existing_pdf",
+                "detail": "Offer letter PDF already on file (bulk only_missing_pdf skips regeneration).",
+            }
+        )
+
+    blocking = [c for c in checks if not c.get("ok")]
+    return Response(
+        {
+            "application_id": application_id,
+            "ready": len(blocking) == 0,
+            "blocking_count": len(blocking),
+            "checks": checks,
+        }
+    )
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def offer_letter_status(request, applicant_id):

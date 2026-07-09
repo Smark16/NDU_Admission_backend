@@ -94,6 +94,9 @@ def _read_portal_logo_bytes() -> bytes | None:
         workspace_root / "NDU_Admission_Frontend" / "public" / "Ndejje_University_Logo.png",
         workspace_root / "NDU_Admission_Frontend" / "public" / "Ndejje_University_Logo.jpg",
         backend_root / "static" / "Ndejje_University_Logo.png",
+        backend_root / "static" / "Ndejje_University_Logo.jpg",
+        backend_root / "static" / "ndejje_logo.png",
+        backend_root / "static" / "ndejje_logo.jpg",
     ]
     for path in candidates:
         if path.is_file():
@@ -114,6 +117,8 @@ def load_portal_logo_b64_for_pdf() -> str:
         img = Image.open(BytesIO(raw))
         if img.mode not in ("RGB", "RGBA"):
             img = img.convert("RGBA")
+        # Keep crest readable in PDFs without exploding PDF size.
+        img.thumbnail((420, 420))
         out = BytesIO()
         img.save(out, format="PNG")
         return base64.b64encode(out.getvalue()).decode("ascii")
@@ -127,6 +132,26 @@ def load_portal_logo_data_uri() -> str:
     if not raw:
         return ""
     return f"data:image/png;base64,{raw}"
+
+
+def xhtml2pdf_link_callback(uri, rel=None):
+    """
+    Resolve relative URIs for xhtml2pdf WITHOUT wiping data:image logos.
+
+    A callback that always returns BASE_DIR breaks embedded base64 images
+    (timetable / exam PDFs would print with blank logo).
+    """
+    if not uri:
+        return uri
+    if str(uri).startswith(("data:", "http://", "https://", "file:")):
+        return uri
+    backend_root = Path(settings.BASE_DIR)
+    candidate = Path(uri)
+    if not candidate.is_absolute():
+        candidate = backend_root / uri.lstrip("/\\")
+    if candidate.is_file():
+        return candidate.as_uri()
+    return str(backend_root.as_uri()) + "/"
 
 
 def portal_branding_payload(settings_obj, request=None) -> dict:

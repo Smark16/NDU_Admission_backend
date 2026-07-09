@@ -283,6 +283,9 @@ class RegisterSerializer(serializers.ModelSerializer):
         except Exception:
             pass
 
+        from hr.staff.utils.profile_sync import ensure_staff_profile_for_user
+        ensure_staff_profile_for_user(user)
+
         return user
 
 #login password reset

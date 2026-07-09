@@ -234,6 +234,8 @@ class UpdateUser(generics.UpdateAPIView):
             User.objects.prefetch_related("groups", "campuses", "faculties")
             .get(pk=instance.pk)
         )
+        from hr.staff.utils.profile_sync import ensure_staff_profile_for_user
+        ensure_staff_profile_for_user(instance)
         return Response(ListUserSerializer(instance).data, status=200)
     
 # get single user

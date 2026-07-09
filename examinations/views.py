@@ -19,6 +19,7 @@ from .permissions import (
     user_can_publish_course,
 )
 from .services.mark_completeness import collect_incomplete_results
+from .services.marks_window import assert_marks_entry_allowed, marks_entry_status
 from .services.policy_resolver import resolve_assessment_policy
 from .services.publish import publish_result, verify_result
 from .serializers import (
@@ -80,6 +81,7 @@ class StaffExaminationCoursesView(APIView):
 
         courses = []
         for cu in qs:
+            entry_status = marks_entry_status(cu, user=request.user)
             courses.append(
                 {
                     "course_unit_id": cu.id,
@@ -93,6 +95,7 @@ class StaffExaminationCoursesView(APIView):
                         if cu.program_batch and cu.program_batch.program
                         else None
                     ),
+                    "marks_entry": entry_status,
                 }
             )
 
@@ -169,6 +172,7 @@ class LecturerCourseMarksView(APIView):
                 "policy_academic_level": level_name,
                 "grading_scheme": grade_scale.name if grade_scale else None,
                 "grade_bands": grade_bands,
+                "marks_entry": marks_entry_status(course_unit, user=request.user),
                 "enrolled_count": enrolled_count,
                 "rows": rows,
             }
@@ -188,6 +192,11 @@ class LecturerCourseMarksView(APIView):
 
         if not user_can_manage_course_marks(request.user, course_unit):
             return Response({"detail": "You are not assigned to this course."}, status=403)
+
+        try:
+            assert_marks_entry_allowed(course_unit, user=request.user)
+        except PermissionError as exc:
+            return Response({"detail": str(exc)}, status=403)
 
         serializer = SaveMarksSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)

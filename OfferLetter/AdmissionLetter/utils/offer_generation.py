@@ -19,7 +19,10 @@ from admissions.admission_specialization import (
     validate_offer_letter_admission,
 )
 from OfferLetter.AdmissionLetter.models import OfferLetterTemplate
-from OfferLetter.AdmissionLetter.utils.letters import fill_pdf_template, render_docx_from_template
+from OfferLetter.AdmissionLetter.utils.letters import (
+    fill_pdf_template_file,
+    render_docx_from_template_file,
+)
 from OfferLetter.AdmissionLetter.utils.offer_security import stamp_offer_letter_pdf
 
 logger = logging.getLogger(__name__)
@@ -87,6 +90,31 @@ def _active_template_for_program(program_id: int) -> OfferLetterTemplate | None:
     )
 
 
+def _offer_letter_error_detail(prefix: str, exc: Exception) -> str:
+    message = str(exc).strip() or exc.__class__.__name__
+    detail = f"{prefix}: {message}"
+    return detail[:500]
+
+
+def _resolve_admission_for_offer_letter(applicant: Application) -> AdmittedStudent | None:
+    """Match single-student admin flow: one admission row per application."""
+    return (
+        AdmittedStudent.objects.select_related(
+            "admitted_program",
+            "admitted_campus",
+            "admitted_specialization",
+        )
+        .filter(application=applicant)
+        .order_by("-is_admitted", "-id")
+        .first()
+    )
+
+
+def _has_stored_offer_letter_pdf(applicant: Application) -> bool:
+    field = getattr(applicant, "admission_letter_pdf", None)
+    return bool(field and getattr(field, "name", None))
+
+
 def build_offer_letter_context(applicant: Application, admission: AdmittedStudent, template: OfferLetterTemplate) -> dict:
     if template.start_date:
         start_date_formatted = template.start_date.strftime("%B %d, %Y")
@@ -119,7 +147,7 @@ def build_offer_letter_context(applicant: Application, admission: AdmittedStuden
         "program_name": admission.admitted_program.name,
         "min_years": admission.admitted_program.max_years,
         "max_years": admission.admitted_program.min_years,
-        "campus": admission.admitted_campus,
+        "campus": getattr(admission.admitted_campus, "name", None) or str(admission.admitted_campus or ""),
         "study_mode": admission.study_mode,
         "start_date": start_date_formatted,
         "hall_of_residence": hall,
@@ -142,7 +170,7 @@ def generate_offer_letter_for_application(
     if applicant.is_revoked:
         return {"ok": False, "detail": "Admission revoked.", "status": "error", "application_id": application_id}
 
-    if skip_if_pdf_exists and applicant.admission_letter_pdf:
+    if skip_if_pdf_exists and _has_stored_offer_letter_pdf(applicant):
         if send_email:
             _queue_offer_letter_email(application_id)
         return {
@@ -152,16 +180,19 @@ def generate_offer_letter_for_application(
             "application_id": application_id,
         }
 
-    try:
-        admission = AdmittedStudent.objects.select_related(
-            "admitted_program",
-            "admitted_campus",
-            "admitted_specialization",
-        ).get(application=applicant, is_admitted=True)
-    except AdmittedStudent.DoesNotExist:
+    admission = _resolve_admission_for_offer_letter(applicant)
+    if admission is None:
         return {
             "ok": False,
-            "detail": "No active admission record for this applicant.",
+            "detail": "No admission record for this applicant.",
+            "status": "error",
+            "application_id": application_id,
+        }
+
+    if not admission.is_admitted:
+        return {
+            "ok": False,
+            "detail": "Student admission is not marked active (is_admitted=false).",
             "status": "error",
             "application_id": application_id,
         }
@@ -198,7 +229,7 @@ def generate_offer_letter_for_application(
         try:
             _issue_offer_letter_audit(applicant, user)
             verify_url = f"{verify_base}/verify-offer/{applicant.offer_letter_verification_token}"
-            pdf_bytes = fill_pdf_template(template.file.path, context, template.field_positions)
+            pdf_bytes = fill_pdf_template_file(template.file, context, template.field_positions)
             from accounts.portal_branding import get_offer_letter_footer_name
 
             sys_name = getattr(
@@ -219,7 +250,7 @@ def generate_offer_letter_for_application(
             logger.error("PDF fill failed for applicant %s: %s", application_id, exc, exc_info=True)
             return {
                 "ok": False,
-                "detail": "PDF template filling failed.",
+                "detail": _offer_letter_error_detail("PDF template filling failed", exc),
                 "status": "error",
                 "application_id": application_id,
             }
@@ -240,12 +271,12 @@ def generate_offer_letter_for_application(
         }
 
     try:
-        docx_bytes = render_docx_from_template(template.file.path, context)
+        docx_bytes = render_docx_from_template_file(template.file, context)
     except Exception as exc:
         logger.error("DOCX rendering failed for applicant %s: %s", application_id, exc, exc_info=True)
         return {
             "ok": False,
-            "detail": "DOCX template rendering failed.",
+            "detail": _offer_letter_error_detail("DOCX template rendering failed", exc),
             "status": "error",
             "application_id": application_id,
         }

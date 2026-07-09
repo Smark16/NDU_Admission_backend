@@ -33,7 +33,8 @@ urlpatterns = [
     path('api/program/', include('Programs.urls')),
     path('api/courses/', include('Programs.course_urls')),
     path('api/offer_letter/', include('OfferLetter.AdmissionLetter.urls')),
-    path('api/admission_reports/', include('OfferLetter.AdmissionReports.urls'))
+    path('api/admission_reports/', include('OfferLetter.AdmissionReports.urls')),
+    path('api/hr/', include('hr.urls')),
 ]
 
 if settings.DEBUG:

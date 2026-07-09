@@ -490,9 +490,10 @@ def render_provisional_results_pdf(
     html = render_to_string("examinations/provisional_results.html", context)
     from xhtml2pdf import pisa
 
+    from accounts.portal_branding import xhtml2pdf_link_callback
+
     pdf_buffer = io.BytesIO()
-    base_url = str(Path(settings.BASE_DIR).as_uri()) + "/"
-    result = pisa.CreatePDF(html, dest=pdf_buffer, link_callback=lambda *args: base_url)
+    result = pisa.CreatePDF(html, dest=pdf_buffer, link_callback=xhtml2pdf_link_callback)
     if result.err:
         raise RuntimeError("Results document PDF generation failed.")
     pdf_buffer.seek(0)

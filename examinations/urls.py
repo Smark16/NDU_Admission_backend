@@ -41,6 +41,12 @@ from .grade_scale_views import (
     GradeScaleDetailView,
     GradeScaleListCreateView,
 )
+from .marks_window_views import (
+    MarksEntryWindowCloseView,
+    MarksEntryWindowDetailView,
+    MarksEntryWindowListCreateView,
+    MarksEntryWindowOpenView,
+)
 from .views import (
     LecturerCourseMarksView,
     PublishCourseMarksView,
@@ -84,6 +90,22 @@ urlpatterns = [
         "award-class/preview/",
         AwardClassPreviewView.as_view(),
         name="examinations-award-class-preview",
+    ),
+    path("marks-windows/", MarksEntryWindowListCreateView.as_view(), name="marks-windows"),
+    path(
+        "marks-windows/<int:window_id>/",
+        MarksEntryWindowDetailView.as_view(),
+        name="marks-window-detail",
+    ),
+    path(
+        "marks-windows/<int:window_id>/open/",
+        MarksEntryWindowOpenView.as_view(),
+        name="marks-window-open",
+    ),
+    path(
+        "marks-windows/<int:window_id>/close/",
+        MarksEntryWindowCloseView.as_view(),
+        name="marks-window-close",
     ),
     path("staff/courses/", StaffExaminationCoursesView.as_view(), name="staff-examination-courses"),
     path(
