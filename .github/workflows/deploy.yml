@@ -50,6 +50,7 @@ jobs:
           python manage.py migrate admissions 0043_weekly_report_digest --fake
           python manage.py migrate admissions 0046_application_refugee_fields --fake
           python manage.py migrate admissions 0047_application_applicant_category --fake
+          python manage.py migrate Programs 0015_lecture_attendance --fake
         
           # Final migrate (this should now be safe)
           python manage.py migrate
