@@ -28,7 +28,7 @@ from .student_portal_finance import (
     student_finance_totals,
 )
 
-from .tasks import run_bulk_commitment_reminders
+from .tasks import queue_bulk_commitment_reminders
 
 logger = logging.getLogger(__name__)
 
@@ -712,8 +712,8 @@ class SendCommitmentFeeReminderView(APIView):
     """
     POST /api/payments/admin/tuition_ledger/send_commitment_reminders
 
-    Emails admitted students whose commitment fee is not met.
-    Runs in the web process (no Celery .get()) so production is reliable.
+    Quickly counts unpaid-commitment students and queues a Celery background job.
+    Returns immediately so nginx/gunicorn do not time out on large cohorts.
     """
 
     permission_classes = [FinanceModuleAdminPermission]
@@ -737,49 +737,38 @@ class SendCommitmentFeeReminderView(APIView):
         }
 
         try:
-            result = run_bulk_commitment_reminders(cohort)
+            result = queue_bulk_commitment_reminders(cohort)
         except Exception as exc:
-            logger.exception("Commitment reminder job failed")
+            logger.exception("Failed to queue commitment reminders")
             return Response(
-                {"detail": f"Failed to send reminders: {exc}"},
+                {
+                    "detail": (
+                        f"Failed to queue reminders. Ensure Celery/Redis is running. ({exc})"
+                    )
+                },
                 status=status.HTTP_502_BAD_GATEWAY,
             )
 
-        if not isinstance(result, dict):
-            return Response(
-                {"detail": "Unexpected reminder job result.", "raw": str(result)},
-                status=status.HTTP_502_BAD_GATEWAY,
-            )
-
-        sent = int(result.get("sent") or 0)
-        failed = int(result.get("failed") or 0)
-        skipped_no_email = int(result.get("skipped_no_email") or 0)
-        skipped_met = int(result.get("skipped_met") or 0)
-        eligible = int(result.get("eligible") or 0)
-        threshold = result.get("commitment_threshold", float(COMMITMENT_FEE_THRESHOLD))
-
-        detail = (
-            f"Payment reminders sent to {sent} admitted student(s) "
-            f"with unpaid commitment fee (tuition paid under "
-            f"UGX {int(threshold):,})."
+        queued = int(result.get("queued") or 0)
+        detail = result.get("detail") or (
+            f"{queued} payment reminder(s) queued for background delivery."
         )
-        if failed:
-            detail += f" {failed} failed to send."
-        if skipped_no_email:
-            detail += f" {skipped_no_email} skipped (no email)."
-        if skipped_met:
-            detail += f" {skipped_met} already met commitment and were skipped."
 
         return Response(
             {
                 "detail": detail,
-                "sent": sent,
-                "failed": failed,
-                "eligible": eligible,
-                "skipped_met": skipped_met,
-                "skipped_no_email": skipped_no_email,
-                "commitment_threshold": float(threshold),
+                "status": result.get("status") or "queued",
+                "queued": queued,
+                "sent": queued,
+                "failed": int(result.get("failed") or 0),
+                "eligible": int(result.get("eligible") or queued),
+                "skipped_met": int(result.get("skipped_met") or 0),
+                "skipped_no_email": int(result.get("skipped_no_email") or 0),
+                "commitment_threshold": float(
+                    result.get("commitment_threshold") or COMMITMENT_FEE_THRESHOLD
+                ),
                 "filters": result.get("filters") or cohort,
+                "task_id": result.get("task_id"),
             },
-            status=status.HTTP_200_OK,
+            status=status.HTTP_202_ACCEPTED,
         )

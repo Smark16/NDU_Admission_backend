@@ -93,38 +93,93 @@ def celery_send_commitment_fee_reminder(self, student_id, paid_ugx=None, balance
     return {"ok": True, "student_id": student_id}
 
 
+def _unpaid_commitment_queryset(cohort=None):
+    """Admitted students with unmet commitment fee and a usable email (DB-level filter)."""
+    from payments.admin_ledger_views import _apply_student_cohort_filters
+    from payments.commitment_queryset import filter_by_commitment_met
+
+    AdmittedStudent = apps.get_model("admissions", "AdmittedStudent")
+    qs = (
+        AdmittedStudent.objects.filter(is_admitted=True)
+        .exclude(application__email__isnull=True)
+        .exclude(application__email="")
+        .select_related("application")
+    )
+    qs = _apply_student_cohort_filters(qs, cohort or {})
+    return filter_by_commitment_met(qs, False)
+
+
+def queue_bulk_commitment_reminders(cohort=None):
+    """
+    Fast path for the API: count eligible students and enqueue ONE Celery job.
+    Does not send emails in the web request (avoids nginx/gunicorn timeouts).
+    """
+    from payments.student_payment_allocation import COMMITMENT_FEE_THRESHOLD
+
+    cohort = cohort or {}
+    qs = _unpaid_commitment_queryset(cohort)
+    queued = qs.count()
+
+    if queued == 0:
+        return {
+            "status": "queued",
+            "queued": 0,
+            "sent": 0,
+            "failed": 0,
+            "eligible": 0,
+            "skipped_met": 0,
+            "skipped_no_email": 0,
+            "commitment_threshold": float(COMMITMENT_FEE_THRESHOLD),
+            "filters": cohort,
+            "task_id": None,
+            "detail": "No admitted students with unpaid commitment fee matched the filters.",
+        }
+
+    async_result = celery_bulk_send_commitment_reminders.delay(cohort)
+    return {
+        "status": "queued",
+        "queued": queued,
+        "sent": queued,  # UI: number of notifications being sent
+        "failed": 0,
+        "eligible": queued,
+        "skipped_met": 0,
+        "skipped_no_email": 0,
+        "commitment_threshold": float(COMMITMENT_FEE_THRESHOLD),
+        "filters": cohort,
+        "task_id": async_result.id,
+        "detail": (
+            f"{queued} payment reminder(s) queued for background delivery "
+            f"(commitment fee under UGX {int(COMMITMENT_FEE_THRESHOLD):,})."
+        ),
+    }
+
+
 def run_bulk_commitment_reminders(cohort=None):
     """
-    Find admitted students with unmet commitment fee and email them.
-
-    Do NOT use QuerySet.iterator() here: commitment_payment_summary() runs nested
-    queries per student, which closes PostgreSQL server-side cursors and raises
-    "cursor ... does not exist".
+    Worker-side send: DB-filter unpaid students, then email in chunks.
+    Uses annotated paid amounts (no per-student finance allocation queries).
     """
-    from payments.admin_ledger_views import _apply_student_cohort_filters
-    from payments.student_portal_finance import (
-        COMMITMENT_FEE_THRESHOLD,
-        commitment_payment_summary,
-    )
+    from decimal import Decimal
+    import time
+
+    from payments.commitment_queryset import annotate_commitment_ugx_paid
+    from payments.student_payment_allocation import COMMITMENT_FEE_THRESHOLD
     from payments.utils.commitment_reminder_email import send_commitment_fee_reminder
 
     cohort = cohort or {}
     AdmittedStudent = apps.get_model("admissions", "AdmittedStudent")
     chunk_size = 100
 
-    base_qs = AdmittedStudent.objects.filter(is_admitted=True).order_by("id")
-    base_qs = _apply_student_cohort_filters(base_qs, cohort)
+    base_qs = _unpaid_commitment_queryset(cohort).order_by("id")
     student_ids = list(base_qs.values_list("id", flat=True))
 
     sent = 0
     failed = 0
-    skipped_met = 0
-    skipped_no_email = 0
-    eligible = 0
+    eligible = len(student_ids)
 
     for offset in range(0, len(student_ids), chunk_size):
         chunk_ids = student_ids[offset : offset + chunk_size]
-        students = (
+        students = annotate_commitment_ugx_paid(
             AdmittedStudent.objects.filter(id__in=chunk_ids)
             .select_related(
                 "application",
@@ -135,19 +190,16 @@ def run_bulk_commitment_reminders(cohort=None):
             .order_by("id")
         )
         for student in students:
-            summary = commitment_payment_summary(student)
-            if bool(summary["commitment_met"]):
-                skipped_met += 1
-                continue
-
             email = (getattr(student, "email", None) or "").strip()
             if not email:
-                skipped_no_email += 1
+                failed += 1
                 continue
 
-            eligible += 1
-            paid_ugx = float(summary["commitment_paid_ugx"])
-            balance_ugx = float(summary["commitment_balance"])
+            paid = Decimal(str(getattr(student, "commitment_paid_ugx", None) or 0))
+            balance = max(COMMITMENT_FEE_THRESHOLD - paid, Decimal("0"))
+            paid_ugx = float(paid)
+            balance_ugx = float(balance)
+
             try:
                 ok = send_commitment_fee_reminder(
                     student,
@@ -179,12 +231,18 @@ def run_bulk_commitment_reminders(cohort=None):
                     pass
                 failed += 1
 
+        # Light pacing so large batches are gentler on SendGrid
+        if offset + chunk_size < len(student_ids):
+            time.sleep(0.25)
+
     return {
+        "status": "completed",
         "sent": sent,
         "failed": failed,
         "eligible": eligible,
-        "skipped_met": skipped_met,
-        "skipped_no_email": skipped_no_email,
+        "queued": eligible,
+        "skipped_met": 0,
+        "skipped_no_email": 0,
         "commitment_threshold": float(COMMITMENT_FEE_THRESHOLD),
         "filters": cohort,
     }
@@ -192,5 +250,5 @@ def run_bulk_commitment_reminders(cohort=None):
 
 @shared_task(bind=True)
 def celery_bulk_send_commitment_reminders(self, cohort=None):
-    """Celery wrapper around run_bulk_commitment_reminders (optional background use)."""
+    """Background job: send commitment reminders for unpaid admitted students."""
     return run_bulk_commitment_reminders(cohort)
