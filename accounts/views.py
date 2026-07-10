@@ -12,6 +12,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.permissions import *
 from django.contrib.auth.models import Group, Permission
 from django.contrib.auth import authenticate
+from django.contrib.auth.models import update_last_login
 from .serializers import *
 from .models import *
 
@@ -40,6 +41,7 @@ class ObtainTokenView(TokenObtainPairView):
             password = request.data.get("password")
             user = authenticate(username=username, password=password)
             if user:
+                update_last_login(None, user)
                 log_audit_event(
                     user,
                     'login',
@@ -103,7 +105,17 @@ class SwitchPortalModeView(APIView):
 class RegisterView(generics.CreateAPIView):
     queryset = User.objects.all()
     serializer_class = RegisterSerializer
-    permission_classes = [permissions.AllowAny] 
+    permission_classes = [permissions.AllowAny]
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        user = (
+            User.objects.prefetch_related("groups", "campuses", "faculties")
+            .get(pk=serializer.instance.pk)
+        )
+        return Response(ListUserSerializer(user).data, status=status.HTTP_201_CREATED)
 
     def perform_create(self, serializer):
         user = serializer.save()
@@ -218,7 +230,13 @@ class UpdateUser(generics.UpdateAPIView):
                 return Response(exc.detail, status=status.HTTP_400_BAD_REQUEST)
 
         instance.refresh_from_db()
-        return Response(self.serializer_class(instance).data, status=200)
+        instance = (
+            User.objects.prefetch_related("groups", "campuses", "faculties")
+            .get(pk=instance.pk)
+        )
+        from hr.staff.utils.profile_sync import ensure_staff_profile_for_user
+        ensure_staff_profile_for_user(instance)
+        return Response(ListUserSerializer(instance).data, status=200)
     
 # get single user
 class getUser(generics.RetrieveAPIView):
@@ -233,12 +251,14 @@ class getUser(generics.RetrieveAPIView):
     
 # list admin users
 class ListUsers(generics.ListAPIView):
-    serializer_class = UserSerializer
+    serializer_class = ListUserSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
     def get_queryset(self):
-        qs = User.objects.filter(is_applicant=False).prefetch_related(
-            "groups", "user_permissions", "campuses", "faculties"
+        qs = (
+            User.objects.filter(is_applicant=False)
+            .defer("password")
+            .prefetch_related("groups", "campuses", "faculties")
         )
         no_group = (self.request.query_params.get("no_group") or "").lower()
         if no_group in ("1", "true", "yes"):
@@ -699,45 +719,116 @@ class ProspectiveStudentsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        from admissions.models import Application
-        from django.db.models import OuterRef, Subquery, Value
-        from django.db.models.functions import Coalesce
-
-        submitted_statuses = ['submitted', 'under_review', 'accepted', 'Admitted', 'rejected']
-
-        latest_draft = Application.objects.filter(
-            applicant=OuterRef('pk'),
-            status='draft'
-        ).order_by('-created_at')
-
-        prospective = (
-            User.objects.filter(is_applicant=True)
-            .exclude(pk__in=Application.objects.filter(status__in=submitted_statuses).values('applicant'))
-            .annotate(
-                has_draft=Coalesce(
-                    Subquery(latest_draft.values('status')[:1]),
-                    Value('no_application')
-                ),
-                draft_started_at=Subquery(latest_draft.values('created_at')[:1]),
-            )
-            .order_by('-date_joined')
+        from accounts.prospective_students import (
+            annotate_prospective_list_fields,
+            apply_prospective_list_filters,
+            prospective_applicant_base_queryset,
+            prospective_list_stats,
+            serialize_prospective_student,
         )
 
-        data = [
-            {
-                'id': u.id,
-                'name': u.get_full_name() or u.email,
-                'email': u.email,
-                'phone': u.phone,
-                'date_joined': u.date_joined,
-                'last_login': u.last_login,
-                'status': 'Draft Started' if u.has_draft == 'draft' else 'Never Started',
-                'draft_started_at': u.draft_started_at,
-                'days_since_joined': (timezone.now() - u.date_joined).days if u.date_joined else None,
-            }
-            for u in prospective
+        search = (request.query_params.get("search") or "").strip()
+        status = (request.query_params.get("status") or "all").strip()
+        date_from = (request.query_params.get("date_from") or "").strip()
+        date_to = (request.query_params.get("date_to") or "").strip()
+        page = max(int(request.query_params.get("page") or 1), 1)
+        page_size = min(max(int(request.query_params.get("page_size") or 50), 1), 200)
+
+        filtered = apply_prospective_list_filters(
+            prospective_applicant_base_queryset(),
+            search=search,
+            status=status,
+            date_from=date_from,
+            date_to=date_to,
+        )
+        total = filtered.count()
+        offset = (page - 1) * page_size
+
+        results = [
+            serialize_prospective_student(u)
+            for u in annotate_prospective_list_fields(filtered)
+            .only(
+                "id",
+                "first_name",
+                "last_name",
+                "email",
+                "phone",
+                "date_joined",
+                "last_login",
+                "username",
+            )
+            .order_by("-date_joined")[offset : offset + page_size]
         ]
-        return Response({'count': len(data), 'results': data})
+
+        payload = {
+            "count": total,
+            "page": page,
+            "page_size": page_size,
+            "results": results,
+        }
+        if page == 1:
+            payload["stats"] = prospective_list_stats()
+        return Response(payload)
+
+
+class AssistApplicationContextView(APIView):
+    """Prospective student assist session — applicant profile + draft progress."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        from Drafts.views import _draft_for_user
+        from Drafts.models import DraftApplication
+        from accounts.assist_application import (
+            draft_progress_payload,
+            get_assistable_applicant,
+        )
+
+        applicant = get_assistable_applicant(request.user, pk)
+        draft = _draft_for_user(applicant, None)
+        has_portal_draft = DraftApplication.objects.filter(applicant=applicant).exists()
+
+        from payments.models import ApplicationPayment
+
+        pending_payment = (
+            ApplicationPayment.objects.filter(user=applicant, status="PENDING")
+            .order_by("-created_at")
+            .first()
+        )
+        pending_payload = None
+        if pending_payment:
+            pending_payload = {
+                "id": pending_payment.id,
+                "external_reference": pending_payment.external_reference,
+                "payment_reference": pending_payment.payment_reference,
+                "amount": str(pending_payment.amount),
+                "created_at": pending_payment.created_at.isoformat()
+                if pending_payment.created_at
+                else None,
+            }
+
+        from payments.utils.application_payment_status import confirmed_application_fee_payment
+
+        confirmed_payment = confirmed_application_fee_payment(applicant, draft=draft)
+
+        return Response(
+            {
+                "applicant": {
+                    "id": applicant.id,
+                    "name": applicant.get_full_name() or applicant.email,
+                    "email": applicant.email,
+                    "phone": applicant.phone,
+                },
+                "status": "Draft Started" if (draft or has_portal_draft) else "Never Started",
+                "draft_started_at": draft.updated_at if draft else None,
+                "has_draft": draft is not None,
+                "progress": draft_progress_payload(draft),
+                "pending_payment": pending_payload,
+                "application_fee_confirmed": confirmed_payment is not None,
+                "confirmed_external_reference": (
+                    confirmed_payment.external_reference if confirmed_payment else ""
+                ),
+            }
+        )
 
 
 class SendReminderEmail(APIView):
@@ -758,13 +849,16 @@ class DeleteProspectiveStudent(APIView):
 
     def delete(self, request, pk):
         from admissions.models import Application
-        submitted_statuses = ['submitted', 'under_review', 'accepted', 'Admitted', 'rejected']
+        from accounts.prospective_students import PROSPECTIVE_EXCLUDED_APPLICATION_STATUSES
+
         try:
             user = User.objects.get(pk=pk, is_applicant=True)
         except User.DoesNotExist:
             return Response({'detail': 'Prospective student not found.'}, status=status.HTTP_404_NOT_FOUND)
 
-        if Application.objects.filter(applicant=user, status__in=submitted_statuses).exists():
+        if Application.objects.filter(
+            applicant=user, status__in=PROSPECTIVE_EXCLUDED_APPLICATION_STATUSES
+        ).exists():
             return Response(
                 {'detail': 'Cannot delete — this user has a submitted application.'},
                 status=status.HTTP_400_BAD_REQUEST
@@ -778,7 +872,10 @@ class ProspectiveAnnouncement(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        from admissions.models import Application
+        from accounts.prospective_students import (
+            filter_prospective_queryset_by_status,
+            prospective_applicant_base_queryset,
+        )
         from ndu_portal.send_grid import send_configurable_email
 
         subject = (request.data.get('subject') or '').strip()
@@ -788,25 +885,8 @@ class ProspectiveAnnouncement(APIView):
         if not subject or not body:
             return Response({'detail': 'Subject and body are required.'}, status=400)
 
-        submitted_statuses = ['submitted', 'under_review', 'accepted', 'Admitted', 'rejected']
-
-        qs = User.objects.filter(
-            is_applicant=True,
-            is_active=True,
-        ).exclude(
-            pk__in=Application.objects.filter(
-                status__in=submitted_statuses
-            ).values('applicant')
-        )
-
-        if status_filter == 'Draft Started':
-            qs = qs.filter(
-                pk__in=Application.objects.filter(status='draft').values('applicant')
-            )
-        elif status_filter == 'Never Started':
-            qs = qs.exclude(
-                pk__in=Application.objects.values('applicant')
-            )
+        qs = prospective_applicant_base_queryset().filter(is_active=True)
+        qs = filter_prospective_queryset_by_status(qs, status_filter)
 
         recipients = list(qs.values('id', 'first_name', 'last_name', 'email'))
         if not recipients:

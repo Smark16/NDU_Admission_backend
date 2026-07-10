@@ -22,7 +22,7 @@ def ordered_programs_for_application(application) -> List:
     except FieldDoesNotExist:
         return []
     return list(
-        application.programs.select_related("faculty").order_by("pk").all()
+        application.programs.select_related("faculty").prefetch_related("campuses").order_by("pk").all()
     )
 
 
@@ -33,7 +33,9 @@ def _programs_from_choice_rows(application) -> List:
         return []
     if not hasattr(application, "program_choices"):
         return []
-    qs = application.program_choices.select_related("program", "program__faculty").all()
+    qs = application.program_choices.select_related(
+        "program", "program__faculty"
+    ).prefetch_related("program__campuses").all()
     if not qs.exists():
         return []
     order_field = _first_order_field(Choice)

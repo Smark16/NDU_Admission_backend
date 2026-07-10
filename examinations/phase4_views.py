@@ -10,11 +10,7 @@ from rest_framework.views import APIView
 from Programs.models import CourseUnit
 
 from .models import CourseUnitResult, ResultChangeRequest
-from .permissions import (
-    CanApproveResultChanges,
-    CanEnterMarksOrAssignedLecturer,
-    user_can_manage_course_marks,
-)
+from .permissions import CanApproveResultChanges, user_can_manage_course_marks
 from .serializers import ResultChangeRequestSerializer
 from .services.publish import publish_result, sync_enrollment_from_result
 
@@ -64,15 +60,24 @@ class ResultChangeRequestListView(APIView):
 class CreateResultChangeRequestView(APIView):
     """Request a change to a published result (lecturer or staff)."""
 
-    permission_classes = [IsAuthenticated, CanEnterMarksOrAssignedLecturer]
+    permission_classes = [IsAuthenticated]
 
     def post(self, request, result_id):
         result = get_object_or_404(
-            CourseUnitResult.objects.select_related("enrollment", "enrollment__course_unit"),
+            CourseUnitResult.objects.select_related(
+                "enrollment",
+                "enrollment__course_unit",
+                "enrollment__student",
+            ),
             pk=result_id,
         )
         course_unit = result.enrollment.course_unit
-        if not user_can_manage_course_marks(request.user, course_unit):
+        student = result.enrollment.student
+        owns_result = (
+            student.student_user_id == request.user.id
+            or (student.reg_no or "").lower() == (request.user.username or "").lower()
+        )
+        if not (owns_result or user_can_manage_course_marks(request.user, course_unit)):
             return Response({"detail": "Forbidden."}, status=403)
 
         if result.status != CourseUnitResult.STATUS_PUBLISHED:

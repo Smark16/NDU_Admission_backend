@@ -5,13 +5,17 @@ from admissions.models import AdmittedStudent
 from ndu_portal.send_grid import send_configurable_email
 from payments.student_payment_allocation import COMMITMENT_FEE_THRESHOLD
 
+DEFAULT_SUBJECT = (
+    "RE: REMINDER TO PAY YOUR ADMISSION COMMITMENT FEE BY 17 JULY 2026"
+)
+
 
 def send_commitment_fee_reminder(
     student: AdmittedStudent,
     *,
     paid_ugx: float | None = None,
     balance_ugx: float | None = None,
-    subject: str = "Reminder: Pay Your Commitment Fee — Ndejje University",
+    subject: str = DEFAULT_SUBJECT,
 ) -> bool:
     """Send a payment reminder for an admitted student who has not met the commitment fee."""
     application = student.application
@@ -19,62 +23,70 @@ def send_commitment_fee_reminder(
     if not email:
         return False
 
-    first_name = application.first_name or ""
-    last_name = application.last_name or ""
-    program_name = student.admitted_program.name if student.admitted_program_id else "your admitted programme"
+    first_name = (application.first_name or "").strip()
+    last_name = (application.last_name or "").strip()
+    full_name = f"{first_name} {last_name}".strip() or "Applicant"
     pay_code = (student.effective_schoolpay_code or student.student_id or "").strip()
-    reg_no = (student.reg_no or "").strip()
     threshold = f"UGX {int(COMMITMENT_FEE_THRESHOLD):,}"
 
-    paid_line = ""
-    if paid_ugx is not None:
-        paid_line = f"Amount paid so far: UGX {int(paid_ugx):,}\n"
-    if balance_ugx is not None and balance_ugx > 0:
-        paid_line += f"Remaining toward commitment: UGX {int(balance_ugx):,}\n"
+    # Partial payment note — only when some money has been paid but commitment not met
+    balance_note = ""
+    paid_amount = float(paid_ugx or 0)
+    remaining = float(balance_ugx) if balance_ugx is not None else None
+    if paid_amount > 0 and remaining is not None and remaining > 0:
+        balance_note = (
+            f"\nOur records show that you have so far paid UGX {int(paid_amount):,} "
+            f"toward the commitment fee. Kindly pay the remaining balance of "
+            f"UGX {int(remaining):,} on or before Friday, 17 July 2026 to complete "
+            f"the {threshold} requirement.\n"
+        )
+    elif paid_amount > 0 and remaining is None:
+        remaining_calc = max(float(COMMITMENT_FEE_THRESHOLD) - paid_amount, 0)
+        if remaining_calc > 0:
+            balance_note = (
+                f"\nOur records show that you have so far paid UGX {int(paid_amount):,} "
+                f"toward the commitment fee. Kindly pay the remaining balance of "
+                f"UGX {int(remaining_calc):,} on or before Friday, 17 July 2026 to complete "
+                f"the {threshold} requirement.\n"
+            )
 
-    body = f"""Dear {first_name} {last_name},
+    pay_code_line = (
+        f"Your SchoolPay Payment Code is: {pay_code}\n"
+        if pay_code
+        else ""
+    )
 
-This is a friendly reminder from Ndejje University regarding your admission commitment fee.
+    body = f"""Dear {full_name},
 
-You were admitted to: {program_name}
-Registration Number: {reg_no or "N/A"}
-School Pay Code: {pay_code or "N/A"}
+RE: REMINDER TO PAY YOUR ADMISSION COMMITMENT FEE BY 17 JULY 2026
 
-To confirm your admission and unlock academic enrollment, please pay the non-refundable commitment fee of {threshold} using your School Pay Code{f" ({pay_code})" if pay_code else ""}.
+Greetings from Ndejje University.
 
-{paid_line}This amount is credited toward your tuition fees.
+Congratulations once again on your provisional admission to Ndejje University for the 2026/2027 Academic Year.
 
-PAYMENT GUIDELINES
+This is a reminder to confirm your admission by paying the non-refundable commitment fee of {threshold} on or before Friday, 17 July 2026, using the SchoolPay Payment Code provided on your admission letter.
+{pay_code_line}{balance_note}
+You can conveniently make your payment using Mobile Money as follows:
 
-=> FOR MTN MOBILE MONEY
-   1. Dial *165#
-   2. Go to payments (4)
-   3. Select school fees (3)
-   4. Select school pay (2)
-   5. Select pay fees (1)
-   Enter student No
-   Verify your student details
-   Enter amount to pay
-   Confirm with MTN mobile money PIN
+MTN Mobile Money
+• Dial *160*80#
+• Enter your SchoolPay Payment Code
+• Confirm the payment details and complete the transaction.
 
-=> FOR AIRTEL MONEY
-   1. Dial *185#
-   2. Go to school fees (6)
-   3. Select school pay (2)
-   4. Select pay fees (1)
-   Enter student No
-   Enter amount to pay
-   Verify your student details
-   Confirm with Airtel mobile money PIN
+Airtel Money
+• Dial *185*6*2#
+• Enter your SchoolPay Payment Code
+• Confirm the payment details and complete the transaction.
 
-After payment, send your Bank Deposit Slip / payment confirmation receipt to:
-confirmation@ndu.ac.ug
+After making the payment, please email the following to confirmation@ndu.ac.ug:
+• Your payment confirmation receipt
 
-You may also log in to the Horizon student portal to track your tuition balance.
+If you have already paid the commitment fee, please disregard this reminder.
 
-If you have already paid, please disregard this message and share your receipt with the Finance / Admissions office if it has not yet reflected.
+We look forward to welcoming you to Ndejje University and wish you every success in your academic journey.
 
-Admissions & Finance Office
+Yours sincerely,
+Admissions Office
 Ndejje University
 """
 

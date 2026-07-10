@@ -41,6 +41,22 @@ def _parse_yes_no(raw: str) -> bool:
     return (raw or "").strip().lower() in ("1", "true", "yes", "y")
 
 
+def row_has_legacy_fee_data(row: dict) -> bool:
+    """True when the row supplies legacy fee balance columns with meaningful values."""
+    if _parse_yes_no(row.get("admission_fee_paid", "")):
+        return True
+    for key in ("fees_paid_ugx", "fees_outstanding_ugx"):
+        raw = (row.get(key) or "").strip().replace(",", "")
+        if not raw:
+            continue
+        try:
+            if Decimal(raw) > 0:
+                return True
+        except InvalidOperation:
+            return True
+    return False
+
+
 def apply_legacy_fee_balances(
     admitted: AdmittedStudent,
     row: dict,

@@ -2,10 +2,14 @@
 from __future__ import annotations
 
 import logging
+import csv
+from datetime import datetime
+
 from decimal import Decimal
 
-from django.db.models import Count, DecimalField, Max, Q, Sum, Value
+from django.db.models import Count, DecimalField, F, Max, Q, Sum, Value
 from django.db.models.functions import Coalesce
+from django.http import StreamingHttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils.dateparse import parse_date
 from accounts.erp_drf_permissions import FinanceModuleAdminPermission
@@ -23,10 +27,12 @@ from .student_portal_finance import (
     student_billing_lines,
     student_finance_totals,
 )
+
 from .tasks import celery_bulk_send_commitment_reminders
 
 logger = logging.getLogger(__name__)
 
+from .commitment_queryset import annotate_commitment_ugx_paid, filter_by_commitment_met
 
 def _parse_page(value, default: int = 1) -> int:
     try:
@@ -192,6 +198,104 @@ def _cohort_finance_summary(students_qs) -> dict[str, float]:
     }
 
 
+def _student_display_name(student: AdmittedStudent) -> str:
+    try:
+        return student.full_name or ""
+    except Exception:
+        if student.application_id and student.application:
+            return getattr(student.application, "full_name", "") or ""
+    return ""
+
+
+def _payment_code_fields(student: AdmittedStudent) -> dict:
+    """SchoolPay wallet code vs reg. no. (students not synced to SchoolPay have no wallet yet)."""
+    wallet = (student.student_id or student.schoolpay_code or "").strip()
+    reg_no = (student.reg_no or "").strip()
+    return {
+        "student_id": student.student_id,
+        "schoolpay_code": wallet or None,
+        "payment_code": wallet or reg_no or None,
+        "schoolpay_registered": bool(wallet),
+        "payment_code_is_reg_no": not wallet and bool(reg_no),
+    }
+
+
+def _commitment_student_row(student: AdmittedStudent) -> dict:
+    """Lightweight list row — uses commitment annotations when present."""
+    threshold = float(COMMITMENT_FEE_THRESHOLD)
+    paid_raw = getattr(student, "commitment_paid_ugx", None)
+    if paid_raw is None:
+        finance = student_finance_totals(student)
+        paid = float(finance["commitment_paid_ugx"])
+        met = bool(finance["commitment_met"])
+        balance = float(finance["commitment_balance"])
+    else:
+        paid = float(paid_raw or 0)
+        admission_paid = bool(student.admission_fee_paid)
+        met = admission_paid or paid >= threshold
+        balance = 0.0 if met else max(threshold - paid, 0.0)
+
+    enrollment_status = None
+    try:
+        enrollment_status = student.programme_enrollment.status
+    except Exception:
+        enrollment_status = None
+
+    return {
+        "id": student.id,
+        "reg_no": student.reg_no,
+        "student_name": _student_display_name(student),
+        **_payment_code_fields(student),
+        "program": student.admitted_program.name if student.admitted_program_id else None,
+        "campus": student.admitted_campus.name if student.admitted_campus_id else None,
+        "batch_id": student.admitted_batch_id,
+        "batch_name": student.admitted_batch.name if student.admitted_batch_id else None,
+        "academic_year": student.admitted_batch.academic_year if student.admitted_batch_id else None,
+        "intake": _batch_intake_label(student.admitted_batch if student.admitted_batch_id else None),
+        "commitment_threshold": threshold,
+        "commitment_paid_ugx": paid,
+        "commitment_met": met,
+        "commitment_balance": balance,
+        "total_paid": paid,
+        "balance": balance,
+        "enrollment_status": enrollment_status,
+    }
+
+
+def _commitment_students_queryset(
+    *,
+    search: str = "",
+    cohort: dict[str, int | str | None] | None = None,
+    commitment_met: bool | None = None,
+):
+    qs = (
+        AdmittedStudent.objects.filter(is_admitted=True)
+        .select_related(
+            "admitted_program",
+            "admitted_campus",
+            "admitted_batch",
+            "application",
+            "programme_enrollment",
+        )
+        .filter(_student_search_filter(search))
+        .order_by(F("student_id").asc(nulls_last=True), "reg_no", "-id")
+    )
+    if cohort:
+        qs = _apply_student_cohort_filters(qs, cohort)
+    if commitment_met is not None:
+        qs = filter_by_commitment_met(qs, commitment_met)
+    else:
+        qs = annotate_commitment_ugx_paid(qs)
+    return qs
+
+
+class _CsvEcho:
+    """Write CSV rows for StreamingHttpResponse."""
+
+    def write(self, value: str) -> str:
+        return value
+
+
 def _student_row(student: AdmittedStudent) -> dict:
     finance = student_finance_totals(student)
     completed_count, pending_count = _student_payment_counts(student)
@@ -206,7 +310,7 @@ def _student_row(student: AdmittedStudent) -> dict:
         "id": student.id,
         "student_id": student.student_id,
         "reg_no": student.reg_no,
-        "student_name": student.full_name,
+        "student_name": _student_display_name(student),
         "program": student.admitted_program.name if student.admitted_program_id else None,
         "campus": student.admitted_campus.name if student.admitted_campus_id else None,
         "batch_id": student.admitted_batch_id,
@@ -249,7 +353,7 @@ def _transaction_row(payment: StudentTuitionPayment) -> dict:
         "student_pk": student.id,
         "student_id": student.student_id,
         "reg_no": student.reg_no,
-        "student_name": student.full_name,
+        "student_name": _student_display_name(student),
         "program": student.admitted_program.name if student.admitted_program_id else None,
         "intake": _batch_intake_label(student.admitted_batch if student.admitted_batch_id else None),
         "amount": float(payment.amount),
@@ -339,105 +443,103 @@ class AdminTuitionLedgerStudentsView(APIView):
         search = request.query_params.get("search", "")
         commitment_met = _parse_bool(request.query_params.get("commitment_met"))
         cohort = _ledger_cohort_params(request)
-
-        qs = (
-            AdmittedStudent.objects.filter(is_admitted=True)
-            .select_related(
-                "admitted_program",
-                "admitted_campus",
-                "admitted_batch",
-                "application",
-                "programme_enrollment",
-            )
-            .annotate(
-                paid_ugx=Coalesce(
-                    Sum(
-                        "tuition_payments__amount",
-                        filter=Q(
-                            tuition_payments__status="completed",
-                            tuition_payments__currency="UGX",
-                        ),
-                    ),
-                    Value(0),
-                    output_field=DecimalField(max_digits=12, decimal_places=2),
-                ),
-                completed_payment_count=Count(
-                    "tuition_payments",
-                    filter=Q(tuition_payments__status="completed"),
-                    distinct=True,
-                ),
-                pending_payment_count=Count(
-                    "tuition_payments",
-                    filter=Q(tuition_payments__status="pending"),
-                    distinct=True,
-                ),
-                last_paid_at=Max(
-                    "tuition_payments__paid_at",
-                    filter=Q(tuition_payments__status="completed"),
-                ),
-            )
-            .filter(_student_search_filter(search))
-            .order_by("-last_paid_at", "student_id")
+        include_finance_summary = _parse_bool(
+            request.query_params.get("include_finance_summary")
         )
-        qs = _apply_student_cohort_filters(qs, cohort)
+        skip_summary = _parse_bool(request.query_params.get("skip_summary"))
 
-        if commitment_met is True:
-            qs = qs.filter(paid_ugx__gte=COMMITMENT_FEE_THRESHOLD)
-        elif commitment_met is False:
-            qs = qs.filter(paid_ugx__lt=COMMITMENT_FEE_THRESHOLD)
+        qs = _commitment_students_queryset(
+            search=search,
+            cohort=cohort,
+            commitment_met=commitment_met,
+        )
 
         total = qs.count()
         offset = (page - 1) * page_size
-        rows = [_student_row(student) for student in qs[offset : offset + page_size]]
+        page_qs = list(qs[offset : offset + page_size])
+        rows = []
+        for student in page_qs:
+            try:
+                rows.append(_commitment_student_row(student))
+            except Exception:
+                rows.append(
+                    {
+                        "id": student.id,
+                        "student_id": student.student_id,
+                        "reg_no": student.reg_no,
+                        "student_name": _student_display_name(student),
+                        "program": student.admitted_program.name
+                        if student.admitted_program_id
+                        else None,
+                        "campus": student.admitted_campus.name
+                        if student.admitted_campus_id
+                        else None,
+                        "commitment_threshold": float(COMMITMENT_FEE_THRESHOLD),
+                        "commitment_paid_ugx": 0.0,
+                        "commitment_met": bool(student.admission_fee_paid),
+                        "commitment_balance": float(COMMITMENT_FEE_THRESHOLD),
+                        "total_paid": 0.0,
+                        "balance": float(COMMITMENT_FEE_THRESHOLD),
+                        "enrollment_status": None,
+                    }
+                )
 
-        summary_qs = _apply_student_cohort_filters(
-            AdmittedStudent.objects.filter(is_admitted=True).annotate(
-                paid_ugx=Coalesce(
-                    Sum(
-                        "tuition_payments__amount",
-                        filter=Q(
-                            tuition_payments__status="completed",
-                            tuition_payments__currency="UGX",
-                        ),
-                    ),
-                    Value(0),
-                    output_field=DecimalField(max_digits=12, decimal_places=2),
-                ),
-            ),
-            cohort,
-        )
-        commitment_met_count = summary_qs.filter(paid_ugx__gte=COMMITMENT_FEE_THRESHOLD).count()
-        payment_totals = _apply_transaction_cohort_filters(
-            StudentTuitionPayment.objects.filter(status="completed"),
-            cohort,
-        ).aggregate(
-            completed_count=Count("id"),
-            completed_amount_ugx=Coalesce(
-                Sum("amount", filter=Q(currency="UGX")),
-                Value(0),
-                output_field=DecimalField(max_digits=14, decimal_places=2),
-            ),
-        )
-        finance_summary = _cohort_finance_summary(
-            summary_qs.select_related(
-                "admitted_program",
-                "admitted_campus",
-                "admitted_batch",
-                "application",
-                "programme_enrollment",
+        summary = {
+            "students_count": 0,
+            "commitment_met_count": 0,
+            "commitment_threshold": float(COMMITMENT_FEE_THRESHOLD),
+            "completed_payments_count": 0,
+            "completed_amount_ugx": 0.0,
+        }
+        if not skip_summary:
+            summary_qs = _apply_student_cohort_filters(
+                AdmittedStudent.objects.filter(is_admitted=True),
+                cohort,
             )
-        )
+            commitment_met_count = filter_by_commitment_met(summary_qs, True).count()
+            payment_totals = _apply_transaction_cohort_filters(
+                StudentTuitionPayment.objects.filter(status="completed"),
+                cohort,
+            ).aggregate(
+                completed_count=Count("id"),
+                completed_amount_ugx=Coalesce(
+                    Sum("amount", filter=Q(currency="UGX")),
+                    Value(0),
+                    output_field=DecimalField(max_digits=14, decimal_places=2),
+                ),
+            )
+            summary = {
+                "students_count": summary_qs.count(),
+                "commitment_met_count": commitment_met_count,
+                "commitment_threshold": float(COMMITMENT_FEE_THRESHOLD),
+                "completed_payments_count": int(payment_totals["completed_count"] or 0),
+                "completed_amount_ugx": float(payment_totals["completed_amount_ugx"] or 0),
+            }
+            if include_finance_summary:
+                try:
+                    summary.update(
+                        _cohort_finance_summary(
+                            summary_qs.select_related(
+                                "admitted_program",
+                                "admitted_campus",
+                                "admitted_batch",
+                                "application",
+                                "programme_enrollment",
+                            )
+                        )
+                    )
+                except Exception:
+                    summary.update(
+                        {
+                            "total_billed": 0.0,
+                            "total_paid": 0.0,
+                            "total_balance": 0.0,
+                        }
+                    )
 
         return Response(
             {
-                "summary": {
-                    "students_count": summary_qs.count(),
-                    "commitment_met_count": commitment_met_count,
-                    "commitment_threshold": float(COMMITMENT_FEE_THRESHOLD),
-                    "completed_payments_count": int(payment_totals["completed_count"] or 0),
-                    "completed_amount_ugx": float(payment_totals["completed_amount_ugx"] or 0),
-                    **finance_summary,
-                },
+                "summary": summary,
                 "filters": cohort,
                 "results": rows,
                 "page": page,
@@ -445,6 +547,79 @@ class AdminTuitionLedgerStudentsView(APIView):
                 "total": total,
             }
         )
+
+
+class AdminTuitionLedgerStudentsExportView(APIView):
+    """GET /api/payments/admin/tuition_ledger/students/export — CSV download."""
+
+    permission_classes = [FinanceModuleAdminPermission]
+
+    def get(self, request):
+        search = request.query_params.get("search", "")
+        commitment_met = _parse_bool(request.query_params.get("commitment_met"))
+        if commitment_met is None:
+            commitment_met = False
+        cohort = _ledger_cohort_params(request)
+        qs = _commitment_students_queryset(
+            search=search,
+            cohort=cohort,
+            commitment_met=commitment_met,
+        )
+
+        label = "paid" if commitment_met else "unpaid"
+        filename = f"commitment_{label}_{datetime.now().strftime('%Y-%m-%d')}.csv"
+
+        def stream_rows():
+            pseudo_buffer = _CsvEcho()
+            writer = csv.writer(pseudo_buffer)
+            yield writer.writerow(
+                [
+                    "Pay code (SchoolPay wallet)",
+                    "Reg No",
+                    "SchoolPay synced",
+                    "Name",
+                    "Program",
+                    "Campus",
+                    "Intake",
+                    "Commitment Paid (UGX)",
+                    "Commitment Balance (UGX)",
+                    "Status",
+                ]
+            )
+            for student in qs.iterator(chunk_size=500):
+                try:
+                    row = _commitment_student_row(student)
+                except Exception:
+                    pay = _payment_code_fields(student)
+                    row = {
+                        **pay,
+                        "reg_no": student.reg_no,
+                        "student_name": _student_display_name(student),
+                        "program": None,
+                        "campus": None,
+                        "intake": None,
+                        "commitment_paid_ugx": 0.0,
+                        "commitment_balance": float(COMMITMENT_FEE_THRESHOLD),
+                        "commitment_met": bool(student.admission_fee_paid),
+                    }
+                yield writer.writerow(
+                    [
+                        row.get("schoolpay_code") or "",
+                        row.get("reg_no") or "",
+                        "Yes" if row.get("schoolpay_registered") else "No",
+                        row.get("student_name") or "",
+                        row.get("program") or "",
+                        row.get("campus") or "",
+                        row.get("intake") or "",
+                        row.get("commitment_paid_ugx") or 0,
+                        row.get("commitment_balance") or 0,
+                        "Paid" if row.get("commitment_met") else "Not paid",
+                    ]
+                )
+
+        response = StreamingHttpResponse(stream_rows(), content_type="text/csv; charset=utf-8")
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return response
 
 
 class AdminTuitionLedgerStudentDetailView(APIView):

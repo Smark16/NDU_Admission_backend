@@ -12,11 +12,23 @@ from .adhoc_views import (
 from .admin_ledger_views import (
     AdminTuitionLedgerFiltersView,
     AdminTuitionLedgerStudentDetailView,
+    AdminTuitionLedgerStudentsExportView,
     AdminTuitionLedgerStudentsView,
     AdminTuitionLedgerTransactionsView,
     SendCommitmentFeeReminderView,
 )
 
+from .application_fee_exception_views import (
+    ApplicationFeeExceptionsView,
+    ClearPendingApplicationFeePaymentView,
+    ReconcileApplicationFeePaymentView,
+    SyncUnpaidApplicationFeeView,
+    VerifyApplicationFeePaymentView,
+)
+from .registration_lookup_views import (
+    AdminRegistrationLookupDetailView,
+    AdminRegistrationLookupSearchView,
+)
 from .semester_registration_views import (
     CheckRegistrationEligibility,
     DownloadStudentOfferLetterPdf,
@@ -73,6 +85,11 @@ urlpatterns = [
     path('admin/tuition_ledger/filters', AdminTuitionLedgerFiltersView.as_view(), name='admin_tuition_ledger_filters'),
     path('admin/tuition_ledger/students', AdminTuitionLedgerStudentsView.as_view(), name='admin_tuition_ledger_students'),
     path(
+        'admin/tuition_ledger/students/export',
+        AdminTuitionLedgerStudentsExportView.as_view(),
+        name='admin_tuition_ledger_students_export',
+    ),
+    path(
         'admin/tuition_ledger/students/<int:student_id>',
         AdminTuitionLedgerStudentDetailView.as_view(),
         name='admin_tuition_ledger_student_detail',
@@ -82,6 +99,16 @@ urlpatterns = [
         'admin/tuition_ledger/send_commitment_reminders',
         SendCommitmentFeeReminderView.as_view(),
         name='admin_send_commitment_reminders',
+    ),
+    path(
+        'admin/registration_lookup',
+        AdminRegistrationLookupSearchView.as_view(),
+        name='admin_registration_lookup_search',
+    ),
+    path(
+        'admin/registration_lookup/<int:student_id>',
+        AdminRegistrationLookupDetailView.as_view(),
+        name='admin_registration_lookup_detail',
     ),
     path('student/tuition_structure', GetStudentTuitionStructure.as_view(), name='get_student_tuition_structure'),
     path('student/payment_status', GetStudentPaymentStatus.as_view(), name='get_student_payment_status'),
@@ -143,6 +170,33 @@ urlpatterns = [
     path('check_payment_status/<str:payment_ref>/', CheckPaymentStatus.as_view()),
     path('register_with_schoolpay/<int:student_id>/', generate_paycode, name='register_with_schoolpay'),
     path('cancel_pending_payment/', CancelPayment.as_view(), name='cancel_payment'),
+
+    # application-fee reconciliation (staff)
+    path(
+        'application-fee-exceptions/',
+        ApplicationFeeExceptionsView.as_view(),
+        name='application-fee-exceptions',
+    ),
+    path(
+        'application-fee-exceptions/<int:payment_id>/verify/',
+        VerifyApplicationFeePaymentView.as_view(),
+        name='application-fee-verify',
+    ),
+    path(
+        'application-fee-exceptions/<int:payment_id>/reconcile/',
+        ReconcileApplicationFeePaymentView.as_view(),
+        name='application-fee-reconcile',
+    ),
+    path(
+        'application-fee-exceptions/<int:payment_id>/clear-pending/',
+        ClearPendingApplicationFeePaymentView.as_view(),
+        name='application-fee-clear-pending',
+    ),
+    path(
+        'application-fee-exceptions/applications/<int:application_id>/sync/',
+        SyncUnpaidApplicationFeeView.as_view(),
+        name='application-fee-sync-application',
+    ),
 
     # payments
     path('list_payments', ListPayments.as_view()),

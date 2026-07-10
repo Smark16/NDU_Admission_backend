@@ -1,0 +1,51 @@
+batch_id,program_code,program_name,batch_name,academic_year,start_date,end_date,offer_start_date,offer_end_date,is_active
+,177-KLA,Certificate in Administrative Law,AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE
+,CAL-177-Main,Certificate in Administrative Law-Main,Main AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE
+,CIA-016-Main,Certificate in Agriculture-Main,Main AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE
+,CECE-106-Main,Certificate in Early Childhood Education-Main,Main AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE
+,601,Doctor of Philosophy  (Business Management),Year 1,2025/2026,2026-08-01,2028-07-31,2026-03-30,2026-12-31,TRUE
+,502-Wkend,Master of Arts in Community Participation and Strategic Management-Weekend,AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE
+,503-Wkend,Master of Arts in Counseling Psychology-Weekend,AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE
+,504-Wkend,Master of Arts in Development Studies-Weekend,AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE
+,MAG-Aug,Master of Arts in Gender and Development - Weekend,AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE
+,MJM-Wkend,Master of Arts in Journalism and Multimedia Studies - Weekend,AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE
+,500-Wkend,Master of Arts in Peace and Human Development-Weekend,AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE
+,533-Wkend,Master of Arts in Public Administration and Management-Weekend,AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE
+,519-Wkend,Master of Business Administration in Oil & Gas Management-Weekend,AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE
+,501-Wkend,Master of Business Administration-Weekend,AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE
+,521-Wkend,Master of Computer Science-Weekend,AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE
+,505-Wkend,Master of Economics-Weekend,AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE
+,MED-Wkend,Master of Education,AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE
+,520-Wkend,Master of Education Administration Planning & Management - Weekend,AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE
+,517-INSERV,Master of Education (Curriculum Studies)-Inservice,Inservice AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE
+,517-Wkend,Master of Education (Curriculum Studies)-Weekend,AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE
+,520-INSERV,Master of Education Planning and Management-Inservice,Inservice AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE
+,900/ME,Master of Monitoring and Evaluation,AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE
+,535-Weekend,Master of Public Relations Management-Weekend,AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE
+,507-Wkend,Master of Science in Accounting and Finance-Weekend,AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE
+,536,Master of Science in Construction and Project Management-Weekend,AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE
+,508-Wkend,Master of Science in Human Resource Management-Weekend,AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE
+,530,Master of Science in Information Technology - Weekend,AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE
+,509-Wkend,Master of Science in Marketing-Weekend,AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE
+,510-Wkend,Master of Science in Procurement and Supply Chain Management-Weekend,AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE
+,511-Wkend,Master of Science in Project Management-Weekend,AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE
+,514-Wkend,Master of Science in Sports Science and management-Weekend,AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE
+,515-Wkend,Master of Sustainable Agriculture and Rural Development-Weekend,AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE
+,401-Wkend,Post Graduate Diploma in Business Administration-Weekend,AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE
+,420-Wkend,Post Graduate Diploma in Construction Management-Weekend,AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE
+,415-INSERV,Postgraduate Diploma in Early Childhood Education & Development-Inservice,Inservice AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE
+,415-Wkend,Postgraduate Diploma in Early Childhood Education & Development-Weekend,AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE
+,402-INSERV,Postgraduate Diploma in Education-Inservice,Inservice AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE
+,403-INSERV,Postgraduate Diploma in Education Institution Management-Inservice,Inservice AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE
+,403-Wkend,Postgraduate Diploma in Education Institution Management-Weekend,AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE
+,402-Wkend,Postgraduate Diploma in Education-Weekend,AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE
+,408-Wkend,Post Graduate Diploma in Human Resource Management-Weekend,AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE
+,409-Wkend,Post Graduate Diploma in Marketing-Weekend,AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE
+,424-Wkend,Post Graduate Diploma in Monitoring and Evaluation-Weekend,AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE
+,422-Wkend,Postgraduate Diploma in Oil and Gas Management-Weelend,AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE
+,410-INSERV,Postgraduate Diploma in Pedagogy-Inservice,Inservice AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE
+,410-Wkend,Postgraduate Diploma in Pedagogy-Weekend,AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE
+,PPE-Wkend,Postgraduate Diploma in Physical Education,AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE
+,410-Weekend,Post Graduate Diploma in Procurement & Supply Chain Management,AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE
+,407-Wkend,Post Graduate Diploma in Project Management-Weekend,AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE
+,423-Wkend,Post Graduate Diploma in Security and Conflict Management-Weekend,AUG 2026,2025/2026,2026-08-01,2027-07-31,2026-03-30,2026-12-31,TRUE

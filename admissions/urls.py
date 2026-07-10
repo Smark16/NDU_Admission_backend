@@ -9,6 +9,15 @@ from admissions.email_template_views import (
     EmailTemplatePreviewView,
     EmailTemplateResetDefaultView,
 )
+from admissions.weekly_report_views import (
+    WeeklyReportPreviewView,
+    WeeklyReportRecipientDetailView,
+    WeeklyReportRecipientListCreateView,
+    WeeklyReportRecipientTestSendView,
+    WeeklyReportSendNowView,
+    WeeklyReportSettingsView,
+    WeeklyReportTestSendView,
+)
 
 from admissions.announcement_views import SendAnnouncementView, TestAnnouncementView
 from admissions.student_bulk_import_views import (
@@ -41,6 +50,14 @@ urlpatterns = [
     path('all_applications_report/', views.AllApplicationsReport.as_view()),
 
     path('all_applications_detail_report/', views.AllApplicationDetailedReport.as_view()),
+    path(
+        'all_applications_detail_report_stats/',
+        views.AllApplicationsDetailReportStatsView.as_view(),
+    ),
+    path(
+        'all_applications_report_filter_options/',
+        views.ApplicationReportFilterOptionsView.as_view(),
+    ),
     path('application_choice_stats/', views.ApplicationChoiceStatsView.as_view()),
     path('test_announcement', TestAnnouncementView.as_view()),
     path('send_announcement', SendAnnouncementView.as_view()),
@@ -89,6 +106,7 @@ urlpatterns = [
     path('batches/', views.ListBatch.as_view()),
     path('active_batch', views.GetActiveApplicationBatch.as_view()),
     path('active_admission_batch', views.GetActiveAdmissionBatch.as_view()),
+    path('intake_eligible_programs', views.IntakeEligibleProgramsView.as_view()),
     path('create_batch', views.CreateBatch.as_view()),
     path('edit_batch/<int:pk>', views.EditBatch.as_view()),
     path('delete_batch/<int:pk>', views.DeleteBatch.as_view()),
@@ -117,8 +135,17 @@ urlpatterns = [
         'program_batches_options/<int:program_id>/',
         views.ListProgramBatchOptionsForAdmission.as_view(),
     ),
+    path(
+        'program_specializations/<int:program_id>/',
+        views.ProgramSpecializationsForAdmissionView.as_view(),
+    ),
     path('update_admission/<int:pk>/', views.UpdateAdmittedStudent.as_view()),
     path('list_admitted_students/',  views.ListAdmittedStudents.as_view()),
+    path(
+        'list_admitted_students/filter_options/',
+        views.AdmittedStudentFilterOptionsView.as_view(),
+        name='list_admitted_students_filter_options',
+    ),
     path('admitted_students/<int:pk>/revoke/', views.RevokeAdmittedStudent.as_view()),
     path('admitted_students/<int:pk>/restore/', views.RestoreAdmittedStudent.as_view()),
     path(
@@ -139,6 +166,15 @@ urlpatterns = [
     path('email_templates/<str:key>', EmailTemplateDetailView.as_view(), name='email_template_detail'),
     path('email_templates/<str:key>/preview', EmailTemplatePreviewView.as_view(), name='email_template_preview'),
     path('email_templates/<str:key>/reset', EmailTemplateResetDefaultView.as_view(), name='email_template_reset'),
+
+    # Weekly admissions digest (project-health email)
+    path('weekly_report/settings', WeeklyReportSettingsView.as_view(), name='weekly_report_settings'),
+    path('weekly_report/recipients', WeeklyReportRecipientListCreateView.as_view(), name='weekly_report_recipients'),
+    path('weekly_report/recipients/<int:pk>', WeeklyReportRecipientDetailView.as_view(), name='weekly_report_recipient_detail'),
+    path('weekly_report/recipients/<int:pk>/test_send', WeeklyReportRecipientTestSendView.as_view(), name='weekly_report_recipient_test_send'),
+    path('weekly_report/preview', WeeklyReportPreviewView.as_view(), name='weekly_report_preview'),
+    path('weekly_report/test_send', WeeklyReportTestSendView.as_view(), name='weekly_report_test_send'),
+    path('weekly_report/send_now', WeeklyReportSendNowView.as_view(), name='weekly_report_send_now'),
 
     # Admission Change Requests
     path('change_requests/my', views.StudentChangeRequestListCreate.as_view(), name='student_change_requests'),
@@ -176,6 +212,7 @@ urlpatterns = [
     ),
     path('id_cards/generate', id_card_views.IdCardGenerateView.as_view(), name='id_cards_generate'),
     path('id_cards/<int:card_id>/preview-data', id_card_views.IdCardPreviewDataView.as_view(), name='id_cards_preview'),
+    path('id_cards/<int:card_id>/print.pdf', id_card_views.IdCardPrintPdfView.as_view(), name='id_cards_print_pdf'),
     path('id_cards/<int:card_id>/revoke', id_card_views.IdCardRevokeView.as_view(), name='id_cards_revoke'),
     path('id_cards/<int:card_id>/reissue', id_card_views.IdCardReissueView.as_view(), name='id_cards_reissue'),
     path('id_cards', id_card_views.IdCardListView.as_view(), name='id_cards_list'),

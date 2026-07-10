@@ -16,14 +16,18 @@ from admissions.models import AcademicLevel, AdmittedStudent, Application, Batch
 from admissions.serializers import AdmittedStudentSerializer
 from admissions.utils.program_choices import sync_application_program_choices
 from admissions.utils.reference import generate_reference
-from admissions.utils.trigger_background_tasks import trigger_background_tasks
+from admissions.utils.trigger_background_tasks import queue_admission_notification_emails
+from admissions.utils.student_portal_provisioning import (
+    StudentPortalProvisioningError,
+    provision_student_portal_on_admission,
+)
 from payments.utils.school_pay_code import _schoolpay_phone
 from Programs.models import Program, ProgramBatch
 from Programs.specialization_rules import resolve_specialization_for_program
 
 logger = logging.getLogger(__name__)
 
-STUDENT_IMPORT_HEADERS = [
+STUDENT_IMPORT_REQUIRED_HEADERS = [
     "first_name",
     "last_name",
     "middle_name",
@@ -39,7 +43,182 @@ STUDENT_IMPORT_HEADERS = [
     "address",
 ]
 
+STUDENT_IMPORT_OPTIONAL_HEADERS = [
+    "current_year_of_study",
+    "current_term_number",
+    "fees_paid_ugx",
+    "fees_paid_reference",
+    "fees_outstanding_ugx",
+    "admission_fee_paid",
+]
+
+# Backward-compatible alias for API responses (required columns only).
+STUDENT_IMPORT_HEADERS = STUDENT_IMPORT_REQUIRED_HEADERS
+
+STUDENT_IMPORT_TEMPLATE_HEADERS = (
+    STUDENT_IMPORT_REQUIRED_HEADERS + STUDENT_IMPORT_OPTIONAL_HEADERS
+)
+
 STUDY_MODES = frozenset({"W", "D", "DL", "DJ", "WJ"})
+
+
+def _parse_optional_position(row: dict, program: Program) -> tuple[int, int] | None:
+    """Parse continuing-student year/term; both columns required when either is set."""
+    raw_year = (row.get("current_year_of_study") or "").strip()
+    raw_term = (row.get("current_term_number") or "").strip()
+    if not raw_year and not raw_term:
+        return None
+    if not raw_year or not raw_term:
+        raise ValueError(
+            "current_year_of_study and current_term_number must both be set together."
+        )
+    try:
+        year = int(raw_year)
+        term = int(raw_term)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "current_year_of_study and current_term_number must be integers."
+        ) from exc
+    if year < 1 or year > program.max_years:
+        raise ValueError(
+            f"current_year_of_study must be between 1 and {program.max_years}."
+        )
+    max_terms = program.max_terms_per_year
+    if term not in range(1, max_terms + 1):
+        raise ValueError(
+            f"current_term_number must be between 1 and {max_terms} "
+            f"for a {program.calendar_type}-based programme."
+        )
+    return year, term
+
+
+def _resolve_curriculum_version(program: Program, program_batch: ProgramBatch):
+    from Programs.models import resolve_program_default_curriculum_version
+
+    if program_batch.curriculum_version_id:
+        return program_batch.curriculum_version
+    return resolve_program_default_curriculum_version(program)
+
+
+def _upsert_programme_enrollment_from_import(
+    admitted: AdmittedStudent,
+    *,
+    program: Program,
+    program_batch: ProgramBatch,
+    year_of_study: int,
+    term_number: int,
+    admitted_by,
+    specialization: str | None = None,
+) -> dict:
+    from Programs.models import StudentProgrammeEnrollment
+    from payments.admin_enrollment_requirements import (
+        admin_programme_enrollment_activation_block,
+    )
+
+    curriculum_version = _resolve_curriculum_version(program, program_batch)
+    if curriculum_version is None:
+        raise ValueError(
+            "No curriculum version is configured for this programme — "
+            "cannot set current year/semester."
+        )
+
+    activation_block = admin_programme_enrollment_activation_block(
+        admitted, target_status="enrolled"
+    )
+    enroll_status = "enrolled" if activation_block is None else "pending"
+
+    enrollment, created = StudentProgrammeEnrollment.objects.get_or_create(
+        student=admitted,
+        defaults={
+            "program": program,
+            "program_batch": program_batch,
+            "curriculum_version": curriculum_version,
+            "current_year_of_study": year_of_study,
+            "current_term_number": term_number,
+            "specialization": specialization,
+            "status": enroll_status,
+            "enrolled_by": admitted_by if enroll_status == "enrolled" else None,
+            "notes": "Bulk import — continuing student position.",
+        },
+    )
+    if not created:
+        enrollment.program = program
+        enrollment.program_batch = program_batch
+        enrollment.curriculum_version = curriculum_version
+        enrollment.current_year_of_study = year_of_study
+        enrollment.current_term_number = term_number
+        if activation_block is None:
+            enrollment.status = "enrolled"
+            enrollment.enrolled_by = admitted_by
+        elif enrollment.status == "pending":
+            pass
+        else:
+            enrollment.status = enroll_status
+        if specialization:
+            enrollment.specialization = specialization
+        enrollment.save()
+
+    return {
+        "enrollment_set": True,
+        "enrollment_created": created,
+        "enrollment_status": enrollment.status,
+        "enrollment_blocked": activation_block,
+        "current_year_of_study": year_of_study,
+        "current_term_number": term_number,
+    }
+
+
+def _apply_import_extensions(
+    admitted: AdmittedStudent,
+    *,
+    program: Program,
+    program_batch: ProgramBatch,
+    row: dict,
+    admitted_by,
+    specialization: str | None = None,
+) -> dict:
+    """
+    Optional continuing-student fields: academic position and legacy fee balances.
+    """
+    from admissions.student_fee_balance_import import (
+        apply_legacy_fee_balances,
+        row_has_legacy_fee_data,
+    )
+
+    result = {
+        "enrollment_set": False,
+        "current_year_of_study": None,
+        "current_term_number": None,
+        "fees_paid_recorded": False,
+        "fees_outstanding_recorded": False,
+        "admission_fee_paid_set": False,
+        "enrollment_activated": False,
+        "extensions_applied": False,
+    }
+
+    position = _parse_optional_position(row, program)
+    if row_has_legacy_fee_data(row):
+        fee_result = apply_legacy_fee_balances(
+            admitted, row, admitted_by=admitted_by
+        )
+        result.update(fee_result)
+        result["extensions_applied"] = True
+
+    if position is not None:
+        year, term = position
+        enrollment_info = _upsert_programme_enrollment_from_import(
+            admitted,
+            program=program,
+            program_batch=program_batch,
+            year_of_study=year,
+            term_number=term,
+            admitted_by=admitted_by,
+            specialization=specialization,
+        )
+        result.update(enrollment_info)
+        result["extensions_applied"] = True
+
+    return result
 
 
 def _normalize_header(name: str) -> str:
@@ -405,10 +584,27 @@ def _import_one_row(
         register_schoolpay=register_schoolpay,
     )
 
+    ext = _apply_import_extensions(
+        admitted,
+        program=program,
+        program_batch=program_batch,
+        row=row,
+        admitted_by=admitted_by,
+        specialization=specialization,
+    )
+
+    try:
+        provision_student_portal_on_admission(admitted.id, send_credentials_email=True)
+    except StudentPortalProvisioningError as exc:
+        raise ValueError(str(exc)) from exc
+
     transaction.on_commit(
-        lambda aid=admitted.id, app_id=application.id: trigger_background_tasks(aid, app_id)
+        lambda aid=admitted.id, app_id=application.id: queue_admission_notification_emails(
+            aid, app_id
+        )
     )
     admitted._import_paycode = paycode  # noqa: SLF001
+    admitted._import_extensions = ext  # noqa: SLF001
     return admitted
 
 
@@ -450,11 +646,16 @@ def process_student_batch_import(
         raise ValueError("No data rows found in file.")
 
     created = 0
+    updated = 0
     skipped = 0
     failed = 0
     errors: list[str] = []
     created_students: list[dict] = []
+    updated_students: list[dict] = []
     skipped_students: list[dict] = []
+    enrollment_set_rows = 0
+    fees_imported_rows = 0
+    enrollment_activated_rows = 0
 
     for row in rows:
         row_num = row.get("__row__", "?")
@@ -463,26 +664,69 @@ def process_student_batch_import(
             if skip_existing_reg_no and reg_no:
                 existing = (
                     AdmittedStudent.objects.filter(reg_no=reg_no)
-                    .select_related("application")
+                    .select_related("application", "programme_enrollment")
                     .first()
                 )
                 if existing is not None:
+                    batch_changed = False
                     if existing.intended_program_batch_id != program_batch.id:
                         existing.intended_program_batch = program_batch
                         existing.save(
                             update_fields=["intended_program_batch", "updated_at"]
                         )
                         AdmittedStudentSerializer._sync_programme_enrollment_batch(existing)
-                    skipped += 1
-                    skipped_students.append(
-                        {
-                            "id": existing.id,
-                            "reg_no": existing.reg_no,
-                            "student_id": existing.student_id,
-                            "name": existing.full_name,
-                            "note": "Already in system — batch updated if needed.",
-                        }
-                    )
+                        batch_changed = True
+
+                    spec_raw = row.get("specialization", "").strip()
+                    specialization = None
+                    if spec_raw:
+                        matched, spec_err = resolve_specialization_for_program(
+                            program, spec_raw
+                        )
+                        if spec_err:
+                            raise ValueError(spec_err)
+                        specialization = matched
+
+                    with transaction.atomic():
+                        ext = _apply_import_extensions(
+                            existing,
+                            program=program,
+                            program_batch=program_batch,
+                            row=row,
+                            admitted_by=admitted_by,
+                            specialization=specialization,
+                        )
+
+                    student_row = {
+                        "id": existing.id,
+                        "reg_no": existing.reg_no,
+                        "student_id": existing.student_id,
+                        "name": existing.full_name,
+                        **ext,
+                    }
+                    if ext.get("extensions_applied"):
+                        updated += 1
+                        if ext.get("enrollment_set"):
+                            enrollment_set_rows += 1
+                        if ext.get("fees_paid_recorded") or ext.get(
+                            "fees_outstanding_recorded"
+                        ):
+                            fees_imported_rows += 1
+                        if ext.get("enrollment_activated"):
+                            enrollment_activated_rows += 1
+                        if batch_changed:
+                            student_row["note"] = (
+                                "Already in system — batch and import columns updated."
+                            )
+                        updated_students.append(student_row)
+                    else:
+                        skipped += 1
+                        student_row["note"] = (
+                            "Already in system — batch updated if needed."
+                            if batch_changed
+                            else "Already in system — no optional columns to apply."
+                        )
+                        skipped_students.append(student_row)
                     continue
 
             with transaction.atomic():
@@ -498,6 +742,13 @@ def process_student_batch_import(
                 )
             created += 1
             paycode = getattr(admitted, "_import_paycode", None) or admitted.student_id
+            ext = getattr(admitted, "_import_extensions", {}) or {}
+            if ext.get("enrollment_set"):
+                enrollment_set_rows += 1
+            if ext.get("fees_paid_recorded") or ext.get("fees_outstanding_recorded"):
+                fees_imported_rows += 1
+            if ext.get("enrollment_activated"):
+                enrollment_activated_rows += 1
             created_students.append(
                 {
                     "id": admitted.id,
@@ -505,6 +756,7 @@ def process_student_batch_import(
                     "student_id": paycode,
                     "schoolpay_registered": bool(admitted.is_registered_with_schoolpay),
                     "name": f"{row.get('first_name', '')} {row.get('last_name', '')}".strip(),
+                    **ext,
                 }
             )
         except (ValueError, DRFValidationError) as exc:
@@ -527,10 +779,15 @@ def process_student_batch_import(
         "program_batch_name": program_batch.name,
         "program_name": program.name,
         "created": created,
+        "updated": updated,
         "skipped": skipped,
         "failed": failed,
+        "enrollment_set_rows": enrollment_set_rows,
+        "fees_imported_rows": fees_imported_rows,
+        "enrollment_activated_rows": enrollment_activated_rows,
         "errors": errors[:100],
         "created_students": created_students[:50],
+        "updated_students": updated_students[:50],
         "skipped_students": skipped_students[:50],
     }
 
@@ -538,7 +795,7 @@ def process_student_batch_import(
 def build_student_import_template_csv() -> str:
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(STUDENT_IMPORT_HEADERS)
+    writer.writerow(STUDENT_IMPORT_TEMPLATE_HEADERS)
     writer.writerow(
         [
             "Jane",
@@ -554,6 +811,12 @@ def build_student_import_template_csv() -> str:
             "1701234567",
             "",
             "Kampala",
+            "3",
+            "1",
+            "850000",
+            "LEG-2024-001",
+            "450000",
+            "yes",
         ]
     )
     return buf.getvalue()

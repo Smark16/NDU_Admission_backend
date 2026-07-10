@@ -1,7 +1,8 @@
 """Faculty-scoped access for staff (e.g. Faculty Dean, Faculty Admin).
 
-Users in faculty-scoped roles only see data whose programme belongs to one of
-their assigned faculties.
+Users may hold multiple roles (e.g. AR Data Clerk + Faculty Admin). Admissions
+work uses institution-wide access when the user has edit permissions; programme
+/timetable/enrollment work stays faculty-scoped when they hold a faculty role.
 """
 from __future__ import annotations
 
@@ -13,22 +14,48 @@ FACULTY_SCOPED_ROLE_NAMES = frozenset({"Faculty Dean", "Faculty Admin"})
 ADMISSIONS_VIEW_ONLY_ROLE_NAMES = frozenset({"Faculty Dean", "Faculty Admin"})
 FACULTY_ASSIGNED_ROLE_NAMES = frozenset({"Faculty Dean", "Faculty Admin"})
 
+INSTITUTION_WIDE_ADMISSIONS_PERMS = (
+    "admissions.change_application",
+    "admissions.add_application",
+    "accounts.manage_direct_applications",
+    "admissions.change_admittedstudent",
+    "admissions.add_admittedstudent",
+)
 
-def user_requires_faculty_scope(user) -> bool:
+
+def user_has_group(user, role_name: str) -> bool:
+    return user.groups.filter(name__iexact=role_name).exists()
+
+
+def user_has_institution_wide_admissions_access(user) -> bool:
+    if not user.is_authenticated or user_is_super_admin(user):
+        return user_is_super_admin(user)
+    return any(user.has_perm(perm) for perm in INSTITUTION_WIDE_ADMISSIONS_PERMS)
+
+
+def user_is_faculty_scoped_staff(user) -> bool:
     if not user.is_authenticated or user_is_super_admin(user):
         return False
-    role = user.groups.first().name if user.groups.exists() else (user.role or "")
-    if role in FACULTY_SCOPED_ROLE_NAMES:
+    return user.groups.filter(name__in=FACULTY_SCOPED_ROLE_NAMES).exists()
+
+
+def user_requires_faculty_scope(user, *, context: str = "programs") -> bool:
+    if not user.is_authenticated or user_is_super_admin(user):
+        return False
+    if context == "admissions" and user_has_institution_wide_admissions_access(user):
+        return False
+    if user_is_faculty_scoped_staff(user):
         return True
-    return user.faculties.exists()
+    return context == "programs" and user.faculties.exists()
 
 
 def user_is_admissions_view_only(user) -> bool:
-    """Faculty Dean / Faculty Admin: read admissions data only."""
+    """Faculty Dean / Faculty Admin without institution-wide admissions edit access."""
     if not user.is_authenticated or user_is_super_admin(user):
         return False
-    role = user.groups.first().name if user.groups.exists() else (user.role or "")
-    return role in ADMISSIONS_VIEW_ONLY_ROLE_NAMES
+    if user_has_institution_wide_admissions_access(user):
+        return False
+    return user.groups.filter(name__in=ADMISSIONS_VIEW_ONLY_ROLE_NAMES).exists()
 
 
 def assert_admissions_modify_access(user) -> None:
@@ -41,22 +68,22 @@ def assert_admissions_modify_access(user) -> None:
         )
 
 
-def user_faculty_ids(user) -> list[int] | None:
+def user_faculty_ids(user, *, context: str = "programs") -> list[int] | None:
     """
     Faculty ids the user may access.
 
-    ``None`` = unrestricted (superuser or not faculty-scoped).
+    ``None`` = unrestricted (superuser or not faculty-scoped for this context).
     ``[]`` = scoped role but no faculties assigned yet (no access).
     """
     if not user.is_authenticated or user_is_super_admin(user):
         return None
-    if not user_requires_faculty_scope(user):
+    if not user_requires_faculty_scope(user, context=context):
         return None
     return list(user.faculties.filter(is_active=True).values_list("pk", flat=True))
 
 
 def filter_applications_for_user(queryset: QuerySet, user) -> QuerySet:
-    faculty_ids = user_faculty_ids(user)
+    faculty_ids = user_faculty_ids(user, context="admissions")
     if faculty_ids is None:
         return queryset
     if not faculty_ids:
@@ -67,7 +94,7 @@ def filter_applications_for_user(queryset: QuerySet, user) -> QuerySet:
 
 
 def filter_admitted_students_for_user(queryset: QuerySet, user) -> QuerySet:
-    faculty_ids = user_faculty_ids(user)
+    faculty_ids = user_faculty_ids(user, context="admissions")
     if faculty_ids is None:
         return queryset
     if not faculty_ids:
@@ -76,7 +103,7 @@ def filter_admitted_students_for_user(queryset: QuerySet, user) -> QuerySet:
 
 
 def filter_faculties_for_user(queryset: QuerySet, user) -> QuerySet:
-    faculty_ids = user_faculty_ids(user)
+    faculty_ids = user_faculty_ids(user, context="programs")
     if faculty_ids is None:
         return queryset
     if not faculty_ids:
@@ -85,7 +112,7 @@ def filter_faculties_for_user(queryset: QuerySet, user) -> QuerySet:
 
 
 def filter_admission_change_requests_for_user(queryset: QuerySet, user) -> QuerySet:
-    faculty_ids = user_faculty_ids(user)
+    faculty_ids = user_faculty_ids(user, context="admissions")
     if faculty_ids is None:
         return queryset
     if not faculty_ids:
@@ -98,7 +125,7 @@ def filter_admission_change_requests_for_user(queryset: QuerySet, user) -> Query
 
 
 def user_can_access_application(user, application) -> bool:
-    faculty_ids = user_faculty_ids(user)
+    faculty_ids = user_faculty_ids(user, context="admissions")
     if faculty_ids is None:
         return True
     if not faculty_ids:
@@ -109,7 +136,7 @@ def user_can_access_application(user, application) -> bool:
 
 
 def user_can_access_admitted_student(user, admitted) -> bool:
-    faculty_ids = user_faculty_ids(user)
+    faculty_ids = user_faculty_ids(user, context="admissions")
     if faculty_ids is None:
         return True
     if not faculty_ids:
@@ -139,7 +166,7 @@ def assert_admitted_student_access(user, admitted) -> None:
 
 
 def filter_programs_for_user(queryset: QuerySet, user) -> QuerySet:
-    faculty_ids = user_faculty_ids(user)
+    faculty_ids = user_faculty_ids(user, context="programs")
     if faculty_ids is None:
         return queryset
     if not faculty_ids:
@@ -148,7 +175,7 @@ def filter_programs_for_user(queryset: QuerySet, user) -> QuerySet:
 
 
 def filter_programme_enrollments_for_user(queryset: QuerySet, user) -> QuerySet:
-    faculty_ids = user_faculty_ids(user)
+    faculty_ids = user_faculty_ids(user, context="programs")
     if faculty_ids is None:
         return queryset
     if not faculty_ids:
@@ -159,7 +186,7 @@ def filter_programme_enrollments_for_user(queryset: QuerySet, user) -> QuerySet:
 def assert_program_in_user_faculties(user, program) -> None:
     from rest_framework.exceptions import PermissionDenied
 
-    faculty_ids = user_faculty_ids(user)
+    faculty_ids = user_faculty_ids(user, context="programs")
     if faculty_ids is None:
         return
     if not faculty_ids:
@@ -203,7 +230,7 @@ def assert_course_unit_enrollment_access(user, enrollment) -> None:
 def assert_admitted_student_program_access(user, student) -> None:
     from rest_framework.exceptions import PermissionDenied
 
-    faculty_ids = user_faculty_ids(user)
+    faculty_ids = user_faculty_ids(user, context="programs")
     if faculty_ids is None:
         return
     if not faculty_ids:
@@ -218,15 +245,13 @@ def assert_admitted_student_program_access(user, student) -> None:
 def user_is_faculty_dean(user) -> bool:
     if not user.is_authenticated or user_is_super_admin(user):
         return False
-    role = user.groups.first().name if user.groups.exists() else (user.role or "")
-    return role == "Faculty Dean"
+    return user_has_group(user, "Faculty Dean")
 
 
 def user_is_faculty_admin(user) -> bool:
     if not user.is_authenticated or user_is_super_admin(user):
         return False
-    role = user.groups.first().name if user.groups.exists() else (user.role or "")
-    return role == "Faculty Admin"
+    return user_has_group(user, "Faculty Admin")
 
 
 def assert_program_structure_modify_access(user) -> None:
@@ -250,7 +275,7 @@ def assert_can_modify_program_batch_structure(user, program_batch) -> None:
 
 
 def filter_program_batches_for_user(queryset: QuerySet, user) -> QuerySet:
-    faculty_ids = user_faculty_ids(user)
+    faculty_ids = user_faculty_ids(user, context="programs")
     if faculty_ids is None:
         return queryset
     if not faculty_ids:

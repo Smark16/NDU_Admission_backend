@@ -49,6 +49,21 @@ class BatchSerializer(serializers.ModelSerializer):
                 attrs['academic_year'] = get_registered_academic_year_label(str(raw_year))
             except DjangoValidationError as exc:
                 raise serializers.ValidationError({'academic_year': str(exc)}) from exc
+
+        if 'programs' in attrs:
+            from admissions.intake_program_eligibility import validate_intake_program_selection
+
+            program_ids = [p.pk for p in attrs['programs']]
+            grandfather = set()
+            if inst is not None:
+                grandfather = set(inst.programs.values_list('id', flat=True))
+            messages = validate_intake_program_selection(
+                program_ids,
+                grandfather_ids=grandfather,
+            )
+            if messages:
+                raise serializers.ValidationError({'programs': messages})
+
         return attrs
 
     def to_representation(self, instance):
@@ -84,9 +99,15 @@ class CudApplicationSerializer(serializers.ModelSerializer):
 class SingleApplicationSerializer(serializers.ModelSerializer):
     programs = serializers.SerializerMethodField()
     campus = CampusSerializer(read_only=True)
+    batch = serializers.SerializerMethodField()
 
     def get_programs(self, obj):
         return ProgramSerializer(ordered_programs_for_application(obj), many=True).data
+
+    def get_batch(self, obj):
+        if not obj.batch_id:
+            return None
+        return {"id": obj.batch_id, "name": obj.batch.name}
 
     class Meta:
         model = Application
@@ -102,6 +123,7 @@ class SingleApplicationSerializer(serializers.ModelSerializer):
             "gender",
             "programs",
             "campus",
+            "batch",
             "status",
         ]
 
@@ -111,8 +133,8 @@ class ApplicationSerializer(serializers.ModelSerializer):
     reviewed_by = serializers.CharField(source='reviewed_by.full_name', read_only=True, allow_null=True)
     class Meta:
         model = Application
-        fields = ['id', 'first_name', 'last_name','middle_name', 'date_of_birth', 'gender', 'nationality', 'phone', 'email',
-                  'batch', 'campus', "nin", "passport_number","disabled", 'olevel_school', 'olevel_year', 'alevel_school', 'alevel_year', 'address',
+        fields = ['id', 'first_name', 'last_name','middle_name', 'date_of_birth', 'gender', 'nationality', 'applicant_category', 'phone', 'email',
+                  'batch', 'campus', "nin", "passport_number","disabled", 'is_refugee', 'refugee_status_proof', 'olevel_school', 'olevel_year', 'alevel_school', 'alevel_year', 'address',
                   'middle_name', 'next_of_kin_name', 'next_of_kin_contact', 'next_of_kin_relationship', 'reviewed_by', 'applicant', 'status',
                   'title', 'alevel_combination', 'alevel_index_number', 'olevel_index_number','application_fee_amount', 'created_at', 'address', 'passport_photo',
                   'has_olevel', 'has_alevel']
@@ -123,6 +145,8 @@ class ListApplicationsSerializer(serializers.ModelSerializer):
     academic_level = serializers.CharField(source="academic_level.name", read_only=True)
     batch = serializers.CharField(source="batch.name", read_only=True)
     campus = serializers.CharField(source="campus.name", read_only=True)
+    reviewed_by = serializers.CharField(source="reviewed_by.full_name", read_only=True, allow_null=True)
+    revoked_by = serializers.CharField(source="revoked_by.full_name", read_only=True, allow_null=True)
 
     class Meta:
         model = Application
@@ -139,6 +163,12 @@ class ListApplicationsSerializer(serializers.ModelSerializer):
             "campus",
             "program_choices_confirmed_at",
             "program_choices_verification_sent_at",
+            "review_notes",
+            "reviewed_by",
+            "reviewed_at",
+            "is_revoked",
+            "revocation_reason",
+            "revoked_by",
         ]
 
 class AllApplicationsReportSerializer(serializers.ModelSerializer):
@@ -148,6 +178,8 @@ class AllApplicationsReportSerializer(serializers.ModelSerializer):
     programs = serializers.SerializerMethodField()
     faculty = serializers.SerializerMethodField()
     entered_by = serializers.SerializerMethodField()
+    reviewed_by = serializers.CharField(source="reviewed_by.full_name", read_only=True, allow_null=True)
+    revoked_by = serializers.CharField(source="revoked_by.full_name", read_only=True, allow_null=True)
 
     def get_academic_level(self, obj):
         return obj.academic_level.name if obj.academic_level else ""
@@ -193,6 +225,9 @@ class AllApplicationsReportSerializer(serializers.ModelSerializer):
             "last_name",
             "email",
             "gender",
+            "nationality",
+            "applicant_category",
+            "is_refugee",
             "academic_level",
             "batch",
             "campus",
@@ -203,6 +238,12 @@ class AllApplicationsReportSerializer(serializers.ModelSerializer):
             "created_at",
             "is_direct_entry",
             "entered_by",
+            "review_notes",
+            "reviewed_by",
+            "reviewed_at",
+            "is_revoked",
+            "revocation_reason",
+            "revoked_by",
         ]
 
 # detail serializer
@@ -212,10 +253,11 @@ class ApplicationDetailSerializer(serializers.ModelSerializer):
     batch = serializers.CharField(source='batch.name', read_only=True)
     class Meta:
         model = Application
-        fields = ['id', 'first_name', 'last_name','middle_name', 'date_of_birth', 'gender', 'nationality', 'phone', 'email',
-                  'batch', "nin", "passport_number","disabled", "has_olevel",'olevel_school', 'olevel_year',"olevel_index_number", "has_alevel", 'alevel_school', 'alevel_year', 'alevel_index_number', 
+        fields = ['id', 'first_name', 'last_name','middle_name', 'date_of_birth', 'gender', 'nationality', 'applicant_category', 'phone', 'email',
+                  'batch', "nin", "passport_number","disabled", "is_refugee", "refugee_status_proof", "has_olevel",'olevel_school', 'olevel_year',"olevel_index_number", "has_alevel", 'alevel_school', 'alevel_year', 'alevel_index_number', 
                   'address','middle_name', 'next_of_kin_name', 'next_of_kin_contact', 'next_of_kin_relationship', 'revoked_by', 'is_revoked','revocation_reason',"alevel_combination",
                   'status', 'application_fee_amount','application_fee_paid', 'created_at', 'reviewed_at', 'passport_photo','reviewed_by',
+                  'review_notes',
                   'program_choices_confirmed_at', 'program_choices_verification_sent_at']
 
     def to_representation(self, instance):
@@ -318,24 +360,34 @@ class AdmittedStudentSerializer(serializers.ModelSerializer):
 
     @staticmethod
     def _sync_programme_enrollment_batch(admitted):
-        """Keep academic enrollment cohort aligned with ``intended_program_batch``."""
+        """Keep academic enrollment cohort and specialization aligned with admission."""
         from Programs.models import StudentProgrammeEnrollment
 
         intended_id = admitted.intended_program_batch_id
-        if not intended_id:
-            return
+        spec_name = (
+            admitted.admitted_specialization.name
+            if admitted.admitted_specialization_id
+            else None
+        )
         try:
             spe = StudentProgrammeEnrollment.objects.get(student=admitted)
         except StudentProgrammeEnrollment.DoesNotExist:
             return
-        if spe.program_batch_id == intended_id and spe.program_id == admitted.admitted_program_id:
-            return
-        update_fields = ['program_batch', 'updated_at']
-        spe.program_batch_id = intended_id
-        if spe.program_id != admitted.admitted_program_id:
-            spe.program_id = admitted.admitted_program_id
-            update_fields.insert(0, 'program')
-        spe.save(update_fields=update_fields)
+        update_fields = []
+        if intended_id and (
+            spe.program_batch_id != intended_id
+            or spe.program_id != admitted.admitted_program_id
+        ):
+            spe.program_batch_id = intended_id
+            if spe.program_id != admitted.admitted_program_id:
+                spe.program_id = admitted.admitted_program_id
+            update_fields.extend(["program_batch", "program"])
+        if spec_name and spe.specialization != spec_name:
+            spe.specialization = spec_name
+            update_fields.append("specialization")
+        if update_fields:
+            update_fields.append("updated_at")
+            spe.save(update_fields=update_fields)
 
     def create(self, validated_data):
         from Programs.program_batch_resolution import resolve_default_program_batch_for_program
@@ -380,6 +432,10 @@ class AdmittedStudentSerializer(serializers.ModelSerializer):
         return admitted
 
     def validate(self, attrs):
+        program = attrs.get('admitted_program')
+        if program is None and self.instance is not None:
+            program = self.instance.admitted_program
+
         if 'intended_program_batch' in attrs:
             intended = attrs['intended_program_batch']
         elif self.instance is not None:
@@ -387,9 +443,14 @@ class AdmittedStudentSerializer(serializers.ModelSerializer):
         else:
             intended = None
 
-        program = attrs.get('admitted_program')
-        if program is None and self.instance is not None:
-            program = self.instance.admitted_program
+        # Programme changed — drop a cohort that belongs to the old programme.
+        if (
+            program is not None
+            and intended is not None
+            and intended.program_id != program.id
+        ):
+            intended = None
+            attrs['intended_program_batch'] = None
 
         if intended is not None and program is not None:
             if intended.program_id != program.id:
@@ -398,7 +459,91 @@ class AdmittedStudentSerializer(serializers.ModelSerializer):
                         'Selected academic batch must belong to the admitted programme.'
                     ),
                 })
+
+        application = attrs.get('application')
+        if application is None and self.instance is not None:
+            application = self.instance.application
+
+        campus = attrs.get('admitted_campus')
+        if campus is None and self.instance is not None:
+            campus = self.instance.admitted_campus
+
+        if application is not None and program is not None:
+            allowed_ids = {
+                p.id for p in ordered_programs_for_application(application)
+            }
+            if allowed_ids and program.id not in allowed_ids:
+                raise serializers.ValidationError({
+                    'admitted_program': (
+                        'Programme must be one of the applicant\'s choices on the application.'
+                    ),
+                })
+
+            if campus is not None and program.campuses.exists():
+                if not program.campuses.filter(id=campus.id).exists():
+                    raise serializers.ValidationError({
+                        'admitted_program': (
+                            'This programme is not offered at the selected campus.'
+                        ),
+                    })
+
+        from admissions.admission_specialization import (
+            program_requires_admission_specialization,
+            validate_admitted_specialization_for_program,
+        )
+
+        admitted_specialization = attrs.get('admitted_specialization')
+        if admitted_specialization is None and self.instance is not None:
+            if 'admitted_specialization' not in attrs:
+                admitted_specialization = self.instance.admitted_specialization
+
+        if program is not None and not program_requires_admission_specialization(program):
+            attrs['admitted_specialization'] = None
+        elif program is not None:
+            if (
+                'admitted_program' in attrs
+                and self.instance is not None
+                and admitted_specialization is not None
+                and admitted_specialization.program_id != program.id
+            ):
+                attrs['admitted_specialization'] = None
+                admitted_specialization = None
+
+            spec_err = validate_admitted_specialization_for_program(
+                program, admitted_specialization
+            )
+            if spec_err:
+                raise serializers.ValidationError({'admitted_specialization': spec_err})
+
+        if self.instance is not None:
+            from payments.utils.tuition_ledger_linking import student_payment_code_locked
+
+            if student_payment_code_locked(self.instance):
+                locked_msg = (
+                    "This SchoolPay payment code has recorded payments and cannot be changed."
+                )
+                for field in ("student_id", "schoolpay_code"):
+                    if field not in attrs:
+                        continue
+                    new_value = (attrs.get(field) or "").strip()
+                    old_value = (getattr(self.instance, field) or "").strip()
+                    if new_value != old_value:
+                        raise serializers.ValidationError({field: locked_msg})
+                if "is_registered_with_schoolpay" in attrs and not attrs[
+                    "is_registered_with_schoolpay"
+                ]:
+                    raise serializers.ValidationError({
+                        "is_registered_with_schoolpay": locked_msg,
+                    })
+
         return attrs
+
+    def to_representation(self, instance):
+        from payments.utils.tuition_ledger_linking import schoolpay_wallet_api_fields
+
+        data = super().to_representation(instance)
+        data.update(schoolpay_wallet_api_fields(instance))
+        return data
 
 class AdmittedStudentListSerializer(serializers.ModelSerializer):
     name = serializers.SerializerMethodField()
@@ -409,10 +554,20 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
     academic_batch = serializers.SerializerMethodField()
     status = serializers.CharField(source='application.status', read_only=True)
     admission_letter_pdf = serializers.SerializerMethodField()
+    physical_documents_verified_by_name = serializers.SerializerMethodField()
+    is_revoked = serializers.SerializerMethodField()
     # Optional registrar workflow (not on all DBs — default so UI stays usable)
     is_approved = serializers.SerializerMethodField()
     approved_by_name = serializers.SerializerMethodField()
     approved_at = serializers.SerializerMethodField()
+    subject_combination = serializers.SerializerMethodField()
+    schoolpay_payment_code_locked = serializers.SerializerMethodField()
+    schoolpay_ledger_total_ugx = serializers.SerializerMethodField()
+    schoolpay_payment_warning = serializers.SerializerMethodField()
+    commitment_met = serializers.SerializerMethodField()
+    commitment_paid_ugx = serializers.SerializerMethodField()
+    commitment_balance = serializers.SerializerMethodField()
+    commitment_threshold = serializers.SerializerMethodField()
 
     class Meta:
         model = AdmittedStudent
@@ -424,6 +579,7 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
             'is_registered_with_schoolpay',
             'name',
             'program',
+            'subject_combination',
             'faculty',
             'campus',
             'batch',
@@ -432,12 +588,25 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
             'is_registered',
             'application',
             'is_admitted',
+            'is_revoked',
             'admitted_by',
             'status',
             'admission_letter_pdf',
+            'physical_documents_verified',
+            'physical_documents_verified_at',
+            'physical_documents_verified_by_name',
+            'physical_documents_notes',
             'is_approved',
             'approved_by_name',
             'approved_at',
+            'admission_fee_paid',
+            'schoolpay_payment_code_locked',
+            'schoolpay_ledger_total_ugx',
+            'schoolpay_payment_warning',
+            'commitment_met',
+            'commitment_paid_ugx',
+            'commitment_balance',
+            'commitment_threshold',
         ]
 
     def get_name(self, obj):
@@ -452,6 +621,11 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
         full_name = f"{first} {middle} {last}".strip()
         return full_name if full_name else "Unnamed Student"
 
+    def get_subject_combination(self, obj):
+        from admissions.admission_specialization import admitted_subject_combination_label
+
+        return admitted_subject_combination_label(obj) or None
+
     def get_faculty(self, obj):
         if not obj.admitted_program:
             return "__"
@@ -460,15 +634,30 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
         return obj.admitted_program.faculty.name
 
     def get_academic_batch(self, obj):
-        from Programs.program_batch_resolution import (
-            format_program_batch_display,
-            resolve_student_academic_cohort,
-        )
+        from Programs.program_batch_resolution import format_program_batch_display
 
-        cohort = resolve_student_academic_cohort(obj)
-        if cohort is not None:
-            return format_program_batch_display(cohort)
+        try:
+            enrollment = obj.programme_enrollment
+        except Exception:
+            enrollment = None
+        if enrollment is not None and enrollment.program_batch_id:
+            return format_program_batch_display(enrollment.program_batch)
+        intended = getattr(obj, "intended_program_batch", None)
+        if intended is not None and getattr(intended, "pk", None):
+            return format_program_batch_display(intended)
         return "—"
+
+    def get_physical_documents_verified_by_name(self, obj):
+        user = getattr(obj, "physical_documents_verified_by", None)
+        if user is None:
+            return None
+        return user.get_full_name() or getattr(user, "username", None)
+
+    def get_is_revoked(self, obj):
+        app = obj.application
+        if app is None:
+            return False
+        return bool(getattr(app, "is_revoked", False))
 
     def get_admission_letter_pdf(self, obj):
         app = obj.application
@@ -491,6 +680,56 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
     def get_approved_at(self, obj):
         return getattr(obj, "approved_at", None)
 
+    def _wallet_fields(self, obj):
+        from payments.utils.tuition_ledger_linking import schoolpay_wallet_api_fields
+
+        return schoolpay_wallet_api_fields(obj)
+
+    def get_schoolpay_payment_code_locked(self, obj):
+        return self._wallet_fields(obj)["schoolpay_payment_code_locked"]
+
+    def get_schoolpay_ledger_total_ugx(self, obj):
+        return self._wallet_fields(obj)["schoolpay_ledger_total_ugx"]
+
+    def get_schoolpay_payment_warning(self, obj):
+        return self._wallet_fields(obj)["schoolpay_payment_warning"]
+
+    def _commitment_totals(self, obj):
+        from decimal import Decimal
+
+        from payments.student_payment_allocation import COMMITMENT_FEE_THRESHOLD
+
+        annotated = getattr(obj, "commitment_paid_ugx", None)
+        if annotated is None:
+            return None
+        ugx_credit = Decimal(str(annotated))
+        admission_paid = bool(getattr(obj, "admission_fee_paid", False))
+        commitment_paid = min(ugx_credit, COMMITMENT_FEE_THRESHOLD)
+        commitment_met = commitment_paid >= COMMITMENT_FEE_THRESHOLD or admission_paid
+        commitment_balance = max(COMMITMENT_FEE_THRESHOLD - commitment_paid, Decimal("0"))
+        return {
+            "commitment_met": commitment_met,
+            "commitment_paid_ugx": float(commitment_paid),
+            "commitment_balance": float(commitment_balance),
+            "commitment_threshold": float(COMMITMENT_FEE_THRESHOLD),
+        }
+
+    def get_commitment_met(self, obj):
+        totals = self._commitment_totals(obj)
+        return totals["commitment_met"] if totals else None
+
+    def get_commitment_paid_ugx(self, obj):
+        totals = self._commitment_totals(obj)
+        return totals["commitment_paid_ugx"] if totals else None
+
+    def get_commitment_balance(self, obj):
+        totals = self._commitment_totals(obj)
+        return totals["commitment_balance"] if totals else None
+
+    def get_commitment_threshold(self, obj):
+        totals = self._commitment_totals(obj)
+        return totals["commitment_threshold"] if totals else None
+
 # admission detail serializer
 class AdmissionDetailSerializer(serializers.ModelSerializer):
     class Meta:
@@ -505,16 +744,23 @@ class AdmissionDetailSerializer(serializers.ModelSerializer):
             'admission_notes',
             'admitted_program',
             'admitted_campus',
+            'admitted_batch',
             'application',
             'is_registered',
             'registration_date',
             'intended_program_batch',
+            'admitted_specialization',
         ]
 
     def to_representation(self, instance):
         response = super().to_representation(instance)
         response['admitted_program'] = ProgramSerializer(instance.admitted_program).data
         response['admitted_campus'] = CampusSerializer(instance.admitted_campus).data
+        ab = instance.admitted_batch
+        if ab is not None:
+            response['admitted_batch'] = {'id': ab.id, 'name': ab.name}
+        else:
+            response['admitted_batch'] = None
         ipb = instance.intended_program_batch
         if ipb is not None:
             response['intended_program_batch'] = {
@@ -525,6 +771,19 @@ class AdmissionDetailSerializer(serializers.ModelSerializer):
             }
         else:
             response['intended_program_batch'] = None
+        spec = instance.admitted_specialization
+        if spec is not None:
+            response['admitted_specialization'] = {
+                'id': spec.id,
+                'name': spec.name,
+            }
+            response['subject_combination'] = spec.name
+        else:
+            response['admitted_specialization'] = None
+            response['subject_combination'] = None
+        from payments.utils.tuition_ledger_linking import schoolpay_wallet_api_fields
+
+        response.update(schoolpay_wallet_api_fields(instance))
         return response
     
 # notification serializers
@@ -633,6 +892,42 @@ class EmailTemplateUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = EmailTemplate
         fields = ["subject_template", "body_template_html", "is_active"]
+
+
+class WeeklyReportSettingsSerializer(serializers.ModelSerializer):
+    schedule_day_label = serializers.SerializerMethodField()
+
+    class Meta:
+        model = WeeklyReportSettings
+        fields = [
+            "is_enabled",
+            "schedule_day",
+            "schedule_day_label",
+            "schedule_hour",
+            "schedule_minute",
+            "last_sent_at",
+            "last_sent_summary",
+            "updated_at",
+        ]
+        read_only_fields = ["last_sent_at", "last_sent_summary", "updated_at"]
+
+    def get_schedule_day_label(self, obj):
+        return dict(WeeklyReportSettings.WEEKDAY_CHOICES).get(obj.schedule_day, "")
+
+
+class WeeklyReportRecipientSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = WeeklyReportRecipient
+        fields = [
+            "id",
+            "email",
+            "name",
+            "is_active",
+            "notes",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["created_at", "updated_at"]
 
 # ============================Program choices========================================
 class ApplicationProgramChoiceSerializer(serializers.ModelSerializer):

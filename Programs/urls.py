@@ -28,11 +28,13 @@ from .enrollment_views import (
     AdminCreateEnrollmentView,
     AdminEnrollmentDetailView,
     AdminListEnrollmentsView,
+    AdminStudentEnrollmentEligibilityView,
     MyAvailableSpecializationsView,
     MyEnrollmentView,
     MyExpectedCoursesView,
     MySelectSpecializationView,
 )
+from .enrollment_report_views import EnrollmentReportExcelView, EnrollmentReportListView
 from .override_views import (
     EnrollmentOverrideListCreate,
     OverrideDetailView,
@@ -40,6 +42,8 @@ from .override_views import (
 )
 
 from .specialization_views import (
+    ProgramSpecializationBulkImportTemplateView,
+    ProgramSpecializationBulkUploadView,
     ProgramSpecializationDetailView,
     ProgramSpecializationListCreateView,
 )
@@ -57,6 +61,23 @@ from .timetable_views import (
     VenueDetailView,
     VenueListCreateView,
     VenueSuggestCodeView,
+)
+from .attendance_views import (
+    AdminAttendanceBlankPdfView,
+    AdminAttendanceCoursesView,
+    AdminAttendanceRosterView,
+    AdminAttendanceSaveView,
+    AdminAttendanceSessionPdfView,
+    AdminAttendanceSessionsView,
+    LecturerAttendanceBlankPdfView,
+    LecturerAttendanceCloseCheckInView,
+    LecturerAttendanceCoursesView,
+    LecturerAttendanceOpenCheckInView,
+    LecturerAttendanceRosterView,
+    LecturerAttendanceSaveView,
+    LecturerAttendanceSessionPdfView,
+    StudentAttendanceCheckInView,
+    StudentAttendanceOpenSessionsView,
 )
 from .course_enrollment_views import (
     AdminDeregisterStudentFromCourses,
@@ -191,8 +212,33 @@ urlpatterns = [
     path('student/my_timetable', StudentMyTimetableView.as_view(), name='student_my_timetable'),
     path('lecturer/my_timetable/pdf', LecturerMyTimetablePdfView.as_view(), name='lecturer_my_timetable_pdf'),
     path('lecturer/my_timetable', LecturerMyTimetableView.as_view(), name='lecturer_my_timetable'),
+    path('lecturer/attendance/courses', LecturerAttendanceCoursesView.as_view(), name='lecturer_attendance_courses'),
+    path('lecturer/attendance/roster', LecturerAttendanceRosterView.as_view(), name='lecturer_attendance_roster'),
+    path('lecturer/attendance/sessions', LecturerAttendanceSaveView.as_view(), name='lecturer_attendance_save'),
+    path('lecturer/attendance/check_in/open', LecturerAttendanceOpenCheckInView.as_view(), name='lecturer_attendance_open_check_in'),
+    path('lecturer/attendance/check_in/close', LecturerAttendanceCloseCheckInView.as_view(), name='lecturer_attendance_close_check_in'),
+    path('lecturer/attendance/sessions/<int:session_id>/pdf', LecturerAttendanceSessionPdfView.as_view(), name='lecturer_attendance_session_pdf'),
+    path('lecturer/attendance/blank_pdf', LecturerAttendanceBlankPdfView.as_view(), name='lecturer_attendance_blank_pdf'),
+    path('student/attendance/sessions', StudentAttendanceOpenSessionsView.as_view(), name='student_attendance_sessions'),
+    path('student/attendance/check_in', StudentAttendanceCheckInView.as_view(), name='student_attendance_check_in'),
+    path('admin/attendance/courses', AdminAttendanceCoursesView.as_view(), name='admin_attendance_courses'),
+    path('admin/attendance/sessions', AdminAttendanceSessionsView.as_view(), name='admin_attendance_sessions'),
+    path('admin/attendance/roster', AdminAttendanceRosterView.as_view(), name='admin_attendance_roster'),
+    path('admin/attendance/sessions/save', AdminAttendanceSaveView.as_view(), name='admin_attendance_save'),
+    path('admin/attendance/sessions/<int:session_id>/pdf', AdminAttendanceSessionPdfView.as_view(), name='admin_attendance_session_pdf'),
+    path('admin/attendance/blank_pdf', AdminAttendanceBlankPdfView.as_view(), name='admin_attendance_blank_pdf'),
 
     # ----- programme specialization track management -----
+    path(
+        'program/<int:program_id>/specializations/bulk_import_template',
+        ProgramSpecializationBulkImportTemplateView.as_view(),
+        name='program_specializations_bulk_import_template',
+    ),
+    path(
+        'program/<int:program_id>/specializations/bulk_upload',
+        ProgramSpecializationBulkUploadView.as_view(),
+        name='program_specializations_bulk_upload',
+    ),
     path(
         'program/<int:program_id>/specializations',
         ProgramSpecializationListCreateView.as_view(),
@@ -206,6 +252,11 @@ urlpatterns = [
 
     # ----- academic enrollment (commitment fee → access) -----
     path(
+        'admin/student/<int:student_id>/enrollment_eligibility',
+        AdminStudentEnrollmentEligibilityView.as_view(),
+        name='admin_student_enrollment_eligibility',
+    ),
+    path(
         'admin/student/<int:student_id>/enroll',
         AdminCreateEnrollmentView.as_view(),
         name='admin_create_enrollment',
@@ -214,6 +265,16 @@ urlpatterns = [
         'admin/enrollments',
         AdminListEnrollmentsView.as_view(),
         name='admin_list_enrollments',
+    ),
+    path(
+        'reports/enrollments',
+        EnrollmentReportListView.as_view(),
+        name='enrollment_report_list',
+    ),
+    path(
+        'reports/enrollments/export',
+        EnrollmentReportExcelView.as_view(),
+        name='enrollment_report_export',
     ),
     path(
         'admin/enrollment/<int:pk>',

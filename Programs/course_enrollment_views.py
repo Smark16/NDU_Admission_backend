@@ -10,6 +10,8 @@ from admissions.faculty_scope import (
     assert_course_unit_enrollment_access,
 )
 
+from payments.admin_enrollment_requirements import batch_course_enrollment_block
+
 from rest_framework import generics, status
 from Programs.permissions import AcademicEnrollmentAdminPermission
 from rest_framework.permissions import IsAuthenticated
@@ -77,26 +79,56 @@ class GetAvailableStudentsForCourseUnit(APIView):
             return Response({'detail': 'Course unit is not associated with a program batch'}, status=status.HTTP_400_BAD_REQUEST)
         
         program = program_batch.program
-        admitted_students = _admitted_students_for_program_batch(program, program_batch)
-        
+        cohort_students = _admitted_students_for_program_batch(program, program_batch)
+
+        from payments.models import RegistrationSettings
+        from payments.admin_enrollment_requirements import batch_course_enrollment_block
+
+        reg_settings = RegistrationSettings.get_settings()
+        if reg_settings.require_programme_enrollment:
+            requirement_note = (
+                "Batch course enrollment requires academic programme enrollment (Enrolled) "
+                "and commitment fee confirmed, because "
+                "'Require active academic programme enrollment' is enabled in Registration Settings."
+            )
+        else:
+            requirement_note = (
+                "Batch course enrollment follows Registration Settings. "
+                "Commitment fee is not required for batch enrollment while "
+                "'Require active academic programme enrollment' is off. "
+                "Student course registration still uses the minimum tuition % you configured."
+            )
+
         # Get already enrolled student IDs
         enrolled_student_ids = StudentCourseUnitEnrollment.objects.filter(
             course_unit=course_unit
         ).values_list('student_id', flat=True)
-        
-        # Filter out already enrolled students
-        available_students = admitted_students.exclude(id__in=enrolled_student_ids)
-        
+
+        available_students = cohort_students.exclude(id__in=enrolled_student_ids)
+
         data = []
+        blocked_count = 0
         for student in available_students:
+            block = batch_course_enrollment_block(student)
+            if block:
+                blocked_count += 1
+                continue
             data.append({
                 'id': student.id,
                 'student_id': student.student_id,
                 'reg_no': student.reg_no,
                 'name': student.full_name,
             })
-        
-        return Response(data, status=status.HTTP_200_OK)
+
+        return Response({
+            'results': data,
+            'eligible_count': len(data),
+            'cohort_count': cohort_students.count(),
+            'blocked_count': blocked_count,
+            'requirement_note': requirement_note,
+            'require_programme_enrollment': reg_settings.require_programme_enrollment,
+            'min_tuition_payment_percentage': float(reg_settings.min_tuition_payment_percentage),
+        }, status=status.HTTP_200_OK)
 
 class EnrollStudentsInCourseUnit(APIView):
     """Enroll one or more students in a course unit"""
@@ -127,9 +159,8 @@ class EnrollStudentsInCourseUnit(APIView):
             )
         program = program_batch.program
 
-        allowed_ids = set(
-            _admitted_students_for_program_batch(program, program_batch).values_list("id", flat=True)
-        )
+        cohort_qs = _admitted_students_for_program_batch(program, program_batch)
+        cohort_ids = set(cohort_qs.values_list("id", flat=True))
         
         enrolled = []
         errors = []
@@ -138,11 +169,15 @@ class EnrollStudentsInCourseUnit(APIView):
             for student_id in student_ids:
                 try:
                     student = AdmittedStudent.objects.select_related("programme_enrollment").get(id=student_id)
-                    if student.id not in allowed_ids:
+                    if student.id not in cohort_ids:
                         errors.append(
                             f"Student {student.student_id} is not in this programme batch "
                             f"(intended cohort or programme enrollment must match)."
                         )
+                        continue
+                    block = batch_course_enrollment_block(student)
+                    if block:
+                        errors.append(f"Student {student.student_id}: {block}")
                         continue
                     # Check if already enrolled
                     if StudentCourseUnitEnrollment.objects.filter(
@@ -699,6 +734,10 @@ class GetStudentEnrolledCourses(APIView):
 
         finance = student_finance_totals(admitted_student)
 
+        from payments.registration_eligibility import build_registration_eligibility_payload
+
+        registration = build_registration_eligibility_payload(admitted_student)
+
         return Response({
             'student_id': admitted_student.student_id,
             'reg_no': admitted_student.reg_no,
@@ -714,6 +753,12 @@ class GetStudentEnrolledCourses(APIView):
             'balance': finance['balance'],
             'display_currency': finance['display_currency'],
             'commitment_met': finance['commitment_met'],
+            'registration_eligible': registration.get('is_eligible'),
+            'registration_minimum_required': registration.get('minimum_required'),
+            'registration_percentage_paid': registration.get('percentage_paid'),
+            'registration_message': registration.get('message'),
+            'registration_block_messages': registration.get('block_messages', []),
+            'tuition_eligible': registration.get('tuition_eligible'),
             'current_year_of_study': current_year,
             'current_term_number': current_term,
             'enrolled_courses': active_courses,

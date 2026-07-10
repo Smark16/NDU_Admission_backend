@@ -16,6 +16,7 @@ from payments.student_payment_allocation import (
     _line_is_billable,
     build_finance_allocation,
 )
+from payments.utils.tuition_ledger_linking import tuition_ledger_queryset_for_student
 
 
 def get_admitted_student_for_user(user):
@@ -85,6 +86,8 @@ def _rules_for_student(student: AdmittedStudent):
 
     ensure_feeplanrule_table()
     program = student.admitted_program
+    if program is None:
+        return []
     fee_plan = get_or_create_tuition_fee_plan(program)
     qs = FeePlanRule.objects.filter(
         fee_plan=fee_plan,
@@ -422,8 +425,8 @@ def payment_status_dict(student: AdmittedStudent, request=None) -> dict:
 
     default_semester = _default_programme_semester_label(student)
     history = []
-    for row in TuitionLedger.objects.filter(
-        student=student, transaction_completion_status="Completed"
+    for row in tuition_ledger_queryset_for_student(student).filter(
+        transaction_completion_status="Completed"
     ).order_by("-payment_date_time")[:50]:
         history.append(
             {

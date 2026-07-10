@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import secrets
 import json
+import logging
 from datetime import date, timedelta
 
 import mimetypes
@@ -28,6 +29,8 @@ from Programs.models import Program
 
 from .models import AdmittedStudent, Batch, Faculty, StudentIdCard
 from .permissions import ManageIdCardsPermission
+
+logger = logging.getLogger(__name__)
 
 
 def _default_expiry(issue: date) -> date:
@@ -258,6 +261,8 @@ def _resolve_template_dict() -> dict | None:
 
 
 def _preview_payload(request, card: StudentIdCard) -> dict:
+    from .id_card_pdf_render import explain_pdf_render_blocker, pdf_first_page_png_base64, render_id_card_pdf
+
     st = card.admitted_student
     app = st.application
     tmpl = _resolve_template_dict() or {}
@@ -279,7 +284,7 @@ def _preview_payload(request, card: StudentIdCard) -> dict:
         "gender": app.gender or "",
         "expiry_date": expiry.isoformat(),
     }
-    return {
+    payload = {
         "card_number": card.card_number,
         "template": {
             "key": tmpl.get("key"),
@@ -308,7 +313,26 @@ def _preview_payload(request, card: StudentIdCard) -> dict:
             "tel": tmpl.get("tel") or "",
             "email": tmpl.get("email") or "",
         },
+        "render_mode": "default",
     }
+
+    try:
+        pdf_bytes = render_id_card_pdf(card)
+        if pdf_bytes:
+            payload["render_mode"] = "pdf_template"
+            payload["rendered_image"] = pdf_first_page_png_base64(pdf_bytes)
+            payload["print_pdf_url"] = request.build_absolute_uri(
+                f"/api/admissions/id_cards/{card.pk}/print.pdf"
+            )
+    except Exception:
+        logger.exception("ID card PDF render failed for card %s", card.pk)
+
+    if payload["render_mode"] == "default":
+        hint = explain_pdf_render_blocker()
+        if hint:
+            payload["render_hint"] = hint
+
+    return payload
 
 
 class IdCardFilterOptionsView(APIView):
@@ -591,6 +615,47 @@ class IdCardPreviewDataView(APIView):
         if not card:
             return Response({"detail": "ID card not found."}, status=status.HTTP_404_NOT_FOUND)
         return Response(_preview_payload(request, card))
+
+
+class IdCardPrintPdfView(APIView):
+    permission_classes = [IsAuthenticated, ManageIdCardsPermission]
+
+    def get(self, request, card_id: int):
+        from django.http import HttpResponse
+
+        from .id_card_pdf_render import render_id_card_pdf
+
+        card = StudentIdCard.objects.select_related(
+            "admitted_student",
+            "admitted_student__application",
+            "admitted_student__admitted_program",
+        ).filter(pk=card_id).first()
+        if not card:
+            return Response({"detail": "ID card not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            pdf_bytes = render_id_card_pdf(card)
+        except Exception:
+            logger.exception("ID card PDF print failed for card %s", card_id)
+            return Response(
+                {"detail": "Failed to render ID card PDF."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        if not pdf_bytes:
+            return Response(
+                {
+                    "detail": (
+                        "No active PDF template with mapped fields. Upload a template, map fields, "
+                        "and set it as active."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        filename = f"id-card-{card.card_number or card_id}.pdf"
+        response = HttpResponse(pdf_bytes, content_type="application/pdf")
+        response["Content-Disposition"] = f'inline; filename="{filename}"'
+        return response
 
 
 class IdCardRevokeView(APIView):

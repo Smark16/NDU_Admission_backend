@@ -1,11 +1,18 @@
 from ndu_portal.send_grid import send_configurable_email
 from django.conf import settings
 from django.template.loader import render_to_string
+from accounts.portal_branding import get_university_display_name
+
+
+def _uni() -> str:
+    return get_university_display_name()
+
 
 def send_application_email(application, subject="Application Submitted Successfully!"):
+    uni = _uni()
     body = (
         f"Dear {application.first_name} {application.last_name},\n\n"
-        f"Your application has been successfully submitted to Ndejje University.\n"
+        f"Your application has been successfully submitted to {uni}.\n"
         f"Application ID: {application.id}\n"
         f"Submitted on: {application.created_at.strftime('%d %B %Y')}\n\n"
         f"Please note that all subsequent communication regarding your application, "
@@ -13,9 +20,9 @@ def send_application_email(application, subject="Application Submitted Successfu
         f"to your email address. You are therefore not required to come to the university "
         f"campus physically unless officially advised otherwise.\n\n"
         f"Kindly keep checking your email regularly for updates from the Admissions Office.\n\n"
-        f"Thank you for choosing Ndejje University.\n\n"
+        f"Thank you for choosing {uni}.\n\n"
         f"Admissions Team\n"
-        f"Ndejje University"
+        f"{uni}"
     )
 
     return send_configurable_email(application.email, subject, body)
@@ -24,8 +31,11 @@ def send_application_email(application, subject="Application Submitted Successfu
 def send_admission_email(
     application,
     admission,
-    subject="Congratulations! You have been admitted to Ndejje University"
+    subject=None,
 ):
+    uni = _uni()
+    if subject is None:
+        subject = f"Congratulations! You have been admitted to {uni}"
     confirmation_fee = "UGX 150,000"
 
     body = f"""
@@ -33,7 +43,7 @@ Dear {application.first_name} {application.last_name},
 
 CONGRATULATIONS
 
-On behalf of the Admissions Board, we are pleased to inform you that you have been provisionally admitted to Ndejje University to pursue the academic programme indicated below:
+On behalf of the Admissions Board, we are pleased to inform you that you have been provisionally admitted to {uni} to pursue the academic programme indicated below:
 
 Programme of Study: {admission.admitted_program.name}
 
@@ -76,9 +86,9 @@ ii) NOTE: This amount shall be credited towards your tuition fees.
 iii) Sending the Bank Deposit Slip and payment confirmation receipt to:
 confirmation@ndu.ac.ug
 
-iv) A second Email will be sent to you with your credentials you will use to log into the horizon student portal
+iv) A second Email will be sent to you with your credentials you will use to log into the {uni} student portal
 
-v)NOTE: PLEASE LOG IN TO YOUR HORIZON PORTAL TO DOWNLOAD AND PRINT YOUR ADMISSION LETTER THERE WILL BE NO NEED TO COME PYHSICALLY FOR THE LETTER.
+v)NOTE: PLEASE LOG IN TO {uni.upper()} TO DOWNLOAD AND PRINT YOUR ADMISSION LETTER. THERE WILL BE NO NEED TO COME PHYSICALLY FOR THE LETTER.
 
 COMMUNICATION
 
@@ -86,12 +96,12 @@ Kindly join the official WhatsApp group using the link below for proper communic
 
 https://chat.whatsapp.com/LZI1mItko834t6c1Vjwy9b
 
-Congratulations on your admission to Ndejje University! We hope you find your studies both enjoyable and fulfilling.
+Congratulations on your admission to {uni}! We hope you find your studies both enjoyable and fulfilling.
 
 We look forward to receiving you.
 
 Admissions Office
-Ndejje University
+{uni}
 """
 
     return send_configurable_email(
@@ -112,32 +122,55 @@ def send_admission_update(admission, subject="Admission updated Successfully"):
         )
     return send_configurable_email(admission.application.email, subject, body)
 
-def send_student_login_credentials(user, password, subject="Account Created Successfully"):
-    login_url = f"{settings.ERP_FRONTEND_URL}"
+def send_student_login_credentials(user, password, subject="Account Created Successfully", *, admission=None):
+    from accounts.portal_branding import email_branding_context, get_erp_frontend_url
+
+    reg_no = ""
+    if admission is None:
+        try:
+            from admissions.models import AdmittedStudent
+
+            admission = AdmittedStudent.objects.select_related("application").filter(
+                student_user=user
+            ).first()
+        except Exception:
+            admission = None
+
+    if admission and admission.reg_no:
+        reg_no = admission.reg_no.strip()
+
+    to_email = (user.email or "").strip()
+    if not to_email and admission and admission.application_id:
+        to_email = (admission.application.email or "").strip()
+    if not to_email:
+        return False
+
+    login_url = get_erp_frontend_url()
     html_body = render_to_string('student_login.html', {
+        **email_branding_context(),
         'user': user,
         'login_url': login_url,
-        'password': password
+        'password': password,
+        'reg_no': reg_no,
     })
-    success = send_configurable_email(
-        to_email=user.email,
+    return send_configurable_email(
+        to_email=to_email,
         subject=subject,
         body=html_body,
-        is_html=True,                 
+        is_html=True,
     )
-
-    return success
 
 # rejection email
 def send_rejection_email(application, msg, subject="Application Update: Admission Decision"):
+    uni = _uni()
     body = (
         f"Dear {application.first_name} {application.last_name},\n\n"
-        f"We regret to inform you that your application for admission to Ndejje University has been unsuccessful.\n\n"
+        f"We regret to inform you that your application for admission to {uni} has been unsuccessful.\n\n"
         f"Application ID: {application.id}\n"
         f"Submitted on: {application.created_at.strftime('%d %B %Y')}\n\n"
         f"Reason for Rejection: {msg}\n\n"
         f"We encourage you to apply again in the future and wish you the best in your academic pursuits.\n\n"
-        f"Thank you for considering Ndejje University.\n"
+        f"Thank you for considering {uni}.\n"
         f"Admissions Team"
     )
 

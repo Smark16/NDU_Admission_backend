@@ -99,6 +99,32 @@ class ProgramSchedulingAPIPermission(BasePermission):
         return user_has_any_erp_perm(u, "manage_program_scheduling", "access_academics")
 
 
+class LectureAttendanceAdminPermission(BasePermission):
+    """Faculty/admin lecture attendance sheets and mark editing."""
+
+    message = "You do not have permission to manage lecture attendance."
+
+    def has_permission(self, request, view):
+        u = request.user
+        if not u.is_authenticated:
+            return False
+        if _superuser(u):
+            return True
+        from admissions.faculty_scope import user_is_faculty_admin, user_is_faculty_dean
+
+        if user_is_faculty_admin(u) or user_is_faculty_dean(u):
+            return True
+        if u.has_perm("Programs.manage_faculty_lecture_attendance"):
+            return True
+        if u.has_perm("Programs.view_lectureattendancesession"):
+            return True
+        return user_has_any_erp_perm(
+            u,
+            "access_academics",
+            "manage_program_scheduling",
+            "manage_academic_enrollment",
+        )
+
 class AcademicEnrollmentAdminPermission(BasePermission):
     """Student programme enrollment (SPE), admin enrollment APIs — not student self-service."""
 
@@ -137,7 +163,7 @@ class FeePlanConfigurationPermission(BasePermission):
 
 
 class CommunicationTemplatesPermission(BasePermission):
-    """Transactional email templates (admissions, system)."""
+    """Transactional email templates (admissions, system) and weekly digest."""
 
     message = "You do not have permission to manage communication templates."
 
@@ -147,9 +173,12 @@ class CommunicationTemplatesPermission(BasePermission):
             return False
         if _superuser(u):
             return True
+        if u.has_perm("admissions.view_emailtemplate"):
+            return True
         return user_has_any_erp_perm(
             u,
             "manage_communication_templates",
             "access_system_settings",
+            "access_user_management",
             "approve_admissions",
         )

@@ -19,7 +19,7 @@ def render_exam_card_pdf(student: AdmittedStudent, *, request=None) -> bytes:
     if not token:
         raise ValueError("Student is not eligible for an examination card.")
 
-    payload = build_exam_card_payload(student, request=request, issue_token=False)
+    payload = build_exam_card_payload(student, request=request, issue_token=True)
     if not payload["can_print"]:
         raise ValueError("Student is not eligible for an examination card.")
 
@@ -55,9 +55,10 @@ def render_exam_card_pdf(student: AdmittedStudent, *, request=None) -> bytes:
     from xhtml2pdf import pisa
     import io
 
+    from accounts.portal_branding import xhtml2pdf_link_callback
+
     pdf_buffer = io.BytesIO()
-    base_url = str(Path(settings.BASE_DIR).as_uri()) + "/"
-    result = pisa.CreatePDF(html, dest=pdf_buffer, link_callback=lambda *args: base_url)
+    result = pisa.CreatePDF(html, dest=pdf_buffer, link_callback=xhtml2pdf_link_callback)
     if result.err:
         raise RuntimeError("Examination card PDF generation failed.")
     pdf_buffer.seek(0)

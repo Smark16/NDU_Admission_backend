@@ -15,6 +15,7 @@ from admissions.models import AdmittedStudent
 from Programs.models import ProgramBatch, Semester
 
 from .models import RegistrationSettings
+from accounts.portal_branding import get_university_display_name
 
 
 def _parse_optional_dt(val):
@@ -213,6 +214,18 @@ class RegisterForCourses(APIView):
                 },
                 status=status.HTTP_403_FORBIDDEN,
             )
+        if not payload.get("tuition_check_skipped") and not payload.get("tuition_eligible"):
+            return Response(
+                {
+                    "detail": payload.get("message")
+                    or (
+                        f"Pay at least {payload.get('minimum_required', 60):.0f}% "
+                        "of your current semester tuition before registering."
+                    ),
+                    "eligibility": payload,
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
         course_unit_ids = request.data.get("course_unit_ids") or []
         if not course_unit_ids:
             return Response({"detail": "No course unit IDs provided"}, status=status.HTTP_400_BAD_REQUEST)
@@ -396,6 +409,6 @@ def verify_registration_card_public(request, student_id: str):
             "commitment_met": finance["commitment_met"],
             "commitment_paid_ugx": finance["commitment_paid_ugx"],
             "commitment_threshold": finance["commitment_threshold"],
-            "system": "Ndejje University — Horizon ERP",
+            "system": get_university_display_name(),
         }
     )

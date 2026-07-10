@@ -535,3 +535,74 @@ class ExamCardToken(models.Model):
 
     def __str__(self):
         return f"Exam card {self.verification_code} ({self.student_id})"
+
+
+class MarksEntryWindow(models.Model):
+    """Controls when lecturers may enter marks for a batch, semester, or course."""
+
+    name = models.CharField(max_length=160)
+    program_batch = models.ForeignKey(
+        "Programs.ProgramBatch",
+        on_delete=models.CASCADE,
+        related_name="marks_entry_windows",
+    )
+    semester = models.ForeignKey(
+        "Programs.Semester",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="marks_entry_windows",
+    )
+    course_unit = models.ForeignKey(
+        "Programs.CourseUnit",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="marks_entry_windows",
+    )
+    opens_at = models.DateTimeField(null=True, blank=True)
+    closes_at = models.DateTimeField(null=True, blank=True)
+    is_active = models.BooleanField(default=True, db_index=True)
+    notes = models.TextField(blank=True, default="")
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_marks_entry_windows",
+    )
+    closed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="closed_marks_entry_windows",
+    )
+    closed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-is_active", "program_batch__name", "semester__order", "course_unit__code"]
+        permissions = [
+            ("manage_marks_windows", "Can open and close examination marks entry windows"),
+        ]
+        indexes = [
+            models.Index(fields=["program_batch", "semester", "course_unit", "is_active"]),
+            models.Index(fields=["opens_at", "closes_at"]),
+        ]
+
+    def __str__(self):
+        return self.name
+
+    def clean(self):
+        if self.course_unit_id and self.course_unit.program_batch_id != self.program_batch_id:
+            raise ValidationError(
+                {"course_unit": "Course unit must belong to the selected programme batch."}
+            )
+        if self.semester_id and self.course_unit_id and self.course_unit.semester_id != self.semester_id:
+            raise ValidationError(
+                {"course_unit": "Course unit must belong to the selected semester."}
+            )
+        if self.opens_at and self.closes_at and self.opens_at >= self.closes_at:
+            raise ValidationError({"closes_at": "Closing time must be after opening time."})

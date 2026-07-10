@@ -9,6 +9,7 @@ from .models import (
     ExamSession,
     GradeBand,
     GradeScale,
+    MarksEntryWindow,
     ResultChangeRequest,
 )
 
@@ -378,6 +379,7 @@ class CourseUnitResultSerializer(serializers.ModelSerializer):
     course_code = serializers.CharField(source="enrollment.course_unit.code", read_only=True)
     course_name = serializers.CharField(source="enrollment.course_unit.name", read_only=True)
     is_published = serializers.SerializerMethodField()
+    has_pending_change_request = serializers.SerializerMethodField()
 
     class Meta:
         model = CourseUnitResult
@@ -398,11 +400,17 @@ class CourseUnitResultSerializer(serializers.ModelSerializer):
             "remark",
             "status",
             "is_published",
+            "has_pending_change_request",
             "published_at",
         ]
 
     def get_is_published(self, obj):
         return obj.status == CourseUnitResult.STATUS_PUBLISHED
+
+    def get_has_pending_change_request(self, obj):
+        return obj.change_requests.filter(
+            status=ResultChangeRequest.STATUS_PENDING
+        ).exists()
 
 
 class ResultChangeRequestSerializer(serializers.ModelSerializer):
@@ -478,6 +486,80 @@ class ExamSessionSerializer(serializers.ModelSerializer):
                 ExamRetakeRegistration.STATUS_SCHEDULED,
             )
         ).count()
+
+
+class MarksEntryWindowSerializer(serializers.ModelSerializer):
+    program_batch_name = serializers.CharField(source="program_batch.name", read_only=True)
+    semester_name = serializers.CharField(source="semester.name", read_only=True, allow_null=True)
+    course_code = serializers.CharField(source="course_unit.code", read_only=True, allow_null=True)
+    course_name = serializers.CharField(source="course_unit.name", read_only=True, allow_null=True)
+    scope = serializers.SerializerMethodField()
+
+    class Meta:
+        model = MarksEntryWindow
+        fields = [
+            "id",
+            "name",
+            "program_batch",
+            "program_batch_name",
+            "semester",
+            "semester_name",
+            "course_unit",
+            "course_code",
+            "course_name",
+            "scope",
+            "opens_at",
+            "closes_at",
+            "is_active",
+            "notes",
+            "closed_at",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["closed_at", "created_at", "updated_at"]
+
+    def get_scope(self, obj):
+        if obj.course_unit_id:
+            return "course"
+        if obj.semester_id:
+            return "semester"
+        return "batch"
+
+    def validate(self, attrs):
+        program_batch = attrs.get(
+            "program_batch",
+            getattr(self.instance, "program_batch", None) if self.instance else None,
+        )
+        semester = attrs.get(
+            "semester",
+            getattr(self.instance, "semester", None) if self.instance else None,
+        )
+        course_unit = attrs.get(
+            "course_unit",
+            getattr(self.instance, "course_unit", None) if self.instance else None,
+        )
+        opens_at = attrs.get(
+            "opens_at",
+            getattr(self.instance, "opens_at", None) if self.instance else None,
+        )
+        closes_at = attrs.get(
+            "closes_at",
+            getattr(self.instance, "closes_at", None) if self.instance else None,
+        )
+
+        if course_unit and program_batch and course_unit.program_batch_id != program_batch.id:
+            raise serializers.ValidationError(
+                {"course_unit": "Course unit must belong to the selected programme batch."}
+            )
+        if semester and course_unit and course_unit.semester_id != semester.id:
+            raise serializers.ValidationError(
+                {"course_unit": "Course unit must belong to the selected semester."}
+            )
+        if opens_at and closes_at and opens_at >= closes_at:
+            raise serializers.ValidationError(
+                {"closes_at": "Closing time must be after opening time."}
+            )
+        return attrs
 
 
 class ExamRetakeRegistrationSerializer(serializers.ModelSerializer):

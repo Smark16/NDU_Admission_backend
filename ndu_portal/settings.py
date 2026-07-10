@@ -53,7 +53,11 @@ LOCAL_APPS = [
     'graduation',
     'Drafts',
     'OfferLetter.AdmissionLetter',
-    'OfferLetter.AdmissionReports'
+    'OfferLetter.AdmissionReports',
+    'hr.staff.apps.StaffConfig',
+    'hr.hiring.apps.HiringConfig',
+    'hr.leave.apps.LeaveConfig',
+    'hr.appraisal.apps.AppraisalConfig',
 ]
 
 MIDDLEWARE = [
@@ -104,12 +108,23 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'ndu_portal.wsgi.application'
 
-# caching
-CACHES = {
-    "default": {
-        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+# caching — production must use Redis so Celery and gunicorn share bulk job status
+if DEBUG:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        }
     }
-}
+else:
+    CACHES = {
+        "default": {
+            "BACKEND": "django_redis.cache.RedisCache",
+            "LOCATION": env("REDIS_CACHE_URL", default="redis://127.0.0.1:6379/1"),
+            "OPTIONS": {
+                "CLIENT_CLASS": "django_redis.client.DefaultClient",
+            },
+        }
+    }
 
 # Database
 if DEBUG:
@@ -218,14 +233,14 @@ CELERY_BEAT_SCHEDULE = {
         "task": "Drafts.tasks.auto_process_drafts_deletion",
         "schedule": crontab(minute="*/5"),
     },
-    "process_failed_payments" : {
-       "task": "payments.tasks.auto_delete_failed_payments",
-       "schedule": crontab(minute="*/5"),
-    },
     "sync-schoolpay-transactions-everyday": {
         "task": "payments.tasks.celery_sync_schoolpay_transactions",
         "schedule": crontab(minute="*/1")
-    }
+    },
+    "check-weekly-admissions-digest": {
+        "task": "admissions.tasks.celery_maybe_send_weekly_admissions_digest",
+        "schedule": crontab(minute="*/15"),
+    },
 }
 
 # school pay configuration
@@ -269,6 +284,8 @@ CORS_ALLOWED_ORIGINS = [
     "http://137.63.139.78",
     "http://localhost:5173",
     "http://127.0.0.1:5173",
+    "http://localhost:5174",
+    "http://127.0.0.1:5174",
     "https://admissions.ndu.ac.ug",
     "http://localhost:3001",
     "https://erp.ndejje.ndu.ac.ug",
@@ -281,7 +298,9 @@ CORS_ALLOWED_ORIGINS = [
 # More flexible option - Recommended for your case
 CORS_ALLOWED_ORIGIN_REGEXES = [
     r"^https?://([a-z0-9-]+\.)*ndu\.ac\.ug$",
+    r"^https?://erp\.ndejje\.ndu\.ac\.ug$",
     r"^http://137\.63\.139\.78$",
+    r"^http://(localhost|127\.0\.0\.1):\d+$",
 ]
 
 # Important for debugging
@@ -301,7 +320,7 @@ CORS_ALLOW_HEADERS = [
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
-        "rest_framework.authentication.BasicAuthentication",
+        # JWT only — BasicAuthentication adds WWW-Authenticate on 401 and triggers the browser login dialog in SPAs.
         "rest_framework_simplejwt.authentication.JWTAuthentication",
     ],
     "DEFAULT_PERMISSION_CLASSES": [

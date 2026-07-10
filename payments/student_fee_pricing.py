@@ -12,6 +12,11 @@ def is_international_student(student: AdmittedStudent) -> bool:
     app = getattr(student, "application", None)
     if not app:
         return False
+    category = (getattr(app, "applicant_category", None) or "").strip().lower()
+    if category == "international":
+        return True
+    if category == "local":
+        return False
     nat = (getattr(app, "nationality", None) or "").strip().lower()
     if not nat:
         return False

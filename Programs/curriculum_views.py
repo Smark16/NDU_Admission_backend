@@ -607,6 +607,8 @@ class BulkUploadCurriculumView(APIView):
       elective_group, specialization, sort_order
     (* = required)
 
+    Optional form field: curriculum_version (defaults to programme default version).
+
     Rows whose (catalog_course, year, term) already exist for this programme
     are skipped (no error). Rows with unknown course codes or bad values are
     reported in the errors list.  All valid rows are bulk-created atomically.
@@ -636,6 +638,12 @@ class BulkUploadCurriculumView(APIView):
                 {'detail': 'This programme inherits its curriculum. Fork it before making local changes.'},
                 status=status.HTTP_403_FORBIDDEN,
             )
+
+        curriculum_version, error = ListCreateCurriculumView._resolve_version(program, request)
+        if error:
+            return error
+
+        owner = curriculum_owner_program(program)
 
         uploaded = request.FILES.get('file')
         if not uploaded:
@@ -682,7 +690,7 @@ class BulkUploadCurriculumView(APIView):
         # Existing mappings for this programme (to skip duplicates)
         existing = set(
             ProgramCurriculumLine.objects
-            .filter(program=program, curriculum_version=curriculum_version)
+            .filter(program=owner, curriculum_version=curriculum_version)
             .values_list('catalog_course_id', 'year_of_study', 'term_number')
         )
 
@@ -746,7 +754,7 @@ class BulkUploadCurriculumView(APIView):
             specialization  = row.get('specialization') or None
 
             to_create.append(ProgramCurriculumLine(
-                program=program,
+                program=owner,
                 curriculum_version=curriculum_version,
                 catalog_course=catalog_course,
                 year_of_study=year,

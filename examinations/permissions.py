@@ -11,6 +11,7 @@ EXAM_VIEW_ALL_RESULTS = "examinations.view_all_results"
 EXAM_MANAGE_SCHEDULE = "examinations.manage_exam_schedule"
 EXAM_MANAGE_RETAKES = "examinations.manage_retakes"
 EXAM_APPROVE_CHANGES = "examinations.approve_result_changes"
+EXAM_MANAGE_MARKS_WINDOWS = "examinations.manage_marks_windows"
 EXAM_ACCESS_MODULE = "accounts.access_examinations"
 
 OFFICE_CODENAMES = (
@@ -20,6 +21,7 @@ OFFICE_CODENAMES = (
     "manage_exam_schedule",
     "manage_retakes",
     "approve_result_changes",
+    "manage_marks_windows",
 )
 
 
@@ -125,6 +127,17 @@ class CanManageExamSchedule(BasePermission):
 
     def has_permission(self, request, view):
         return user_has_any_examination_perm(request.user, "manage_exam_schedule")
+
+
+class CanManageMarksWindows(BasePermission):
+    message = "You do not have permission to manage marks entry windows."
+
+    def has_permission(self, request, view):
+        return user_has_any_examination_perm(
+            request.user,
+            "manage_marks_windows",
+            "publish_results",
+        )
 
 
 class CanManageRetakes(BasePermission):

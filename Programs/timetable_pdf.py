@@ -9,7 +9,7 @@ from django.conf import settings
 from django.template.loader import render_to_string
 from django.utils import timezone
 
-from accounts.portal_branding import load_portal_logo_b64_for_pdf
+from accounts.portal_branding import load_portal_logo_b64_for_pdf, xhtml2pdf_link_callback
 from Programs.models import TimetableSession
 
 
@@ -97,8 +97,7 @@ def render_timetable_pdf(context: dict) -> bytes:
     from xhtml2pdf import pisa
 
     pdf_buffer = io.BytesIO()
-    base_url = str(Path(settings.BASE_DIR).as_uri()) + "/"
-    result = pisa.CreatePDF(html, dest=pdf_buffer, link_callback=lambda *args: base_url)
+    result = pisa.CreatePDF(html, dest=pdf_buffer, link_callback=xhtml2pdf_link_callback)
     if result.err:
         raise RuntimeError("Timetable PDF generation failed.")
     pdf_buffer.seek(0)

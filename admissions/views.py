@@ -32,27 +32,35 @@ from rest_framework.parsers import MultiPartParser, FormParser
 from django.utils import timezone
 from rest_framework.decorators import api_view, permission_classes
 from django.conf import settings
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models.deletion import ProtectedError
 from django.db.utils import OperationalError
 # from .utils.validate_photo import validate_passport_photo
 from .tasks import celery_send_application_email, celery_application_notification, celery_admission_email, celery_admission_update, celery_create_student_account, celery_send_rejection_email, celery_update_student_account
 from accounts.tasks import celery_send_account_email
 from payments.utils.school_pay_code import register_student_with_schoolpay
-from .utils.trigger_background_tasks import trigger_background_tasks
+from .utils.trigger_background_tasks import queue_admission_notification_emails
+from .utils.student_portal_provisioning import (
+    StudentPortalProvisioningError,
+    provision_student_portal_on_admission,
+)
 from .utils.application_programs_display import ordered_programs_for_application
 from .utils.program_choices import (
     PROGRAM_CHOICE_CONFIRMED_BY_APPLICANT,
     applicant_confirmed_program_choices,
     applicant_may_edit_program_choices,
+    assert_applicant_may_select_programs,
+    assert_staff_may_select_programs_for_direct_entry,
     clear_program_choices_confirmation,
     mark_program_choices_confirmed,
+    parse_program_id_list,
     program_options_for_application,
     sync_application_academic_level_from_programs,
     sync_application_program_choices,
 )
 from .utils.program_choice_integrity import application_has_suspect_program_choices
 from payments.models import ApplicationPayment
+from payments.utils.application_payment_status import confirmed_application_fee_payment
 from Drafts.models import DraftApplication
 from django.db.models import Q, Prefetch, Count, Value
 from django.db.models.functions import Concat
@@ -71,18 +79,169 @@ from datetime import date
 
 from urllib.parse import quote
 from .utils.reg_no import generate_reg_no
-from .utils.batch_offer_filters import batch_offer_window_q
+from .utils.batch_offer_filters import batch_offer_window_q, resolve_active_application_batch
 
 # caching
 from django.core.cache import cache
 
 logger = logging.getLogger(__name__)
 
+SUBMITTED_APPLICATION_STATUSES = frozenset(
+    {"submitted", "under_review", "accepted", "Admitted", "admitted"}
+)
+
+
+def _draft_for_applicant(applicant, batch_id):
+    """Resolve the portal draft used when copying files into a submitted application."""
+    if batch_id:
+        draft = (
+            DraftApplication.objects.filter(applicant=applicant, batch_id=batch_id)
+            .order_by("-updated_at")
+            .first()
+        )
+        if draft:
+            return draft
+    return DraftApplication.objects.filter(applicant=applicant).order_by("-updated_at").first()
+
+
+def _normalize_payment_reference(value):
+    if value in (None, ""):
+        return None
+    ref = str(value).strip()
+    return ref or None
+
+
+def _lookup_paid_application_payment(applicant_user, external_reference, *, lock=False):
+    """Find a PAID application-fee payment for this applicant and reference."""
+    ref = _normalize_payment_reference(external_reference)
+    if not ref:
+        return None
+    qs = ApplicationPayment.objects.filter(
+        external_reference=ref,
+        user=applicant_user,
+        status="PAID",
+    )
+    if lock:
+        return qs.select_for_update().first()
+    return qs.first()
+
+
+def _resolve_paid_payment_for_submit(applicant_user, ext_ref, draft, *, staff_user):
+    """
+    Resolve a PAID application-fee payment without changing rules for self-service applicants.
+
+    Regular applicants: only the external_reference sent on submit is accepted.
+    Staff assist: may also use the draft's stored reference when payment was already confirmed.
+    """
+    payment = _lookup_paid_application_payment(
+        applicant_user,
+        ext_ref,
+        lock=True,
+    )
+    if payment or not staff_user:
+        return payment
+
+    if draft and draft.application_reference:
+        payment = _lookup_paid_application_payment(
+            applicant_user,
+            draft.application_reference,
+            lock=True,
+        )
+    return payment
+
+
+def _idempotent_submit_response(payment, applicant_user, ext_ref):
+    existing = Application.objects.filter(pk=payment.application_id).first()
+    if existing and existing.status in SUBMITTED_APPLICATION_STATUSES:
+        logger.info(
+            "Idempotent submit replay accepted for user=%s ext_ref=%s app_id=%s",
+            applicant_user.id,
+            ext_ref,
+            payment.application_id,
+        )
+        return Response(
+            {
+                "detail": "Application already submitted successfully.",
+                "application_id": payment.application_id,
+                "idempotent_replay": True,
+            },
+            status=status.HTTP_200_OK,
+        )
+    return None
+
+
+def _clear_unsubmitted_application_reference(reference, *, exclude_pk=None):
+    """Free a payment reference held by an abandoned non-submitted application row."""
+    ref = _normalize_payment_reference(reference)
+    if not ref:
+        return
+    qs = Application.objects.filter(application_reference=ref).exclude(
+        status__in=SUBMITTED_APPLICATION_STATUSES
+    )
+    if exclude_pk is not None:
+        qs = qs.exclude(pk=exclude_pk)
+    if qs.exists():
+        cleared = qs.update(application_reference=None)
+        logger.info(
+            "Cleared application_reference=%s from %s unsubmitted application(s)",
+            ref,
+            cleared,
+        )
+
+
+def _release_stale_payment_application_link(payment, *, staff_user):
+    """
+    Re-link a PAID payment to a new submission only when the prior link is missing or not submitted.
+
+    Self-service applicants keep the existing rule: a used payment reference cannot be reused.
+    """
+    if not payment.application_id:
+        return None
+
+    existing = Application.objects.filter(pk=payment.application_id).first()
+    if existing and existing.status in SUBMITTED_APPLICATION_STATUSES:
+        return existing
+
+    if not staff_user:
+        return existing
+
+    if existing:
+        _clear_unsubmitted_application_reference(
+            payment.external_reference,
+            exclude_pk=existing.pk,
+        )
+        existing.application_reference = None
+        existing.save(update_fields=["application_reference"])
+
+    payment.application = None
+    payment.save(update_fields=["application"])
+    return None
+
+
 # ===========================applications ===========================================
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def create_applications(request):
     MAX_FILE_SIZE = settings.FILE_UPLOAD_MAX_MEMORY_SIZE
+    applicant_user = request.user
+    staff_user = None
+    raw_applicant_id = request.data.get("applicant_id")
+    if raw_applicant_id not in (None, ""):
+        from accounts.assist_application import get_assistable_applicant
+
+        staff_user = request.user
+        try:
+            applicant_user = get_assistable_applicant(staff_user, int(raw_applicant_id))
+        except Exception as exc:
+            from rest_framework.exceptions import PermissionDenied, ValidationError
+
+            if isinstance(exc, (PermissionDenied, ValidationError)):
+                detail = getattr(exc, "detail", str(exc))
+                if isinstance(detail, dict):
+                    detail = detail.get("detail", detail)
+                status_code = 403 if isinstance(exc, PermissionDenied) else 400
+                return Response({"detail": detail}, status=status_code)
+            raise
 
     # === File size validation ===
     for file_obj in request.FILES.getlist('documents', []):
@@ -104,6 +263,20 @@ def create_applications(request):
     serializer = CudApplicationSerializer(data=request.data, context={"request": request}, partial=True)
     serializer.is_valid(raise_exception=True)
     # serializer.validated_data.pop('programs', None)
+
+    program_ids = parse_program_id_list(request.data.get("programs"))
+    if not program_ids:
+        return Response(
+            {"detail": "At least one programme choice is required."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    try:
+        assert_applicant_may_select_programs(
+            Application(**serializer.validated_data),
+            program_ids,
+        )
+    except ValueError as exc:
+        return Response({"detail": str(exc)}, status=400)
 
     # === Parse & Validate O-Level and A-Level ONCE ===
     olevel_validated = []
@@ -152,53 +325,78 @@ def create_applications(request):
     with transaction.atomic():
         try:
             files = request.FILES
-            ext_ref = request.data.get("external_reference")
+            ext_ref = _normalize_payment_reference(request.data.get("external_reference"))
+            draft = _draft_for_applicant(applicant_user, request.data.get("batch"))
             payment = None
 
-            # === Idempotency check for payment ===
-            if ext_ref:
-                try:
-                    payment = ApplicationPayment.objects.select_for_update().get(
-                        external_reference=ext_ref,
-                        user=request.user,
-                        status="PAID",
+            # === Payment resolution (self-service rules unchanged) ===
+            if ext_ref or staff_user:
+                payment = _resolve_paid_payment_for_submit(
+                    applicant_user,
+                    ext_ref,
+                    draft,
+                    staff_user=bool(staff_user),
+                )
+                if ext_ref and payment is None and not staff_user:
+                    return Response(
+                        {"detail": "Invalid or unpaid payment reference"},
+                        status=status.HTTP_400_BAD_REQUEST,
                     )
-                except ApplicationPayment.DoesNotExist:
-                    return Response({"detail": "Invalid or unpaid payment reference"}, status=400)
 
-                if payment.application_id is not None:
-                    logger.info(
-                        "Idempotent submit replay accepted for user=%s ext_ref=%s app_id=%s",
-                        request.user.id, ext_ref, payment.application_id
+                if payment:
+                    idempotent = _idempotent_submit_response(
+                        payment,
+                        applicant_user,
+                        payment.external_reference,
                     )
-                    return Response({
-                        "detail": "Application already submitted successfully.",
-                        "application_id": payment.application_id,
-                        "idempotent_replay": True
-                    }, status=status.HTTP_200_OK)
+                    if idempotent is not None:
+                        return idempotent
+
+                    stale = _release_stale_payment_application_link(
+                        payment,
+                        staff_user=bool(staff_user),
+                    )
+                    if stale and not staff_user:
+                        return Response(
+                            {
+                                "detail": "This payment reference has already been used.",
+                                "application_id": stale.id,
+                            },
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
 
             # === Create Application object ===
             application = Application(**serializer.validated_data)
-            application.applicant = request.user
+            application.applicant = applicant_user
             application.status = "submitted"
             application.has_olevel = str(request.data.get('has_olevel', '')).lower() in ('true', '1', 'yes')
             application.has_alevel = str(request.data.get('has_alevel', '')).lower() in ('true', '1', 'yes')
+            if staff_user:
+                application.entered_by = staff_user
+
+            if staff_user and (payment is None or payment.status != "PAID"):
+                payment = confirmed_application_fee_payment(
+                    applicant_user,
+                    external_reference=ext_ref,
+                    draft=draft,
+                )
+
+            if staff_user and (payment is None or payment.status != "PAID"):
+                return Response(
+                    {
+                        "detail": (
+                            "Application fee payment must be confirmed (PAID) before submit. "
+                            "Complete payment on the applicant's phone or clear any pending payment."
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
             if payment:
                 application.application_fee_paid = True
                 application.application_fee_amount = payment.amount
                 application.application_reference = payment.external_reference
-            
-            draft = None
-            try:
-                draft = DraftApplication.objects.get(
-                    applicant=request.user,
-                    batch_id=request.data.get('batch')
-                )
-            except DraftApplication.DoesNotExist:
-                draft = None
 
-            
             if draft and draft.passport_photo:
                 try:
                     original_name = draft.passport_photo.name.split('/')[-1]
@@ -217,70 +415,43 @@ def create_applications(request):
             else:
                 return Response({"detail": "Passport photo is required"}, status=400)
 
+            is_refugee = bool(serializer.validated_data.get('is_refugee'))
+            if is_refugee:
+                if draft and draft.refugee_status_proof:
+                    try:
+                        original_name = draft.refugee_status_proof.name.split('/')[-1]
+                        application.refugee_status_proof.save(
+                            original_name,
+                            draft.refugee_status_proof.file,
+                            save=False,
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to copy refugee status proof from draft: {e}")
+                        return Response({"detail": "Failed to process refugee status proof"}, status=400)
+                elif 'refugee_status_proof' in request.FILES:
+                    application.refugee_status_proof = request.FILES['refugee_status_proof']
+                else:
+                    return Response({"detail": "Refugee status proof is required"}, status=400)
+
             # Save the main application first (so it gets an ID)
+            if application.application_reference:
+                _clear_unsubmitted_application_reference(application.application_reference)
             application.save()
 
-            programs_input = request.data.get(
-                "programs"
-            )
+            choice_objects = [
+                ApplicationProgramChoice(
+                    application=application,
+                    program_id=pid,
+                    choice_order=index + 1,
+                )
+                for index, pid in enumerate(program_ids)
+            ]
+            ApplicationProgramChoice.objects.bulk_create(choice_objects)
 
-            if programs_input:
+            if staff_user:
+                from .utils.program_choices import mark_program_choices_settled_by_admin
 
-                try:
-
-                    if isinstance(programs_input, str):
-
-                        program_list = json.loads(
-                            programs_input
-                        )
-
-                    else:
-
-                        program_list = programs_input
-
-                    choice_objects = []
-
-                    for index, program_id in enumerate(
-                        program_list
-                    ):
-
-                        try:
-
-                            pid = int(program_id)
-
-                            if pid > 0:
-
-                                choice_objects.append(
-
-                                    ApplicationProgramChoice(
-
-                                        application=application,
-
-                                        program_id=pid,
-
-                                        choice_order=index + 1
-                                    )
-                                )
-
-                        except (
-                            ValueError,
-                            TypeError
-                        ):
-
-                            continue
-
-                    if choice_objects:
-
-                        ApplicationProgramChoice.objects.bulk_create(
-                            choice_objects
-                        )
-
-                except Exception as e:
-
-                    logger.warning(
-                        f"Failed to save "
-                        f"program choices: {e}"
-                    )
+                mark_program_choices_settled_by_admin(application, save=True)
 
             # Link payment to application
             if payment:
@@ -312,6 +483,14 @@ def create_applications(request):
                             file=draft.other_documents,
                             name=draft.other_documents.name.split('/')[-1],
                             document_type="Others"
+                        )
+
+                    for other_doc in draft.other_document_files.all():
+                        ApplicationDocument.objects.create(
+                            application=application,
+                            file=other_doc.file,
+                            name=(other_doc.original_name or other_doc.file.name.split('/')[-1])[:50],
+                            document_type="Others",
                         )
 
                 except Exception as copy_error:
@@ -374,10 +553,20 @@ def create_applications(request):
                 try:
                     celery_send_application_email.delay(application.id)
                     celery_application_notification.delay(
-                        request.user.id,
+                        applicant_user.id,
                         "Application Submitted",
                         "Your application was successfully submitted"
                     )
+                    if staff_user:
+                        from audit.utils import log_audit_event
+
+                        log_audit_event(
+                            staff_user,
+                            "assist_application_submit",
+                            applicant_user,
+                            f"Staff submitted application on behalf of {applicant_user.email}",
+                            request,
+                        )
                 except Exception as task_error:
                     logger.exception(
                         "Application %s saved but post-submit tasks failed: %s",
@@ -392,6 +581,22 @@ def create_applications(request):
                 "application_id": application.id,
             }, status=status.HTTP_201_CREATED)
 
+        except IntegrityError as e:
+            logger.error("Application creation integrity error: %s", str(e), exc_info=True)
+            if "application_reference" in str(e).lower() or "unique" in str(e).lower():
+                return Response(
+                    {
+                        "detail": (
+                            "This payment reference is already linked to another application. "
+                            "Refresh the page and try again, or contact admissions support."
+                        )
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+            return Response(
+                {"detail": "A database conflict prevented submission. Please try again."},
+                status=status.HTTP_409_CONFLICT,
+            )
         except Exception as e:
             logger.error("Application creation failed: %s", str(e), exc_info=True)
             return Response({"detail": "An error occurred while processing your application."}, status=500)
@@ -400,6 +605,16 @@ def create_applications(request):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def create_direct_applications(request):
+    if not (
+        request.user.is_superuser
+        or user_has_any_erp_perm(request.user, "manage_direct_applications")
+        or request.user.has_perm("admissions.add_application")
+    ):
+        return Response(
+            {"detail": "You do not have permission for direct application entry."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
     MAX_FILE_SIZE = settings.FILE_UPLOAD_MAX_MEMORY_SIZE
 
     # ================= FILE VALIDATION =================
@@ -443,6 +658,16 @@ def create_direct_applications(request):
     validated.pop("entered_by", None)
     validated.pop("programs", None)
 
+    program_ids = parse_program_id_list(request.data.get("programs"))
+    preview_app = Application(**validated)
+    if program_ids:
+        try:
+            assert_staff_may_select_programs_for_direct_entry(preview_app, program_ids)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
+    elif not program_ids:
+        return Response({"detail": "Select at least one programme."}, status=400)
+
     account_password = "applicant@12345"
 
     try:
@@ -474,31 +699,15 @@ def create_direct_applications(request):
             application.save()
 
             # ================= PROGRAMS =================
-            programs_input = request.data.get("programs")
-
-            if programs_input:
-                if isinstance(programs_input, str):
-                    program_list = json.loads(programs_input)
-                else:
-                    program_list = programs_input
-
-                choices = []
-                for index, pid in enumerate(program_list, start=1):
-                    try:
-                        pid = int(pid)
-                        if pid > 0:
-                            choices.append(
-                                ApplicationProgramChoice(
-                                    application=application,
-                                    program_id=pid,
-                                    choice_order=index
-                                )
-                            )
-                    except Exception:
-                        continue
-
-                if choices:
-                    ApplicationProgramChoice.objects.bulk_create(choices)
+            if program_ids:
+                ApplicationProgramChoice.objects.bulk_create([
+                    ApplicationProgramChoice(
+                        application=application,
+                        program_id=pid,
+                        choice_order=index,
+                    )
+                    for index, pid in enumerate(program_ids, start=1)
+                ])
 
             # ================= O-LEVEL =================
             OLevelResult.objects.bulk_create([
@@ -556,10 +765,13 @@ def create_direct_applications(request):
             "application_id": application.id
         }, status=201)
 
+    except DRFValidationError as exc:
+        return Response(exc.detail, status=status.HTTP_400_BAD_REQUEST)
     except Exception as e:
         logger.error("Direct application failed: %s", str(e), exc_info=True)
+        detail = str(e).strip() or "Application failed. No data was saved."
         return Response(
-            {"detail": "Application failed. No data was saved."},
+            {"detail": detail},
             status=500
         )
     
@@ -574,7 +786,7 @@ class ListApplications(generics.ListAPIView):
             is_direct_entry=False
         ).select_related(
             "academic_level", "batch", "campus"
-        ).order_by('created_at')
+        ).order_by('-created_at')
 
         # Optional query-param filters so the frontend can narrow server-side
         status_filter = self.request.query_params.get('status')
@@ -594,6 +806,25 @@ class StandardPagination(PageNumberPagination):
     max_page_size = 200
 
 # Applicant lists
+def apply_application_demographic_filters(queryset, request):
+  """Filter by applicant category (local/international), country name, and refugee status."""
+  from admissions.applicant_category import normalize_applicant_category
+
+  nationality = (request.query_params.get("nationality") or "").strip()
+  applicant_category = normalize_applicant_category(request.query_params.get("applicant_category"))
+  is_refugee = (request.query_params.get("is_refugee") or "").strip().lower()
+
+  if applicant_category:
+      queryset = queryset.filter(applicant_category=applicant_category)
+  elif nationality and nationality.lower() != "all":
+      queryset = queryset.filter(nationality__icontains=nationality)
+  if is_refugee in ("true", "yes", "1"):
+      queryset = queryset.filter(is_refugee=True)
+  elif is_refugee in ("false", "no", "0"):
+      queryset = queryset.filter(is_refugee=False)
+  return queryset
+
+
 def build_applications_report_queryset(request, *, apply_choice_filter: bool = True):
     queryset = (
         Application.objects.select_related(
@@ -602,6 +833,8 @@ def build_applications_report_queryset(request, *, apply_choice_filter: bool = T
             "campus",
             "applicant",
             "entered_by",
+            "reviewed_by",
+            "revoked_by",
         )
         .prefetch_related(
             Prefetch(
@@ -613,13 +846,14 @@ def build_applications_report_queryset(request, *, apply_choice_filter: bool = T
             )
         )
         .filter(~Q(status__in=["draft", "Admitted", "admitted", "rejected"]))
-        .order_by("created_at")
+        .order_by("-created_at")
     )
 
     status = request.query_params.get("status")
     gender = request.query_params.get("gender")
     academic_level = request.query_params.get("academic_level")
     batch = request.query_params.get("batch")
+    academic_year = request.query_params.get("academic_year")
     campus = request.query_params.get("campus")
     program = request.query_params.get("program")
     faculty = request.query_params.get("faculty")
@@ -646,6 +880,8 @@ def build_applications_report_queryset(request, *, apply_choice_filter: bool = T
         queryset = queryset.filter(academic_level__name=academic_level)
     if batch and batch != "all":
         queryset = queryset.filter(batch__name=batch)
+    if academic_year and academic_year != "all":
+        queryset = queryset.filter(batch__academic_year=academic_year)
     if campus and campus != "all":
         queryset = queryset.filter(campus__name=campus)
     if program and program != "all":
@@ -656,6 +892,8 @@ def build_applications_report_queryset(request, *, apply_choice_filter: bool = T
         queryset = queryset.filter(created_at__date__gte=date_from)
     if date_to:
         queryset = queryset.filter(created_at__date__lte=date_to)
+
+    queryset = apply_application_demographic_filters(queryset, request)
 
     if choice_confirmation and choice_confirmation != "all":
         cc = choice_confirmation.strip().lower()
@@ -698,13 +936,14 @@ def build_applications_detail_report_queryset(request, *, apply_choice_filter: b
             )
         )
         .filter(~Q(status__in=["draft"]))
-        .order_by("created_at")
+        .order_by("-created_at")
     )
 
     status = request.query_params.get("status")
     gender = request.query_params.get("gender")
     academic_level = request.query_params.get("academic_level")
     batch = request.query_params.get("batch")
+    academic_year = request.query_params.get("academic_year")
     campus = request.query_params.get("campus")
     program = request.query_params.get("program")
     faculty = request.query_params.get("faculty")
@@ -731,6 +970,8 @@ def build_applications_detail_report_queryset(request, *, apply_choice_filter: b
         queryset = queryset.filter(academic_level__name=academic_level)
     if batch and batch != "all":
         queryset = queryset.filter(batch__name=batch)
+    if academic_year and academic_year != "all":
+        queryset = queryset.filter(batch__academic_year=academic_year)
     if campus and campus != "all":
         queryset = queryset.filter(campus__name=campus)
     if program and program != "all":
@@ -741,6 +982,7 @@ def build_applications_detail_report_queryset(request, *, apply_choice_filter: b
         queryset = queryset.filter(created_at__date__gte=date_from)
     if date_to:
         queryset = queryset.filter(created_at__date__lte=date_to)
+    queryset = apply_application_demographic_filters(queryset, request)
     if direct_entry_param is not None:
         direct_entry_param = str(direct_entry_param).lower().strip()
         
@@ -774,6 +1016,83 @@ class ApplicationChoiceStatsView(APIView):
             }
         )
 
+
+class AllApplicationsDetailReportStatsView(APIView):
+    """Aggregate counts for All Applicants report (same filters as detail list, no pagination)."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        base = build_applications_detail_report_queryset(request, apply_choice_filter=False)
+        stats = base.aggregate(
+            total=Count("id"),
+            submitted=Count(
+                "id",
+                filter=Q(status__in=["submitted", "under_review"]),
+            ),
+            admitted=Count(
+                "id",
+                filter=Q(status__in=["Admitted", "admitted", "accepted"]),
+            ),
+            rejected=Count("id", filter=Q(status__iexact="rejected")),
+            direct=Count("id", filter=Q(is_direct_entry=True)),
+        )
+        return Response(stats)
+
+
+class ApplicationReportFilterOptionsView(APIView):
+    """Filter metadata for the All Applicants report."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from accounts.models import Campus
+        from accounts.serializers import CampusSerializer
+        from admissions.faculty_scope import filter_faculties_for_user
+        from Programs.models import Program
+        from Programs.serializers import ListProgramsSerializer
+
+        base = build_applications_detail_report_queryset(request, apply_choice_filter=False)
+
+        batches = sorted(
+            {name for name in base.values_list("batch__name", flat=True) if name}
+        )
+        academic_years = sorted(
+            {y for y in base.values_list("batch__academic_year", flat=True) if y},
+            reverse=True,
+        )
+        levels = sorted(
+            {name for name in base.values_list("academic_level__name", flat=True) if name}
+        )
+        campuses = CampusSerializer(
+            Campus.objects.filter(is_active=True).order_by("name"),
+            many=True,
+        ).data
+        faculties = FacultySerializer(
+            filter_faculties_for_user(
+                Faculty.objects.prefetch_related("campuses").filter(is_active=True),
+                request.user,
+            ),
+            many=True,
+        ).data
+        programs = ListProgramsSerializer(
+            Program.objects.filter(is_active=True)
+            .select_related("faculty", "academic_level")
+            .prefetch_related("campuses")
+            .order_by("short_form", "name"),
+            many=True,
+        ).data
+        return Response(
+            {
+                "academic_years": academic_years,
+                "batches": batches,
+                "levels": levels,
+                "campuses": campuses,
+                "faculties": faculties,
+                "programs": programs,
+            }
+        )
+
+
 # Applicants List
 class AllApplicationsReport(generics.ListAPIView):
     serializer_class = AllApplicationsReportSerializer
@@ -782,7 +1101,7 @@ class AllApplicationsReport(generics.ListAPIView):
 
     ordering_fields = ['created_at', 'id', 'status', 'first_name']
     filter_backends = [OrderingFilter]
-    ordering = ['created_at']
+    ordering = ['-created_at']
 
     def get_queryset(self):
         return build_applications_report_queryset(self.request, apply_choice_filter=True)
@@ -795,7 +1114,7 @@ class AllApplicationDetailedReport(generics.ListAPIView):
 
     ordering_fields = ['created_at', 'id', 'status', 'first_name']
     filter_backends = [OrderingFilter]
-    ordering = ['created_at']
+    ordering = ['-created_at']
 
     def get_queryset(self):
         return build_applications_detail_report_queryset(self.request, apply_choice_filter=True)
@@ -842,13 +1161,21 @@ class RejectStudent(APIView):
                 {"detail": "You do not have permission to reject applications."},
                 status=status.HTTP_403_FORBIDDEN,
             )
-        _rejection_reason = request.data.get("rejection_reason", "No reason provided")
+        _rejection_reason = str(request.data.get("rejection_reason", "") or "").strip() or "No reason provided"
         try:
             with transaction.atomic():
                 application = Application.objects.select_related("applicant").get(pk=application_id)
                 assert_application_access(request.user, application)
                 application.status = "rejected"
-                application.save()
+                application.review_notes = _rejection_reason
+                application.reviewed_by = request.user
+                application.reviewed_at = timezone.now()
+                application.save(update_fields=[
+                    "status",
+                    "review_notes",
+                    "reviewed_by",
+                    "reviewed_at",
+                ])
                 try:
                     celery_send_rejection_email.delay(
                         application.id,
@@ -997,7 +1324,7 @@ class ChangeApplicationProgramme(APIView):
             Application.objects.prefetch_related(
                 "program_choices__program"
             ).select_related(
-                "campus"
+                "campus", "batch"
             ),
             pk=application_id,
         )
@@ -1043,21 +1370,32 @@ class ChangeApplicationProgramme(APIView):
                 status=400
             )
 
-        # Optional campus update
+        # Optional campus update — resolve before programme validation
         campus_id = request.data.get("campus_id")
-
+        effective_campus_id = application.campus_id
         campus_changed = False
         if campus_id not in (None, "", "null"):
             try:
-                application.campus = Campus.objects.get(pk=int(campus_id))
+                effective_campus_id = int(campus_id)
+                application.campus = Campus.objects.get(pk=effective_campus_id)
                 campus_changed = True
             except (TypeError, ValueError, Campus.DoesNotExist):
                 return Response({"detail": "Invalid campus_id."}, status=400)
 
+        grandfather_ids = {
+            p.id for p in ordered_programs_for_application(application)
+        }
+
         level_changed = False
         new_level_name = None
         try:
-            sync_application_program_choices(application, program_ids)
+            sync_application_program_choices(
+                application,
+                program_ids,
+                staff=True,
+                campus_id=effective_campus_id,
+                grandfather_ids=grandfather_ids,
+            )
             level_changed, new_level_name = sync_application_academic_level_from_programs(
                 application, program_ids
             )
@@ -1250,7 +1588,14 @@ class ApplicantChangeApplicationProgramme(APIView):
                 "revoked_by", "offer_letter_generated_by", "admission"
             ),
             pk=application_id,
+            applicant=request.user,
         )
+
+        if not applicant_may_edit_program_choices(application):
+            return Response(
+                {"detail": "Programme choices cannot be changed for this application status."},
+                status=400,
+            )
 
         raw_program_ids = request.data.get("program_ids", [])
 
@@ -1282,6 +1627,11 @@ class ApplicantChangeApplicationProgramme(APIView):
                 {"detail": "Maximum of 3 programme choices allowed."},
                 status=400
             )
+
+        try:
+            assert_applicant_may_select_programs(application, program_ids)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
 
         programs = Program.objects.filter(
             id__in=program_ids
@@ -1389,7 +1739,7 @@ class ListRejectedApplications(generics.ListAPIView):
     def get_queryset(self):
         qs = (
             Application.objects.filter(status__iexact="rejected")
-            .select_related("academic_level", "batch", "campus")
+            .select_related("academic_level", "batch", "campus", "reviewed_by", "revoked_by")
             .order_by("-updated_at", "-created_at")
         )
         return filter_applications_for_user(qs, self.request.user)
@@ -1692,30 +2042,60 @@ class UpdateAdditionalQualififcations(APIView):
         serializer = AdditionalQualifficationsSerializer(created, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
+def _user_can_manage_application_documents(user, application):
+    if not user or not user.is_authenticated:
+        return False
+    if application.applicant_id == user.id:
+        return True
+    if user.is_superuser:
+        return True
+    if (
+        user.has_perm("admissions.change_application")
+        or user_has_any_erp_perm(
+            user,
+            "approve_admissions",
+            "manage_direct_applications",
+            "admit_applicant",
+        )
+    ):
+        assert_application_access(user, application)
+        return True
+    return False
+
+
 #==================================================Update Documents=======================================
 class UpdateDocumentAPIView(APIView):
     permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
 
     def patch(self, request, doc_id):
-        document = get_object_or_404(ApplicationDocument, id=doc_id)
+        document = get_object_or_404(
+            ApplicationDocument.objects.select_related("application"),
+            id=doc_id,
+        )
+        if not _user_can_manage_application_documents(request.user, document.application):
+            return Response({"detail": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
 
         file = request.FILES.get('file')
         if file:
             document.file = file
-            document.name = file.name  # Update name
+            document.name = file.name[:25]
 
         if 'document_type' in request.data:
             document.document_type = request.data['document_type']
 
         document.save()
-        return Response({"detail": "Document updated successfully"}, status=status.HTTP_200_OK)
+        return Response(DocumentSerializer(document).data, status=status.HTTP_200_OK)
 
 #==========================Upload documnts===============================================
 class UploadDocumentAPIView(APIView):
     permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request, application_id):
         application = get_object_or_404(Application, id=application_id)
+        if not _user_can_manage_application_documents(request.user, application):
+            return Response({"detail": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
 
         file = request.FILES.get('file')
         if not file:
@@ -1727,28 +2107,59 @@ class UploadDocumentAPIView(APIView):
 
         document = ApplicationDocument.objects.create(
             application=application,
-            name=file.name,                
+            name=file.name[:25],
             document_type=document_type,
             file=file,
         )
 
-        return Response({
-            "id": document.id,
-            "name": document.name,
-            "document_type": document.document_type,
-            "uploaded_at": document.uploaded_at,
-        }, status=status.HTTP_201_CREATED)
+        return Response(DocumentSerializer(document).data, status=status.HTTP_201_CREATED)
 
 #==================================Delete documents================================================
 class DeleteDocumentAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
     def delete(self, request, doc_id):
-        document = get_object_or_404(ApplicationDocument, id=doc_id)
+        document = get_object_or_404(
+            ApplicationDocument.objects.select_related("application"),
+            id=doc_id,
+        )
+        if not _user_can_manage_application_documents(request.user, document.application):
+            return Response({"detail": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
         document.delete()
         return Response({"detail": "Document deleted"}, status=status.HTTP_204_NO_CONTENT)
 
 # ========================================================Batch=================================================
+
+class IntakeEligibleProgramsView(generics.ListAPIView):
+    """Programmes that may be added to an admission intake (active cohort in offer)."""
+
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    queryset = Batch.objects.all()
+
+    def list(self, request, *args, **kwargs):
+        from admissions.faculty_scope import filter_programs_for_user
+        from admissions.intake_program_eligibility import program_ids_with_active_cohort_offer
+        from Programs.models import Program
+        from Programs.serializers import ListProgramsSerializer
+
+        eligible_ids = program_ids_with_active_cohort_offer()
+        extra_raw = (request.query_params.get("include_program_ids") or "").strip()
+        if extra_raw:
+            for part in extra_raw.split(","):
+                part = part.strip()
+                if part.isdigit():
+                    eligible_ids.add(int(part))
+
+        qs = (
+            Program.objects.filter(id__in=eligible_ids, is_active=True)
+            .select_related("faculty", "academic_level")
+            .prefetch_related("campuses")
+            .order_by("name")
+        )
+        qs = filter_programs_for_user(qs, request.user)
+        data = ListProgramsSerializer(qs, many=True).data
+        return Response(data, status=status.HTTP_200_OK)
+
 
 #create batch
 class CreateBatch(generics.CreateAPIView):
@@ -1810,20 +2221,29 @@ class GetActiveApplicationBatch(generics.ListAPIView):
             return Response(cached, status=status.HTTP_200_OK)
 
         try:
+            active = resolve_active_application_batch(today=now)
+            if not active:
+                return Response({
+                    "detail": "No active application batch found",
+                    "is_active": False
+                }, status=status.HTTP_404_NOT_FOUND)
+
             batch = (
                 Batch.objects
                 .select_related('created_by')
                 .prefetch_related('programs', 'programs__campuses')
-                .filter(batch_offer_window_q())
-                .get(
-                    application_start_date__lte=now,
-                    application_end_date__gte=now,
-                    is_active=True
-                )
+                .get(pk=active.pk)
             )
 
             serializer = self.get_serializer(batch)
             data = serializer.data
+            from admissions.intake_program_eligibility import applicant_selectable_programs_qs
+            from Programs.serializers import ProgramSerializer
+
+            data["programs"] = ProgramSerializer(
+                applicant_selectable_programs_qs(batch),
+                many=True,
+            ).data
 
             try:
                 cache.set(cache_key, data, timeout=60 * 60 * 24)
@@ -1846,7 +2266,7 @@ class GetActiveApplicationBatch(generics.ListAPIView):
 
 # active admission batch
 class GetActiveAdmissionBatch(generics.RetrieveAPIView):
-    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    permission_classes = [IsAuthenticated]
     queryset = Batch.objects.all()
     serializer_class = BatchSerializer
 
@@ -1854,18 +2274,24 @@ class GetActiveAdmissionBatch(generics.RetrieveAPIView):
         now = timezone.now().date()
 
         try:
-            # Optimized query
-            batch = (
+            base = (
                 Batch.objects
                 .select_related('created_by')
                 .prefetch_related('programs', 'programs__campuses')
                 .filter(is_active=True)
                 .filter(batch_offer_window_q())
                 .filter(
-                    Q(application_start_date__lte=now, application_end_date__gte=now) |
-                    Q(admission_start_date__lte=now, admission_end_date__gte=now)
-                ).first() 
+                    Q(application_start_date__lte=now, application_end_date__gte=now)
+                    | Q(admission_start_date__lte=now, admission_end_date__gte=now)
+                )
+                .order_by("created_at")
             )
+            active = (
+                base.exclude(code__istartswith="QA-")
+                .exclude(name__icontains="[QA-INTAKE-BATCH]")
+                .first()
+            )
+            batch = active or base.first()
 
             if not batch:
                 return Response({
@@ -2300,6 +2726,31 @@ class ListProgramBatchOptionsForAdmission(APIView):
         )
 
 
+class ProgramSpecializationsForAdmissionView(APIView):
+    """Teaching subject combinations for admit / edit admission forms."""
+
+    permission_classes = [IsAuthenticated, CanAdmitApplicant]
+
+    def get(self, request, program_id):
+        from Programs.models import Program, ProgramSpecialization
+        from Programs.serializers import ProgramSpecializationSerializer
+
+        program = get_object_or_404(Program, pk=program_id)
+        qs = ProgramSpecialization.objects.filter(program=program, is_active=True).order_by('name')
+        from admissions.admission_specialization import program_requires_admission_specialization
+
+        return Response(
+            {
+                'program_id': program.id,
+                'program_name': program.name,
+                'has_specialization': program.has_specialization,
+                'requires_admission_specialization': program_requires_admission_specialization(program),
+                'specializations': ProgramSpecializationSerializer(qs, many=True).data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
 # create admission
 class AdmitStudent(generics.CreateAPIView):
     queryset = AdmittedStudent.objects.all()
@@ -2352,11 +2803,21 @@ class AdmitStudent(generics.CreateAPIView):
                     return
 
                 # CRITICAL: Update status immediately
-                Application.objects.filter(id=application.id).update(status="Admitted")
+                Application.objects.filter(id=application.id).update(
+                    status="Admitted",
+                    is_revoked=False,
+                    revoked_at=None,
+                    revoked_by_id=None,
+                    revocation_reason="",
+                )
+
+                from payments.utils.tuition_ledger_linking import (
+                    relink_tuition_ledgers_for_student,
+                    should_register_student_with_schoolpay,
+                )
 
                 try:
-                    if not admission.is_registered_with_schoolpay:
-
+                    if should_register_student_with_schoolpay(admission):
                         result = register_student_with_schoolpay(admission)
 
                         logger.info(
@@ -2377,13 +2838,20 @@ class AdmitStudent(generics.CreateAPIView):
                         "SchoolPay registration failed during admission"
                     )
 
-                # Student Account Creation and auto Enrollment
+                relink_tuition_ledgers_for_student(admission)
+
+                provision_student_portal_on_admission(admission.id, send_credentials_email=True)
+                admission.refresh_from_db()
                 transaction.on_commit(
-                    lambda: trigger_background_tasks(admission.id, application.id),
+                    lambda app_id=application.id, adm_id=admission.id: queue_admission_notification_emails(
+                        adm_id, app_id
+                    )
                 )
-            
+
                 return Response(self.serializer_class(admission).data, status=201)
 
+        except StudentPortalProvisioningError as e:
+            return Response({"detail": str(e)}, status=400)
         except Exception as e:
             logger.exception("Admission failed")
             return Response({"detail": str(e)}, status=400)
@@ -2409,7 +2877,6 @@ class RevokeAdmittedStudent(APIView):
             return Response({"detail": "Revocation reason is required."}, status=400)
 
         with transaction.atomic():
-            # Delete actual files from storage
             if application.admission_letter_pdf:
                 application.admission_letter_pdf.delete(save=False)
 
@@ -2421,10 +2888,8 @@ class RevokeAdmittedStudent(APIView):
             application.revoked_by = request.user
             application.revocation_reason = reason
             application.status = "revoked"
-            # Clear database fields
             application.admission_letter_pdf = None
             application.admission_letter_docx = None
-
             application.save(
                 update_fields=[
                     "is_revoked",
@@ -2433,14 +2898,26 @@ class RevokeAdmittedStudent(APIView):
                     "revocation_reason",
                     "admission_letter_pdf",
                     "admission_letter_docx",
-                    "status"
+                    "status",
                 ]
             )
-           
-        User.objects.filter(username=admission.reg_no).delete()
-        admission.delete()
 
-        return Response({"detail":"Candidate has been removed from Admitted Students"}, status=200)
+            admission.is_admitted = False
+            admission.save(update_fields=["is_admitted", "updated_at"])
+
+            if admission.student_user_id:
+                User.objects.filter(pk=admission.student_user_id).update(is_active=False)
+
+        from payments.utils.tuition_ledger_linking import student_payment_code_locked
+
+        return Response(
+            {
+                "detail": "Admission revoked. Student record and SchoolPay payments are preserved.",
+                "admission_id": admission.id,
+                "schoolpay_payment_code_locked": student_payment_code_locked(admission),
+            },
+            status=200,
+        )
 
 # restore student 
 class RestoreAdmittedStudent(APIView):
@@ -2453,24 +2930,39 @@ class RestoreAdmittedStudent(APIView):
 
         admission = get_object_or_404(AdmittedStudent, pk=pk)
         assert_admitted_student_access(request.user, admission)
+        application = admission.application
 
         with transaction.atomic():
-            admission.is_revoked = False
             admission.is_admitted = True
-            admission.revoked_at = None
-            admission.revoked_by = None
-            admission.revocation_reason = ""
-            admission.save(
-                update_fields=[
-                    "is_revoked",
-                    "is_admitted",
-                    # "revoked_at",
-                    # "revoked_by",
-                    # "revocation_reason",
-                    "updated_at",
-                ]
-            )
-            Application.objects.filter(id=admission.application_id).update(status="Admitted")
+            admission.save(update_fields=["is_admitted", "updated_at"])
+
+            if application is not None:
+                application.is_revoked = False
+                application.revoked_at = None
+                application.revoked_by = None
+                application.revocation_reason = ""
+                application.status = "Admitted"
+                application.save(
+                    update_fields=[
+                        "is_revoked",
+                        "revoked_at",
+                        "revoked_by",
+                        "revocation_reason",
+                        "status",
+                    ]
+                )
+
+            if admission.student_user_id:
+                User.objects.filter(pk=admission.student_user_id).update(is_active=True)
+
+        from payments.utils.tuition_ledger_linking import relink_tuition_ledgers_for_student
+
+        relink_tuition_ledgers_for_student(admission)
+
+        try:
+            provision_student_portal_on_admission(admission.id, send_credentials_email=False)
+        except StudentPortalProvisioningError as e:
+            return Response({"detail": str(e)}, status=400)
 
         refreshed = (
             AdmittedStudent.objects.select_related(
@@ -2478,7 +2970,6 @@ class RestoreAdmittedStudent(APIView):
                 "admitted_program__faculty",
                 "admitted_batch",
                 "admitted_campus",
-                # "revoked_by",
             )
             .get(pk=admission.pk)
         )
@@ -2486,15 +2977,17 @@ class RestoreAdmittedStudent(APIView):
  
 # list Admitted students
 class ListAdmittedStudents(generics.ListAPIView):
-    queryset = AdmittedStudent.objects.select_related(
+    queryset = AdmittedStudent.objects.filter(is_admitted=True).select_related(
         'admitted_program__faculty',
         'admitted_batch',
         'admitted_campus',
+        'admitted_specialization',
         'intended_program_batch',
         'programme_enrollment__program_batch',
         'application__applicant',
         'admitted_by',
-    ).all()
+        'physical_documents_verified_by',
+    )
 
     serializer_class = AdmittedStudentListSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
@@ -2522,13 +3015,18 @@ class ListAdmittedStudents(generics.ListAPIView):
         search = self.request.query_params.get('search', '').strip()
         batch = self.request.query_params.get('batch')
         academic_batch = self.request.query_params.get('academic_batch')
+        academic_batch_id = self.request.query_params.get('academic_batch_id')
         campus = self.request.query_params.get('campus')
         faculty = self.request.query_params.get('faculty')
         program = self.request.query_params.get('program')
         is_registered = self.request.query_params.get('is_registered')
         is_approved = self.request.query_params.get('is_approved')
+        physical_documents_verified = self.request.query_params.get(
+            'physical_documents_verified'
+        )
         date_from = self.request.query_params.get('date_from')
         date_to = self.request.query_params.get('date_to')
+        commitment_met = self.request.query_params.get('commitment_met')
 
         # Search across multiple fields
         if search:
@@ -2552,7 +3050,14 @@ class ListAdmittedStudents(generics.ListAPIView):
         if batch and batch != "all":
             queryset = queryset.filter(admitted_batch__name=batch)
 
-        if academic_batch and academic_batch != "all":
+        if academic_batch_id and academic_batch_id != "all":
+            try:
+                queryset = queryset.filter(
+                    intended_program_batch_id=int(academic_batch_id)
+                )
+            except (TypeError, ValueError):
+                pass
+        elif academic_batch and academic_batch != "all":
             queryset = queryset.filter(intended_program_batch__name=academic_batch)
 
         if campus and campus != "all":
@@ -2568,8 +3073,14 @@ class ListAdmittedStudents(generics.ListAPIView):
         if is_registered is not None and is_registered.lower() != "all":
             queryset = queryset.filter(is_registered=is_registered.lower() == "true")
 
-        # if is_approved is not None and is_approved.lower() != "all":
-        #     queryset = queryset.filter(is_approved=is_approved.lower() == "true")
+        if physical_documents_verified is not None and physical_documents_verified.lower() != "all":
+            queryset = queryset.filter(
+                physical_documents_verified=physical_documents_verified.lower() == "true"
+            )
+
+        if is_approved is not None and is_approved.lower() != "all":
+            if hasattr(AdmittedStudent, "is_approved"):
+                queryset = queryset.filter(is_approved=is_approved.lower() == "true")
 
         # Date filters
         if date_from:
@@ -2577,7 +3088,86 @@ class ListAdmittedStudents(generics.ListAPIView):
         if date_to:
             queryset = queryset.filter(admission_date__date__lte=date_to)
 
+        if commitment_met is not None and str(commitment_met).lower() not in ("all", ""):
+            from payments.commitment_queryset import filter_by_commitment_met
+
+            raw = str(commitment_met).lower()
+            if raw in ("1", "true", "yes"):
+                queryset = filter_by_commitment_met(queryset, True)
+            elif raw in ("0", "false", "no"):
+                queryset = filter_by_commitment_met(queryset, False)
+
         return filter_admitted_students_for_user(queryset.distinct(), self.request.user)
+
+
+class AdmittedStudentFilterOptionsView(APIView):
+    """Lightweight distinct filter values for the admitted students directory."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if not request.user.has_perm("admissions.view_admittedstudent"):
+            return Response(
+                {"detail": "You do not have permission to view admitted students."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        base = filter_admitted_students_for_user(
+            AdmittedStudent.objects.filter(is_admitted=True),
+            request.user,
+        )
+        campuses = sorted(
+            {
+                name
+                for name in base.values_list("admitted_campus__name", flat=True)
+                if name
+            }
+        )
+        faculties = sorted(
+            {
+                name
+                for name in base.values_list("admitted_program__faculty__name", flat=True)
+                if name
+            }
+        )
+        programs = sorted(
+            {
+                name
+                for name in base.values_list("admitted_program__name", flat=True)
+                if name
+            }
+        )
+        batches = sorted(
+            {
+                name
+                for name in base.values_list("admitted_batch__name", flat=True)
+                if name
+            }
+        )
+        from Programs.models import ProgramBatch
+        from Programs.program_batch_resolution import format_program_batch_display
+
+        batch_ids = {
+            bid
+            for bid in base.values_list("intended_program_batch_id", flat=True)
+            if bid
+        }
+        academic_batches = []
+        for pb in ProgramBatch.objects.filter(pk__in=batch_ids).order_by("-start_date", "name"):
+            academic_batches.append(
+                {
+                    "id": pb.id,
+                    "label": format_program_batch_display(pb),
+                }
+            )
+        return Response(
+            {
+                "campuses": campuses,
+                "faculties": faculties,
+                "programs": programs,
+                "batches": batches,
+                "academic_batches": academic_batches,
+            }
+        )
  
 class MarkPhysicalDocumentsVerified(APIView):
     permission_classes = [IsAuthenticated, VerifyPhysicalDocumentsPermission]
@@ -2689,6 +3279,10 @@ class UpdateAdmittedStudent(generics.UpdateAPIView):
         assert_admitted_student_access(self.request.user, admission)
         admission = serializer.save()   # This saves the AdmittedStudent instance
 
+        from payments.utils.tuition_ledger_linking import relink_tuition_ledgers_for_student
+
+        relink_tuition_ledgers_for_student(admission)
+
         try:
             # Always trigger both tasks when admission is updated
             celery_admission_update.delay(admission.id)
@@ -2705,6 +3299,7 @@ class CandidateAdmission(generics.RetrieveAPIView):
         'admitted_batch',
         'admitted_campus',
         'admitted_by',
+        'admitted_specialization',
         'intended_program_batch',
         # 'physical_documents_verified_by',
     ).prefetch_related('admitted_program__campuses')
@@ -3059,16 +3654,49 @@ def generate_reg_no_view(request):
         program_id = request.data.get("program")
         study_mode = request.data.get("study_mode")
         batch_id = request.data.get("batch")
+        application_id = request.data.get("application_id") or request.data.get("application")
 
-        if not campus_id or not program_id or not study_mode or not batch_id:
+        if not campus_id or not program_id or not study_mode:
             return Response(
-                {"error": "campus, program, study_mode and batch are required"},
-                status=status.HTTP_400_BAD_REQUEST
+                {"error": "campus, program, and study_mode are required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            parsed_batch_id = int(batch_id) if batch_id not in (None, "") else None
+        except (TypeError, ValueError):
+            return Response({"error": "batch must be an integer when provided"}, status=400)
+
+        try:
+            parsed_application_id = (
+                int(application_id) if application_id not in (None, "") else None
+            )
+        except (TypeError, ValueError):
+            return Response(
+                {"error": "application_id must be an integer when provided"},
+                status=400,
+            )
+
+        from .utils.batch_offer_filters import resolve_admission_intake_batch
+
+        try:
+            batch = resolve_admission_intake_batch(
+                batch_id=parsed_batch_id,
+                application_id=parsed_application_id,
+            )
+        except Batch.DoesNotExist:
+            return Response(
+                {
+                    "error": (
+                        "No admission intake batch found. Configure an active batch "
+                        "under Admission Intakes, or open this application from its intake."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         campus = Campus.objects.get(id=campus_id)
         program = Program.objects.get(id=program_id)
-        batch = Batch.objects.get(id=batch_id)
 
         reg_no = generate_reg_no(
             campus=campus,
@@ -3077,7 +3705,10 @@ def generate_reg_no_view(request):
             batch=batch,
         )
 
-        return Response({"reg_no": reg_no}, status=status.HTTP_200_OK)
+        return Response(
+            {"reg_no": reg_no, "batch_id": batch.id, "batch_name": batch.name},
+            status=status.HTTP_200_OK,
+        )
 
     except Campus.DoesNotExist:
         return Response({"error": "Invalid campus"}, status=404)
@@ -3088,7 +3719,7 @@ def generate_reg_no_view(request):
     except Exception as e:
         return Response(
             {"error": str(e)},
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
 # ══════════════════════════════════════════════════════════════════════════════
 # DIRECT APPLICATION ENTRY  (admin-side manual / legacy entry)
@@ -3205,8 +3836,59 @@ class DirectApplicationEntryView(APIView):
             logger.exception('DirectApplicationEntryView error')
             return Response({'detail': str(e)}, status=500)
 
+
+def _optional_int_id(value):
+    if value in (None, ""):
+        return None
+    try:
+        pk = int(value)
+    except (TypeError, ValueError):
+        return None
+    return pk if pk > 0 else None
+
+
+def _resolve_batch_for_direct_admission(batch_id):
+    """Resolve intake batch from request id or fall back to the active admission batch."""
+    pk = _optional_int_id(batch_id)
+    if pk:
+        batch = Batch.objects.filter(pk=pk).first()
+        if batch:
+            return batch
+
+    now = timezone.now().date()
+    base = (
+        Batch.objects.filter(is_active=True)
+        .filter(batch_offer_window_q())
+        .filter(
+            Q(application_start_date__lte=now, application_end_date__gte=now)
+            | Q(admission_start_date__lte=now, admission_end_date__gte=now)
+        )
+        .order_by("created_at")
+    )
+    return base.exclude(code__istartswith="QA-").exclude(name__icontains="[QA-INTAKE-BATCH]").first() or base.first()
+
+
+def _validation_error_response(errors):
+    if isinstance(errors, dict) and errors:
+        first_key = next(iter(errors))
+        first_val = errors[first_key]
+        if isinstance(first_val, list):
+            first_message = str(first_val[0])
+        else:
+            first_message = str(first_val)
+        return Response(
+            {
+                "detail": first_message,
+                "errors": errors,
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    return Response({"detail": "Invalid request."}, status=status.HTTP_400_BAD_REQUEST)
+
+
 class DirectAdmissionEntryView(APIView):
     permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request):
         if not user_can_admit_applicant(request.user):
@@ -3220,24 +3902,29 @@ class DirectAdmissionEntryView(APIView):
         # ====================== 1. VALIDATION ======================
         required_fields = [
             'first_name', 'last_name', 'date_of_birth', 'gender', 'nationality',
-            'phone', 'email'
+            'phone', 'email', 'campus', 'academic_level', 'program', 'reg_no', 'study_mode',
         ]
 
-        errors = {field: 'This field is required.' for field in required_fields if not d.get(field)}
-        
+        errors = {field: 'This field is required.' for field in required_fields if not str(d.get(field, '')).strip()}
         if errors:
-            return Response(errors, status=status.HTTP_400_BAD_REQUEST)
+            return _validation_error_response(errors)
 
         # ====================== 2. FETCH RELATED OBJECTS ======================
         try:
-            campus = Campus.objects.get(id=d['campus'])
-            program = Program.objects.get(id=d['program'])
-            academic_level = AcademicLevel.objects.get(id=d['academic_level'])
-            batch = Batch.objects.get(id=d.get('batch')) 
-        except (Campus.DoesNotExist, Program.DoesNotExist, AcademicLevel.DoesNotExist, Batch.DoesNotExist) as e:
-            return Response({'detail': f'Invalid reference: {str(e)}'}, status=400)
+            campus = Campus.objects.get(id=_optional_int_id(d.get('campus')))
+            program = Program.objects.get(id=_optional_int_id(d.get('program')))
+            academic_level = AcademicLevel.objects.get(id=_optional_int_id(d.get('academic_level')))
+        except (Campus.DoesNotExist, Program.DoesNotExist, AcademicLevel.DoesNotExist):
+            return Response({'detail': 'Invalid campus, programme, or academic level.'}, status=400)
 
-        email = d['email'].strip().lower()
+        batch = _resolve_batch_for_direct_admission(d.get('batch'))
+        if batch is None:
+            return Response(
+                {'detail': 'No active intake batch found. Select an intake in batch management or try again later.'},
+                status=400,
+            )
+
+        email = str(d['email']).strip().lower()
 
         # ====================== 3. MAIN TRANSACTION ======================
         try:
@@ -3275,11 +3962,13 @@ class DirectAdmissionEntryView(APIView):
                 # --- 3.2 Create Application ---
                 application = Application.objects.create(
                     applicant=applicant_user,
-                    batch=batch if 'batch' in d else None,
+                    batch=batch,
                     campus=campus,
                     academic_level=academic_level,
                     source=Application.SOURCE_DIRECT,
-                    status='Admitted',                   
+                    is_direct_entry=True,
+                    entered_by=request.user,
+                    status='Admitted',
                     application_reference=generate_reference(),
                     first_name=d['first_name'].strip(),
                     last_name=d['last_name'].strip(),
@@ -3292,10 +3981,11 @@ class DirectAdmissionEntryView(APIView):
                     address=d.get('address', '').strip(),
                     nin=d.get('nin', '').strip(),
                     passport_number=d.get('passport_number', '').strip(),
-                    next_of_kin_name=d.get('next_of_kin_name', '').strip(),
-                    next_of_kin_contact=d.get('next_of_kin_contact', '').strip(),
-                    next_of_kin_relationship=d.get('next_of_kin_relationship', '').strip(),
+                    next_of_kin_name=d.get('next_of_kin_name', '').strip() or 'N/A',
+                    next_of_kin_contact=d.get('next_of_kin_contact', '').strip() or 'N/A',
+                    next_of_kin_relationship=d.get('next_of_kin_relationship', '').strip() or 'N/A',
                 )
+                sync_application_program_choices(application, [program.id])
 
                 # --- 3.3 Create AdmittedStudent ---
                 provided_reg_no = d.get('reg_no', '').strip()
@@ -3314,6 +4004,12 @@ class DirectAdmissionEntryView(APIView):
                     except (TypeError, ValueError):
                         raise ValueError("intended_program_batch must be an integer or empty.")
 
+                direct_reason = (d.get("direct_admission_reason") or "").strip()
+                admission_notes = f"Direct admission reason: {direct_reason}" if direct_reason else ""
+
+                raw_spec = d.get("admitted_specialization")
+                admitted_specialization_id = _optional_int_id(raw_spec) if raw_spec not in (None, "") else None
+
                 admission_payload = {
                     "application": application.pk,
                     "reg_no": provided_reg_no,
@@ -3325,13 +4021,21 @@ class DirectAdmissionEntryView(APIView):
                     "admission_date": timezone.now(),
                     "admitted_by": request.user.pk,
                     "intended_program_batch": intended_val,
-                    "admission_notes": (d.get("admission_notes") or "").strip(),
+                    "admission_notes": admission_notes,
                 }
+                if admitted_specialization_id is not None:
+                    admission_payload["admitted_specialization"] = admitted_specialization_id
                 adm_serializer = AdmittedStudentSerializer(data=admission_payload)
                 try:
                     adm_serializer.is_valid(raise_exception=True)
                 except DRFValidationError as exc:
-                    return Response(exc.detail, status=status.HTTP_400_BAD_REQUEST)
+                    detail = exc.detail
+                    if isinstance(detail, dict):
+                        first_key = next(iter(detail))
+                        first_val = detail[first_key]
+                        message = first_val[0] if isinstance(first_val, list) else str(first_val)
+                        return Response({"detail": str(message), "errors": detail}, status=status.HTTP_400_BAD_REQUEST)
+                    return Response({"detail": str(detail)}, status=status.HTTP_400_BAD_REQUEST)
                 admitted_student = adm_serializer.save()
 
                 try:
@@ -3357,10 +4061,12 @@ class DirectAdmissionEntryView(APIView):
                         "SchoolPay registration failed during admission"
                     )
 
-
-                # Queue background tasks AFTER successful commit
+                provision_student_portal_on_admission(admitted_student.id, send_credentials_email=True)
+                admitted_student.refresh_from_db()
                 transaction.on_commit(
-                    lambda: trigger_background_tasks(admitted_student.id, application.id)
+                    lambda app_id=application.id, adm_id=admitted_student.id: queue_admission_notification_emails(
+                        adm_id, app_id
+                    )
                 )
 
                 return Response({
@@ -3372,6 +4078,8 @@ class DirectAdmissionEntryView(APIView):
                     'schoolpay_code': admitted_student.schoolpay_code,
                 }, status=status.HTTP_201_CREATED)
 
+        except StudentPortalProvisioningError as e:
+            return Response({'detail': str(e)}, status=400)
         except ValueError as ve:
             return Response({'detail': str(ve)}, status=400)
         except Exception as e:

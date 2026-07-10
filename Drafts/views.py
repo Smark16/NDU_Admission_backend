@@ -15,6 +15,33 @@ import json
 
 logger = logging.getLogger(__name__)
 
+def _other_institution_document_items(draft, request):
+    """Build API payload for all other-institution draft documents."""
+    items = []
+    for doc in draft.other_document_files.all():
+        items.append({
+            "id": doc.id,
+            "url": request.build_absolute_uri(doc.file.url),
+            "filename": doc.original_name or doc.file.name.split("/")[-1],
+            "legacy": False,
+        })
+    if draft.other_documents and not any(i.get("legacy") for i in items):
+        # Legacy single-file column (pre-multi-upload drafts)
+        items.append({
+            "id": None,
+            "url": request.build_absolute_uri(draft.other_documents.url),
+            "filename": draft.other_documents.name.split("/")[-1],
+            "legacy": True,
+        })
+    return items
+
+
+def _draft_for_user(user, batch_id):
+    draft = DraftApplication.objects.filter(applicant=user, batch_id=batch_id).order_by("-updated_at").first()
+    if draft:
+        return draft
+    return DraftApplication.objects.filter(applicant=user).order_by("-updated_at").first()
+
 def _optional_fk_id(value):
     if value is None:
         return None
@@ -35,8 +62,10 @@ def _optional_fk_id(value):
 @permission_classes([IsAuthenticated])
 def save_draft_applications(request):
     try:
+        from accounts.assist_application import resolve_assisted_applicant
+
         data = request.data
-        user = request.user
+        user, staff_user = resolve_assisted_applicant(request)
 
         batch_id = _optional_fk_id(data.get('batch'))
 
@@ -58,6 +87,10 @@ def save_draft_applications(request):
         draft.middle_name = data.get('middleName', '')
         draft.gender = data.get('gender', '')
         draft.nationality = data.get('nationality', '')
+        from admissions.applicant_category import category_from_nationality, normalize_applicant_category
+
+        raw_category = normalize_applicant_category(data.get('applicantCategory'))
+        draft.applicant_category = raw_category or category_from_nationality(draft.nationality)
         draft.nin = data.get('nin', '')
         draft.title = data.get('title', '')
         draft.passport_number = data.get('passportNumber', '')
@@ -65,6 +98,10 @@ def save_draft_applications(request):
         draft.email = data.get('email', '')
         draft.address = data.get('address', '')
         draft.disabled = data.get('disabled', '')
+        draft.is_refugee = str(data.get('isRefugee', '')).lower() == 'yes'
+        if not draft.is_refugee and draft.refugee_status_proof:
+            draft.refugee_status_proof.delete(save=False)
+            draft.refugee_status_proof = None
         
         draft.nextOfKinName = data.get('nextOfKinName', '')
         draft.next_of_kin_contact = data.get('nextOfKinContact', '')
@@ -105,8 +142,22 @@ def save_draft_applications(request):
             draft.additional_qualifications = []
 
         # ====================== BOOLEAN & OTHER ======================
-        draft.application_fee_paid = str(data.get('application_fee_paid', 'false')).lower() == 'true'
-        draft.application_reference = data.get('externalReference', '')
+        from payments.utils.application_payment_status import confirmed_application_fee_payment
+
+        if staff_user:
+            confirmed = confirmed_application_fee_payment(
+                user,
+                external_reference=data.get("externalReference"),
+                draft=draft,
+            )
+            draft.application_fee_paid = confirmed is not None
+            if confirmed:
+                draft.application_reference = confirmed.external_reference
+        else:
+            draft.application_fee_paid = (
+                str(data.get("application_fee_paid", "false")).lower() == "true"
+            )
+            draft.application_reference = data.get("externalReference", "")
         draft.status = data.get('status', 'draft')
 
         # Programs (ManyToMany)
@@ -154,6 +205,17 @@ def save_draft_applications(request):
 
         draft.save()
 
+        if staff_user:
+            from audit.utils import log_audit_event
+
+            log_audit_event(
+                staff_user,
+                "assist_draft_save",
+                user,
+                f"Staff saved draft for applicant {user.email}",
+                request,
+            )
+
         return Response({
             "message": "Draft saved successfully",
             "draft_id": draft.id,
@@ -169,11 +231,14 @@ def save_draft_applications(request):
 @permission_classes([IsAuthenticated])
 @parser_classes([MultiPartParser, FormParser])
 def upload_draft_document(request):
+    from accounts.assist_application import resolve_assisted_applicant
+
     FIELD_MAP = {
         'passportPhoto': 'passport_photo',
         'oLevelDocuments': 'olevel_document',
         'aLevelDocuments': 'alevel_document',
         'otherInstitutionDocuments': 'other_documents',
+        'refugeeStatusProof': 'refugee_status_proof',
     }
 
     doc_type = request.data.get('document_type')
@@ -188,19 +253,47 @@ def upload_draft_document(request):
         return Response({'detail': 'Invalid document_type.'}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
+        acting_user, staff_user = resolve_assisted_applicant(request)
         draft, _ = DraftApplication.objects.get_or_create(
-            applicant=request.user,
+            applicant=acting_user,
             batch_id=batch_id,
             defaults={'status': 'draft'}
         )
 
-        # Remove old file before saving new one
+        if doc_type == 'otherInstitutionDocuments':
+            other_doc = DraftOtherDocument.objects.create(
+                draft=draft,
+                file=file,
+                original_name=file.name,
+            )
+            file_url = request.build_absolute_uri(other_doc.file.url)
+            return Response(
+                {
+                    'id': other_doc.id,
+                    'url': file_url,
+                    'filename': other_doc.original_name or file.name,
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        # Remove old file before saving new one (single-file document types)
         old_file = getattr(draft, field_name)
         if old_file:
             old_file.delete(save=False)
 
         setattr(draft, field_name, file)
         draft.save()
+
+        if staff_user:
+            from audit.utils import log_audit_event
+
+            log_audit_event(
+                staff_user,
+                "assist_draft_upload",
+                acting_user,
+                f"Staff uploaded {doc_type} for applicant {acting_user.email}",
+                request,
+            )
 
         file_url = request.build_absolute_uri(getattr(draft, field_name).url)
         return Response({'url': file_url, 'filename': file.name}, status=status.HTTP_200_OK)
@@ -209,19 +302,56 @@ def upload_draft_document(request):
         logger.error(f"Draft document upload failed: {e}", exc_info=True)
         return Response({'detail': f"Draft document upload failed: {e}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def delete_draft_other_document(request):
+    from accounts.assist_application import resolve_assisted_applicant
+
+    batch_id = _optional_fk_id(request.data.get('batch'))
+    doc_id = request.data.get('id')
+    legacy = str(request.data.get('legacy', '')).lower() in ('true', '1', 'yes')
+
+    acting_user, _staff_user = resolve_assisted_applicant(request)
+    draft = _draft_for_user(acting_user, batch_id)
+    if not draft:
+        return Response({'detail': 'Draft not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+    try:
+        if legacy or not doc_id:
+            if draft.other_documents:
+                draft.other_documents.delete(save=False)
+                draft.other_documents = None
+                draft.save(update_fields=['other_documents'])
+            return Response({'detail': 'Document removed.'}, status=status.HTTP_200_OK)
+
+        other_doc = draft.other_document_files.filter(pk=doc_id).first()
+        if not other_doc:
+            return Response({'detail': 'Document not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        other_doc.file.delete(save=False)
+        other_doc.delete()
+        return Response({'detail': 'Document removed.'}, status=status.HTTP_200_OK)
+    except Exception as e:
+        logger.error(f"Draft other document delete failed: {e}", exc_info=True)
+        return Response({'detail': 'Failed to remove document.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 # GET DRAFT DATA
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_draft_application(request):
     try:
+        from accounts.assist_application import resolve_assisted_applicant
+
+        acting_user, _staff_user = resolve_assisted_applicant(request)
         draft = DraftApplication.objects.filter(
-            applicant=request.user,
+            applicant=acting_user,
             batch__isnull=False
         ).order_by('-updated_at').first()
 
         if not draft:
             draft = DraftApplication.objects.filter(
-                applicant=request.user
+                applicant=acting_user
             ).order_by('-updated_at').first()
 
         if not draft:
@@ -232,6 +362,10 @@ def get_draft_application(request):
 
         # Safe date formatting
         date_of_birth_str = draft.date_of_birth.strftime("%Y-%m-%d") if draft.date_of_birth else ""
+        other_doc_items = _other_institution_document_items(draft, request)
+        from payments.utils.application_payment_status import confirmed_application_fee_payment
+
+        confirmed_payment = confirmed_application_fee_payment(acting_user, draft=draft)
 
         data = {
             "applicant": draft.applicant_id,
@@ -243,12 +377,14 @@ def get_draft_application(request):
             "title": draft.title or "",
             "gender": draft.gender or "",
             "nationality": draft.nationality or "",
+            "applicantCategory": draft.applicant_category or "local",
             "nin": draft.nin or "",
             "passportNumber": draft.passport_number or "",
             "phone": draft.phone or "",
             "email": draft.email or "",
             "address": draft.address or "",
             "disabled": draft.disabled or "",
+            "isRefugee": "yes" if draft.is_refugee else "no",
 
             # === NEXT OF KIN - FIXED ===
             "nextOfKinName": getattr(draft, 'nextOfKinName', '') or "",
@@ -280,15 +416,21 @@ def get_draft_application(request):
             # Additional Qualifications
             "additionalQualifications": draft.additional_qualifications if isinstance(draft.additional_qualifications, list) else [],
 
-            "application_fee_paid": draft.application_fee_paid,
-            "externalReference": draft.application_reference or "",
+            "application_fee_paid": confirmed_payment is not None,
+            "externalReference": (
+                confirmed_payment.external_reference
+                if confirmed_payment
+                else (draft.application_reference or "")
+            ),
             "status": draft.status,
 
             # Document URLs
             "passportPhotoUrl": request.build_absolute_uri(draft.passport_photo.url) if draft.passport_photo else None,
+            "refugeeStatusProofUrl": request.build_absolute_uri(draft.refugee_status_proof.url) if draft.refugee_status_proof else None,
             "oLevelDocumentsUrl": request.build_absolute_uri(draft.olevel_document.url) if draft.olevel_document else None,
             "aLevelDocumentsUrl": request.build_absolute_uri(draft.alevel_document.url) if draft.alevel_document else None,
-            "otherInstitutionDocumentsUrl": request.build_absolute_uri(draft.other_documents.url) if draft.other_documents else None,
+            "otherInstitutionDocumentsUrl": other_doc_items[0]["url"] if other_doc_items else None,
+            "otherInstitutionDocumentItems": other_doc_items,
         }
 
         return Response({
