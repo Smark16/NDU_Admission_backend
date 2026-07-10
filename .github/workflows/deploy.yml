@@ -46,6 +46,7 @@ jobs:
           python manage.py migrate accounts 0032_systemsettings_portal_branding --fake
           python manage.py migrate accounts 0033_user_assigned_faculties --fake
           python manage.py migrate accounts 0035_user_portal_mode --fake
+          python manage.py migrate admissions 0042_admittedstudent_admitted_specialization --fake
         
           # Final migrate (this should now be safe)
           python manage.py migrate
