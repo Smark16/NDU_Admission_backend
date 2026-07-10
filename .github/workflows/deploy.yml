@@ -54,6 +54,7 @@ jobs:
           python manage.py migrate Programs 0016_attendance_check_in_window --fake
           python manage.py migrate staff 0001_initial --fake
           python manage.py migrate appraisal 0002_initial --fake
+          python manage.py migrate hiring 0002_initial --fake
         
           # Final migrate (this should now be safe)
           python manage.py migrate
