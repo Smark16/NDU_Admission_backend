@@ -56,6 +56,7 @@ jobs:
           python manage.py migrate appraisal 0002_initial --fake
           python manage.py migrate hiring 0002_initial --fake
           python manage.py migrate leave 0002_initial --fake
+          python manage.py migrate staff 0002_payscale --fake
         
           # Final migrate (this should now be safe)
           python manage.py migrate
