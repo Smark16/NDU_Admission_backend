@@ -234,6 +234,13 @@ def set_user_roles(user, role_names: list[str]):
             ) from exc
 
     user.groups.set(groups)
+    # Drop Django's per-request permission cache so the next /session call is fresh.
+    if hasattr(user, "_perm_cache"):
+        delattr(user, "_perm_cache")
+    if hasattr(user, "_user_perm_cache"):
+        delattr(user, "_user_perm_cache")
+    if hasattr(user, "_group_perm_cache"):
+        delattr(user, "_group_perm_cache")
     sync_user_role_flags(user, save=False)
 
     primary = primary_staff_role(user)
