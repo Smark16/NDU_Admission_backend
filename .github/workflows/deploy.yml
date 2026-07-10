@@ -48,6 +48,7 @@ jobs:
           # python manage.py migrate accounts 0035_user_portal_mode --fake
           python manage.py migrate admissions 0042_admittedstudent_admitted_specialization --fake
           python manage.py migrate admissions 0043_weekly_report_digest --fake
+          python manage.py migrate admissions 0046_application_refugee_fields --fake
         
           # Final migrate (this should now be safe)
           python manage.py migrate
