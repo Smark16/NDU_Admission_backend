@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from django.db.models import DecimalField, F, OuterRef, Q, Subquery, Sum, Value
+from django.db.models import DecimalField, F, IntegerField, OuterRef, Q, Subquery, Sum, Value
 from django.db.models.functions import Coalesce
 
 from payments.models import StudentTuitionPayment, TuitionLedger
@@ -33,6 +33,7 @@ def _portal_ugx_subquery():
 
 
 def _ledger_ugx_subquery():
+    """Sum all completed SchoolPay ledger credits matching this student's identifiers."""
     return Subquery(
         TuitionLedger.objects.filter(
             transaction_completion_status="Completed",
@@ -44,7 +45,8 @@ def _ledger_ugx_subquery():
             | Q(student_payment_code=OuterRef("reg_no"))
         )
         .order_by()
-        .values("student_id")
+        .annotate(grp=Value(1, output_field=IntegerField()))
+        .values("grp")
         .annotate(total=Sum("amount"))
         .values("total")[:1],
         output_field=_DECIMAL,
@@ -76,5 +78,6 @@ def filter_by_commitment_met(qs, commitment_met: bool | None):
     if commitment_met:
         return qs.filter(met_q)
     return qs.filter(admission_fee_paid=False).filter(
-        commitment_paid_ugx__lt=COMMITMENT_FEE_THRESHOLD
+        Q(commitment_paid_ugx__lt=COMMITMENT_FEE_THRESHOLD)
+        | Q(commitment_paid_ugx__isnull=True)
     )

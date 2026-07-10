@@ -86,6 +86,8 @@ def _rules_for_student(student: AdmittedStudent):
 
     ensure_feeplanrule_table()
     program = student.admitted_program
+    if program is None:
+        return []
     fee_plan = get_or_create_tuition_fee_plan(program)
     qs = FeePlanRule.objects.filter(
         fee_plan=fee_plan,

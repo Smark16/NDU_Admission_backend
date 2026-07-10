@@ -21,7 +21,7 @@ from .student_portal_finance import (
     student_billing_lines,
     student_finance_totals,
 )
-from .commitment_queryset import filter_by_commitment_met
+from .commitment_queryset import annotate_commitment_ugx_paid, filter_by_commitment_met
 
 
 def _parse_page(value, default: int = 1) -> int:
@@ -188,6 +188,58 @@ def _cohort_finance_summary(students_qs) -> dict[str, float]:
     }
 
 
+def _student_display_name(student: AdmittedStudent) -> str:
+    try:
+        return student.full_name or ""
+    except Exception:
+        if student.application_id and student.application:
+            return getattr(student.application, "full_name", "") or ""
+    return ""
+
+
+def _commitment_student_row(student: AdmittedStudent) -> dict:
+    """Lightweight list row — uses commitment annotations when present."""
+    threshold = float(COMMITMENT_FEE_THRESHOLD)
+    paid_raw = getattr(student, "commitment_paid_ugx", None)
+    if paid_raw is None:
+        finance = student_finance_totals(student)
+        paid = float(finance["commitment_paid_ugx"])
+        met = bool(finance["commitment_met"])
+        balance = float(finance["commitment_balance"])
+    else:
+        paid = float(paid_raw or 0)
+        admission_paid = bool(student.admission_fee_paid)
+        met = admission_paid or paid >= threshold
+        balance = 0.0 if met else max(threshold - paid, 0.0)
+
+    enrollment_status = None
+    try:
+        enrollment_status = student.programme_enrollment.status
+    except Exception:
+        enrollment_status = None
+
+    return {
+        "id": student.id,
+        "student_id": student.student_id,
+        "reg_no": student.reg_no,
+        "student_name": _student_display_name(student),
+        "program": student.admitted_program.name if student.admitted_program_id else None,
+        "campus": student.admitted_campus.name if student.admitted_campus_id else None,
+        "batch_id": student.admitted_batch_id,
+        "batch_name": student.admitted_batch.name if student.admitted_batch_id else None,
+        "academic_year": student.admitted_batch.academic_year if student.admitted_batch_id else None,
+        "intake": _batch_intake_label(student.admitted_batch if student.admitted_batch_id else None),
+        "schoolpay_code": student.effective_schoolpay_code,
+        "commitment_threshold": threshold,
+        "commitment_paid_ugx": paid,
+        "commitment_met": met,
+        "commitment_balance": balance,
+        "total_paid": paid,
+        "balance": balance,
+        "enrollment_status": enrollment_status,
+    }
+
+
 def _student_row(student: AdmittedStudent) -> dict:
     finance = student_finance_totals(student)
     completed_count, pending_count = _student_payment_counts(student)
@@ -202,7 +254,7 @@ def _student_row(student: AdmittedStudent) -> dict:
         "id": student.id,
         "student_id": student.student_id,
         "reg_no": student.reg_no,
-        "student_name": student.full_name,
+        "student_name": _student_display_name(student),
         "program": student.admitted_program.name if student.admitted_program_id else None,
         "campus": student.admitted_campus.name if student.admitted_campus_id else None,
         "batch_id": student.admitted_batch_id,
@@ -245,7 +297,7 @@ def _transaction_row(payment: StudentTuitionPayment) -> dict:
         "student_pk": student.id,
         "student_id": student.student_id,
         "reg_no": student.reg_no,
-        "student_name": student.full_name,
+        "student_name": _student_display_name(student),
         "program": student.admitted_program.name if student.admitted_program_id else None,
         "intake": _batch_intake_label(student.admitted_batch if student.admitted_batch_id else None),
         "amount": float(payment.amount),
@@ -335,6 +387,9 @@ class AdminTuitionLedgerStudentsView(APIView):
         search = request.query_params.get("search", "")
         commitment_met = _parse_bool(request.query_params.get("commitment_met"))
         cohort = _ledger_cohort_params(request)
+        include_finance_summary = _parse_bool(
+            request.query_params.get("include_finance_summary")
+        )
 
         qs = (
             AdmittedStudent.objects.filter(is_admitted=True)
@@ -352,10 +407,38 @@ class AdminTuitionLedgerStudentsView(APIView):
 
         if commitment_met is not None:
             qs = filter_by_commitment_met(qs, commitment_met)
+        else:
+            qs = annotate_commitment_ugx_paid(qs)
 
         total = qs.count()
         offset = (page - 1) * page_size
-        rows = [_student_row(student) for student in qs[offset : offset + page_size]]
+        page_qs = list(qs[offset : offset + page_size])
+        rows = []
+        for student in page_qs:
+            try:
+                rows.append(_commitment_student_row(student))
+            except Exception:
+                rows.append(
+                    {
+                        "id": student.id,
+                        "student_id": student.student_id,
+                        "reg_no": student.reg_no,
+                        "student_name": _student_display_name(student),
+                        "program": student.admitted_program.name
+                        if student.admitted_program_id
+                        else None,
+                        "campus": student.admitted_campus.name
+                        if student.admitted_campus_id
+                        else None,
+                        "commitment_threshold": float(COMMITMENT_FEE_THRESHOLD),
+                        "commitment_paid_ugx": 0.0,
+                        "commitment_met": bool(student.admission_fee_paid),
+                        "commitment_balance": float(COMMITMENT_FEE_THRESHOLD),
+                        "total_paid": 0.0,
+                        "balance": float(COMMITMENT_FEE_THRESHOLD),
+                        "enrollment_status": None,
+                    }
+                )
 
         summary_qs = _apply_student_cohort_filters(
             AdmittedStudent.objects.filter(is_admitted=True),
@@ -373,26 +456,38 @@ class AdminTuitionLedgerStudentsView(APIView):
                 output_field=DecimalField(max_digits=14, decimal_places=2),
             ),
         )
-        finance_summary = _cohort_finance_summary(
-            summary_qs.select_related(
-                "admitted_program",
-                "admitted_campus",
-                "admitted_batch",
-                "application",
-                "programme_enrollment",
-            )
-        )
+        summary = {
+            "students_count": summary_qs.count(),
+            "commitment_met_count": commitment_met_count,
+            "commitment_threshold": float(COMMITMENT_FEE_THRESHOLD),
+            "completed_payments_count": int(payment_totals["completed_count"] or 0),
+            "completed_amount_ugx": float(payment_totals["completed_amount_ugx"] or 0),
+        }
+        if include_finance_summary:
+            try:
+                summary.update(
+                    _cohort_finance_summary(
+                        summary_qs.select_related(
+                            "admitted_program",
+                            "admitted_campus",
+                            "admitted_batch",
+                            "application",
+                            "programme_enrollment",
+                        )
+                    )
+                )
+            except Exception:
+                summary.update(
+                    {
+                        "total_billed": 0.0,
+                        "total_paid": 0.0,
+                        "total_balance": 0.0,
+                    }
+                )
 
         return Response(
             {
-                "summary": {
-                    "students_count": summary_qs.count(),
-                    "commitment_met_count": commitment_met_count,
-                    "commitment_threshold": float(COMMITMENT_FEE_THRESHOLD),
-                    "completed_payments_count": int(payment_totals["completed_count"] or 0),
-                    "completed_amount_ugx": float(payment_totals["completed_amount_ugx"] or 0),
-                    **finance_summary,
-                },
+                "summary": summary,
                 "filters": cohort,
                 "results": rows,
                 "page": page,
