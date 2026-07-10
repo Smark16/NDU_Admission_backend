@@ -12,6 +12,7 @@ from .adhoc_views import (
 from .admin_ledger_views import (
     AdminTuitionLedgerFiltersView,
     AdminTuitionLedgerStudentDetailView,
+    AdminTuitionLedgerStudentsExportView,
     AdminTuitionLedgerStudentsView,
     AdminTuitionLedgerTransactionsView,
 )
@@ -82,6 +83,11 @@ urlpatterns = [
     ),
     path('admin/tuition_ledger/filters', AdminTuitionLedgerFiltersView.as_view(), name='admin_tuition_ledger_filters'),
     path('admin/tuition_ledger/students', AdminTuitionLedgerStudentsView.as_view(), name='admin_tuition_ledger_students'),
+    path(
+        'admin/tuition_ledger/students/export',
+        AdminTuitionLedgerStudentsExportView.as_view(),
+        name='admin_tuition_ledger_students_export',
+    ),
     path(
         'admin/tuition_ledger/students/<int:student_id>',
         AdminTuitionLedgerStudentDetailView.as_view(),
