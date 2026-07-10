@@ -15,7 +15,6 @@ import json
 
 logger = logging.getLogger(__name__)
 
-
 def _optional_fk_id(value):
     if value is None:
         return None

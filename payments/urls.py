@@ -14,6 +14,7 @@ from .admin_ledger_views import (
     AdminTuitionLedgerStudentDetailView,
     AdminTuitionLedgerStudentsView,
     AdminTuitionLedgerTransactionsView,
+    SendCommitmentFeeReminderView,
 )
 
 from .semester_registration_views import (
@@ -77,6 +78,11 @@ urlpatterns = [
         name='admin_tuition_ledger_student_detail',
     ),
     path('admin/tuition_ledger/transactions', AdminTuitionLedgerTransactionsView.as_view(), name='admin_tuition_ledger_transactions'),
+    path(
+        'admin/tuition_ledger/send_commitment_reminders',
+        SendCommitmentFeeReminderView.as_view(),
+        name='admin_send_commitment_reminders',
+    ),
     path('student/tuition_structure', GetStudentTuitionStructure.as_view(), name='get_student_tuition_structure'),
     path('student/payment_status', GetStudentPaymentStatus.as_view(), name='get_student_payment_status'),
     path(

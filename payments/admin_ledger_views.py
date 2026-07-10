@@ -1,6 +1,7 @@
 """Staff-facing tuition payment ledger for admitted students."""
 from __future__ import annotations
 
+import logging
 from decimal import Decimal
 
 from django.db.models import Count, DecimalField, Max, Q, Sum, Value
@@ -8,6 +9,7 @@ from django.db.models.functions import Coalesce
 from django.shortcuts import get_object_or_404
 from django.utils.dateparse import parse_date
 from accounts.erp_drf_permissions import FinanceModuleAdminPermission
+from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -21,6 +23,9 @@ from .student_portal_finance import (
     student_billing_lines,
     student_finance_totals,
 )
+from .tasks import celery_bulk_send_commitment_reminders
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_page(value, default: int = 1) -> int:
@@ -525,4 +530,87 @@ class AdminTuitionLedgerTransactionsView(APIView):
                 "page_size": page_size,
                 "total": total,
             }
+        )
+
+
+class SendCommitmentFeeReminderView(APIView):
+    """
+    POST /api/payments/admin/tuition_ledger/send_commitment_reminders
+
+    Queues Celery jobs to email admitted students whose commitment fee is not met
+    (UGX tuition credit < 150,000 and admission_fee_paid is false).
+    Optional cohort filters match the tuition ledger students list.
+    """
+
+    permission_classes = [FinanceModuleAdminPermission]
+
+    def post(self, request):
+        # Accept filters from query string or JSON body
+        params = request.query_params
+        data = request.data if hasattr(request, "data") else {}
+
+        def _param(key: str):
+            if key in params and params.get(key) not in (None, ""):
+                return params.get(key)
+            return data.get(key) if isinstance(data, dict) else None
+
+        cohort = {
+            "batch_id": _parse_int(_param("batch_id") or _param("intake_id")),
+            "program_id": _parse_int(_param("program_id")),
+            "campus_id": _parse_int(_param("campus_id")),
+            "program_batch_id": _parse_int(_param("program_batch_id")),
+            "academic_year": (str(_param("academic_year") or "").strip() or None),
+            "intake": (str(_param("intake") or "").strip() or None),
+        }
+
+        async_result = celery_bulk_send_commitment_reminders.delay(cohort)
+        try:
+            # Wait for Celery so the UI can show accurate sent/failed counts.
+            # In local DEBUG, CELERY_TASK_ALWAYS_EAGER runs this in-process.
+            result = async_result.get(timeout=600)
+        except Exception as exc:
+            logger.exception("Commitment reminder Celery job failed")
+            return Response(
+                {"detail": f"Failed to send reminders: {exc}"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        if not isinstance(result, dict):
+            return Response(
+                {"detail": "Unexpected reminder job result.", "raw": str(result)},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        sent = int(result.get("sent") or 0)
+        failed = int(result.get("failed") or 0)
+        skipped_no_email = int(result.get("skipped_no_email") or 0)
+        skipped_met = int(result.get("skipped_met") or 0)
+        eligible = int(result.get("eligible") or 0)
+        threshold = result.get("commitment_threshold", float(COMMITMENT_FEE_THRESHOLD))
+
+        detail = (
+            f"Payment reminders sent to {sent} admitted student(s) "
+            f"with unpaid commitment fee (tuition paid under "
+            f"UGX {int(threshold):,})."
+        )
+        if failed:
+            detail += f" {failed} failed to send."
+        if skipped_no_email:
+            detail += f" {skipped_no_email} skipped (no email)."
+        if skipped_met:
+            detail += f" {skipped_met} already met commitment and were skipped."
+
+        return Response(
+            {
+                "detail": detail,
+                "sent": sent,
+                "failed": failed,
+                "eligible": eligible,
+                "skipped_met": skipped_met,
+                "skipped_no_email": skipped_no_email,
+                "commitment_threshold": float(threshold),
+                "filters": result.get("filters") or cohort,
+                "task_id": async_result.id,
+            },
+            status=status.HTTP_200_OK,
         )
