@@ -5,7 +5,7 @@ import csv
 from datetime import datetime
 from decimal import Decimal
 
-from django.db.models import Count, DecimalField, Max, Q, Sum, Value
+from django.db.models import Count, DecimalField, F, Max, Q, Sum, Value
 from django.db.models.functions import Coalesce
 from django.http import StreamingHttpResponse
 from django.shortcuts import get_object_or_404
@@ -200,6 +200,19 @@ def _student_display_name(student: AdmittedStudent) -> str:
     return ""
 
 
+def _payment_code_fields(student: AdmittedStudent) -> dict:
+    """SchoolPay wallet code vs reg. no. (students not synced to SchoolPay have no wallet yet)."""
+    wallet = (student.student_id or student.schoolpay_code or "").strip()
+    reg_no = (student.reg_no or "").strip()
+    return {
+        "student_id": student.student_id,
+        "schoolpay_code": wallet or None,
+        "payment_code": wallet or reg_no or None,
+        "schoolpay_registered": bool(wallet),
+        "payment_code_is_reg_no": not wallet and bool(reg_no),
+    }
+
+
 def _commitment_student_row(student: AdmittedStudent) -> dict:
     """Lightweight list row — uses commitment annotations when present."""
     threshold = float(COMMITMENT_FEE_THRESHOLD)
@@ -223,16 +236,15 @@ def _commitment_student_row(student: AdmittedStudent) -> dict:
 
     return {
         "id": student.id,
-        "student_id": student.student_id,
         "reg_no": student.reg_no,
         "student_name": _student_display_name(student),
+        **_payment_code_fields(student),
         "program": student.admitted_program.name if student.admitted_program_id else None,
         "campus": student.admitted_campus.name if student.admitted_campus_id else None,
         "batch_id": student.admitted_batch_id,
         "batch_name": student.admitted_batch.name if student.admitted_batch_id else None,
         "academic_year": student.admitted_batch.academic_year if student.admitted_batch_id else None,
         "intake": _batch_intake_label(student.admitted_batch if student.admitted_batch_id else None),
-        "schoolpay_code": student.effective_schoolpay_code,
         "commitment_threshold": threshold,
         "commitment_paid_ugx": paid,
         "commitment_met": met,
@@ -259,7 +271,7 @@ def _commitment_students_queryset(
             "programme_enrollment",
         )
         .filter(_student_search_filter(search))
-        .order_by("student_id", "-id")
+        .order_by(F("student_id").asc(nulls_last=True), "reg_no", "-id")
     )
     if cohort:
         qs = _apply_student_cohort_filters(qs, cohort)
@@ -555,8 +567,9 @@ class AdminTuitionLedgerStudentsExportView(APIView):
             writer = csv.writer(pseudo_buffer)
             yield writer.writerow(
                 [
-                    "Student ID",
+                    "Pay code (SchoolPay wallet)",
                     "Reg No",
+                    "SchoolPay synced",
                     "Name",
                     "Program",
                     "Campus",
@@ -570,8 +583,9 @@ class AdminTuitionLedgerStudentsExportView(APIView):
                 try:
                     row = _commitment_student_row(student)
                 except Exception:
+                    pay = _payment_code_fields(student)
                     row = {
-                        "student_id": student.student_id,
+                        **pay,
                         "reg_no": student.reg_no,
                         "student_name": _student_display_name(student),
                         "program": None,
@@ -583,8 +597,9 @@ class AdminTuitionLedgerStudentsExportView(APIView):
                     }
                 yield writer.writerow(
                     [
-                        row.get("student_id") or "",
+                        row.get("schoolpay_code") or "",
                         row.get("reg_no") or "",
+                        "Yes" if row.get("schoolpay_registered") else "No",
                         row.get("student_name") or "",
                         row.get("program") or "",
                         row.get("campus") or "",
