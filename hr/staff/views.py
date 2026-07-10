@@ -84,7 +84,7 @@ class StaffProfileListView(generics.ListAPIView):
 class StaffProfileDetailView(generics.RetrieveAPIView):
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
     queryset = StaffProfile.objects.select_related(
-        'team', 'org_unit', 'staff_type', 'position_level', 'user'
+        'team', 'org_unit', 'staff_type', 'position_level', 'pay_scale', 'user'
         ).prefetch_related('campus', 'managed_org_units')
     serializer_class = DetailStaffSerializer
     lookup_field = "id"
@@ -94,7 +94,7 @@ class StaffProfileDetailView(generics.RetrieveAPIView):
 class MiniStaffProfile(generics.RetrieveAPIView):
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
     queryset = StaffProfile.objects.select_related(
-        'team', 'org_unit', 'staff_type', 'position_level', 'user'
+        'team', 'org_unit', 'staff_type', 'position_level', 'pay_scale', 'user'
         )
     serializer_class = MiniStaffSerializer
     lookup_field = 'user'
@@ -204,6 +204,43 @@ class DeleteLevel(generics.DestroyAPIView):
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
     queryset = PositonLevel.objects.all()
     serializer_class = PositionLevelSerializer
+
+# ===============================================pay scales (Ugandan U/P grades)================================
+
+class ListPayScales(generics.ListAPIView):
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    queryset = PayScale.objects.filter(is_active=True)
+    serializer_class = PayScaleSerializer
+
+    def get_queryset(self):
+        qs = PayScale.objects.all().order_by("rank_order", "code")
+        category = self.request.query_params.get("category")
+        if category:
+            qs = qs.filter(category__iexact=category)
+        active = self.request.query_params.get("active")
+        if active is not None and active.lower() == "all":
+            return qs
+        if active is not None and active.lower() in ("0", "false", "no"):
+            return qs.filter(is_active=False)
+        return qs.filter(is_active=True)
+
+
+class CreatePayScale(generics.CreateAPIView):
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    queryset = PayScale.objects.all()
+    serializer_class = PayScaleSerializer
+
+
+class UpdatePayScale(generics.UpdateAPIView):
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    queryset = PayScale.objects.all()
+    serializer_class = PayScaleSerializer
+
+
+class DeletePayScale(generics.DestroyAPIView):
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    queryset = PayScale.objects.all()
+    serializer_class = PayScaleSerializer
 
 # ==========================================================teams========================================
 
@@ -754,7 +791,7 @@ class CurrentStaffProfileView(APIView):
                 status=404,
             )
         profile = (
-            StaffProfile.objects.select_related("team", "org_unit", "staff_type", "position_level", "user")
+            StaffProfile.objects.select_related("team", "org_unit", "staff_type", "position_level", "pay_scale", "user")
             .prefetch_related("campus", "managed_org_units")
             .get(pk=profile.pk)
         )
@@ -764,7 +801,7 @@ class CurrentStaffProfileView(APIView):
 class StaffContractListView(generics.ListAPIView):
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
     serializer_class = StaffContractSerializer
-    queryset = StaffContract.objects.select_related("staff", "department").order_by("-start_date")
+    queryset = StaffContract.objects.select_related("staff", "department", "pay_scale").order_by("-start_date")
 
     def get_queryset(self):
         qs = super().get_queryset()

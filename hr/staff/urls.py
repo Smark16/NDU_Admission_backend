@@ -35,6 +35,12 @@ urlpatterns = [
     path('level_types/<int:pk>/update/', views.UpdateLevels.as_view()),
     path('level_types/<int:pk>/delete/', views.DeleteLevel.as_view()),
 
+    # pay scales (Ugandan U/P grades)
+    path('pay_scales/', views.ListPayScales.as_view()),
+    path('pay_scales/create/', views.CreatePayScale.as_view()),
+    path('pay_scales/<int:pk>/update/', views.UpdatePayScale.as_view()),
+    path('pay_scales/<int:pk>/delete/', views.DeletePayScale.as_view()),
+
     # team urls
     path('teams/', views.ListTeams.as_view(), name='team_list'),
     path('teams/create/', views.CreateTeam.as_view(), name='team_create'),  

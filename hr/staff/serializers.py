@@ -191,6 +191,9 @@ class DetailStaffSerializer(serializers.ModelSerializer):
         response['position_level'] = (
             PositionLevelSerializer(instance.position_level).data if instance.position_level else None
         )
+        response['pay_scale'] = (
+            PayScaleSerializer(instance.pay_scale).data if instance.pay_scale else None
+        )
         response['managed_org_units'] = DepartmentSerializer(instance.managed_org_units.all(), many=True).data
         response['team'] = (
             DepartmentTeamsSerializer(instance.team).data if instance.team else None
@@ -224,6 +227,13 @@ class PositionLevelSerializer(serializers.ModelSerializer):
      class Meta:
         model = PositonLevel
         fields = '__all__'
+
+class PayScaleSerializer(serializers.ModelSerializer):
+    category_display = serializers.CharField(source="get_category_display", read_only=True)
+
+    class Meta:
+        model = PayScale
+        fields = "__all__"
 
 # teams serializer
 class DepartmentTeamsSerializer(serializers.ModelSerializer):
@@ -283,6 +293,7 @@ class BulkUploadSerializer(serializers.ModelSerializer):
 class StaffContractSerializer(serializers.ModelSerializer):
     staff_name = serializers.CharField(source="staff.get_full_name", read_only=True)
     department_name = serializers.SerializerMethodField()
+    pay_scale_code = serializers.SerializerMethodField()
     contract_file = serializers.FileField(write_only=True, required=False)
 
     class Meta:
@@ -298,6 +309,10 @@ class StaffContractSerializer(serializers.ModelSerializer):
             "position",
             "department",
             "department_name",
+            "salary",
+            "pay_scale",
+            "pay_scale_code",
+            "pay_step",
             "status",
             "contract_file",
         ]
@@ -305,6 +320,9 @@ class StaffContractSerializer(serializers.ModelSerializer):
 
     def get_department_name(self, obj):
         return obj.department.name if obj.department else None
+
+    def get_pay_scale_code(self, obj):
+        return obj.pay_scale.code if obj.pay_scale_id else None
 
     def create(self, validated_data):
         import uuid

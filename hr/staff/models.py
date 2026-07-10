@@ -27,6 +27,40 @@ class PositonLevel(models.Model):
     def __str__(self):
         return self.name
 
+
+class PayScale(models.Model):
+    """Ugandan public university / IPPS-style salary scale (e.g. U1–U17, P1–P5)."""
+
+    CATEGORY_CHOICES = [
+        ("ACADEMIC", "Academic"),
+        ("ADMINISTRATIVE", "Administrative"),
+        ("SUPPORT", "Support"),
+    ]
+
+    code = models.CharField(max_length=10, unique=True, help_text="Scale code, e.g. U7 or P2")
+    name = models.CharField(max_length=200)
+    category = models.CharField(max_length=20, choices=CATEGORY_CHOICES, default="ADMINISTRATIVE")
+    rank_order = models.PositiveSmallIntegerField(
+        default=0,
+        help_text="Lower numbers = junior grades (used for sorting)",
+    )
+    description = models.TextField(blank=True)
+    typical_roles = models.CharField(
+        max_length=500,
+        blank=True,
+        help_text="Example job titles commonly placed on this scale",
+    )
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["rank_order", "code"]
+        verbose_name = "Pay scale"
+        verbose_name_plural = "Pay scales"
+
+    def __str__(self):
+        return f"{self.code} — {self.name}"
+
 class Department(models.Model):
     name = models.CharField(max_length=20)
     code = models.CharField(max_length=10)
@@ -199,6 +233,19 @@ class StaffProfile(models.Model):
     )
     
     position_level = models.ForeignKey(PositonLevel, on_delete=models.SET_NULL, null=True, blank=True)
+    pay_scale = models.ForeignKey(
+        PayScale,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="staff_profiles",
+        help_text="Ugandan salary scale (U/P grade) per IPPS-style grading",
+    )
+    pay_step = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        help_text="Salary step/notch on the scale (typically 1–35)",
+    )
     
     system_login = models.BooleanField(default=False)
     
@@ -316,6 +363,19 @@ class StaffContract(models.Model):
         null=True,
         blank=True,
         help_text="Annual salary (optional, confidential)"
+    )
+    pay_scale = models.ForeignKey(
+        PayScale,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="contracts",
+        help_text="Contracted Ugandan pay scale (U/P grade)",
+    )
+    pay_step = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        help_text="Salary step/notch on the scale",
     )
     
     # Document

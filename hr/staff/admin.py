@@ -17,3 +17,10 @@ class DepartmentAdmin(admin.ModelAdmin):
 class PositionAdmin(admin.ModelAdmin):
     list_display = ['id', 'name']
 
+@admin.register(PayScale)
+class PayScaleAdmin(admin.ModelAdmin):
+    list_display = ["code", "name", "category", "rank_order", "is_active"]
+    list_filter = ["category", "is_active"]
+    search_fields = ["code", "name", "typical_roles"]
+    ordering = ["rank_order", "code"]
+
