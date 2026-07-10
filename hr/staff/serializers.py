@@ -2,6 +2,7 @@ from rest_framework import serializers
 from accounts.models import Campus
 
 from .models import *
+from .models import PayScale  # explicit — required for PayScaleSerializer at import time
 
 
 class CampusSerializer(serializers.ModelSerializer):
