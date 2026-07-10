@@ -93,11 +93,13 @@ def celery_send_commitment_fee_reminder(self, student_id, paid_ugx=None, balance
     return {"ok": True, "student_id": student_id}
 
 
-@shared_task(bind=True)
-def celery_bulk_send_commitment_reminders(self, cohort=None):
+def run_bulk_commitment_reminders(cohort=None):
     """
-    Celery job: find admitted students with unmet commitment fee and email them.
-    Returns sent/failed/skipped counts for the API success message.
+    Find admitted students with unmet commitment fee and email them.
+
+    Do NOT use QuerySet.iterator() here: commitment_payment_summary() runs nested
+    queries per student, which closes PostgreSQL server-side cursors and raises
+    "cursor ... does not exist".
     """
     from payments.admin_ledger_views import _apply_student_cohort_filters
     from payments.student_portal_finance import (
@@ -108,18 +110,11 @@ def celery_bulk_send_commitment_reminders(self, cohort=None):
 
     cohort = cohort or {}
     AdmittedStudent = apps.get_model("admissions", "AdmittedStudent")
+    chunk_size = 100
 
-    qs = (
-        AdmittedStudent.objects.filter(is_admitted=True)
-        .select_related(
-            "application",
-            "admitted_program",
-            "admitted_campus",
-            "admitted_batch",
-        )
-        .order_by("student_id")
-    )
-    qs = _apply_student_cohort_filters(qs, cohort)
+    base_qs = AdmittedStudent.objects.filter(is_admitted=True).order_by("id")
+    base_qs = _apply_student_cohort_filters(base_qs, cohort)
+    student_ids = list(base_qs.values_list("id", flat=True))
 
     sent = 0
     failed = 0
@@ -127,41 +122,62 @@ def celery_bulk_send_commitment_reminders(self, cohort=None):
     skipped_no_email = 0
     eligible = 0
 
-    for student in qs.iterator(chunk_size=100):
-        summary = commitment_payment_summary(student)
-        if bool(summary["commitment_met"]):
-            skipped_met += 1
-            continue
-
-        email = (getattr(student, "email", None) or "").strip()
-        if not email:
-            skipped_no_email += 1
-            continue
-
-        eligible += 1
-        try:
-            ok = send_commitment_fee_reminder(
-                student,
-                paid_ugx=float(summary["commitment_paid_ugx"]),
-                balance_ugx=float(summary["commitment_balance"]),
+    for offset in range(0, len(student_ids), chunk_size):
+        chunk_ids = student_ids[offset : offset + chunk_size]
+        students = (
+            AdmittedStudent.objects.filter(id__in=chunk_ids)
+            .select_related(
+                "application",
+                "admitted_program",
+                "admitted_campus",
+                "admitted_batch",
             )
-            if ok:
-                sent += 1
-            else:
-                # Queue a retried single-send task so transient SendGrid errors recover
-                celery_send_commitment_fee_reminder.delay(
-                    student.id,
-                    float(summary["commitment_paid_ugx"]),
-                    float(summary["commitment_balance"]),
+            .order_by("id")
+        )
+        for student in students:
+            summary = commitment_payment_summary(student)
+            if bool(summary["commitment_met"]):
+                skipped_met += 1
+                continue
+
+            email = (getattr(student, "email", None) or "").strip()
+            if not email:
+                skipped_no_email += 1
+                continue
+
+            eligible += 1
+            paid_ugx = float(summary["commitment_paid_ugx"])
+            balance_ugx = float(summary["commitment_balance"])
+            try:
+                ok = send_commitment_fee_reminder(
+                    student,
+                    paid_ugx=paid_ugx,
+                    balance_ugx=balance_ugx,
                 )
+                if ok:
+                    sent += 1
+                else:
+                    try:
+                        celery_send_commitment_fee_reminder.delay(
+                            student.id, paid_ugx, balance_ugx
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Could not queue commitment reminder retry for student %s",
+                            student.id,
+                        )
+                    failed += 1
+            except Exception:
+                logger.exception(
+                    "Commitment reminder send failed for student %s", student.id
+                )
+                try:
+                    celery_send_commitment_fee_reminder.delay(
+                        student.id, paid_ugx, balance_ugx
+                    )
+                except Exception:
+                    pass
                 failed += 1
-        except Exception:
-            celery_send_commitment_fee_reminder.delay(
-                student.id,
-                float(summary["commitment_paid_ugx"]),
-                float(summary["commitment_balance"]),
-            )
-            failed += 1
 
     return {
         "sent": sent,
@@ -172,3 +188,9 @@ def celery_bulk_send_commitment_reminders(self, cohort=None):
         "commitment_threshold": float(COMMITMENT_FEE_THRESHOLD),
         "filters": cohort,
     }
+
+
+@shared_task(bind=True)
+def celery_bulk_send_commitment_reminders(self, cohort=None):
+    """Celery wrapper around run_bulk_commitment_reminders (optional background use)."""
+    return run_bulk_commitment_reminders(cohort)

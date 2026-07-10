@@ -28,7 +28,7 @@ from .student_portal_finance import (
     student_finance_totals,
 )
 
-from .tasks import celery_bulk_send_commitment_reminders
+from .tasks import run_bulk_commitment_reminders
 
 logger = logging.getLogger(__name__)
 
@@ -712,15 +712,13 @@ class SendCommitmentFeeReminderView(APIView):
     """
     POST /api/payments/admin/tuition_ledger/send_commitment_reminders
 
-    Queues Celery jobs to email admitted students whose commitment fee is not met
-    (UGX tuition credit < 150,000 and admission_fee_paid is false).
-    Optional cohort filters match the tuition ledger students list.
+    Emails admitted students whose commitment fee is not met.
+    Runs in the web process (no Celery .get()) so production is reliable.
     """
 
     permission_classes = [FinanceModuleAdminPermission]
 
     def post(self, request):
-        # Accept filters from query string or JSON body
         params = request.query_params
         data = request.data if hasattr(request, "data") else {}
 
@@ -738,13 +736,10 @@ class SendCommitmentFeeReminderView(APIView):
             "intake": (str(_param("intake") or "").strip() or None),
         }
 
-        async_result = celery_bulk_send_commitment_reminders.delay(cohort)
         try:
-            # Wait for Celery so the UI can show accurate sent/failed counts.
-            # In local DEBUG, CELERY_TASK_ALWAYS_EAGER runs this in-process.
-            result = async_result.get(timeout=600)
+            result = run_bulk_commitment_reminders(cohort)
         except Exception as exc:
-            logger.exception("Commitment reminder Celery job failed")
+            logger.exception("Commitment reminder job failed")
             return Response(
                 {"detail": f"Failed to send reminders: {exc}"},
                 status=status.HTTP_502_BAD_GATEWAY,
@@ -785,7 +780,6 @@ class SendCommitmentFeeReminderView(APIView):
                 "skipped_no_email": skipped_no_email,
                 "commitment_threshold": float(threshold),
                 "filters": result.get("filters") or cohort,
-                "task_id": async_result.id,
             },
             status=status.HTTP_200_OK,
         )
