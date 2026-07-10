@@ -52,6 +52,7 @@ jobs:
           python manage.py migrate admissions 0047_application_applicant_category --fake
           python manage.py migrate Programs 0015_lecture_attendance --fake
           python manage.py migrate Programs 0016_attendance_check_in_window --fake
+          python manage.py migrate staff 0001_initial --fake
         
           # Final migrate (this should now be safe)
           python manage.py migrate
