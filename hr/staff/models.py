@@ -428,7 +428,7 @@ class StaffContract(models.Model):
         verbose_name_plural = 'Staff Contracts'
     
     def __str__(self):
-        return f"{self.contract_number} - {self.staff.full_name} - {self.get_contract_type_display()}"
+        return f"{self.contract_number} - {self.staff.get_full_name} - {self.get_contract_type_display()}"
     
     @property
     def days_until_expiry(self):

@@ -209,7 +209,7 @@ class LeaveBalance(models.Model):
         unique_together = ['staff', 'leave_type', 'year']
     
     def __str__(self):
-        return f"{self.staff.full_name} - {self.leave_type.name} - {self.year}"
+        return f"{self.staff.get_full_name} - {self.leave_type.name} - {self.year}"
     
     @property
     def available(self):
@@ -426,7 +426,7 @@ class LeaveAccrual(models.Model):
         ordering = ['-accrual_date', 'staff']
     
     def __str__(self):
-        return f"{self.staff.full_name} - {self.days_accrued} days - {self.accrual_date}"
+        return f"{self.staff.get_full_name} - {self.days_accrued} days - {self.accrual_date}"
 
 
 class PublicHoliday(models.Model):

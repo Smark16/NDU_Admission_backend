@@ -172,6 +172,9 @@ TIME_ZONE = 'Africa/Kampala'
 USE_I18N = True
 USE_TZ = True
 
+# Minimum lecture attendance % required to sit end-of-semester exams (present/late/excused).
+MIN_ATTENDANCE_PERCENT_TO_SIT_EXAM = env.float("MIN_ATTENDANCE_PERCENT_TO_SIT_EXAM", default=75)
+
 # Security settings
 SECURE_SSL_REDIRECT = env.bool('SECURE_SSL_REDIRECT', default=False)
 SECURE_HSTS_SECONDS = env.int('SECURE_HSTS_SECONDS', default=0)

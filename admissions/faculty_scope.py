@@ -36,7 +36,10 @@ def user_has_institution_wide_admissions_access(user) -> bool:
 def user_is_faculty_scoped_staff(user) -> bool:
     if not user.is_authenticated or user_is_super_admin(user):
         return False
-    return user.groups.filter(name__in=FACULTY_SCOPED_ROLE_NAMES).exists()
+    # Case-insensitive so Faculty Admin / Faculty Dean always stay faculty-scoped.
+    return user.groups.filter(
+        Q(name__iexact="Faculty Dean") | Q(name__iexact="Faculty Admin")
+    ).exists()
 
 
 def user_requires_faculty_scope(user, *, context: str = "programs") -> bool:
@@ -209,10 +212,38 @@ def assert_semester_access(user, semester) -> None:
 def assert_course_unit_access(user, course_unit) -> None:
     program_batch = getattr(course_unit, "program_batch", None)
     if program_batch is None:
+        semester = getattr(course_unit, "semester", None)
+        program_batch = getattr(semester, "program_batch", None) if semester is not None else None
+    if program_batch is None:
         from rest_framework.exceptions import PermissionDenied
 
         raise PermissionDenied("Course unit is not linked to a programme batch.")
     assert_program_batch_access(user, program_batch)
+
+
+def filter_course_units_for_user(queryset: QuerySet, user) -> QuerySet:
+    """Limit course units to the user's assigned faculties (Faculty Admin/Dean)."""
+    faculty_ids = user_faculty_ids(user, context="programs")
+    if faculty_ids is None:
+        return queryset
+    if not faculty_ids:
+        return queryset.none()
+    return queryset.filter(
+        Q(program_batch__program__faculty_id__in=faculty_ids)
+        | Q(semester__program_batch__program__faculty_id__in=faculty_ids)
+    ).distinct()
+
+
+def filter_lecture_attendance_sessions_for_user(queryset: QuerySet, user) -> QuerySet:
+    faculty_ids = user_faculty_ids(user, context="programs")
+    if faculty_ids is None:
+        return queryset
+    if not faculty_ids:
+        return queryset.none()
+    return queryset.filter(
+        Q(course_unit__program_batch__program__faculty_id__in=faculty_ids)
+        | Q(course_unit__semester__program_batch__program__faculty_id__in=faculty_ids)
+    ).distinct()
 
 
 def assert_timetable_session_access(user, session) -> None:

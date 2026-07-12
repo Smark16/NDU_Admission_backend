@@ -24,7 +24,9 @@ from Programs.venue_code_utils import (
     unique_venue_code_for_campus,
 )
 from Programs.timetable_pdf import (
+    build_teaching_load_pdf_context,
     build_timetable_pdf_context,
+    render_teaching_load_pdf,
     render_timetable_pdf,
     safe_pdf_filename,
 )
@@ -629,6 +631,129 @@ class SemesterTimetableView(APIView):
         return Response(data, status=201)
 
 
+class SemesterTimetablePdfView(APIView):
+    """Admin/faculty PDF of a semester teaching timetable (for reporting / notice boards)."""
+
+    permission_classes = [IsAuthenticated, ProgramSchedulingAPIPermission]
+
+    def get(self, request, semester_id):
+        semester = get_object_or_404(
+            Semester.objects.select_related("program_batch__program"),
+            pk=semester_id,
+            is_active=True,
+        )
+        assert_semester_access(request.user, semester)
+        batch = semester.program_batch
+        program = batch.program
+
+        include_drafts = str(request.query_params.get("include_drafts") or "").lower() in {
+            "1",
+            "true",
+            "yes",
+            "all",
+        }
+        sessions = sessions_for_semester(semester.id, published_only=not include_drafts)
+        serialized = [serialize_session(s) for s in sessions]
+
+        period = ""
+        if semester.start_date and semester.end_date:
+            period = (
+                f"{semester.start_date.strftime('%d %b %Y')} – "
+                f"{semester.end_date.strftime('%d %b %Y')}"
+            )
+        extra_lines = [
+            f"Programme: {program.name}",
+            f"Batch: {batch.name}"
+            + (f" ({batch.academic_year})" if batch.academic_year else ""),
+            f"Semester: {semester.name}",
+        ]
+        if period:
+            extra_lines.append(f"Period: {period}")
+        extra_lines.append(
+            "Includes draft slots" if include_drafts else "Published slots only"
+        )
+
+        context = build_timetable_pdf_context(
+            title="Teaching Timetable",
+            person_name=program.short_form or program.name,
+            person_subtitle=f"{batch.name} · {semester.name}",
+            sessions=serialized,
+            extra_lines=extra_lines,
+        )
+        if include_drafts:
+            context["disclaimer"] = (
+                "This timetable includes draft (unpublished) slots for internal reporting. "
+                "Confirm publication status before posting for students."
+            )
+        else:
+            context["disclaimer"] = (
+                "This timetable shows published teaching sessions for this semester cohort."
+            )
+
+        try:
+            pdf_bytes = render_timetable_pdf(context)
+        except RuntimeError as exc:
+            return Response({"detail": str(exc)}, status=500)
+
+        filename = safe_pdf_filename(
+            "timetable",
+            f"{program.short_form or program.code or program.id}_{batch.name}_{semester.name}",
+        )
+        response = HttpResponse(pdf_bytes, content_type="application/pdf")
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return response
+
+
+class SemesterTeachingLoadPdfView(APIView):
+    """Admin/faculty PDF of lecturer teaching load for a semester (reporting)."""
+
+    permission_classes = [IsAuthenticated, ProgramSchedulingAPIPermission]
+
+    def get(self, request, semester_id):
+        semester = get_object_or_404(
+            Semester.objects.select_related("program_batch__program"),
+            pk=semester_id,
+            is_active=True,
+        )
+        assert_semester_access(request.user, semester)
+        batch = semester.program_batch
+        program = batch.program
+
+        include_drafts = str(request.query_params.get("include_drafts") or "").lower() in {
+            "1",
+            "true",
+            "yes",
+            "all",
+        }
+        sessions = sessions_for_semester(semester.id, published_only=not include_drafts)
+        load_rows = compute_teaching_load(sessions)
+
+        context = build_teaching_load_pdf_context(
+            title="Teaching Load Report",
+            program_name=program.name,
+            batch_name=batch.name,
+            semester_name=semester.name,
+            academic_year=batch.academic_year or "",
+            load_rows=load_rows,
+            include_drafts=include_drafts,
+            extra_lines=[
+                f"Prepared for: {request.user.get_full_name() or request.user.username}",
+            ],
+        )
+        try:
+            pdf_bytes = render_teaching_load_pdf(context)
+        except RuntimeError as exc:
+            return Response({"detail": str(exc)}, status=500)
+
+        filename = safe_pdf_filename(
+            "teaching_load",
+            f"{program.short_form or program.code or program.id}_{batch.name}_{semester.name}",
+        )
+        response = HttpResponse(pdf_bytes, content_type="application/pdf")
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return response
+
+
 class SemesterTimetableBulkPublishView(APIView):
     """Publish or unpublish all timetable sessions for a semester."""
 
@@ -817,11 +942,16 @@ def _student_timetable_sessions(user, semester_id=None):
 
 
 def _lecturer_timetable_sessions(user, semester_id=None):
+    assigned_ids = list(
+        user.course_units.filter(is_active=True).values_list("id", flat=True).distinct()
+    )
+    if not assigned_ids:
+        return []
+
     qs = TimetableSession.objects.filter(
         is_active=True,
         is_published=True,
-        course_unit__lecturers=user,
-        course_unit__is_active=True,
+        course_unit_id__in=assigned_ids,
     ).select_related(
         "course_unit",
         "course_unit__catalog_unit",
@@ -833,7 +963,9 @@ def _lecturer_timetable_sessions(user, semester_id=None):
         qs = qs.filter(course_unit__semester_id=semester_id)
 
     return list(
-        qs.prefetch_related("course_unit__lecturers").order_by("day_of_week", "start_time")
+        qs.prefetch_related("course_unit__lecturers")
+        .distinct()
+        .order_by("day_of_week", "start_time")
     )
 
 
@@ -880,7 +1012,9 @@ class LecturerMyTimetableView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        if not getattr(request.user, "is_lecturer", False) and not request.user.is_staff:
+        user = request.user
+        is_lecturer = bool(getattr(user, "is_lecturer", False)) or user.course_units.exists()
+        if not is_lecturer and not user.is_staff:
             return Response({"detail": "Lecturer access only."}, status=403)
 
         semester_id = request.query_params.get("semester_id")
@@ -892,7 +1026,9 @@ class LecturerMyTimetablePdfView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        if not getattr(request.user, "is_lecturer", False) and not request.user.is_staff:
+        user = request.user
+        is_lecturer = bool(getattr(user, "is_lecturer", False)) or user.course_units.exists()
+        if not is_lecturer and not user.is_staff:
             return Response({"detail": "Lecturer access only."}, status=403)
 
         semester_id = request.query_params.get("semester_id")

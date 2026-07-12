@@ -1341,7 +1341,7 @@ class TimetableSession(models.Model):
 
 
 class LectureAttendanceSession(models.Model):
-    """One class meeting where attendance was taken (course unit + calendar date)."""
+    """One class meeting where attendance was taken (course unit + date + optional timetable slot)."""
 
     course_unit = models.ForeignKey(
         CourseUnit,
@@ -1355,7 +1355,7 @@ class LectureAttendanceSession(models.Model):
         null=True,
         blank=True,
         related_name="attendance_sessions",
-        help_text="Optional link when a published timetable slot matches this date.",
+        help_text="Timetable slot for this meeting (required for multi-slot same-day classes).",
     )
     venue_label = models.CharField(max_length=160, blank=True, default="")
     notes = models.TextField(blank=True, default="")
@@ -1385,13 +1385,35 @@ class LectureAttendanceSession(models.Model):
         default=30,
         help_text="Planned self-check-in window length (minutes). Recommended 20–30 for large classes.",
     )
+    check_in_token = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        help_text="Rotating token encoded in the lecturer QR for student scan check-in.",
+    )
+    check_in_token_issued_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the current check_in_token was issued (rotated periodically).",
+    )
     locked_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ["-session_date", "-id"]
-        unique_together = [("course_unit", "session_date")]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["course_unit", "session_date", "timetable_session"],
+                condition=models.Q(timetable_session__isnull=False),
+                name="uniq_lecture_att_course_date_slot",
+            ),
+            models.UniqueConstraint(
+                fields=["course_unit", "session_date"],
+                condition=models.Q(timetable_session__isnull=True),
+                name="uniq_lecture_att_course_date_noslot",
+            ),
+        ]
         verbose_name = "Lecture attendance session"
         verbose_name_plural = "Lecture attendance sessions"
         permissions = [
@@ -1435,11 +1457,13 @@ class LectureAttendanceRecord(models.Model):
     SOURCE_STUDENT = "student"
     SOURCE_ADMIN = "admin"
     SOURCE_PAPER = "paper"
+    SOURCE_QR = "qr"
     SOURCE_CHOICES = [
         (SOURCE_LECTURER, "Lecturer"),
         (SOURCE_STUDENT, "Student self-check-in"),
         (SOURCE_ADMIN, "Faculty / admin"),
         (SOURCE_PAPER, "Paper register"),
+        (SOURCE_QR, "QR scan"),
     ]
 
     attendance_session = models.ForeignKey(

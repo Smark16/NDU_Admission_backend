@@ -269,6 +269,18 @@ class ResultsReportView(APIView):
         published = qs.filter(status=CourseUnitResult.STATUS_PUBLISHED)
         pass_count = published.filter(is_pass=True).count()
         fail_count = published.filter(is_pass=False).count()
+        published_total = pass_count + fail_count
+        pass_rate = (
+            round(100.0 * pass_count / published_total, 1) if published_total else None
+        )
+
+        grade_distribution = list(
+            published.exclude(grade_letter="")
+            .exclude(grade_letter__isnull=True)
+            .values("grade_letter")
+            .annotate(count=Count("id"))
+            .order_by("grade_letter")
+        )
 
         courses = []
         if semester_id or program_batch_id or course_unit_id:
@@ -284,6 +296,10 @@ class ResultsReportView(APIView):
                     course_unit=cu, status="enrolled"
                 ).count()
                 cu_results = qs.filter(enrollment__course_unit=cu)
+                cu_published = cu_results.filter(status=CourseUnitResult.STATUS_PUBLISHED)
+                cu_pass = cu_published.filter(is_pass=True).count()
+                cu_fail = cu_published.filter(is_pass=False).count()
+                cu_pub_total = cu_pass + cu_fail
                 courses.append(
                     {
                         "course_unit_id": cu.id,
@@ -292,9 +308,12 @@ class ResultsReportView(APIView):
                         "enrolled": enrolled,
                         "draft": cu_results.filter(status=CourseUnitResult.STATUS_DRAFT).count(),
                         "verified": cu_results.filter(status=CourseUnitResult.STATUS_VERIFIED).count(),
-                        "published": cu_results.filter(
-                            status=CourseUnitResult.STATUS_PUBLISHED
-                        ).count(),
+                        "published": cu_published.count(),
+                        "published_pass": cu_pass,
+                        "published_fail": cu_fail,
+                        "pass_rate": (
+                            round(100.0 * cu_pass / cu_pub_total, 1) if cu_pub_total else None
+                        ),
                     }
                 )
 
@@ -303,6 +322,9 @@ class ResultsReportView(APIView):
                 "by_status": by_status,
                 "published_pass": pass_count,
                 "published_fail": fail_count,
+                "published_total": published_total,
+                "pass_rate": pass_rate,
+                "grade_distribution": grade_distribution,
                 "courses": courses,
             }
         )

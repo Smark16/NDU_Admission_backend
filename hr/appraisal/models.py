@@ -205,7 +205,7 @@ class Appraisal(models.Model):
         unique_together = [['cycle', 'staff']]
     
     def __str__(self):
-        return f"{self.staff.full_name} - {self.cycle.academic_year}"
+        return f"{self.staff.get_full_name} - {self.cycle.academic_year}"
     
     def calculate_scores(self):
         """Calculate all scores automatically."""
@@ -354,7 +354,7 @@ class AppraisalObjective(models.Model):
         ordering = ['appraisal', 'id']
     
     def __str__(self):
-        return f"{self.appraisal.staff.full_name} - {self.individual_objective[:50]}"
+        return f"{self.appraisal.staff.get_full_name} - {self.individual_objective[:50]}"
 
 
 class BehavioralCompetency(models.Model):
@@ -407,7 +407,7 @@ class BehavioralCompetency(models.Model):
         unique_together = [['appraisal', 'competency']]
     
     def __str__(self):
-        return f"{self.appraisal.staff.full_name} - {self.get_competency_display()}"
+        return f"{self.appraisal.staff.get_full_name} - {self.get_competency_display()}"
 
 
 class PerformanceFactor(models.Model):
@@ -465,7 +465,7 @@ class PerformanceFactor(models.Model):
         unique_together = [['appraisal', 'factor']]
     
     def __str__(self):
-        return f"{self.appraisal.staff.full_name} - {self.get_factor_display()}"
+        return f"{self.appraisal.staff.get_full_name} - {self.get_factor_display()}"
 
 
 class DevelopmentObjective(models.Model):
@@ -497,7 +497,7 @@ class DevelopmentObjective(models.Model):
         ordering = ['appraisal', 'id']
     
     def __str__(self):
-        return f"{self.appraisal.staff.full_name} - {self.objective[:50]}"
+        return f"{self.appraisal.staff.get_full_name} - {self.objective[:50]}"
 
 
 class PerformanceImprovementPlan(models.Model):
@@ -558,7 +558,7 @@ class PerformanceImprovementPlan(models.Model):
         ordering = ['-start_date']
     
     def __str__(self):
-        return f"PIP - {self.appraisal.staff.full_name} ({self.start_date})"
+        return f"PIP - {self.appraisal.staff.get_full_name} ({self.start_date})"
 
 
 class MidYearReview(models.Model):
@@ -603,4 +603,4 @@ class MidYearReview(models.Model):
         ordering = ['-review_date']
     
     def __str__(self):
-        return f"Mid-Year Review - {self.appraisal.staff.full_name}"
+        return f"Mid-Year Review - {self.appraisal.staff.get_full_name}"

@@ -19,9 +19,12 @@ from .phase2_views import (
     CourseRetakeRegistrationsView,
     CourseSittingListView,
     ExamRetakeDetailView,
+    ExamSessionBulkGenerateView,
     ExamSessionDetailView,
+    ExamSessionListView,
     ExamSessionSittingListView,
     StudentMyExamScheduleView,
+    StudentRetakeRequestView,
 )
 from .policy_views import (
     ActivePolicyView,
@@ -160,6 +163,21 @@ urlpatterns = [
         name="exam-card-verify",
     ),
     path("student/my-exam-schedule/", StudentMyExamScheduleView.as_view(), name="student-my-exam-schedule"),
+    path(
+        "student/retake-request/",
+        StudentRetakeRequestView.as_view(),
+        name="student-retake-request",
+    ),
+    path(
+        "exam-sessions/bulk-generate/",
+        ExamSessionBulkGenerateView.as_view(),
+        name="exam-sessions-bulk-generate",
+    ),
+    path(
+        "exam-sessions/",
+        ExamSessionListView.as_view(),
+        name="exam-sessions-list",
+    ),
     path(
         "courses/<int:course_unit_id>/exam-sessions/",
         CourseExamSessionsView.as_view(),

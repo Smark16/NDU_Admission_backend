@@ -1,7 +1,8 @@
-"""Exam sitting eligibility from CA marks, enrollment, and admission status."""
+"""Exam sitting eligibility from CA marks, enrollment, admission status, and attendance %."""
 from decimal import Decimal
 
 from admissions.models import AdmittedStudent
+from Programs.attendance_stats import student_course_attendance_summary
 from Programs.models import StudentCourseUnitEnrollment
 
 from ..models import AssessmentPolicy, CourseUnitResult
@@ -19,8 +20,8 @@ def evaluate_exam_eligibility(
     """
     Returns eligibility for end-of-semester exam sitting.
 
-    eligible: True when student may sit (CA >= policy threshold, enrolled, not revoked).
-  """
+    eligible: True when student may sit (CA >= policy threshold, attendance %, enrolled, not revoked).
+    """
     policy = policy or resolve_assessment_policy(enrollment=enrollment)
     if result is None:
         result = getattr(enrollment, "course_result", None)
@@ -56,6 +57,23 @@ def evaluate_exam_eligibility(
     else:
         reasons.append(f"CA {ca_mark} meets the sit threshold (≥ {min_ca}).")
 
+    attendance = student_course_attendance_summary(student, enrollment.course_unit)
+    attendance_percent = attendance.get("attendance_percent")
+    min_attendance = attendance.get("min_percent_required")
+    if attendance.get("sessions_taken", 0) > 0 and attendance_percent is not None:
+        if not attendance.get("meets_threshold"):
+            blockers.append(
+                f"Attendance {attendance_percent}% is below the minimum "
+                f"{min_attendance}% required to sit the exam "
+                f"({attendance['sessions_attended']}/{attendance['sessions_taken']} sessions)."
+            )
+        else:
+            reasons.append(
+                f"Attendance {attendance_percent}% meets the sit threshold (≥ {min_attendance}%)."
+            )
+    else:
+        reasons.append("No lecture attendance sessions recorded yet for this course.")
+
     eligible = len(blockers) == 0
     if allow_admin_override:
         eligible = True
@@ -67,6 +85,10 @@ def evaluate_exam_eligibility(
         "blockers": blockers,
         "ca_mark": str(ca_mark) if ca_mark is not None else None,
         "min_ca_to_sit_exam": str(min_ca),
+        "attendance_percent": attendance_percent,
+        "min_attendance_percent_to_sit_exam": min_attendance,
+        "attendance_sessions_taken": attendance.get("sessions_taken", 0),
+        "attendance_sessions_attended": attendance.get("sessions_attended", 0),
         "exam_sitting_allowed": result.exam_sitting_allowed if result else False,
         "failed_published": failed_published,
         "has_published_result": bool(

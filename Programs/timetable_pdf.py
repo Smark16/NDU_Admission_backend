@@ -104,6 +104,57 @@ def render_timetable_pdf(context: dict) -> bytes:
     return pdf_buffer.read()
 
 
+def build_teaching_load_pdf_context(
+    *,
+    title: str,
+    program_name: str,
+    batch_name: str,
+    semester_name: str,
+    academic_year: str = "",
+    load_rows: list[dict],
+    include_drafts: bool = False,
+    extra_lines: list[str] | None = None,
+) -> dict:
+    branding = _portal_branding()
+    total_hours = round(sum(float(r.get("total_hours") or 0) for r in load_rows), 2)
+    total_sessions = sum(int(r.get("session_count") or 0) for r in load_rows)
+    return {
+        **branding,
+        "title": title,
+        "program_name": program_name,
+        "batch_name": batch_name,
+        "semester_name": semester_name,
+        "academic_year": academic_year or "",
+        "extra_lines": extra_lines or [],
+        "include_drafts": include_drafts,
+        "load_rows": load_rows,
+        "lecturer_count": len(load_rows),
+        "total_hours": total_hours,
+        "total_sessions": total_sessions,
+        "generated_at": timezone.localtime().strftime("%d %B %Y %I:%M %p"),
+        "disclaimer": (
+            "Teaching load is calculated from scheduled class duration. "
+            + (
+                "Includes draft (unpublished) slots."
+                if include_drafts
+                else "Published slots only."
+            )
+        ),
+    }
+
+
+def render_teaching_load_pdf(context: dict) -> bytes:
+    html = render_to_string("programs/teaching_load_pdf.html", context)
+    from xhtml2pdf import pisa
+
+    pdf_buffer = io.BytesIO()
+    result = pisa.CreatePDF(html, dest=pdf_buffer, link_callback=xhtml2pdf_link_callback)
+    if result.err:
+        raise RuntimeError("Teaching load PDF generation failed.")
+    pdf_buffer.seek(0)
+    return pdf_buffer.read()
+
+
 def safe_pdf_filename(prefix: str, identifier: str) -> str:
     safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in (identifier or "timetable"))
     safe = safe.strip("_") or "timetable"

@@ -379,6 +379,12 @@ class ExamSession(models.Model):
         help_text="When true, students enrolled on this course can see the session.",
     )
     notes = models.TextField(blank=True, default="")
+    invigilators = models.ManyToManyField(
+        "staff.StaffProfile",
+        blank=True,
+        related_name="exam_sessions_invigilating",
+        help_text="Staff assigned to invigilate this sitting.",
+    )
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
