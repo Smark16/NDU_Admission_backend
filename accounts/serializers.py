@@ -279,7 +279,8 @@ class RegisterSerializer(serializers.ModelSerializer):
 
         # Send email (best-effort — skip if broker/Redis is unavailable)
         try:
-            celery_send_account_email.delay(user.id, password)
+            # User Management creates staff/ERP users — always link to Horizon ERP.
+            celery_send_account_email.delay(user.id, password, True)
         except Exception:
             pass
 

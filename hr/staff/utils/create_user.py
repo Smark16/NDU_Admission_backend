@@ -8,6 +8,9 @@ from accounts.role_assignment import sync_user_role_flags
 
 def create_user_for_staff(staff, initial_password=None):
     """Create or link an ERP user for an HR staff profile (university email login)."""
+    send_credentials = False
+    password = (initial_password or "").strip() or None
+
     with transaction.atomic():
         email = (staff.university_email or "").lower().strip()
         if not email:
@@ -15,7 +18,6 @@ def create_user_for_staff(staff, initial_password=None):
 
         first_name = (staff.first_name or "").strip()
         last_name = (staff.last_name or "").strip()
-        password = (initial_password or "").strip() or None
 
         existing = User.objects.filter(username__iexact=email).first()
         if existing:
@@ -34,6 +36,7 @@ def create_user_for_staff(staff, initial_password=None):
             user.set_password(password)
             user.is_active = True
             user.must_change_password = True
+            send_credentials = True
         elif not existing:
             user.set_unusable_password()
             user.is_active = False
@@ -58,5 +61,13 @@ def create_user_for_staff(staff, initial_password=None):
 
         staff.user = user
         staff.save(update_fields=["user"])
+
+    if send_credentials and password:
+        try:
+            from accounts.tasks import celery_send_account_email
+
+            celery_send_account_email.delay(user.id, password, True)
+        except Exception:
+            pass
 
     return user

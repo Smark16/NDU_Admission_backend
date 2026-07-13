@@ -3,10 +3,15 @@ from django.apps import apps
 from .utils.emails import send_account_email, send_reset_password_link, send_horizon_reset_password_link
 
 @shared_task
-def celery_send_account_email(user_id, password):
+def celery_send_account_email(user_id, password, use_erp_portal=None):
    User = apps.get_model('accounts', 'User')
    user = User.objects.get(id=user_id)
-   send_account_email(user, password, subject = "Account Created Successfully")
+   send_account_email(
+       user,
+       password,
+       subject="Account Created Successfully",
+       use_erp_portal=use_erp_portal,
+   )
 
 @shared_task
 def celery_send_password_reset_Link(user_id):
