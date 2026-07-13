@@ -288,6 +288,33 @@ def schoolpay_webhook(request):
         logger.exception("Error processing ApplicationPayment for ref %s", payment_ref)
         return JsonResponse({'error': 'Internal server error'}, status=500)
 
+    # ── Portal tuition STK (StudentTuitionPayment) ───────────────────────────
+    try:
+        from payments.utils.tuition_payment_status import mark_tuition_payment_completed
+
+        with transaction.atomic():
+            tuition_payment = StudentTuitionPayment.objects.select_for_update().filter(
+                payment_reference=payment_ref
+            ).first()
+
+            if tuition_payment:
+                if tuition_payment.status == "completed":
+                    logger.info("StudentTuitionPayment %s already completed", payment_ref)
+                    return JsonResponse({"status": "duplicate"}, status=200)
+
+                mark_tuition_payment_completed(
+                    tuition_payment,
+                    schoolpay_payload=data,
+                )
+                logger.info("StudentTuitionPayment %s marked completed", payment_ref)
+                return JsonResponse({"status": "ok"}, status=200)
+
+    except Exception:
+        logger.exception(
+            "Error processing StudentTuitionPayment for ref %s", payment_ref
+        )
+        return JsonResponse({"error": "Internal server error"}, status=500)
+
     logger.warning("No matching payment found for reference: %s", payment_ref)
     return JsonResponse({'status': 'unknown'}, status=200)
 

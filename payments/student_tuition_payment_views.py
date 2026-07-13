@@ -7,9 +7,6 @@ import uuid
 from decimal import Decimal, InvalidOperation
 
 from django.conf import settings
-from django.db import transaction
-from django.utils import timezone
-from datetime import timedelta
 
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
@@ -114,12 +111,15 @@ class InitiateTuitionPaymentView(APIView):
         if request.data.get("last_name"):
             last_name = str(request.data["last_name"]).strip() or last_name
 
-        stale_cutoff = timezone.now() - timedelta(minutes=10)
-        StudentTuitionPayment.objects.filter(
-            student=student,
-            status="pending",
-            created_at__lt=stale_cutoff,
-        ).update(status="failed")
+        # Reconcile this student's stale pendings with SchoolPay before blocking retry.
+        from payments.utils.tuition_payment_status import (
+            reconcile_stale_pending_tuition_payments,
+        )
+
+        reconcile_stale_pending_tuition_payments(
+            StudentTuitionPayment.objects.filter(student=student),
+            stale_minutes=10,
+        )
 
         if StudentTuitionPayment.objects.filter(student=student, status="pending").exists():
             return Response(
@@ -215,29 +215,16 @@ class TuitionPaymentStatusView(APIView):
                 }
             )
 
+        from payments.utils.tuition_payment_status import reconcile_pending_tuition_payment
+
         try:
-            client = SchoolPayClient()
-            data = client.check_status(payment.payment_reference)
-        except ValueError:
-            return Response({"status": _api_status(payment), "receipt_number": ""})
+            reconcile_pending_tuition_payment(payment)
+        except Exception:
+            logger.exception(
+                "Tuition status reconcile failed for ref %s", payment_ref
+            )
 
-        if data.get("returnCode") == 0:
-            sp_status = (data.get("status") or "").upper()
-            if sp_status == "PAID":
-                with transaction.atomic():
-                    payment = StudentTuitionPayment.objects.select_for_update().get(pk=payment.pk)
-                    if payment.status != "completed":
-                        payment.status = "completed"
-                        payment.receipt_number = data.get("receiptNumber") or payment.receipt_number or ""
-                        payment.paid_at = timezone.now()
-                        tid = data.get("transactionId")
-                        if tid:
-                            payment.notes = (payment.notes + f"\nSchoolPay transactionId: {tid}").strip()
-                        payment.save()
-            elif sp_status in ("FAILED", "CANCELLED"):
-                payment.status = "failed" if sp_status == "FAILED" else "cancelled"
-                payment.save(update_fields=["status", "updated_at"])
-
+        payment.refresh_from_db()
         return Response(
             {
                 "status": _api_status(payment),

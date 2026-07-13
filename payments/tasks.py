@@ -10,6 +10,9 @@ from payments.utils.Transaction_sync import (
 from payments.utils.application_payment_status import (
     reconcile_stale_pending_application_payments,
 )
+from payments.utils.tuition_payment_status import (
+    reconcile_stale_pending_tuition_payments,
+)
 
 import logging
 
@@ -19,10 +22,27 @@ logger = logging.getLogger(__name__)
 @shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=10)
 def auto_process_delayed_payments(self):
     """
-    Reconcile PENDING application-fee payments older than 10 minutes with SchoolPay.
-    Auto-clears abandoned initiations (no PIN entered) so applicants can retry.
+    Reconcile PENDING application-fee and portal tuition STK payments older than
+    10 minutes with SchoolPay. Auto-clears abandoned initiations so payers can retry.
     """
-    results = reconcile_stale_pending_application_payments()
+    app = reconcile_stale_pending_application_payments()
+    tuition = reconcile_stale_pending_tuition_payments()
+    return (
+        "application: "
+        f"{app['paid']} paid, {app['failed']} failed, "
+        f"{app['cleared']} cleared, {app['still_pending']} still pending, "
+        f"{app['errors']} errors; "
+        "tuition: "
+        f"{tuition['paid']} paid, {tuition['failed']} failed, "
+        f"{tuition['cleared']} cleared, {tuition['still_pending']} still pending, "
+        f"{tuition['errors']} errors"
+    )
+
+
+@shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=10)
+def auto_process_delayed_tuition_payments(self):
+    """Reconcile stale pending StudentTuitionPayment rows with SchoolPay."""
+    results = reconcile_stale_pending_tuition_payments()
     return (
         f"{results['paid']} paid, {results['failed']} failed, "
         f"{results['cleared']} cleared, {results['still_pending']} still pending, "
