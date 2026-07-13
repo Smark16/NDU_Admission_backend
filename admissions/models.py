@@ -502,15 +502,30 @@ class AdmittedStudent(models.Model):
     
     @property
     def full_name(self):
-        return self.application.full_name
+        if not self.application_id:
+            return ""
+        try:
+            return self.application.full_name
+        except Exception:
+            return ""
     
     @property
     def email(self):
-        return self.application.email
+        if not self.application_id:
+            return ""
+        try:
+            return self.application.email
+        except Exception:
+            return ""
     
     @property
     def phone(self):
-        return self.application.phone
+        if not self.application_id:
+            return ""
+        try:
+            return self.application.phone
+        except Exception:
+            return ""
 
 
 class StudentIdCard(models.Model):

@@ -123,7 +123,9 @@ class LecturerCourseMarksView(APIView):
         grade_scale = resolve_grade_scale(course_unit=course_unit)
         level_name = None
         if course_unit.program_batch_id:
-            level_name = course_unit.program_batch.program.academic_level.name
+            program = getattr(course_unit.program_batch, "program", None)
+            level = getattr(program, "academic_level", None) if program else None
+            level_name = level.name if level else None
 
         enrollments = (
             StudentCourseUnitEnrollment.objects.filter(
@@ -137,14 +139,19 @@ class LecturerCourseMarksView(APIView):
 
         rows = []
         for enr in enrollments:
-            if enr.student.application and enr.student.application.is_revoked:
+            application = getattr(enr.student, "application", None)
+            if application is not None and getattr(application, "is_revoked", False):
                 continue
             result = getattr(enr, "course_result", None)
+            try:
+                student_name = enr.student.full_name or ""
+            except Exception:
+                student_name = ""
             rows.append(
                 {
                     "enrollment_id": enr.id,
                     "reg_no": enr.student.reg_no or "",
-                    "student_name": enr.student.full_name or "",
+                    "student_name": student_name,
                     "ca_mark": str(result.ca_mark) if result and result.ca_mark is not None else None,
                     "exam_mark": str(result.exam_mark) if result and result.exam_mark is not None else None,
                     "final_mark": str(result.final_mark) if result and result.final_mark is not None else None,
