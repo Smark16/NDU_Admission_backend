@@ -4,7 +4,11 @@ from django.template.loader import render_to_string
 from django.utils.http import urlsafe_base64_encode
 from django.utils.encoding import force_bytes
 from django.contrib.auth.tokens import default_token_generator
-from accounts.portal_branding import get_erp_frontend_url, get_university_display_name
+from accounts.portal_branding import (
+    DEFAULT_ERP_FRONTEND_URL,
+    get_erp_frontend_url,
+    get_university_display_name,
+)
 
 
 def _uni() -> str:
@@ -20,7 +24,7 @@ def _email_template_context(**extra):
 
 def _account_login_link(user, *, use_erp_portal=None) -> str:
     """
-    Staff / ERP users → Horizon ERP URL.
+    Staff / ERP users → https://erp.ndejje.ndu.ac.ug
     Applicants only → admissions LOGIN_URL.
     """
     if use_erp_portal is None:
@@ -29,7 +33,8 @@ def _account_login_link(user, *, use_erp_portal=None) -> str:
         )
         use_erp_portal = not is_applicant_only
     if use_erp_portal:
-        return get_erp_frontend_url()
+        # Canonical staff ERP (do not use admissions LOGIN_URL).
+        return (DEFAULT_ERP_FRONTEND_URL or get_erp_frontend_url()).rstrip("/")
     return (getattr(settings, "LOGIN_URL", "") or "").rstrip("/")
 
 
