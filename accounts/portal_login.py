@@ -29,10 +29,6 @@ def user_is_erp_account(user) -> bool:
     )
 
 
-def user_is_applicant_only(user) -> bool:
-    return bool(getattr(user, "is_applicant", False)) and not user_is_erp_account(user)
-
-
 def assert_user_allowed_on_portal(user, portal_kind: str | None) -> None:
     """
     Enforce portal split:
