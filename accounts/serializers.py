@@ -143,6 +143,19 @@ class ObtainSerializer(TokenObtainPairSerializer):
                 "no_active_account",
             )
 
+        request = self.context.get("request")
+        portal_kind = None
+        if request is not None:
+            portal_kind = (
+                request.data.get("portal")
+                or request.data.get("portal_kind")
+                or request.headers.get("X-Portal-Kind")
+            )
+
+        from accounts.portal_login import assert_user_allowed_on_portal
+
+        assert_user_allowed_on_portal(user, portal_kind)
+
         self.user = user
         refresh = self.get_token(self.user)
         data = {
