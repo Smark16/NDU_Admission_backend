@@ -154,7 +154,7 @@ class ObtainSerializer(TokenObtainPairSerializer):
 
         from accounts.portal_login import assert_user_allowed_on_portal
 
-        assert_user_allowed_on_portal(user, portal_kind)
+        assert_user_allowed_on_portal(user, portal_kind, request=request)
 
         self.user = user
         refresh = self.get_token(self.user)

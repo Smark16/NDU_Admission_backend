@@ -58,7 +58,9 @@ class SessionView(APIView):
 
     def get(self, request):
         from accounts.jwt_utils import session_payload
+        from accounts.portal_login import assert_session_allowed_on_portal
 
+        assert_session_allowed_on_portal(request.user, request)
         return Response(session_payload(request.user), status=status.HTTP_200_OK)
 
 
