@@ -27,8 +27,12 @@ class JobOpening(models.Model):
     )
     employment_type = models.CharField(max_length=20, choices=EMPLOYMENT_TYPE_CHOICES, default='FULL_TIME')
     
-    # Job Details
-    description = models.FileField(upload_to='job_descriptions/')
+    # Job Details — PDF only (careers portal serves this as a download)
+    description = models.FileField(
+        upload_to='job_descriptions/',
+        validators=[FileExtensionValidator(allowed_extensions=['pdf'])],
+        help_text='Upload the full job description as a PDF.',
+    )
    
     # Application Details
     number_of_positions = models.IntegerField(
@@ -76,19 +80,19 @@ class JobApplication(models.Model):
     last_name = models.CharField(max_length=100)
     email = models.EmailField()
     phone = models.CharField(max_length=20)
-    title = models.CharField(max_length=5)
-    current_address = models.TextField(max_length=100)
-    religious_affiliation = models.CharField(max_length=20)
-    marital_status = models.CharField(max_length=20)
+    title = models.CharField(max_length=20)
+    current_address = models.TextField(max_length=255)
+    religious_affiliation = models.CharField(max_length=100)
+    marital_status = models.CharField(max_length=50)
     dob = models.CharField(max_length=20)
-    brief_description = models.TextField(max_length=20)
+    brief_description = models.TextField(max_length=2000)
     
     # Application Details
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='APPLIED')
     current_stage = models.CharField(max_length=20,null=True, blank=True)
     application_date = models.DateTimeField(auto_now_add=True)
     has_declared = models.BooleanField(default=False)
-    skills = models.TextField(max_length=500)
+    skills = models.TextField(max_length=2000)
     reference = models.CharField(max_length=20, unique=True, blank=True, editable=False)
 
     def save(self, *args, **kwargs):
@@ -117,8 +121,8 @@ class JobApplication(models.Model):
 
 class EducationHistory(models.Model):
     application = models.ForeignKey(JobApplication, on_delete=models.CASCADE)
-    institution = models.CharField(max_length=20)
-    award = models.CharField(max_length=20)
+    institution = models.CharField(max_length=200)
+    award = models.CharField(max_length=200)
     start_date = models.DateField()
     end_date = models.DateField()
         
@@ -132,26 +136,26 @@ class Employment(models.Model):
         default=0,
         validators=[MinValueValidator(0)]
     )
-    duties = models.TextField(max_length=300)
+    duties = models.TextField(max_length=1000)
 
 class Certificates_and_Training(models.Model):
     application = models.ForeignKey(JobApplication, on_delete=models.CASCADE, null=True, blank=True)
-    certificate_name = models.CharField(max_length=30)
-    institution = models.CharField(max_length=30)
+    certificate_name = models.CharField(max_length=200)
+    institution = models.CharField(max_length=200)
     date_obtained = models.DateField()
 
 class Projects(models.Model):
     application = models.ForeignKey(JobApplication, on_delete=models.CASCADE)
-    name = models.CharField(max_length=50)
+    name = models.CharField(max_length=100)
     link = models.URLField(max_length=200)
-    description = models.CharField(max_length=200)
+    description = models.CharField(max_length=500)
 
 class References(models.Model):
     application = models.ForeignKey(JobApplication, on_delete=models.CASCADE)
-    name = models.CharField(max_length=30)
-    phone = models.PositiveIntegerField()
-    email = models.EmailField(max_length=30)
-    job_position = models.CharField(max_length=30)
+    name = models.CharField(max_length=100)
+    phone = models.CharField(max_length=30)
+    email = models.EmailField(max_length=100)
+    job_position = models.CharField(max_length=100)
 
 class Interview(models.Model):  
     STATUS_CHOICES = [

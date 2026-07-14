@@ -23,7 +23,15 @@ from django.http import HttpResponse
 from django.template.loader import render_to_string
 
 # email
-from hr.hiring.utils.interview_email import send_interview_email
+from hr.hiring.tasks import (
+    queue_application_received,
+    queue_hired_emails,
+    queue_interview_invitation,
+    queue_interview_invitations,
+    queue_interview_outcome,
+)
+from hr.hiring.utils.job_lifecycle import is_within_application_window, public_openings_queryset
+from hr.hiring.erp_views import UpdateJobOpeningErpView
 
 # =========================================Job Openings=================================================
 
@@ -42,17 +50,31 @@ class ListJobOpenings(generics.ListAPIView):
         serializer = self.get_serializer(job_openings, many=True)
         return Response(serializer.data, status=200)
 
-# list open vacancies
+# list open vacancies (public careers — status + active date window)
 class ListOpenJobs(generics.ListAPIView):
-    queryset = JobOpening.objects.select_related('department').filter(status='OPEN')
     serializer_class = ListJobOpeningSerializer
+
+    def get_queryset(self):
+        return public_openings_queryset()
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx['request'] = self.request
+        return ctx
 
 # single open vacancy
 class RetrieveOpenJob(generics.RetrieveAPIView):
-    queryset = JobOpening.objects.select_related('department').filter(status='OPEN')
     serializer_class = ListJobOpeningSerializer
     lookup_field = "id"
     lookup_url_kwarg = "job_id"
+
+    def get_queryset(self):
+        return public_openings_queryset()
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx['request'] = self.request
+        return ctx
 
 # create job openings
 class CreateJobOpenings(generics.CreateAPIView):
@@ -61,12 +83,11 @@ class CreateJobOpenings(generics.CreateAPIView):
     serializer_class = JobOpeningSerializer
     parser_classes = [MultiPartParser, FormParser]
 
-# update job openings
-class UpdateJobOpenings(generics.UpdateAPIView):
-    permission_classes = [IsAuthenticated, DjangoModelPermissions]
-    queryset = JobOpening.objects.all()
-    serializer_class = JobOpeningSerializer
-    parser_classes = [MultiPartParser, FormParser]
+# update job openings — always use ERP handler (PDF optional; keep existing file)
+class UpdateJobOpenings(UpdateJobOpeningErpView):
+    """Backward-compatible alias of UpdateJobOpeningErpView."""
+
+    pass
 
 # delete job openings
 class DeleteJobOpenings(generics.DestroyAPIView):
@@ -79,7 +100,7 @@ class DeleteJobOpenings(generics.DestroyAPIView):
 class SingleJobOpening(generics.RetrieveAPIView):
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
     queryset = JobOpening.objects.select_related('department')
-    serializer_class = JobOpeningSerializer
+    serializer_class = ListJobOpeningSerializer
     lookup_field = "id"
     lookup_url_kwarg = "job_id"
 
@@ -88,19 +109,29 @@ class OpeningStats(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        from hr.hiring.utils.job_lifecycle import today_local
+
+        day = today_local()
         openings = JobOpening.objects.annotate(
-            accepted_count=Count(
+            hired_count=Count(
                 'applications',
-                filter=Q(applications__status='ACCEPTED')
+                filter=Q(applications__status='HIRED')
             )
         )
 
         stats = openings.aggregate(
             total_positions=Count('id'),
-            open_jobs=Count('id', filter=Q(status='OPEN')),
+            open_jobs=Count(
+                'id',
+                filter=Q(
+                    status='OPEN',
+                    published_date__lte=day,
+                    application_deadline__gte=day,
+                ),
+            ),
             filled_positions=Count(
                 'id',
-                filter=Q(accepted_count__gte=F('number_of_positions'))
+                filter=Q(hired_count__gte=F('number_of_positions')) | Q(status='FILLED')
             )
         )
 
@@ -170,28 +201,57 @@ def create_job_application(request):
             if not job:
                 return Response({"detail": "Job opening is closed or invalid"}, status=400)
 
+            if not is_within_application_window(job):
+                return Response(
+                    {"detail": "This vacancy is not currently accepting applications (outside open dates)."},
+                    status=400,
+                )
+
             application = JobApplication(
                 job_opening=job,
-                first_name=data.get("first_name"),
-                last_name=data.get("last_name"),
-                email=data.get("email"),
-                phone=data.get("phone"),
-                title=data.get("title"),
-                current_address=data.get("current_address"),
-                religious_affiliation=data.get("religious_affiliation"),
-                marital_status=data.get("marital_status"),
-                dob=data.get("dob"),
-                brief_description=data.get("brief_description"),
-                skills=data.get("skills"),
-                has_declared=str(data.get("has_declared", "")).upper() == "TRUE",
+                first_name=data.get("first_name") or "",
+                last_name=data.get("last_name") or "",
+                email=data.get("email") or "",
+                phone=data.get("phone") or "",
+                title=(data.get("title") or "Mr")[:20],
+                current_address=(data.get("current_address") or "N/A")[:255],
+                religious_affiliation=(data.get("religious_affiliation") or "N/A")[:100],
+                marital_status=(data.get("marital_status") or "N/A")[:50],
+                dob=data.get("dob") or "N/A",
+                brief_description=(data.get("brief_description") or "N/A")[:2000],
+                skills=(data.get("skills") or "N/A")[:2000],
+                has_declared=str(data.get("has_declared", "")).lower() in ("true", "1", "yes"),
             )
 
+            reference_bulk = []
+            for r in references_data:
+                phone_raw = str(r.get("phone") or "").strip()
+                if not phone_raw:
+                    raise KeyError("references.phone")
+                reference_bulk.append(References(
+                    application=application,
+                    name=(r.get("name") or "")[:100],
+                    phone=phone_raw[:30],
+                    email=(r.get("email") or "")[:100],
+                    job_position=(r.get("job_position") or "")[:100],
+                ))
+
+            certificate_bulk = []
+            for c in certificates:
+                certificate_bulk.append(Certificates_and_Training(
+                    application=application,
+                    certificate_name=(c.get("certificate_name") or "")[:200],
+                    institution=(c.get("institution") or "")[:200],
+                    date_obtained=c["date_obtained"],
+                ))
+
+            # normalize nested education/employment with field length guards
             education_bulk = []
             for e in education_data:
                 education_bulk.append(EducationHistory(
                     application=application,
-                    institution=e["institution"],
-                    award=e["award"],
+                    institution=(e.get("institution") or "")[:200],
+                    award=(e.get("award") or "")[:200],
                     start_date=e["start_date"],
                     end_date=e["end_date"],
                 ))
@@ -200,40 +260,21 @@ def create_job_application(request):
             for e in employment_data:
                 employment_bulk.append(Employment(
                     application=application,
-                    current_employer=e["current_employer"],
+                    current_employer=(e.get("current_employer") or "")[:200],
                     start_date=e["start_date"],
                     end_date=e["end_date"],
-                    current_position=e["current_position"],
-                    years_of_experience=e.get("years_of_experience", 0),
-                    duties=e["duties"],
+                    current_position=(e.get("current_position") or "")[:200],
+                    years_of_experience=int(e.get("years_of_experience") or 0),
+                    duties=(e.get("duties") or "")[:1000],
                 ))
 
             project_bulk = []
             for p in projects_data:
                 project_bulk.append(Projects(
                     application=application,
-                    name=p["name"],
-                    link=p["link"],
-                    description=p["description"],
-                ))
-
-            reference_bulk = []
-            for r in references_data:
-                reference_bulk.append(References(
-                    application=application,
-                    name=r["name"],
-                    phone=r["phone"],
-                    email=r["email"],
-                    job_position=r["job_position"],
-                ))
-
-            certificate_bulk = []
-            for c in certificates:
-                certificate_bulk.append(Certificates_and_Training(
-                    application=application,
-                    certificate_name=c['certificate_name'],
-                    institution=c['institution'],
-                    date_obtained=c['date_obtained']
+                    name=(p.get("name") or "")[:100],
+                    link=(p.get("link") or "")[:200],
+                    description=(p.get("description") or "")[:500],
                 ))
 
             application.save()
@@ -247,8 +288,7 @@ def create_job_application(request):
             # -----------------------------
             # Post-commit actions
             # -----------------------------
-            # transaction.on_commit(lambda: send_job_application_email.delay(application.id))
-            # transaction.on_commit(lambda: notify_hr_new_application.delay(application.id))
+            queue_application_received(application.id)
 
             return Response(
                 {
@@ -303,7 +343,7 @@ def track_application(request):
 class SingleApplication(generics.RetrieveAPIView):
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
     queryset = JobApplication.objects.select_related('job_opening', 'job_opening__department')
-    serializer_class = ListApplicationSerilaizer
+    serializer_class = ApplicationDetailSerializer
     lookup_field = "id"
     lookup_url_kwarg = "app_id"
 
@@ -341,10 +381,17 @@ class Shortlist(APIView):
 
         with transaction.atomic():
             application = JobApplication.objects.filter(pk=application_id).first()
+            if not application:
+                return Response({"detail": "Application not found"}, status=404)
+            if application.status not in ('APPLIED', 'SCREENING'):
+                return Response(
+                    {"detail": f"Cannot shortlist application in status {application.status}"},
+                    status=400,
+                )
             application.status = 'SHORTLISTED'
-            application.save()
+            application.save(update_fields=['status'])
 
-        return Response({"detail":"Application shortlisted successfully"})
+        return Response({"detail": "Application shortlisted successfully"})
 
 class BulkShortList(APIView):
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
@@ -376,17 +423,17 @@ class BulkShortList(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # -------- Fetch scoped applications --------
+        # -------- Fetch scoped applications (APPLIED + SCREENING eligible) --------
         qs = JobApplication.objects.filter(
             id__in=application_ids,
-            status='APPLIED'
+            status__in=['APPLIED', 'SCREENING'],
         ).order_by('application_date')
 
         total_valid = qs.count()
 
         if total_valid == 0:
             return Response(
-                {"detail": "No valid APPLIED applications found for this job"},
+                {"detail": "No valid APPLIED/SCREENING applications found in your selection"},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
@@ -483,12 +530,32 @@ class BulkJobApplicationPDFDownloadView(APIView):
     def post(self, request):
         number = request.data.get('number')
         application_ids = request.data.get("application_ids", [])
+        # Optional: "SHORTLISTED" (default for legacy “Shortlisted PDFs”) or omit to download any selected IDs
+        status_filter = (request.data.get("status") or "").strip().upper() or None
 
-        applications = JobApplication.objects.filter(id__in=application_ids, 
-                       status='SHORTLISTED').order_by('application_date')[:number]
+        try:
+            number = int(number)
+        except (TypeError, ValueError):
+            number = len(application_ids) if isinstance(application_ids, list) else 0
 
-        if not applications.exists():
-            return HttpResponse("No applications found for the given filter.", status=404)
+        if not isinstance(application_ids, list) or not application_ids:
+            return Response({"detail": "application_ids must be a non-empty list"}, status=400)
+        if number <= 0:
+            return Response({"detail": "number must be greater than zero"}, status=400)
+
+        qs = JobApplication.objects.filter(id__in=application_ids).select_related(
+            "job_opening", "job_opening__department"
+        ).order_by("application_date")
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+
+        applications = list(qs[:number])
+
+        if not applications:
+            return Response(
+                {"detail": "No applications found for the given filter. Shortlist candidates first, or select shortlisted rows."},
+                status=404,
+            )
 
         # Create in-memory zip
         zip_buffer = io.BytesIO()
@@ -533,8 +600,8 @@ class InterviewPipelineView(APIView):
 
     def get(self, request):
         if not request.user.has_perm('hiring.view_interview'):
-            return Response({"detail":"you dont have permissions to access interviews"})
-        
+            return Response({"detail": "you dont have permissions to access interviews"}, status=403)
+
         data = {}
 
         openings = JobOpening.objects.prefetch_related(
@@ -543,7 +610,7 @@ class InterviewPipelineView(APIView):
 
         for opening in openings:
             position = opening.title
-            data[position] = {
+            buckets = {
                 "shortlisted": [],
                 "personality": [],
                 "written": [],
@@ -556,19 +623,17 @@ class InterviewPipelineView(APIView):
                     "name": app.get_full_name(),
                     "email": app.email,
                     "phone": app.phone,
-                    "reference":app.reference,
+                    "reference": app.reference,
                     "appliedDate": app.application_date.date(),
                 }
 
                 if app.status == 'HIRED':
                     continue
 
-                # 1️⃣ SHORTLIST (no interview yet)
                 if app.status == 'SHORTLISTED':
-                    data[position]["shortlisted"].append(base)
+                    buckets["shortlisted"].append(base)
                     continue
 
-                # 2️⃣ INTERVIEW STAGES (single source of truth)
                 if app.current_stage:
                     latest_interview = (
                         app.interviews
@@ -580,13 +645,19 @@ class InterviewPipelineView(APIView):
                     entry = {
                         **base,
                         "status": latest_interview.status if latest_interview else "SCHEDULED",
-                        "interview_id":latest_interview.id if latest_interview else None,
+                        "interview_id": latest_interview.id if latest_interview else None,
                         "testDate": latest_interview.interview_date.date() if latest_interview else None,
                         "time": latest_interview.interview_date.time() if latest_interview else None,
+                        "location": latest_interview.location if latest_interview else "",
+                        "meeting_link": latest_interview.meeting_link if latest_interview else "",
                     }
 
                     key = app.current_stage.lower()
-                    data[position][key].append(entry)
+                    if key in buckets:
+                        buckets[key].append(entry)
+
+            if any(buckets[s] for s in buckets):
+                data[position] = buckets
 
         return Response(data)
 
@@ -601,7 +672,7 @@ class MoveCandidatesToStage(APIView):
         date = request.data.get("interview_date")
         location = request.data.get("location", "")
         meeting_link = request.data.get("meeting_link", "")
-        duration = request.data.get("duration_minutes")
+        duration = request.data.get("duration_minutes") or 60
         feed_back = request.data.get("feedback", "")
         ids = request.data.get("application_ids", [])
 
@@ -612,12 +683,11 @@ class MoveCandidatesToStage(APIView):
         if stage not in STAGES:
             return Response({"detail": "Invalid stage"}, status=400)
 
-        # Parse the datetime string
         try:
-            interview_date = datetime.fromisoformat(date)
+            interview_date = datetime.fromisoformat(date.replace("Z", "+00:00") if isinstance(date, str) else date)
             if timezone.is_naive(interview_date):
                 interview_date = timezone.make_aware(interview_date)
-        except (ValueError, TypeError) as e:
+        except (ValueError, TypeError, AttributeError) as e:
             return Response({"detail": f"Invalid date format: {str(e)}"}, status=400)
 
         applications = JobApplication.objects.filter(
@@ -626,32 +696,56 @@ class MoveCandidatesToStage(APIView):
         )
 
         created = 0
+        invite_interview_ids = []
+        send_emails = str(request.data.get("send_emails", "true")).lower() in ("1", "true", "yes")
+
         for app in applications:
-            if app.current_stage == stage:
-               continue
-
-            obj, is_new = Interview.objects.get_or_create(
-                application=app,
-                interview_type=stage,
-                interview_date=interview_date,
-                location=location,
-                meeting_link=meeting_link,
-                duration_minutes=duration,
-                feedback=feed_back,
+            existing = (
+                Interview.objects
+                .filter(application=app, interview_type=stage)
+                .order_by('-interview_date')
+                .first()
             )
+            if existing:
+                existing.interview_date = interview_date
+                existing.location = location or ""
+                existing.meeting_link = meeting_link or ""
+                existing.duration_minutes = int(duration) if duration else 60
+                existing.feedback = feed_back or ""
+                existing.status = "SCHEDULED"
+                existing.save()
+                obj = existing
+                is_new = False
+            else:
+                obj = Interview.objects.create(
+                    application=app,
+                    interview_type=stage,
+                    interview_date=interview_date,
+                    location=location or "",
+                    meeting_link=meeting_link or "",
+                    duration_minutes=int(duration) if duration else 60,
+                    feedback=feed_back or "",
+                    status="SCHEDULED",
+                )
+                is_new = True
 
-            # send_interview_email(obj, app)
+            invite_interview_ids.append(obj.id)
 
             if is_new:
                 created += 1
-            
+
             app.current_stage = stage
             app.status = 'INTERVIEWING'
             app.save(update_fields=['current_stage', 'status'])
 
+        if send_emails and invite_interview_ids:
+            queue_interview_invitations(invite_interview_ids)
+
         return Response({
             "moved": created,
-            "stage": stage
+            "scheduled": len(invite_interview_ids),
+            "emails_queued": len(invite_interview_ids) if send_emails else 0,
+            "stage": stage,
         })
 
 # change interview status
@@ -698,13 +792,42 @@ class ChangeInterviewStatus(APIView):
 
         application.save(update_fields=["status", "current_stage"])
 
+        send_emails = str(request.data.get("send_emails", "true")).lower() in ("1", "true", "yes")
+        if send_emails and (application.email or "").strip():
+            queue_interview_outcome(interview.id, status_value)
+
         return Response(
             {
                 "detail": "Interview status updated successfully",
                 "interview_status": interview.status,
+                "email_queued": bool(send_emails and (application.email or "").strip()),
             },
             status=status.HTTP_200_OK
         )
+
+
+class ResendInterviewInvitation(APIView):
+    """Queue a fresh interview invitation email for one interview record."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, interview_id):
+        if not (
+            request.user.is_superuser
+            or request.user.has_perm("hiring.change_interview")
+            or request.user.has_perm("hiring.view_interview")
+        ):
+            return Response({"detail": "Permission denied."}, status=403)
+
+        interview = Interview.objects.filter(pk=interview_id).select_related("application").first()
+        if not interview:
+            return Response({"detail": "Interview not found."}, status=404)
+        if not (interview.application.email or "").strip():
+            return Response({"detail": "Applicant has no email address."}, status=400)
+
+        queue_interview_invitation(interview.id)
+        return Response({"detail": "Interview invitation email queued.", "interview_id": interview.id})
+
 
 # mark as hired
 class MarkAsHired(APIView):
@@ -713,20 +836,50 @@ class MarkAsHired(APIView):
 
     def patch(self, request, *args, **kwargs):
         with transaction.atomic():
-            application_ids = request.data.get('ids')
+            application_ids = request.data.get('ids') or []
+            if not application_ids:
+                return Response({"detail": "ids is required"}, status=400)
 
-            applications = JobApplication.objects.filter(id__in=application_ids)
+            applications = JobApplication.objects.filter(id__in=application_ids).prefetch_related('interviews')
+            hired_ids: list[int] = []
 
             for app in applications:
                 if app.status == 'HIRED':
-                    return Response({"detail":"These cnadidates are already hired"}, status=400)
-                
+                    return Response({"detail": "These candidates are already hired"}, status=400)
+
+                # Hiring may occur after Written or Oral — not every role requires oral.
+                interviews = list(app.interviews.all())
+                written_ok = any(
+                    i.interview_type == "WRITTEN" and i.status == "PASSED" for i in interviews
+                )
+                oral_ok = any(
+                    i.interview_type == "ORAL" and i.status == "PASSED" for i in interviews
+                )
+                if not (written_ok or oral_ok):
+                    return Response(
+                        {
+                            "detail": (
+                                f"{app.get_full_name()} must pass the written or oral interview "
+                                "before being hired."
+                            )
+                        },
+                        status=400,
+                    )
+
                 app.status = 'HIRED'
                 app.current_stage = None
                 app.save(update_fields=["status", "current_stage"])
-                # app.save(update_fields=["status"])
+                hired_ids.append(app.id)
 
-            return Response({"detail": "candidate hired successfully"})
+            send_emails = str(request.data.get("send_emails", "true")).lower() in ("1", "true", "yes")
+            if send_emails and hired_ids:
+                queue_hired_emails(hired_ids)
+
+            return Response({
+                "detail": "candidate hired successfully",
+                "hired": len(hired_ids),
+                "emails_queued": len(hired_ids) if send_emails else 0,
+            })
 
 # hired candidates
 class HiredCandidates(generics.ListAPIView):

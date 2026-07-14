@@ -120,6 +120,13 @@ def setup_roles(sender, **kwargs):
             "appraisal.change_appraisalcycle",
             "appraisal.delete_appraisalcycle",
             "appraisal.view_strategicobjective",
+            "appraisal.add_strategicobjective",
+            "appraisal.change_strategicobjective",
+            "appraisal.delete_strategicobjective",
+            "appraisal.view_performanceimprovementplan",
+            "appraisal.add_performanceimprovementplan",
+            "appraisal.change_performanceimprovementplan",
+            "appraisal.delete_performanceimprovementplan",
             "staff.view_pips",
 
             # ---- Leave system (policies & approvals) ----

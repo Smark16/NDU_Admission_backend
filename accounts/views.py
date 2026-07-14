@@ -258,7 +258,7 @@ class ListUsers(generics.ListAPIView):
 
     def get_queryset(self):
         qs = (
-            User.objects.filter(is_applicant=False)
+            User.objects.filter(is_applicant=False, is_student=False)
             .defer("password")
             .prefetch_related("groups", "campuses", "faculties")
         )
@@ -290,18 +290,51 @@ class ChangeUserStatus(APIView):
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
     def patch(self, request, *args, **kwargs):
+        from django.db import transaction
+        from accounts.utils.passwords import generate_changeme_password
+        from accounts.tasks import celery_send_account_email
+
         user_id = self.kwargs['pk']
         newStatus = request.data.get('is_active')
+        # Normalize query/body booleans
+        if isinstance(newStatus, str):
+            newStatus = newStatus.lower() in ("1", "true", "yes")
 
         try:
-            user = User.objects.prefetch_related('groups', 'user_permissions', 'campuses').get(pk=user_id)
-            user.is_active = newStatus
-            user.save()
+            with transaction.atomic():
+                user = User.objects.prefetch_related(
+                    'groups', 'user_permissions', 'campuses'
+                ).get(pk=user_id)
+                was_active = bool(user.is_active)
+                activating = bool(newStatus) and not was_active
+
+                plain_password = None
+                if activating:
+                    plain_password = generate_changeme_password()
+                    user.set_password(plain_password)
+                    user.must_change_password = True
+
+                user.is_active = bool(newStatus)
+                user.save()
+
+                if activating and plain_password and (user.email or "").strip():
+                    password_for_email = plain_password
+                    uid = user.id
+
+                    def _enqueue():
+                        celery_send_account_email.delay(
+                            uid,
+                            password_for_email,
+                            True,
+                            "Your ERP Account Has Been Activated",
+                        )
+
+                    transaction.on_commit(_enqueue)
 
             serializer = self.serializer_class(user)
             return Response(serializer.data, status=status.HTTP_200_OK)
         except Exception as e:
-            return Response({"detail":str(e)}, status=400)
+            return Response({"detail": str(e)}, status=400)
         
 # delete user
 class DeleteUser(generics.RetrieveDestroyAPIView):

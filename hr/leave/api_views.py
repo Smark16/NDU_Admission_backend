@@ -36,10 +36,71 @@ def _get_staff_for_user(user, staff_id=None):
     return resolve_staff_profile_for_user(user)
 
 
-class LeaveTypeListView(generics.ListAPIView):
+class LeaveTypeListCreateView(generics.ListCreateAPIView):
+    """
+    List leave types (active-only for staff; all for managers).
+    Create requires leave.add_leavetype (or HR change permission).
+    """
+
     permission_classes = [IsAuthenticated]
     serializer_class = LeaveTypeSerializer
-    queryset = LeaveType.objects.filter(is_active=True).order_by("sort_order", "name")
+
+    def get_queryset(self):
+        qs = LeaveType.objects.all().order_by("sort_order", "name")
+        user = self.request.user
+        can_manage = (
+            user.is_superuser
+            or user.has_perm("leave.change_leavetype")
+            or user.has_perm("leave.view_leavetype")
+            or _user_is_hr(user)
+        )
+        if can_manage and self.request.query_params.get("active_only") != "1":
+            return qs
+        return qs.filter(is_active=True)
+
+    def create(self, request, *args, **kwargs):
+        if not (
+            request.user.is_superuser
+            or request.user.has_perm("leave.add_leavetype")
+            or _user_is_hr(request.user)
+        ):
+            return Response({"detail": "You do not have permission to create leave types."}, status=403)
+        return super().create(request, *args, **kwargs)
+
+
+class LeaveTypeDetailView(generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = LeaveTypeSerializer
+    queryset = LeaveType.objects.all()
+    lookup_url_kwarg = "type_id"
+
+    def _can_manage(self, user):
+        return user.is_superuser or user.has_perm("leave.change_leavetype") or _user_is_hr(user)
+
+    def update(self, request, *args, **kwargs):
+        if not self._can_manage(request.user):
+            return Response({"detail": "You do not have permission to update leave types."}, status=403)
+        return super().update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        if not (
+            request.user.is_superuser
+            or request.user.has_perm("leave.delete_leavetype")
+            or _user_is_hr(request.user)
+        ):
+            return Response({"detail": "You do not have permission to delete leave types."}, status=403)
+        instance = self.get_object()
+        if LeaveRequest.objects.filter(leave_type=instance).exists():
+            instance.is_active = False
+            instance.save(update_fields=["is_active"])
+            return Response(
+                {
+                    "detail": "Leave type deactivated because existing requests reference it.",
+                    "id": str(instance.id),
+                    "is_active": False,
+                }
+            )
+        return super().destroy(request, *args, **kwargs)
 
 
 class LeaveRequestListView(generics.ListAPIView):
@@ -68,8 +129,18 @@ class MyLeaveBalancesView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        staff = _get_staff_for_user(request.user)
+        staff_id = request.query_params.get("staff_id")
+        if staff_id not in (None, ""):
+            try:
+                staff_id = int(staff_id)
+            except (TypeError, ValueError):
+                return Response({"detail": "Invalid staff_id."}, status=400)
+        else:
+            staff_id = None
+        staff = _get_staff_for_user(request.user, staff_id)
         if not staff:
+            if staff_id and not _user_is_hr(request.user):
+                return Response({"detail": "You cannot view another staff member's balances."}, status=403)
             return Response({"detail": "Staff profile not linked to your account."}, status=400)
         year = request.query_params.get("year")
         balances = LeaveBalance.objects.filter(staff=staff).select_related("leave_type")
@@ -110,6 +181,10 @@ class LeaveRequestCreateView(APIView):
                 {"detail": "Staff profile required. Link your account or select a staff member."},
                 status=400,
             )
+
+        leave_type = data.get("leave_type")
+        if leave_type and not leave_type.is_active:
+            return Response({"detail": "Selected leave type is not available."}, status=400)
 
         start = data["start_date"]
         end = data["end_date"]

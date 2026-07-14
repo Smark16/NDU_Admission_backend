@@ -8,6 +8,7 @@ from .api_views import (
     AppraisalCreateView,
     AppraisalCycleActivateView,
     AppraisalCycleCreateView,
+    AppraisalCycleDetailView,
     AppraisalCycleListView,
     AppraisalDetailView,
     AppraisalExportView,
@@ -32,6 +33,7 @@ app_name = 'appraisal'
 urlpatterns = [
     path('api/cycles/', AppraisalCycleListView.as_view(), name='api_cycles'),
     path('api/cycles/create/', AppraisalCycleCreateView.as_view(), name='api_cycles_create'),
+    path('api/cycles/<int:cycle_id>/', AppraisalCycleDetailView.as_view(), name='api_cycle_detail'),
     path('api/cycles/<int:cycle_id>/activate/', AppraisalCycleActivateView.as_view(), name='api_cycle_activate'),
     path('api/campuses/', CampusListForAppraisalView.as_view(), name='api_campuses'),
     path('api/appraisals/my/', MyAppraisalsView.as_view(), name='api_my_appraisals'),

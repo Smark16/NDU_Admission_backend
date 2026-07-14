@@ -12,7 +12,8 @@ from .api_views import (
     LeaveRequestListView,
     LeavePolicyDetailView,
     LeavePolicyListCreateView,
-    LeaveTypeListView,
+    LeaveTypeDetailView,
+    LeaveTypeListCreateView,
     MyLeaveBalancesView,
     MyLeaveRequestsView,
     PendingApprovalsListView,
@@ -23,7 +24,8 @@ from .api_views import (
 app_name = 'leave'
 
 urlpatterns = [
-    path('leave_types/', LeaveTypeListView.as_view(), name='api_leave_types'),
+    path('leave_types/', LeaveTypeListCreateView.as_view(), name='api_leave_types'),
+    path('leave_types/<uuid:type_id>/', LeaveTypeDetailView.as_view(), name='api_leave_type_detail'),
     path('list_requests/', LeaveRequestListView.as_view(), name='api_leave_requests'),
     path('my_requests/', MyLeaveRequestsView.as_view(), name='api_my_leave_requests'),
     path('my_balances/', MyLeaveBalancesView.as_view(), name='api_my_leave_balances'),

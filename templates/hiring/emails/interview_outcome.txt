@@ -1,0 +1,40 @@
+{% if outcome == "PASSED" %}Interview Result — Passed{% else %}Application Update{% endif %}
+
+Dear {{ applicant_name }},
+
+{% if outcome == "PASSED" %}
+Congratulations. You have passed the {{ stage_label }} stage for {{ position_title }} ({{ department_name }}) at {{ university_name }}.
+
+Application reference: {{ reference }}
+Stage completed: {{ stage_label }}
+{% if next_stage_label %}
+Next stage: {{ next_stage_label }}
+
+Our recruitment team will schedule your next stage and email you the details. Please check your inbox regularly.
+{% else %}
+You have completed the interview stages. Our team will contact you regarding the hiring decision.
+{% endif %}
+{% else %}
+Thank you for participating in the {{ stage_label }} stage for {{ position_title }} at {{ university_name }}.
+
+After careful consideration, we will not be progressing your application further at this time.
+We appreciate your interest and encourage you to apply for future openings that match your profile.
+
+Application reference: {{ reference }}
+Position: {{ position_title }}
+{% endif %}
+{% if track_url %}
+
+Track your application: {{ track_url }}
+{% endif %}
+{% if hr_contact_email %}
+
+Questions? Contact {{ hr_contact_email }}.
+{% endif %}
+
+Kind regards,
+Recruitment Team
+{{ university_name }}
+
+---
+This is an automated message from {{ from_email }}. Please do not reply directly to this email.

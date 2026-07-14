@@ -5,7 +5,7 @@ from pathlib import Path
 
 from django.conf import settings
 
-DEFAULT_UNIVERSITY_NAME = "NDEJJE UNIVERSITY STEWARD"
+DEFAULT_UNIVERSITY_NAME = "NDEJJE UNIVERSITY"
 DEFAULT_ERP_FRONTEND_URL = "https://erp.ndejje.ndu.ac.ug"
 
 
@@ -24,6 +24,9 @@ def get_university_display_name() -> str:
 
         name = (SystemSettings.get_settings().university_name or "").strip()
         if name:
+            # Normalize legacy seeded value used in interview/account emails.
+            if "STEWARD" in name.upper():
+                return DEFAULT_UNIVERSITY_NAME
             return name
     except Exception:
         pass

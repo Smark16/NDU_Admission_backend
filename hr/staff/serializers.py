@@ -42,7 +42,8 @@ class StaffProfileSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         # 🔥 POP relational fields FIRST
         teams_supervised = validated_data.pop("teams_supervised", [])
-        staff_members_supervised = validated_data.pop("staff_members_supervised", [])
+        # Members are derived from supervised teams — ignore direct member picks.
+        validated_data.pop("staff_members_supervised", None)
         managed_org_units = validated_data.pop("managed_org_units", [])
         campus = validated_data.pop("campus", [])
         if not campus:
@@ -59,61 +60,50 @@ class StaffProfileSerializer(serializers.ModelSerializer):
         if campus:
             staff.campus.set(campus)
 
+        # Directors manage whole departments — no team assignments.
         if staff.is_director:
             if not managed_org_units:
                 raise serializers.ValidationError(
                     "Director must manage at least one organizational unit."
                 )
+            return staff
 
+        # Supervisors supervise teams only (members come from those teams).
         if staff.is_supervisor:
-            if not teams_supervised and not staff_members_supervised:
+            if not teams_supervised:
                 raise serializers.ValidationError(
-                    "Supervisor must supervise at least one team or staff member."
+                    "Supervisor must supervise at least one team."
                 )
-
             for team in teams_supervised:
                 SupervisionAssignment.objects.create(
                     supervisor=staff,
                     team=team
                 )
 
-            for member in staff_members_supervised:
-                SupervisionAssignment.objects.create(
-                    supervisor=staff,
-                    staff_member=member
-                )
-
         return staff
 
-    def _sync_supervision_assignments(self, instance, teams_supervised, staff_members_supervised):
-        if not instance.is_supervisor:
+    def _sync_supervision_assignments(self, instance, teams_supervised, staff_members_supervised=None):
+        # Directors never hold team/member supervision rows.
+        if instance.is_director or not instance.is_supervisor:
             SupervisionAssignment.objects.filter(supervisor=instance).delete()
             return
 
-        if teams_supervised is None and staff_members_supervised is None:
+        if teams_supervised is None:
             return
 
-        teams = teams_supervised if teams_supervised is not None else list(
-            DepartmentTeams.objects.filter(asigned_teams__supervisor=instance).distinct()
-        )
-        members = staff_members_supervised if staff_members_supervised is not None else list(
-            StaffProfile.objects.filter(assigned_supervisors__supervisor=instance).distinct()
-        )
-
-        if not teams and not members:
+        teams = teams_supervised
+        if not teams:
             raise serializers.ValidationError(
-                "Supervisor must supervise at least one team or staff member."
+                "Supervisor must supervise at least one team."
             )
 
         SupervisionAssignment.objects.filter(supervisor=instance).delete()
         for team in teams:
             SupervisionAssignment.objects.create(supervisor=instance, team=team)
-        for member in members:
-            SupervisionAssignment.objects.create(supervisor=instance, staff_member=member)
 
     def update(self, instance, validated_data):
         teams_supervised = validated_data.pop("teams_supervised", None)
-        staff_members_supervised = validated_data.pop("staff_members_supervised", None)
+        validated_data.pop("staff_members_supervised", None)
         managed_org_units = validated_data.pop("managed_org_units", None)
         campus = validated_data.pop("campus", None)
 
@@ -131,8 +121,11 @@ class StaffProfileSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     "Director must manage at least one organizational unit."
                 )
+            # Clear any legacy team/member assignments.
+            SupervisionAssignment.objects.filter(supervisor=instance).delete()
+            return instance
 
-        self._sync_supervision_assignments(instance, teams_supervised, staff_members_supervised)
+        self._sync_supervision_assignments(instance, teams_supervised)
 
         return instance
     

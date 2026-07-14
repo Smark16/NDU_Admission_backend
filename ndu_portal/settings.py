@@ -244,6 +244,11 @@ CELERY_BEAT_SCHEDULE = {
         "task": "admissions.tasks.celery_maybe_send_weekly_admissions_digest",
         "schedule": crontab(minute="*/15"),
     },
+    # Hiring: auto-open drafts at published_date; auto-close after application_deadline
+    "sync-job-opening-statuses": {
+        "task": "hr.hiring.tasks.celery_sync_job_opening_statuses",
+        "schedule": crontab(minute="*/15"),
+    },
 }
 
 # school pay configuration
@@ -262,12 +267,18 @@ ERP_FRONTEND_URL=env('ERP_FRONTEND_URL')
 # backend url
 BACKEND_URL=env('BACKEND_URL')
 
+# Public careers / applicant portal (used in interview & application emails)
+CAREERS_PORTAL_URL = env('CAREERS_PORTAL_URL', default='http://localhost:5174')
+HR_RECRUITMENT_EMAIL = env('HR_RECRUITMENT_EMAIL', default='')
+
 CSRF_TRUSTED_ORIGINS = [
     'http://localhost:5173',
+    'http://localhost:5174',
     'http://localhost:3000',
     'http://localhost:3001',
     'http://127.0.0.1:3000',
     'http://127.0.0.1:3001',
+    'http://127.0.0.1:5174',
     'https://applications.ndu.ac.ug',
     'https://applications-admin.ndu.ac.ug',
     'http://172.17.31.147',

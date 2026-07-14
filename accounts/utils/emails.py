@@ -5,7 +5,6 @@ from django.utils.http import urlsafe_base64_encode
 from django.utils.encoding import force_bytes
 from django.contrib.auth.tokens import default_token_generator
 from accounts.portal_branding import (
-    DEFAULT_ERP_FRONTEND_URL,
     get_erp_frontend_url,
     get_university_display_name,
 )
@@ -24,7 +23,7 @@ def _email_template_context(**extra):
 
 def _account_login_link(user, *, use_erp_portal=None) -> str:
     """
-    Staff / ERP users → https://erp.ndejje.ndu.ac.ug
+    Staff / ERP users → ERP_FRONTEND_URL (fallback canonical ERP).
     Applicants only → admissions LOGIN_URL.
     """
     if use_erp_portal is None:
@@ -33,8 +32,7 @@ def _account_login_link(user, *, use_erp_portal=None) -> str:
         )
         use_erp_portal = not is_applicant_only
     if use_erp_portal:
-        # Canonical staff ERP (do not use admissions LOGIN_URL).
-        return (DEFAULT_ERP_FRONTEND_URL or get_erp_frontend_url()).rstrip("/")
+        return get_erp_frontend_url().rstrip("/")
     return (getattr(settings, "LOGIN_URL", "") or "").rstrip("/")
 
 
@@ -53,13 +51,21 @@ def send_account_email(
 
     login_link = _account_login_link(user, use_erp_portal=use_erp_portal)
     portal_label = "ERP portal" if use_erp_portal else "admissions portal"
+    username = (user.username or user.email or "").strip()
+    is_activation = "activat" in (subject or "").lower()
+    intro = (
+        "Your account has been activated successfully."
+        if is_activation
+        else "Your account has been created successfully."
+    )
 
     body = (
         f"Hello {user.first_name or user.email},\n\n"
-        f"Your account has been created successfully.\n\n"
-        f"Email: {user.email}\n"
+        f"{intro}\n\n"
+        f"Username: {username}\n"
         f"Password: {password}\n\n"
-        f"Log in to the {portal_label}:\n{login_link}\n"
+        f"Log in to the {portal_label}:\n{login_link}\n\n"
+        f"Please change your password after signing in.\n"
     )
 
     return send_configurable_email(user.email, subject, body)

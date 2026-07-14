@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>{{ app.get_full_name }} — Application</title>
+  <style>
+    body { font-family: Arial, Helvetica, sans-serif; font-size: 12px; color: #222; margin: 24px; }
+    h1 { font-size: 20px; margin: 0 0 4px; color: #7c1519; }
+    h2 { font-size: 14px; margin: 18px 0 8px; border-bottom: 1px solid #ccc; padding-bottom: 4px; }
+    .meta { color: #555; margin-bottom: 16px; }
+    .row { margin: 4px 0; }
+    table { width: 100%; border-collapse: collapse; margin-top: 6px; }
+    th, td { border: 1px solid #ddd; padding: 6px 8px; text-align: left; vertical-align: top; }
+    th { background: #f5f5f5; }
+  </style>
+</head>
+<body>
+  <h1>{{ app.get_full_name }}</h1>
+  <div class="meta">
+    <div class="row"><strong>Reference:</strong> {{ app.reference }}</div>
+    <div class="row"><strong>Position:</strong> {{ app.job_opening.title }} — {{ app.job_opening.department.name }}</div>
+    <div class="row"><strong>Email:</strong> {{ app.email }} &nbsp;|&nbsp; <strong>Phone:</strong> {{ app.phone }}</div>
+    <div class="row"><strong>Status:</strong> {{ app.status }}</div>
+  </div>
+
+  <h2>Profile</h2>
+  <div class="row"><strong>Title:</strong> {{ app.title }}</div>
+  <div class="row"><strong>Address:</strong> {{ app.current_address }}</div>
+  <div class="row"><strong>DOB:</strong> {{ app.dob }}</div>
+  <div class="row"><strong>Marital status:</strong> {{ app.marital_status }}</div>
+  <div class="row"><strong>Religion:</strong> {{ app.religious_affiliation }}</div>
+  <div class="row"><strong>Skills:</strong> {{ app.skills }}</div>
+  <div class="row"><strong>Summary:</strong> {{ app.brief_description }}</div>
+
+  <h2>Education</h2>
+  {% if education %}
+  <table>
+    <tr><th>Institution</th><th>Award</th><th>Start</th><th>End</th></tr>
+    {% for e in education %}
+    <tr><td>{{ e.institution }}</td><td>{{ e.award }}</td><td>{{ e.start_date }}</td><td>{{ e.end_date }}</td></tr>
+    {% endfor %}
+  </table>
+  {% else %}<p>No education history provided.</p>{% endif %}
+
+  <h2>Employment</h2>
+  {% if employment %}
+  <table>
+    <tr><th>Employer</th><th>Position</th><th>Start</th><th>End</th><th>Years</th></tr>
+    {% for e in employment %}
+    <tr>
+      <td>{{ e.current_employer }}</td>
+      <td>{{ e.current_position }}</td>
+      <td>{{ e.start_date }}</td>
+      <td>{{ e.end_date }}</td>
+      <td>{{ e.years_of_experience }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}<p>No employment history provided.</p>{% endif %}
+
+  <h2>Projects</h2>
+  {% if projects %}
+  <table>
+    <tr><th>Name</th><th>Link</th><th>Description</th></tr>
+    {% for p in projects %}
+    <tr><td>{{ p.name }}</td><td>{{ p.link }}</td><td>{{ p.description }}</td></tr>
+    {% endfor %}
+  </table>
+  {% else %}<p>No projects provided.</p>{% endif %}
+
+  <h2>Certificates &amp; training</h2>
+  {% if certificates %}
+  <table>
+    <tr><th>Certificate</th><th>Institution</th><th>Date</th></tr>
+    {% for c in certificates %}
+    <tr><td>{{ c.certificate_name }}</td><td>{{ c.institution }}</td><td>{{ c.date_obtained }}</td></tr>
+    {% endfor %}
+  </table>
+  {% else %}<p>No certificates provided.</p>{% endif %}
+
+  <h2>References</h2>
+  {% if references %}
+  <table>
+    <tr><th>Name</th><th>Position</th><th>Email</th><th>Phone</th></tr>
+    {% for r in references %}
+    <tr><td>{{ r.name }}</td><td>{{ r.job_position }}</td><td>{{ r.email }}</td><td>{{ r.phone }}</td></tr>
+    {% endfor %}
+  </table>
+  {% else %}<p>No references provided.</p>{% endif %}
+</body>
+</html>

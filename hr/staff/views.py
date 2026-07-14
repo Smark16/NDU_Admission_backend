@@ -3,7 +3,7 @@ from .serializers import *
 from .models import *
 from accounts.models import Campus
 from rest_framework.permissions import IsAuthenticated, DjangoModelPermissions
-from .utils.create_user import create_user_for_staff
+from .tasks import queue_staff_login_provision
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.http import HttpResponse
@@ -36,11 +36,10 @@ class CreateStaffProfileView(generics.CreateAPIView):
             application.is_staff = True
             application.save(update_fields=["is_staff"])
 
-        # Create system user if needed
+        # Create ERP login in background after commit (auto Changeme#### password).
         if staff.system_login:
-            initial_password = self.request.data.get("initial_password")
-            create_user_for_staff(staff, initial_password=initial_password)
- 
+            queue_staff_login_provision(staff.id)
+
 # edit staff profile
 class UpdateStaffProfileView(generics.UpdateAPIView):
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
@@ -50,9 +49,8 @@ class UpdateStaffProfileView(generics.UpdateAPIView):
     @transaction.atomic
     def perform_update(self, serializer):
         staff = serializer.save()
-        initial_password = (self.request.data.get("initial_password") or "").strip() or None
-        if staff.system_login and (staff.user is None or initial_password):
-            create_user_for_staff(staff, initial_password=initial_password)
+        if staff.system_login and staff.user is None:
+            queue_staff_login_provision(staff.id)
     
 # delete staff profile
 class DeleteStaffProfileView(generics.DestroyAPIView):
@@ -763,8 +761,9 @@ class DepartmentStaff(APIView):
 
         grouped = defaultdict(list)
         for s in staff:
-            dept_name = s.org_unit.name
-            grouped[dept_name].append(s)
+            if not s.org_unit_id or not s.org_unit:
+                continue
+            grouped[s.org_unit.name].append(s)
 
         data = {
             dept_name: ListStaffSerializer(staff_list, many=True).data

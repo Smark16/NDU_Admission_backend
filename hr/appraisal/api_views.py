@@ -1,6 +1,7 @@
 from django.utils import timezone
 from django.db.models import Avg
 from django.http import HttpResponse
+from datetime import timedelta
 import csv
 import io
 from rest_framework import generics
@@ -27,6 +28,15 @@ from .objective_utils import ensure_appraisal_assessment_scaffold
 
 def _get_staff_for_user(user):
     return resolve_staff_profile_for_user(user)
+
+
+def _user_can_manage_pips(user):
+    return (
+        user.has_perm("staff.view_pips")
+        or user.has_perm("appraisal.view_performanceimprovementplan")
+        or user.has_perm("appraisal.add_performanceimprovementplan")
+        or user.has_perm("appraisal.change_performanceimprovementplan")
+    )
 
 
 STAFF_PROFILE_LINK_ERROR = (
@@ -57,6 +67,31 @@ class AppraisalCycleCreateView(generics.CreateAPIView):
         return super().create(request, *args, **kwargs)
 
 
+class AppraisalCycleDetailView(generics.RetrieveUpdateAPIView):
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    serializer_class = AppraisalCycleCreateSerializer
+    queryset = AppraisalCycle.objects.select_related("campus")
+    lookup_url_kwarg = "cycle_id"
+
+    def get_serializer_class(self):
+        if self.request.method == "GET":
+            return AppraisalCycleListSerializer
+        return AppraisalCycleCreateSerializer
+
+    def retrieve(self, request, *args, **kwargs):
+        if not request.user.has_perm("appraisal.view_appraisalcycle"):
+            return Response({"detail": "You do not have permission to view appraisal cycles."}, status=403)
+        return super().retrieve(request, *args, **kwargs)
+
+    def update(self, request, *args, **kwargs):
+        if not request.user.has_perm("appraisal.change_appraisalcycle"):
+            return Response({"detail": "You do not have permission to update cycles."}, status=403)
+        return super().update(request, *args, **kwargs)
+
+    def partial_update(self, request, *args, **kwargs):
+        return self.update(request, *args, **kwargs)
+
+
 class AppraisalCycleActivateView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -76,12 +111,19 @@ class AppraisalCycleActivateView(APIView):
 class AppraisalListView(generics.ListAPIView):
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
     serializer_class = AppraisalListSerializer
-    queryset = Appraisal.objects.select_related("staff", "cycle").order_by("-cycle__academic_year")
+    queryset = Appraisal.objects.select_related("staff", "cycle", "supervisor").order_by("-cycle__academic_year")
 
     def list(self, request, *args, **kwargs):
         if not request.user.has_perm("appraisal.view_appraisal"):
             return Response({"detail": "You do not have permission to view appraisals."}, status=403)
-        return super().list(request, *args, **kwargs)
+        qs = self.get_queryset()
+        status_filter = request.query_params.get("status")
+        cycle_id = request.query_params.get("cycle")
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+        if cycle_id:
+            qs = qs.filter(cycle_id=cycle_id)
+        return Response(self.get_serializer(qs, many=True).data)
 
 
 class MyAppraisalsView(APIView):
@@ -125,7 +167,24 @@ class AppraisalStatusUpdateView(APIView):
         if new_status == "APPROVED":
             appraisal.hr_approved_at = timezone.now()
         serializer.save()
-        return Response(AppraisalListSerializer(appraisal).data)
+        appraisal.refresh_from_db()
+
+        # Seed a draft PIP when HR approves an unsatisfactory appraisal.
+        if (
+            new_status == "APPROVED"
+            and appraisal.overall_rating == "UNSATISFACTORY"
+            and not PerformanceImprovementPlan.objects.filter(appraisal=appraisal).exists()
+        ):
+            PerformanceImprovementPlan.objects.create(
+                appraisal=appraisal,
+                start_date=timezone.now().date(),
+                end_date=timezone.now().date() + timedelta(days=90),
+                status="DRAFT",
+                improvement_areas="Auto-created after unsatisfactory rating. Complete improvement areas and targets.",
+                improvement_targets="Define measurable targets before activating this PIP.",
+            )
+
+        return Response(AppraisalDetailSerializer(appraisal).data)
 
 
 class CampusListForAppraisalView(APIView):
@@ -303,6 +362,11 @@ class TeamAppraisalsListView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        if not (
+            request.user.has_perm("staff.view_team_appraisals")
+            or request.user.has_perm("appraisal.change_appraisal")
+        ):
+            return Response({"detail": "You do not have permission to view team appraisals."}, status=403)
         staff = _get_staff_for_user(request.user)
         if not staff:
             return Response({"detail": STAFF_PROFILE_LINK_ERROR}, status=400)
@@ -351,6 +415,8 @@ class SupervisorReviewSubmitView(APIView):
                 comp.supervisor_assessment = int(item["supervisor_assessment"])
             if item.get("agreed_assessment") is not None:
                 comp.agreed_assessment = int(item["agreed_assessment"])
+            elif comp.supervisor_assessment is not None and comp.agreed_assessment is None:
+                comp.agreed_assessment = comp.supervisor_assessment
             comp.save()
 
         for item in request.data.get("performance_factors") or []:
@@ -361,6 +427,8 @@ class SupervisorReviewSubmitView(APIView):
                 factor.supervisor_assessment = int(item["supervisor_assessment"])
             if item.get("agreed_assessment") is not None:
                 factor.agreed_assessment = int(item["agreed_assessment"])
+            elif factor.supervisor_assessment is not None and factor.agreed_assessment is None:
+                factor.agreed_assessment = factor.supervisor_assessment
             factor.save()
 
         if "overall_comment" in request.data:
@@ -482,14 +550,45 @@ class AppraisalExportView(APIView):
 
 
 class PipListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    permission_classes = [IsAuthenticated]
     serializer_class = PerformanceImprovementPlanSerializer
     queryset = PerformanceImprovementPlan.objects.select_related(
         "appraisal__staff", "appraisal__cycle"
     ).order_by("-start_date")
 
+    def list(self, request, *args, **kwargs):
+        if not _user_can_manage_pips(request.user):
+            return Response({"detail": "You do not have permission to view PIPs."}, status=403)
+        return super().list(request, *args, **kwargs)
+
+    def create(self, request, *args, **kwargs):
+        if not (
+            request.user.has_perm("appraisal.add_performanceimprovementplan")
+            or request.user.has_perm("staff.view_pips")
+        ):
+            return Response({"detail": "You do not have permission to create PIPs."}, status=403)
+        return super().create(request, *args, **kwargs)
+
 
 class PipDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    permission_classes = [IsAuthenticated]
     serializer_class = PerformanceImprovementPlanSerializer
     queryset = PerformanceImprovementPlan.objects.select_related("appraisal__staff", "appraisal__cycle")
+
+    def retrieve(self, request, *args, **kwargs):
+        if not _user_can_manage_pips(request.user):
+            return Response({"detail": "You do not have permission to view PIPs."}, status=403)
+        return super().retrieve(request, *args, **kwargs)
+
+    def update(self, request, *args, **kwargs):
+        if not (
+            request.user.has_perm("appraisal.change_performanceimprovementplan")
+            or request.user.has_perm("staff.view_pips")
+        ):
+            return Response({"detail": "You do not have permission to update PIPs."}, status=403)
+        return super().update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        if not request.user.has_perm("appraisal.delete_performanceimprovementplan"):
+            return Response({"detail": "You do not have permission to delete PIPs."}, status=403)
+        return super().destroy(request, *args, **kwargs)

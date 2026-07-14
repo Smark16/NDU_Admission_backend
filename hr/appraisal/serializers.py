@@ -50,6 +50,7 @@ class AppraisalCycleCreateSerializer(serializers.ModelSerializer):
 class AppraisalListSerializer(serializers.ModelSerializer):
     staff_name = serializers.CharField(source="staff.get_full_name", read_only=True)
     cycle_year = serializers.CharField(source="cycle.academic_year", read_only=True)
+    supervisor_name = serializers.CharField(source="supervisor.get_full_name", read_only=True, default="")
 
     class Meta:
         model = Appraisal
@@ -58,6 +59,8 @@ class AppraisalListSerializer(serializers.ModelSerializer):
             "cycle",
             "staff",
             "staff_name",
+            "supervisor",
+            "supervisor_name",
             "cycle_year",
             "status",
             "overall_rating",
@@ -86,7 +89,7 @@ class AppraisalCreateSerializer(serializers.ModelSerializer):
 class AppraisalStatusSerializer(serializers.ModelSerializer):
     class Meta:
         model = Appraisal
-        fields = ["status"]
+        fields = ["status", "hr_comments"]
 
 
 class AppraisalObjectiveSerializer(serializers.ModelSerializer):
@@ -171,6 +174,7 @@ class PerformanceFactorSerializer(serializers.ModelSerializer):
             "factor",
             "factor_label",
             "description",
+            "is_applicable",
             "self_assessment",
             "supervisor_assessment",
             "agreed_assessment",
@@ -179,6 +183,7 @@ class PerformanceFactorSerializer(serializers.ModelSerializer):
 
 class AppraisalDetailSerializer(serializers.ModelSerializer):
     staff_name = serializers.CharField(source="staff.get_full_name", read_only=True)
+    supervisor_name = serializers.CharField(source="supervisor.get_full_name", read_only=True, default="")
     cycle_year = serializers.CharField(source="cycle.academic_year", read_only=True)
     objectives = AppraisalObjectiveSerializer(many=True, read_only=True)
     behavioral_competencies = BehavioralCompetencySerializer(many=True, read_only=True)
@@ -193,10 +198,15 @@ class AppraisalDetailSerializer(serializers.ModelSerializer):
             "staff",
             "staff_name",
             "supervisor",
+            "supervisor_name",
             "status",
             "overall_rating",
             "overall_score",
+            "objectives_score",
+            "behavioral_score",
+            "performance_factors_score",
             "supervisor_overall_comment",
+            "hr_comments",
             "staff_acknowledgment_comment",
             "objectives",
             "behavioral_competencies",
