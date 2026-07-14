@@ -694,6 +694,8 @@ class GetStudentEnrolledCourses(APIView):
                 for lecturer in course_unit.lecturers.all()
             ]
 
+            from .course_material_views import published_outline_for_course
+
             active_courses.append({
                 'enrollment_id': enrollment.id,
                 'course_unit_id': course_unit.id,
@@ -719,6 +721,7 @@ class GetStudentEnrolledCourses(APIView):
                 'is_registered': enrollment.registration_date is not None,
                 'status': enrollment.status,
                 'grade': enrollment.grade,
+                'published_outline': published_outline_for_course(course_unit.id, request),
             })
 
         registered_courses = [c for c in active_courses if c['is_registered']]

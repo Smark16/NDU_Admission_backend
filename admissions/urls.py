@@ -63,6 +63,7 @@ urlpatterns = [
     path('send_announcement', SendAnnouncementView.as_view()),
 
     path('rejected_applications', views.ListRejectedApplications.as_view()),
+    path('revoked_applications', views.ListRevokedApplications.as_view()),
     path('reject_application/<int:application_id>', views.RejectStudent.as_view()),
     path('application_detail/<int:application_id>', views.application_detail),
     path('review_application/<int:application_id>', views.ReviewApplication.as_view()),

@@ -713,6 +713,56 @@ class CourseUnit(models.Model):
         return f"{self.code} - {self.name}"
 
 
+class CourseMaterial(models.Model):
+    """Teaching materials attached to a course unit (outline first; notes later)."""
+
+    TYPE_OUTLINE = "outline"
+    TYPE_NOTES = "notes"
+    TYPE_OTHER = "other"
+    TYPE_CHOICES = (
+        (TYPE_OUTLINE, "Course outline"),
+        (TYPE_NOTES, "Lecture notes"),
+        (TYPE_OTHER, "Other"),
+    )
+
+    course_unit = models.ForeignKey(
+        CourseUnit,
+        on_delete=models.CASCADE,
+        related_name="materials",
+    )
+    material_type = models.CharField(
+        max_length=20,
+        choices=TYPE_CHOICES,
+        default=TYPE_OUTLINE,
+        db_index=True,
+    )
+    title = models.CharField(max_length=200, blank=True)
+    file = models.FileField(upload_to="course_materials/%Y/%m/")
+    uploaded_by = models.ForeignKey(
+        "accounts.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="uploaded_course_materials",
+    )
+    is_published = models.BooleanField(
+        default=False,
+        help_text="When true, enrolled students can download this file.",
+    )
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-uploaded_at"]
+        indexes = [
+            models.Index(fields=["course_unit", "material_type", "is_published"]),
+        ]
+
+    def __str__(self):
+        label = self.title or self.get_material_type_display()
+        return f"{self.course_unit.code}: {label}"
+
+
 class StudentCourseUnitEnrollment(models.Model):
     """Track which students are enrolled in which course units."""
     student = models.ForeignKey('admissions.AdmittedStudent', on_delete=models.CASCADE, related_name='course_unit_enrollments')

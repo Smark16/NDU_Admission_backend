@@ -31,13 +31,41 @@ def send_admission_portal_credentials(admission_id: int) -> None:
 
 
 def queue_admission_notification_emails(admission_id: int, application_id: int) -> None:
-    """Queue admission decision email (credentials are sent synchronously on admit)."""
+    """Queue admission decision email + student portal notification (credentials already sent)."""
     try:
         celery_admission_email.delay(application_id, admission_id)
     except Exception:
         logger.exception(
             "Failed to queue admission email for application=%s admission=%s",
             application_id,
+            admission_id,
+        )
+    try:
+        from admissions.models import AdmittedStudent
+        from admissions.tasks import celery_application_notification
+        from accounts.portal_branding import get_university_display_name
+
+        admission = (
+            AdmittedStudent.objects.select_related("student_user", "application__applicant")
+            .filter(pk=admission_id)
+            .first()
+        )
+        if not admission:
+            return
+        student_user = admission.student_user or getattr(
+            getattr(admission, "application", None), "applicant", None
+        )
+        if not student_user:
+            return
+        uni = get_university_display_name()
+        celery_application_notification.delay(
+            student_user.id,
+            "Admission Successful",
+            f"Congratulations! You have been admitted to {uni}.",
+        )
+    except Exception:
+        logger.exception(
+            "Failed to queue admission portal notification for admission=%s",
             admission_id,
         )
 

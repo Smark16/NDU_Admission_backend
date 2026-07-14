@@ -108,6 +108,13 @@ from .course_enrollment_views import (
     RemoveLecturerFromCourseUnit,
     RemoveStudentFromCourseUnit,
 )
+from .course_material_views import (
+    LecturerCourseMaterialDetailView,
+    LecturerCourseMaterialDownloadView,
+    LecturerCourseMaterialListCreateView,
+    StudentCourseMaterialDownloadView,
+    StudentCourseMaterialListView,
+)
 
 try:
     from .program_structure_view import ProgramStructureView
@@ -428,6 +435,31 @@ urlpatterns.extend(
             'lecturer/my_courses',
             GetLecturerCourses.as_view(),
             name='get_lecturer_courses',
+        ),
+        path(
+            'lecturer/course_unit/<int:course_unit_id>/materials/',
+            LecturerCourseMaterialListCreateView.as_view(),
+            name='lecturer_course_materials',
+        ),
+        path(
+            'lecturer/materials/<int:material_id>/',
+            LecturerCourseMaterialDetailView.as_view(),
+            name='lecturer_course_material_detail',
+        ),
+        path(
+            'lecturer/materials/<int:material_id>/download/',
+            LecturerCourseMaterialDownloadView.as_view(),
+            name='lecturer_course_material_download',
+        ),
+        path(
+            'student/course_unit/<int:course_unit_id>/materials/',
+            StudentCourseMaterialListView.as_view(),
+            name='student_course_materials',
+        ),
+        path(
+            'student/materials/<int:material_id>/download/',
+            StudentCourseMaterialDownloadView.as_view(),
+            name='student_course_material_download',
         ),
         path(
             'semester/<int:semester_id>/students',

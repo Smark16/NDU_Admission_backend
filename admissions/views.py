@@ -1744,6 +1744,21 @@ class ListRejectedApplications(generics.ListAPIView):
         )
         return filter_applications_for_user(qs, self.request.user)
 
+
+class ListRevokedApplications(generics.ListAPIView):
+    """Applications whose admission was withdrawn (status=revoked)."""
+
+    permission_classes = [IsAuthenticated, CanViewAdmissionQueues]
+    serializer_class = ListApplicationsSerializer
+
+    def get_queryset(self):
+        qs = (
+            Application.objects.filter(status__iexact="revoked")
+            .select_related("academic_level", "batch", "campus", "reviewed_by", "revoked_by")
+            .order_by("-updated_at", "-created_at")
+        )
+        return filter_applications_for_user(qs, self.request.user)
+
 # ================================subjects================================================
 
 # create O subjects
@@ -3379,16 +3394,48 @@ class AdminDashboardStats(APIView):
 
 # ===================================================notifications======================================
 # list user notifications
+_STUDENT_FACING_NOTIFICATION_TITLES = {
+    "admission successful",
+    "application submitted",
+    "admission updated",
+    "admission successfull",  # historical typo
+}
+
+
+def _is_student_facing_notification(*, title: str, message: str) -> bool:
+    """Admission/applicant/student notices that must not appear in lecturer UI."""
+    t = (title or "").strip().lower()
+    m = (message or "").strip().lower()
+    if t in _STUDENT_FACING_NOTIFICATION_TITLES:
+        return True
+    if t.startswith("exam published"):
+        return True
+    if "you have been admitted" in t or "you have been admitted" in m:
+        return True
+    if "your application was successfully submitted" in m:
+        return True
+    return False
+
+
 class ListNotifications(generics.ListAPIView):
     queryset = PortalNotification.objects.select_related('recipient')
-    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    permission_classes = [IsAuthenticated]
     serializer_class = NotificationSerializer
 
     def get(self, request):
-        user_notifications = PortalNotification.objects.select_related('recipient').filter(recipient=request.user)
+        user_notifications = PortalNotification.objects.filter(recipient=request.user)
+        audience = str(request.query_params.get("audience") or "").strip().lower()
+        if audience in {"lecturer", "staff", "admin", "erp"}:
+            user_notifications = [
+                n
+                for n in user_notifications
+                if not _is_student_facing_notification(title=n.title, message=n.message)
+            ]
+        else:
+            user_notifications = list(user_notifications)
         serializer = self.serializer_class(user_notifications, many=True)
-
         return Response(serializer.data, status=200)
+
 
 #========================================pdf download=================================================
 
