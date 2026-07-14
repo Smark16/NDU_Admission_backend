@@ -1189,6 +1189,78 @@ class RejectStudent(APIView):
         except Exception as e:
             return Response({"detail": str(e)}, status=400)
 
+
+class RestoreRejectedApplication(APIView):
+    """Reopen a rejected application into the submitted review queue."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, application_id):
+        assert_admissions_modify_access(request.user)
+        if not (
+            user_can_reject_application(request.user)
+            or user_can_approve_application(request.user)
+        ):
+            return Response(
+                {"detail": "You do not have permission to restore rejected applications."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        try:
+            with transaction.atomic():
+                application = Application.objects.select_related("applicant").get(
+                    pk=application_id
+                )
+                assert_application_access(request.user, application)
+                if str(application.status or "").strip().lower() != "rejected":
+                    return Response(
+                        {"detail": "Only rejected applications can be restored."},
+                        status=400,
+                    )
+
+                note = str(request.data.get("note") or "").strip()
+                application.status = "submitted"
+                application.review_notes = (
+                    f"Restored from rejection. {note}".strip()
+                    if note
+                    else "Restored from rejection."
+                )
+                application.pending_reason = ""
+                application.reviewed_by = request.user
+                application.reviewed_at = timezone.now()
+                application.save(
+                    update_fields=[
+                        "status",
+                        "review_notes",
+                        "pending_reason",
+                        "reviewed_by",
+                        "reviewed_at",
+                    ]
+                )
+                try:
+                    log_audit_event(
+                        request.user,
+                        "restore_rejected_application",
+                        application,
+                        f"Restored rejected application {application.id} to submitted",
+                        request,
+                    )
+                except Exception:
+                    pass
+                return Response(
+                    {
+                        "detail": "Application restored to submitted queue.",
+                        "id": application.id,
+                        "status": application.status,
+                    },
+                    status=200,
+                )
+        except Application.DoesNotExist:
+            return Response({"detail": "Application not found"}, status=404)
+        except Exception as e:
+            return Response({"detail": str(e)}, status=400)
+
+
 # delete application
 class DeleteApplication(generics.RetrieveDestroyAPIView):
     queryset = Application.objects.all()
