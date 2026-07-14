@@ -1,0 +1,20 @@
+Application Received — {{ position_title }}
+
+Dear {{ applicant_name }},
+
+We have received your application for {{ position_title }} ({{ department_name }}) at {{ university_name }}.
+
+Your reference number: {{ reference }}
+Keep this reference — you will need it (with your email) to track your status.
+{% if track_url %}
+Track your application: {{ track_url }}
+{% endif %}
+
+Our recruitment team will review your application and contact you if shortlisted.
+
+Kind regards,
+Recruitment Team
+{{ university_name }}
+
+---
+Automated message from {{ from_email }}.

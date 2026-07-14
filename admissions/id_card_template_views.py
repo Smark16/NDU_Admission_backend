@@ -15,6 +15,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .id_card_pdf_render import maybe_auto_activate_id_card_template
 from .models import IdCardPdfTemplate
 from .permissions import ManageIdCardsPermission
 
@@ -60,6 +61,13 @@ class IdCardPdfTemplateListCreateView(ListCreateAPIView):
     parser_classes = [MultiPartParser, FormParser]
     queryset = IdCardPdfTemplate.objects.all().order_by("name")
     serializer_class = IdCardPdfTemplateSerializer
+
+    def create(self, request, *args, **kwargs):
+        response = super().create(request, *args, **kwargs)
+        key = (response.data.get("key") or "").strip()
+        if key and maybe_auto_activate_id_card_template(key):
+            response.data["auto_activated"] = True
+        return response
 
 
 class IdCardPdfTemplateDetailView(RetrieveUpdateDestroyAPIView):
@@ -115,4 +123,8 @@ class IdCardPdfTemplateSavePositionsView(APIView):
             return Response({"detail": "field_positions must be an object."}, status=status.HTTP_400_BAD_REQUEST)
         template.field_positions = positions
         template.save(update_fields=["field_positions", "updated_at"])
-        return Response({"detail": "Field positions saved successfully."})
+        auto_activated = maybe_auto_activate_id_card_template(template.key)
+        payload = {"detail": "Field positions saved successfully."}
+        if auto_activated:
+            payload["auto_activated"] = True
+        return Response(payload)

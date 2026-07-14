@@ -25,12 +25,12 @@ def _schoolpay_phone(value: str) -> str:
         return ""
 
     # Common data-entry typo: letter O instead of zero at the start.
-    if phone[0] in "Oo" and len(phone) > 1 and phone[1:].isdigit():
+    if phone[0] in "Oo" and len(phone) > 1 and phone[1:].lstrip("+").isdigit():
         phone = "0" + phone[1:]
 
     if phone.startswith("+256"):
         phone = "0" + phone[4:]
-    elif phone.startswith("256") and len(phone) > 3:
+    elif phone.startswith("256") and len(phone) > 3 and phone[3:].isdigit():
         phone = "0" + phone[3:]
 
     digits = re.sub(r"\D", "", phone)
@@ -42,14 +42,12 @@ def _schoolpay_phone(value: str) -> str:
         return digits
     return phone
 
-
 def _extract_gateway_paycode(data: dict) -> str:
     for key in ("paymentCode", "studentCode", "studentPaymentCode"):
         value = str(data.get(key) or "").strip()
         if value:
             return value
     return ""
-
 
 def _normalize_person_name(value: str) -> str:
     return " ".join(str(value or "").strip().lower().split())
@@ -178,9 +176,15 @@ def register_student_with_schoolpay(admitted_student):
             }
 
         admitted_student.student_id = paycode
+        admitted_student.schoolpay_code = paycode
         admitted_student.is_registered_with_schoolpay = True
         admitted_student.save(
-            update_fields=["student_id", "is_registered_with_schoolpay", "updated_at"]
+            update_fields=[
+                "student_id",
+                "schoolpay_code",
+                "is_registered_with_schoolpay",
+                "updated_at",
+            ]
         )
 
         return {

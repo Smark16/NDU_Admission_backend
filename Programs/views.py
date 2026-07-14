@@ -33,6 +33,11 @@ class ListPrograms(generics.ListAPIView):
     serializer_class = ListProgramsSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
+    def get_queryset(self):
+        from admissions.faculty_scope import filter_programs_for_user
+
+        return filter_programs_for_user(super().get_queryset(), self.request.user)
+
 # edit program
 class UpdateProgram(generics.UpdateAPIView):
     queryset = Program.objects.all()
@@ -114,7 +119,10 @@ class ExportProgramTemplateView(APIView):
             sheet_name="Program Upload Template",
             header_bg="1E6F8A",
             dropdowns=dropdowns,
-            instructions="Fill all the required fields. Use dropdowns to avoid errors.",
+            instructions=(
+                "Fill all required fields. Campus accepts name or code "
+                "(e.g. Main Campus or MAIN). Use dropdowns where available."
+            ),
         )
 
         response = HttpResponse(
@@ -138,11 +146,13 @@ class ListProgramsWithBatches(generics.ListAPIView):
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
     def get_queryset(self):
+        from admissions.faculty_scope import filter_programs_for_user
+
         has_batches = ProgramBatch.objects.filter(
             program=OuterRef('pk'),
             is_active=True,
         )
-        return Program.objects.select_related(
+        qs = Program.objects.select_related(
             'faculty',
             'academic_level',
         ).prefetch_related(
@@ -153,6 +163,7 @@ class ListProgramsWithBatches(generics.ListAPIView):
             has_batches=True,
             is_active=True,
         ).order_by('name')
+        return filter_programs_for_user(qs, self.request.user)
 
     def list(self, request, *args, **kwargs):
         queryset = self.get_queryset()
@@ -272,7 +283,17 @@ class HandleBulkUpload(generics.CreateAPIView):
                 # 4. Pre-load reference data (fast lookup by name)
                 faculty_map = {f.name.strip().lower(): f for f in Faculty.objects.all()}
                 level_map = {al.name.strip().lower(): al for al in AcademicLevel.objects.all()}
-                campus_map = {c.name.strip().lower(): c for c in Campus.objects.all()}
+                campus_by_name = {c.name.strip().lower(): c for c in Campus.objects.all()}
+                campus_by_code = {c.code.strip().upper(): c for c in Campus.objects.all()}
+
+                def _resolve_campus(token: str):
+                    key = token.strip()
+                    if not key:
+                        return None
+                    obj = campus_by_name.get(key.lower())
+                    if obj:
+                        return obj
+                    return campus_by_code.get(key.upper())
 
                 # 5. Process rows
                 for idx, row in df.iterrows():
@@ -312,9 +333,12 @@ class HandleBulkUpload(generics.CreateAPIView):
                             raise ValueError("Invalid campus format")
                         campus_objs = []
                         for c_name in campus_names:
-                            campus_obj = campus_map.get(c_name.lower())
+                            campus_obj = _resolve_campus(c_name)
                             if not campus_obj:
-                                raise ValueError(f"Campus '{c_name}' not found")
+                                raise ValueError(
+                                    f"Campus '{c_name}' not found "
+                                    f"(use exact campus name or code, e.g. Main Campus or MAIN)"
+                                )
                             campus_objs.append(campus_obj)
 
                         # Optional fields
@@ -383,19 +407,33 @@ class HandleBulkUpload(generics.CreateAPIView):
                         "errors": error_log[:50]
                     }, status=status.HTTP_400_BAD_REQUEST)
 
-                # 8. Bulk create
+                # 8. Bulk create (re-fetch by code so campus M2M always has real PKs)
                 program_objs = [p for p, _ in programs_to_create]
                 Program.objects.bulk_create(program_objs, ignore_conflicts=False)
+                created_codes = [p.code for p in program_objs if p.code]
+                saved_by_code = {
+                    p.code: p
+                    for p in Program.objects.filter(code__in=created_codes)
+                }
 
                 # 9. Assign campuses via through model
                 through_entries = []
                 for program, campuses in programs_to_create:
+                    saved = saved_by_code.get(program.code)
+                    if not saved:
+                        error_log.append(
+                            f"Row: Program '{program.code}' saved but could not link campuses"
+                        )
+                        continue
                     for campus in campuses:
                         through_entries.append(
-                            Program.campuses.through(program_id=program.id, campus_id=campus.id)
+                            Program.campuses.through(
+                                program_id=saved.id, campus_id=campus.id,
+                            )
                         )
                 if through_entries:
                     Program.campuses.through.objects.bulk_create(through_entries, ignore_conflicts=True)
+                program_objs = list(saved_by_code.values())
 
                 # 10. Finalize upload record
                 bulk_upload.processed_records = len(df)

@@ -26,21 +26,48 @@ jobs:
           set -e
           cd /home/admissions/NDU_Admission_backend
           git reset --hard
-          rm Drafts/migrations/0003_alter_draftapplication_applicant.py
+          
           git pull origin main
           source venv/bin/activate
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
           # === Clean and safe migration strategy ===
+          
           python manage.py makemigrations --merge --noinput
           
           # Fake known problematic migrations
+          # python manage.py migrate Programs 0006 --fake
+          # python manage.py migrate admissions 0027_application_program_choice_confirmation --fake
+          # python manage.py migrate admissions 0030 --fake
+          # python manage.py migrate admissions 0032 --fake
+          # python manage.py migrate accounts 0028_user_primary_campus --fake
+          # python manage.py migrate examinations --fake
+          # python manage.py migrate accounts 0032_systemsettings_portal_branding --fake
+          # python manage.py migrate accounts 0033_user_assigned_faculties --fake
+          # python manage.py migrate accounts 0035_user_portal_mode --fake
+          python manage.py migrate admissions 0042_admittedstudent_admitted_specialization --fake
+          python manage.py migrate admissions 0043_weekly_report_digest --fake
+          python manage.py migrate admissions 0046_application_refugee_fields --fake
+          python manage.py migrate admissions 0047_application_applicant_category --fake
+          python manage.py migrate Programs 0015_lecture_attendance --fake
+          python manage.py migrate Programs 0016_attendance_check_in_window --fake
+          python manage.py migrate staff 0001_initial --fake
+          python manage.py migrate appraisal 0002_initial --fake
+          python manage.py migrate hiring 0002_initial --fake
+          python manage.py migrate leave 0002_initial --fake
+          python manage.py migrate staff 0002_payscale --fake
         
           # Final migrate (this should now be safe)
           python manage.py migrate
+
+          # Ensure confirmation columns exist if 0027 was only faked
+          python manage.py ensure_program_choice_confirmation_columns
+          python manage.py ensure_portal_branding_columns
           
           python manage.py collectstatic --noinput
         
           sudo systemctl restart gunicorn
+          sudo systemctl restart celery || true
+          sudo systemctl restart celery-beat || true
           sudo systemctl restart nginx

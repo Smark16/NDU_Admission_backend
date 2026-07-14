@@ -4,6 +4,19 @@ from django.contrib.contenttypes.fields import GenericForeignKey
 from accounts.models import User
 
 class AuditLog(models.Model): 
+    ACTION_CHOICES = [
+        ('login', 'Login'),
+        ('register', 'register'),
+        ('phys_verify', 'Physical documents verified'),
+        ('phys_clear', 'Physical documents verification cleared'),
+        ('id_card_generate', 'ID card generated'),
+        ('id_card_revoke', 'ID card revoked'),
+        ('id_card_reissue', 'ID card reissued'),
+        ('passport_photo_update', 'Passport / ID photo updated at desk'),
+        ('passport_photo_delete', 'Passport / ID photo removed at desk'),
+        ('program_choice_admin_change', 'Programme choices updated by staff'),
+    ]
+    
     user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
     action = models.CharField(max_length=32)
     content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE, null=True, blank=True)

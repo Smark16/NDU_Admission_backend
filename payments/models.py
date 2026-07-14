@@ -80,6 +80,7 @@ class FeePlan(models.Model):
         ('application', 'Application fees'),
         ('tuition', 'Tuition'),
         ('general', 'General / service fees'),
+        ('other_schedule', 'Scheduled other fees (year/term milestones)'),
     ]
     PLAN_SCOPE_CHOICES = [
         ('program', 'Program'),
@@ -194,6 +195,22 @@ class FeePlanRule(models.Model):
 
     installment_number = models.PositiveIntegerField(null=True, blank=True)
     due_date_days = models.IntegerField(null=True, blank=True)
+    billing_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Date this fee becomes visible and billable on the student portal.",
+    )
+
+    payable_year_of_study = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        help_text="When set with payable_term_number, fee is due at this curriculum year/term.",
+    )
+    payable_term_number = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        help_text="Term within payable_year_of_study (1-based).",
+    )
 
     is_active = models.BooleanField(default=True)
     order = models.PositiveIntegerField(default=1)
@@ -434,6 +451,13 @@ class RegistrationSettings(models.Model):
             "(skips commitment fee gate)."
         ),
     )
+    auto_assign_course_units_after_commitment = models.BooleanField(
+        default=True,
+        help_text=(
+            "When enabled, commitment-based enrollment activation also auto-assigns "
+            "active course units for the student's current batch semester."
+        ),
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     updated_by = models.ForeignKey(
@@ -463,6 +487,7 @@ class RegistrationSettings(models.Model):
             existing.skip_tuition_check = self.skip_tuition_check
             existing.is_active = self.is_active
             existing.auto_enroll_on_admission = self.auto_enroll_on_admission
+            existing.auto_assign_course_units_after_commitment = self.auto_assign_course_units_after_commitment
             existing.updated_by = self.updated_by
             return existing.save(*args, **kwargs)
         return super().save(*args, **kwargs)
@@ -478,6 +503,7 @@ class RegistrationSettings(models.Model):
                 'skip_tuition_check': False,
                 'is_active': True,
                 'auto_enroll_on_admission': False,
+                'auto_assign_course_units_after_commitment': True,
             }
         )
         return settings

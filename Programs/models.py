@@ -53,6 +53,7 @@ class Program(models.Model):
         ),
     )
     is_active = models.BooleanField(default=True)
+    is_hec = models.BooleanField(default=False)
     CURRICULUM_MODE_MASTER = 'master'
     CURRICULUM_MODE_INHERITED = 'inherited'
     CURRICULUM_MODE_FORKED = 'forked'
@@ -546,15 +547,20 @@ class ProgramBatch(models.Model):
 
     @property
     def is_offer_active(self):
-        """True when today is inside [offer_start_date, offer_end_date] if those bounds are set."""
-        from django.utils import timezone
+        """
+        Cohort-only offer window (both dates set on this row).
 
-        today = timezone.now().date()
-        if self.offer_start_date and today < self.offer_start_date:
+        For intake inheritance use
+        ``Programs.program_batch_resolution.cohort_offer_is_active`` with
+        ``admission_batch`` at admit time.
+        """
+        from admissions.utils.batch_offer_filters import dates_in_offer_window
+
+        if self.offer_start_date is None and self.offer_end_date is None:
+            return True
+        if self.offer_start_date is None or self.offer_end_date is None:
             return False
-        if self.offer_end_date and today > self.offer_end_date:
-            return False
-        return True
+        return dates_in_offer_window(self.offer_start_date, self.offer_end_date)
 
     def clean(self):
         from django.core.exceptions import ValidationError
@@ -705,6 +711,56 @@ class CourseUnit(models.Model):
 
     def __str__(self):
         return f"{self.code} - {self.name}"
+
+
+class CourseMaterial(models.Model):
+    """Teaching materials attached to a course unit (outline first; notes later)."""
+
+    TYPE_OUTLINE = "outline"
+    TYPE_NOTES = "notes"
+    TYPE_OTHER = "other"
+    TYPE_CHOICES = (
+        (TYPE_OUTLINE, "Course outline"),
+        (TYPE_NOTES, "Lecture notes"),
+        (TYPE_OTHER, "Other"),
+    )
+
+    course_unit = models.ForeignKey(
+        CourseUnit,
+        on_delete=models.CASCADE,
+        related_name="materials",
+    )
+    material_type = models.CharField(
+        max_length=20,
+        choices=TYPE_CHOICES,
+        default=TYPE_OUTLINE,
+        db_index=True,
+    )
+    title = models.CharField(max_length=200, blank=True)
+    file = models.FileField(upload_to="course_materials/%Y/%m/")
+    uploaded_by = models.ForeignKey(
+        "accounts.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="uploaded_course_materials",
+    )
+    is_published = models.BooleanField(
+        default=False,
+        help_text="When true, enrolled students can download this file.",
+    )
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-uploaded_at"]
+        indexes = [
+            models.Index(fields=["course_unit", "material_type", "is_published"]),
+        ]
+
+    def __str__(self):
+        label = self.title or self.get_material_type_display()
+        return f"{self.course_unit.code}: {label}"
 
 
 class StudentCourseUnitEnrollment(models.Model):
@@ -1245,6 +1301,11 @@ class TimetableSession(models.Model):
         related_name="timetable_sessions",
     )
     day_of_week = models.PositiveSmallIntegerField(choices=DAY_CHOICES)
+    session_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Calendar date when this class takes place.",
+    )
     start_time = models.TimeField()
     end_time = models.TimeField()
     venue = models.ForeignKey(
@@ -1294,6 +1355,201 @@ class TimetableSession(models.Model):
 
         if self.start_time and self.end_time and self.end_time <= self.start_time:
             raise ValidationError({"end_time": "End time must be after start time."})
+
+        if self.session_date:
+            expected_day = self.session_date.weekday() + 1
+            if self.day_of_week != expected_day:
+                day_name = dict(self.DAY_CHOICES).get(expected_day, "")
+                raise ValidationError(
+                    {
+                        "session_date": (
+                            f"This date falls on {day_name}. "
+                            "The weekday must match the selected date."
+                        )
+                    }
+                )
+            semester = getattr(self.course_unit, "semester", None)
+            if semester:
+                if semester.start_date and self.session_date < semester.start_date:
+                    raise ValidationError(
+                        {
+                            "session_date": (
+                                f"Class date cannot be before semester start "
+                                f"({semester.start_date.strftime('%d %b %Y')})."
+                            )
+                        }
+                    )
+                if semester.end_date and self.session_date > semester.end_date:
+                    raise ValidationError(
+                        {
+                            "session_date": (
+                                f"Class date cannot be after semester end "
+                                f"({semester.end_date.strftime('%d %b %Y')})."
+                            )
+                        }
+                    )
+
+
+class LectureAttendanceSession(models.Model):
+    """One class meeting where attendance was taken (course unit + date + optional timetable slot)."""
+
+    course_unit = models.ForeignKey(
+        CourseUnit,
+        on_delete=models.CASCADE,
+        related_name="attendance_sessions",
+    )
+    session_date = models.DateField()
+    timetable_session = models.ForeignKey(
+        TimetableSession,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="attendance_sessions",
+        help_text="Timetable slot for this meeting (required for multi-slot same-day classes).",
+    )
+    venue_label = models.CharField(max_length=160, blank=True, default="")
+    notes = models.TextField(blank=True, default="")
+    taken_by = models.ForeignKey(
+        "accounts.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="lecture_attendance_sessions_taken",
+    )
+    check_in_opened_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the lecturer opened student self-check-in for this class.",
+    )
+    check_in_closes_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When student self-check-in closes. Lecturer may still edit marks after this.",
+    )
+    check_in_closed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the lecturer manually closed student self-check-in (if earlier than closes_at).",
+    )
+    check_in_duration_minutes = models.PositiveSmallIntegerField(
+        default=30,
+        help_text="Planned self-check-in window length (minutes). Recommended 20–30 for large classes.",
+    )
+    check_in_token = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        help_text="Rotating token encoded in the lecturer QR for student scan check-in.",
+    )
+    check_in_token_issued_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the current check_in_token was issued (rotated periodically).",
+    )
+    locked_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-session_date", "-id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["course_unit", "session_date", "timetable_session"],
+                condition=models.Q(timetable_session__isnull=False),
+                name="uniq_lecture_att_course_date_slot",
+            ),
+            models.UniqueConstraint(
+                fields=["course_unit", "session_date"],
+                condition=models.Q(timetable_session__isnull=True),
+                name="uniq_lecture_att_course_date_noslot",
+            ),
+        ]
+        verbose_name = "Lecture attendance session"
+        verbose_name_plural = "Lecture attendance sessions"
+        permissions = [
+            ("take_lecture_attendance", "Can take lecture attendance"),
+            ("manage_faculty_lecture_attendance", "Can manage faculty lecture attendance"),
+        ]
+
+    def __str__(self):
+        return f"{self.course_unit.code} @ {self.session_date}"
+
+    @property
+    def student_check_in_open(self) -> bool:
+        """True while students may self-mark present in the portal."""
+        from django.utils import timezone
+
+        if self.locked_at or not self.check_in_opened_at:
+            return False
+        now = timezone.now()
+        if self.check_in_closed_at and self.check_in_closed_at <= now:
+            return False
+        if self.check_in_closes_at and self.check_in_closes_at <= now:
+            return False
+        return True
+
+
+class LectureAttendanceRecord(models.Model):
+    """Per-student mark for one attendance session."""
+
+    STATUS_PRESENT = "present"
+    STATUS_ABSENT = "absent"
+    STATUS_LATE = "late"
+    STATUS_EXCUSED = "excused"
+    STATUS_CHOICES = [
+        (STATUS_PRESENT, "Present"),
+        (STATUS_ABSENT, "Absent"),
+        (STATUS_LATE, "Late"),
+        (STATUS_EXCUSED, "Excused"),
+    ]
+
+    SOURCE_LECTURER = "lecturer"
+    SOURCE_STUDENT = "student"
+    SOURCE_ADMIN = "admin"
+    SOURCE_PAPER = "paper"
+    SOURCE_QR = "qr"
+    SOURCE_CHOICES = [
+        (SOURCE_LECTURER, "Lecturer"),
+        (SOURCE_STUDENT, "Student self-check-in"),
+        (SOURCE_ADMIN, "Faculty / admin"),
+        (SOURCE_PAPER, "Paper register"),
+        (SOURCE_QR, "QR scan"),
+    ]
+
+    attendance_session = models.ForeignKey(
+        LectureAttendanceSession,
+        on_delete=models.CASCADE,
+        related_name="records",
+    )
+    student = models.ForeignKey(
+        "admissions.AdmittedStudent",
+        on_delete=models.CASCADE,
+        related_name="lecture_attendance_records",
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_ABSENT,
+    )
+    remark = models.CharField(max_length=255, blank=True, default="")
+    marked_via = models.CharField(
+        max_length=20,
+        choices=SOURCE_CHOICES,
+        default=SOURCE_LECTURER,
+        blank=True,
+    )
+    checked_in_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["student__reg_no", "student__student_id"]
+        unique_together = [("attendance_session", "student")]
+        verbose_name = "Lecture attendance record"
+        verbose_name_plural = "Lecture attendance records"
+
+    def __str__(self):
+        return f"{self.student_id} {self.status} ({self.attendance_session_id})"
 
 
 # --- Existing: bulk program upload (unchanged) ---

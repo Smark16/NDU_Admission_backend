@@ -18,12 +18,27 @@ class DraftApplication(models.Model):
     gender = models.CharField(max_length=20, blank=True, null=True)
     title = models.CharField(max_length=10, null=True, blank=True)
     nationality = models.CharField(max_length=100, blank=True, null=True)
+    applicant_category = models.CharField(
+        max_length=20,
+        choices=[
+            ("local", "Local"),
+            ("international", "International"),
+        ],
+        default="local",
+        blank=True,
+    )
     nin = models.CharField(max_length=20, blank=True, null=True)
     passport_number = models.CharField(max_length=20, blank=True, null=True)
     phone = models.CharField(max_length=20, blank=True, null=True)
     email = models.EmailField(blank=True, null=True)
     address = models.TextField(blank=True, null=True)
     disabled = models.CharField(max_length=5, blank=True, null=True)
+    is_refugee = models.BooleanField(default=False)
+    refugee_status_proof = models.FileField(
+        upload_to='draft_documents/refugee/',
+        blank=True,
+        null=True,
+    )
 
     # Next of Kin
     nextOfKinName = models.CharField(max_length=200, blank=True, null=True)
@@ -32,7 +47,6 @@ class DraftApplication(models.Model):
 
     # Program & Campus
     campus = models.ForeignKey(Campus, on_delete=models.SET_NULL, null=True, blank=True)
-    programs = models.ManyToManyField(Program, blank=True)
     academic_level = models.ForeignKey(AcademicLevel, on_delete=models.SET_NULL, null=True, blank=True)
 
     # Academic Results (stored as JSON for flexibility)
@@ -69,4 +83,43 @@ class DraftApplication(models.Model):
 
     @property
     def is_empty(self):
-        return not any([self.first_name, self.last_name, self.programs.exists()])
+        return not any([self.first_name, self.last_name, self.program_choices.exists()])
+    
+class DraftProgramChoice(models.Model):
+    draft = models.ForeignKey(
+        DraftApplication,
+        on_delete=models.CASCADE,
+        related_name="program_choices"
+    )
+
+    program = models.ForeignKey(
+        Program,
+        on_delete=models.CASCADE
+    )
+
+    choice_order = models.PositiveIntegerField()
+
+    class Meta:
+        ordering = ["choice_order"]
+        unique_together = ["draft", "choice_order"]
+
+    def __str__(self):
+        return f"{self.draft.id} - Choice {self.choice_order}"
+
+
+class DraftOtherDocument(models.Model):
+    """Additional institution qualification documents (multiple per draft)."""
+    draft = models.ForeignKey(
+        DraftApplication,
+        on_delete=models.CASCADE,
+        related_name="other_document_files",
+    )
+    file = models.FileField(upload_to="draft_documents/other/")
+    original_name = models.CharField(max_length=255, blank=True)
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["uploaded_at", "id"]
+
+    def __str__(self):
+        return self.original_name or self.file.name

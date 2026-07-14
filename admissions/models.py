@@ -118,8 +118,10 @@ class Batch(models.Model):
 
     @property
     def is_offer_active(self):
-        """Intakes no longer use offer_start/offer_end; cohort offer control is on ``Programs.ProgramBatch``."""
-        return True
+        """True when today falls inside this intake's offer window (null bounds = always active)."""
+        from admissions.utils.batch_offer_filters import dates_in_offer_window
+
+        return dates_in_offer_window(self.offer_start_date, self.offer_end_date)
 
 class OLevelSubject(models.Model):
     name = models.CharField(max_length=100)
@@ -149,7 +151,6 @@ class Application(models.Model):
     applicant = models.ForeignKey(User, on_delete=models.CASCADE, related_name='applications')
     batch = models.ForeignKey(Batch, on_delete=models.CASCADE, related_name='applications')
     campus = models.ForeignKey(Campus, on_delete=models.CASCADE, related_name='applications')
-    programs = models.ManyToManyField(Program, related_name='application_programs')
     academic_level = models.ForeignKey(AcademicLevel, on_delete=models.CASCADE)
     # Personal Information
     first_name = models.CharField(max_length=100)
@@ -159,13 +160,23 @@ class Application(models.Model):
     date_of_birth = models.DateField()
     gender = models.CharField(max_length=20)
     nationality = models.CharField(max_length=100)
+    applicant_category = models.CharField(
+        max_length=20,
+        choices=[
+            ("local", "Local"),
+            ("international", "International"),
+        ],
+        default="local",
+    )
     phone = models.CharField(max_length=20)
     email = models.EmailField()
     address = models.TextField(max_length=255, blank=True, null=True)
     nin = models.CharField(max_length=20, blank=True, null=True)
     passport_number = models.CharField(max_length=20, blank=True, null=True)
     disabled = models.CharField(max_length=5, null=True, blank=True)
-    
+    is_refugee = models.BooleanField(default=False)
+    refugee_status_proof = models.FileField(upload_to='refugee_proofs/', blank=True, null=True)
+
     # Next of Kin Information
     next_of_kin_name = models.CharField(max_length=200)
     next_of_kin_contact = models.CharField(max_length=25)
@@ -211,6 +222,7 @@ class Application(models.Model):
    
     # Application Status
     status = models.CharField(max_length=20, default='draft')
+    pending_reason = models.TextField(max_length=255, blank=True, null=True)
     application_reference = models.CharField(max_length=50, unique=True, blank=True, null=True)
     school_pay_reference = models.CharField(max_length=100, blank=True, null=True)
     application_fee_paid = models.BooleanField(default=False)
@@ -250,6 +262,23 @@ class Application(models.Model):
         related_name="generated_offer_letters",
     )
 
+    program_choices_verification_sent_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the applicant was asked to review/confirm programme choices (e.g. bulk email).",
+    )
+    program_choices_confirmed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When programme choices were confirmed in the portal (applicant or staff).",
+    )
+    program_choices_confirmed_by = models.CharField(
+        max_length=16,
+        blank=True,
+        default="",
+        help_text="Who confirmed: applicant (portal) or staff (change programme). Empty = legacy.",
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -285,7 +314,7 @@ class Application(models.Model):
     def full_name(self):
         return f"{self.first_name} {self.middle_name} {self.last_name}".strip()
 
-
+# program choices
 class ApplicationProgramChoice(models.Model):
     """Ordered programme choices for an application (replaces relying on M2M ordering alone)."""
 
@@ -304,7 +333,6 @@ class ApplicationProgramChoice(models.Model):
         validators=[MinValueValidator(1), MaxValueValidator(50)],
         help_text="1 = first choice; higher numbers = lower priority.",
     )
-
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -324,8 +352,7 @@ class ApplicationProgramChoice(models.Model):
         ]
 
     def __str__(self):
-        return f"{self.application_id}→{self.program_id} (pref {self.preference})"
-
+        return f"{self.application_id} - Choice {self.choice_order} - {self.program}"
 
 class OLevelResult(models.Model):
     application = models.ForeignKey(Application, on_delete=models.CASCADE, related_name='olevel_results')
@@ -382,7 +409,7 @@ class AdditionalQualifications(models.Model):
     application = models.ForeignKey(Application, on_delete=models.CASCADE, related_name='additionals', null=True, blank=True)
     additional_qualification_institution = models.CharField(max_length=200, blank=True, help_text="Institution Name")
     additional_qualification_type = models.CharField(max_length=30, blank=True)
-    additional_qualification_year = models.PositiveIntegerField(blank=True, null=True, help_text="Award Year")
+    additional_qualification_year = models.CharField(max_length=100, blank=True, null=True, help_text="Award Year")
     class_of_award = models.CharField(max_length=200, blank=True, null=True)
 
 class AdmittedStudent(models.Model):
@@ -402,6 +429,17 @@ class AdmittedStudent(models.Model):
         related_name='intended_admissions',
         help_text=(
             'The academic cohort this student should be placed in. Set at time of admission.'
+        ),
+    )
+    admitted_specialization = models.ForeignKey(
+        'Programs.ProgramSpecialization',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='admitted_students',
+        help_text=(
+            'Teaching subject combination / programme track selected at admission '
+            '(required for programmes with has_specialization=True).'
         ),
     )
     schoolpay_code = models.CharField(max_length=100, unique=True, null=True, blank=True)
@@ -487,15 +525,30 @@ class AdmittedStudent(models.Model):
     
     @property
     def full_name(self):
-        return self.application.full_name
+        if not self.application_id:
+            return ""
+        try:
+            return self.application.full_name
+        except Exception:
+            return ""
     
     @property
     def email(self):
-        return self.application.email
+        if not self.application_id:
+            return ""
+        try:
+            return self.application.email
+        except Exception:
+            return ""
     
     @property
     def phone(self):
-        return self.application.phone
+        if not self.application_id:
+            return ""
+        try:
+            return self.application.phone
+        except Exception:
+            return ""
 
 
 class StudentIdCard(models.Model):
@@ -702,12 +755,14 @@ class EmailTemplate(models.Model):
     KEY_ADMISSION_ACCEPTED = "admission_accepted"
     KEY_ADMISSION_UPDATED = "admission_updated"
     KEY_OFFER_LETTER_SENT = "offer_letter_sent"
+    KEY_WEEKLY_ADMISSIONS_DIGEST = "weekly_admissions_digest"
 
     TEMPLATE_KEY_CHOICES = [
         (KEY_APPLICATION_SUBMITTED, "Application Submitted"),
         (KEY_ADMISSION_ACCEPTED, "Admission Accepted"),
         (KEY_ADMISSION_UPDATED, "Admission Updated"),
         (KEY_OFFER_LETTER_SENT, "Offer Letter Sent"),
+        (KEY_WEEKLY_ADMISSIONS_DIGEST, "Weekly Admissions Digest"),
     ]
 
     key = models.CharField(max_length=80, unique=True, choices=TEMPLATE_KEY_CHOICES)
@@ -735,10 +790,70 @@ class EmailTemplate(models.Model):
         return f"{self.name} ({self.key})"
 
 
+class WeeklyReportSettings(models.Model):
+    """Singleton-style configuration for the weekly admissions digest email."""
+
+    WEEKDAY_CHOICES = [
+        (0, "Monday"),
+        (1, "Tuesday"),
+        (2, "Wednesday"),
+        (3, "Thursday"),
+        (4, "Friday"),
+        (5, "Saturday"),
+        (6, "Sunday"),
+    ]
+
+    is_enabled = models.BooleanField(default=False)
+    schedule_day = models.PositiveSmallIntegerField(choices=WEEKDAY_CHOICES, default=0)
+    schedule_hour = models.PositiveSmallIntegerField(default=8)
+    schedule_minute = models.PositiveSmallIntegerField(default=0)
+    last_sent_at = models.DateTimeField(null=True, blank=True)
+    last_sent_summary = models.CharField(max_length=255, blank=True, default="")
+    updated_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="updated_weekly_report_settings",
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Weekly report settings"
+        verbose_name_plural = "Weekly report settings"
+
+    @classmethod
+    def get_solo(cls):
+        obj, _ = cls.objects.get_or_create(pk=1)
+        return obj
+
+    def __str__(self):
+        return "Weekly admissions digest settings"
 
 
+class WeeklyReportRecipient(models.Model):
+    """Staff email addresses that receive the weekly admissions health digest."""
 
+    email = models.EmailField(unique=True)
+    name = models.CharField(max_length=120, blank=True, default="")
+    is_active = models.BooleanField(default=True)
+    notes = models.CharField(max_length=255, blank=True, default="")
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="weekly_report_recipients_created",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
+    class Meta:
+        ordering = ["email"]
+        verbose_name = "Weekly report recipient"
+        verbose_name_plural = "Weekly report recipients"
 
-
+    def __str__(self):
+        label = self.name.strip() or self.email
+        return label
 

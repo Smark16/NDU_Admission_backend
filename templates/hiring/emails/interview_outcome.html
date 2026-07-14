@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Interview Update</title>
+</head>
+<body style="font-family: Arial, Helvetica, sans-serif; color: #222; line-height: 1.5; margin: 0; padding: 0;">
+  <div style="max-width: 640px; margin: 0 auto; padding: 24px;">
+    <h1 style="color: #7c1519; font-size: 20px; margin: 0 0 16px;">
+      {% if outcome == "PASSED" %}Interview Result — Passed{% else %}Application Update{% endif %}
+    </h1>
+    <p>Dear {{ applicant_name }},</p>
+
+    {% if outcome == "PASSED" %}
+    <p>
+      Congratulations. You have <strong>passed</strong> the
+      <strong>{{ stage_label }}</strong> stage for
+      <strong>{{ position_title }}</strong> ({{ department_name }}) at
+      <strong>{{ university_name }}</strong>.
+    </p>
+    <div style="background: #f7f5f5; border-left: 4px solid #7c1519; padding: 12px 16px; margin: 20px 0;">
+      <p style="margin: 4px 0;"><strong>Application reference:</strong> {{ reference }}</p>
+      <p style="margin: 4px 0;"><strong>Stage completed:</strong> {{ stage_label }}</p>
+      {% if next_stage_label %}
+      <p style="margin: 4px 0;"><strong>Next stage:</strong> {{ next_stage_label }}</p>
+      <p style="margin: 4px 0;">
+        Our recruitment team will schedule your {{ next_stage_label|lower }} and email you the details.
+        Please check your inbox regularly.
+      </p>
+      {% else %}
+      <p style="margin: 4px 0;">
+        You have completed the interview stages. Our team will contact you regarding the hiring decision.
+      </p>
+      {% endif %}
+    </div>
+    {% else %}
+    <p>
+      Thank you for participating in the <strong>{{ stage_label }}</strong> stage for
+      <strong>{{ position_title }}</strong> at <strong>{{ university_name }}</strong>.
+    </p>
+    <p>
+      After careful consideration, we will not be progressing your application further at this time.
+      We appreciate your interest and encourage you to apply for future openings that match your profile.
+    </p>
+    <div style="background: #f7f5f5; border-left: 4px solid #7c1519; padding: 12px 16px; margin: 20px 0;">
+      <p style="margin: 4px 0;"><strong>Application reference:</strong> {{ reference }}</p>
+      <p style="margin: 4px 0;"><strong>Position:</strong> {{ position_title }}</p>
+    </div>
+    {% endif %}
+
+    {% if track_url %}
+    <p>You can track your application status here: <a href="{{ track_url }}">{{ track_url }}</a></p>
+    {% endif %}
+
+    {% if hr_contact_email %}
+    <p>Questions? Contact {{ hr_contact_email }}.</p>
+    {% endif %}
+
+    <p>
+      Kind regards,<br />
+      Recruitment Team<br />
+      {{ university_name }}
+    </p>
+    <p style="font-size: 12px; color: #777; margin-top: 24px;">
+      This is an automated message from {{ from_email }}. Please do not reply directly to this email.
+    </p>
+  </div>
+</body>
+</html>

@@ -1,6 +1,6 @@
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
-from rest_framework import generics, permissions, status
+from rest_framework import generics, permissions, status, serializers
 from rest_framework.parsers import JSONParser, FormParser, MultiPartParser
 from rest_framework.views import APIView
 from django.utils import timezone
@@ -8,21 +8,26 @@ from django.db.models import Q, Count
 from django.shortcuts import get_object_or_404
 from django.conf import settings
 from rest_framework_simplejwt.views import TokenObtainPairView
+from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.permissions import *
 from django.contrib.auth.models import Group, Permission
 from django.contrib.auth import authenticate
+from django.contrib.auth.models import update_last_login
 from .serializers import *
 from .models import *
 
 from audit.utils import log_audit_event
 from django.db import transaction
 from django.db.models.deletion import ProtectedError
+from django.db.utils import IntegrityError
 
 from django.utils.http import urlsafe_base64_decode
 from django.shortcuts import redirect
 from django.contrib.auth.tokens import default_token_generator
 from django.core.cache import cache
-from .tasks import celery_send_password_reset_Link
+from .tasks import celery_send_password_reset_Link, celery_send_erp_password_reset_Link
+from .role_assignment import role_requires_faculty_assignment
+from .super_admin import user_is_super_admin
 
 # login view
 class ObtainTokenView(TokenObtainPairView):
@@ -36,6 +41,7 @@ class ObtainTokenView(TokenObtainPairView):
             password = request.data.get("password")
             user = authenticate(username=username, password=password)
             if user:
+                update_last_login(None, user)
                 log_audit_event(
                     user,
                     'login',
@@ -46,11 +52,72 @@ class ObtainTokenView(TokenObtainPairView):
 
         return response
 
+# live session (permissions refresh without full re-login)
+class SessionView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from accounts.jwt_utils import session_payload
+        from accounts.portal_login import assert_session_allowed_on_portal
+
+        assert_session_allowed_on_portal(request.user, request)
+        return Response(session_payload(request.user), status=status.HTTP_200_OK)
+
+
+class SwitchPortalModeView(APIView):
+    """
+    POST { portal_mode: 'admin' | 'lecturer' | 'student' }
+
+    Switches the active ERP portal view when the user has access to multiple portals.
+    Returns fresh JWT tokens with updated portal_mode claim.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        from accounts.jwt_utils import session_payload
+        from accounts.role_assignment import PORTAL_MODES, user_portal_modes
+
+        mode = (request.data.get("portal_mode") or "").strip().lower()
+        if mode not in PORTAL_MODES:
+            return Response(
+                {"detail": 'portal_mode must be "admin", "lecturer", or "student".'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        user = request.user
+        allowed = user_portal_modes(user)
+        if mode not in allowed:
+            return Response(
+                {"detail": f'You do not have access to the "{mode}" portal.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        user.portal_mode = mode
+        user.save(update_fields=["portal_mode"])
+
+        refresh = RefreshToken.for_user(user)
+        access = ObtainSerializer.get_token(user)
+        payload = session_payload(user)
+        payload["access"] = str(access.access_token)
+        payload["refresh"] = str(refresh)
+        return Response(payload, status=status.HTTP_200_OK)
+
 # register
 class RegisterView(generics.CreateAPIView):
     queryset = User.objects.all()
     serializer_class = RegisterSerializer
-    permission_classes = [permissions.AllowAny] 
+    permission_classes = [permissions.AllowAny]
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        user = (
+            User.objects.prefetch_related("groups", "campuses", "faculties")
+            .get(pk=serializer.instance.pk)
+        )
+        return Response(ListUserSerializer(user).data, status=status.HTTP_201_CREATED)
 
     def perform_create(self, serializer):
         user = serializer.save()
@@ -76,11 +143,37 @@ class UpdateUser(generics.UpdateAPIView):
         # Never accept raw password writes through ModelSerializer; hash it properly.
         data = request.data.copy()
         new_role = (data.get("role") or "").strip()
+        roles_payload = data.pop("roles", None)
         if new_role.lower() == "student":
             return Response(
                 {"detail": "Student accounts are created from Admissions/Direct Admission, not User Management."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        faculty_ids = data.pop("faculties", None)
+        campus_ids = data.pop("campuses", None)
+        role_names_for_faculty: list[str] = []
+        if roles_payload is not None:
+            role_names_for_faculty = [
+                str(n).strip() for n in (roles_payload if isinstance(roles_payload, list) else []) if str(n).strip()
+            ]
+        elif new_role:
+            role_names_for_faculty = [new_role]
+        needs_faculty = any(role_requires_faculty_assignment(name) for name in role_names_for_faculty)
+        if needs_faculty:
+            faculty_label = ", ".join(role_names_for_faculty) or new_role
+            if faculty_ids is not None and len(faculty_ids) == 0:
+                if instance.faculties.exists():
+                    faculty_ids = None
+                else:
+                    return Response(
+                        {"faculties": f"Select at least one faculty for a {faculty_label} account."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+            elif faculty_ids is None and not instance.faculties.exists():
+                return Response(
+                    {"faculties": f"Select at least one faculty for a {faculty_label} account."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
         if str(data.get("is_student", "")).strip().lower() in {"true", "1", "yes"}:
             return Response(
                 {"detail": "Student flag cannot be set from User Management."},
@@ -89,34 +182,67 @@ class UpdateUser(generics.UpdateAPIView):
         new_password = (data.get("password") or "").strip()
         data.pop("password", None)
         data.pop("confirm_password", None)
+        if "staff_id" in data:
+            from accounts.serializers import normalize_staff_id
 
-        serializer = self.serializer_class(instance, data=data, partial=True)
-        serializer.is_valid(raise_exception=True)
-        serializer.save()
+            data["staff_id"] = normalize_staff_id(data.get("staff_id"))
+
+        try:
+            serializer = self.serializer_class(instance, data=data, partial=True)
+            serializer.is_valid(raise_exception=True)
+            serializer.save()
+        except IntegrityError as exc:
+            if "staff_id" in str(exc).lower():
+                return Response(
+                    {"staff_id": "That staff ID is already assigned to another user."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            raise
+
+        if campus_ids is not None:
+            instance.campuses.set(campus_ids)
+        if faculty_ids is not None:
+            instance.faculties.set(faculty_ids)
 
         if new_password:
             instance.set_password(new_password)
             instance.must_change_password = True
             instance.save(update_fields=["password", "must_change_password"])
 
-        # ── Lecturer role sync ────────────────────────────────────────────────
-        # If the saved role is "Lecturer", ensure is_lecturer=True and Lecturer
-        # group membership — matching what AssignLecturerRole does.
-        # We only auto-GRANT here; removal remains a deliberate separate action
-        # (via the assign_lecturer endpoint) so we never accidentally lock out a
-        # lecturer who already has course unit responsibilities.
-        if new_role == "Lecturer" and not instance.is_lecturer:
-            instance.is_lecturer = True
-            instance.save(update_fields=["is_lecturer"])
-            lecturer_group, _ = Group.objects.get_or_create(name="Lecturer")
-            instance.groups.add(lecturer_group)
-        # ─────────────────────────────────────────────────────────────────────
+        if roles_payload is not None:
+            from accounts.role_assignment import set_user_roles
 
-        return Response(serializer.data, status=200)
+            try:
+                set_user_roles(instance, roles_payload)
+            except serializers.ValidationError as exc:
+                return Response(exc.detail, status=status.HTTP_400_BAD_REQUEST)
+            except IntegrityError as exc:
+                if "staff_id" in str(exc).lower():
+                    return Response(
+                        {"staff_id": "That staff ID is already assigned to another user."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                raise
+        elif new_role:
+            from accounts.role_assignment import assign_user_role
+
+            try:
+                assign_user_role(instance, new_role)
+            except serializers.ValidationError as exc:
+                return Response(exc.detail, status=status.HTTP_400_BAD_REQUEST)
+
+        instance.refresh_from_db()
+        instance = (
+            User.objects.prefetch_related("groups", "campuses", "faculties")
+            .get(pk=instance.pk)
+        )
+        from hr.staff.utils.profile_sync import ensure_staff_profile_for_user
+        ensure_staff_profile_for_user(instance)
+        return Response(ListUserSerializer(instance).data, status=200)
     
 # get single user
 class getUser(generics.RetrieveAPIView):
-    queryset = User.objects.prefetch_related('groups', 'user_permissions', 'campuses')
+    queryset = User.objects.prefetch_related('groups', 'user_permissions', 'campuses', 'faculties')
     serializer_class = UserSerializer
     permission_classes = [IsAuthenticated]
 
@@ -127,12 +253,14 @@ class getUser(generics.RetrieveAPIView):
     
 # list admin users
 class ListUsers(generics.ListAPIView):
-    serializer_class = UserSerializer
+    serializer_class = ListUserSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
     def get_queryset(self):
-        qs = User.objects.filter(is_applicant=False).prefetch_related(
-            "groups", "user_permissions", "campuses"
+        qs = (
+            User.objects.filter(is_applicant=False, is_student=False)
+            .defer("password")
+            .prefetch_related("groups", "campuses", "faculties")
         )
         no_group = (self.request.query_params.get("no_group") or "").lower()
         if no_group in ("1", "true", "yes"):
@@ -162,18 +290,51 @@ class ChangeUserStatus(APIView):
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
     def patch(self, request, *args, **kwargs):
+        from django.db import transaction
+        from accounts.utils.passwords import generate_changeme_password
+        from accounts.tasks import celery_send_account_email
+
         user_id = self.kwargs['pk']
         newStatus = request.data.get('is_active')
+        # Normalize query/body booleans
+        if isinstance(newStatus, str):
+            newStatus = newStatus.lower() in ("1", "true", "yes")
 
         try:
-            user = User.objects.prefetch_related('groups', 'user_permissions', 'campuses').get(pk=user_id)
-            user.is_active = newStatus
-            user.save()
+            with transaction.atomic():
+                user = User.objects.prefetch_related(
+                    'groups', 'user_permissions', 'campuses'
+                ).get(pk=user_id)
+                was_active = bool(user.is_active)
+                activating = bool(newStatus) and not was_active
+
+                plain_password = None
+                if activating:
+                    plain_password = generate_changeme_password()
+                    user.set_password(plain_password)
+                    user.must_change_password = True
+
+                user.is_active = bool(newStatus)
+                user.save()
+
+                if activating and plain_password and (user.email or "").strip():
+                    password_for_email = plain_password
+                    uid = user.id
+
+                    def _enqueue():
+                        celery_send_account_email.delay(
+                            uid,
+                            password_for_email,
+                            True,
+                            "Your ERP Account Has Been Activated",
+                        )
+
+                    transaction.on_commit(_enqueue)
 
             serializer = self.serializer_class(user)
             return Response(serializer.data, status=status.HTTP_200_OK)
         except Exception as e:
-            return Response({"detail":str(e)}, status=400)
+            return Response({"detail": str(e)}, status=400)
         
 # delete user
 class DeleteUser(generics.RetrieveDestroyAPIView):
@@ -200,24 +361,28 @@ class AssignLecturerRole(APIView):
         flag = bool(request.data.get("is_lecturer"))
         try:
             user = User.objects.get(pk=user_id)
-            user.is_lecturer = flag
+            group, _ = Group.objects.get_or_create(name="Lecturer")
+            if flag:
+                from accounts.role_assignment import assign_user_role
+
+                assign_user_role(user, "Lecturer", replace=False)
+            else:
+                user.groups.remove(group)
+                from accounts.role_assignment import sync_user_role_flags
+
+                sync_user_role_flags(user)
             if "staff_id" in request.data:
                 user.staff_id = (request.data.get("staff_id") or "").strip() or None
             if flag and request.data.get("password"):
                 user.set_password(str(request.data.get("password")))
                 user.must_change_password = True
-            fields = ["is_lecturer"]
+            fields = []
             if "staff_id" in request.data:
                 fields.append("staff_id")
             if flag and request.data.get("password"):
                 fields.extend(["password", "must_change_password"])
-            user.save(update_fields=fields)
-
-            group, _ = Group.objects.get_or_create(name="Lecturer")
-            if flag:
-                user.groups.add(group)
-            else:
-                user.groups.remove(group)
+            if fields:
+                user.save(update_fields=fields)
 
             return Response(UserSerializer(user).data, status=200)
         except Exception as e:
@@ -462,6 +627,21 @@ class PasswordResetRequestView(APIView):
 
         return Response({"detail": "Password reset email sent."}, status=status.HTTP_200_OK)
 
+# password reset link
+class HorizonPasswordResetRequestView(APIView):
+    def post(self, request):
+        email = request.data.get('email')
+        user = User.objects.filter(email=email, is_applicant=False).first()
+        if not user:
+                return Response({"detail": "User with this Email not found."}, status=status.HTTP_404_NOT_FOUND)
+    
+        try:
+            celery_send_erp_password_reset_Link.delay(user.id)
+        except Exception:
+            pass
+
+        return Response({"detail": "Password reset email sent."}, status=status.HTTP_200_OK)    
+
 # reset login password view
 class PasswordResetConfirmView(APIView):
     def post(self, request):
@@ -506,6 +686,11 @@ def password_reset_redirect(request, uidb64, token):
     frontend_url = f"{settings.LOGIN_URL.rstrip('/')}/reset-password?uidb64={uidb64}&token={token}"
     return redirect(frontend_url)
 
+# Horizon Frontend redirect
+# Frontend redirect
+def password_horizon_reset_redirect(request, uidb64, token):
+    frontend_url = f"{settings.ERP_FRONTEND_URL.rstrip('/')}/reset-password?uidb64={uidb64}&token={token}"
+    return redirect(frontend_url)
 
 # ── Student first-login forced password change ────────────────────────────────
 class StudentFirstLoginChangePassword(APIView):
@@ -549,20 +734,12 @@ class StudentFirstLoginChangePassword(APIView):
 
         # Issue fresh tokens so frontend can go straight to the portal
         from rest_framework_simplejwt.tokens import RefreshToken
+        from accounts.jwt_utils import apply_user_token_claims
+
         refresh = RefreshToken.for_user(user)
-        # Stamp custom claims (mirrors ObtainSerializer.get_token)
         for token in (refresh, refresh.access_token):
-            token['first_name']          = user.first_name
-            token['last_name']           = user.last_name
-            token['is_staff']            = user.is_staff
-            token['is_applicant']        = user.is_applicant
-            token['is_student']          = user.is_student
-            token['must_change_password'] = False          # explicitly cleared
-            token['role']                = user.groups.first().name if user.groups.exists() else None
-            token['phone']               = user.phone
-            token['email']               = user.email
-            token['username']            = user.username
-            token['permissions']         = list(user.get_all_permissions())
+            apply_user_token_claims(token, user)
+            token["must_change_password"] = False
 
         return Response({
             'detail': 'Password changed successfully.',
@@ -577,45 +754,116 @@ class ProspectiveStudentsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        from admissions.models import Application
-        from django.db.models import OuterRef, Subquery, Value
-        from django.db.models.functions import Coalesce
-
-        submitted_statuses = ['submitted', 'under_review', 'accepted', 'Admitted', 'rejected']
-
-        latest_draft = Application.objects.filter(
-            applicant=OuterRef('pk'),
-            status='draft'
-        ).order_by('-created_at')
-
-        prospective = (
-            User.objects.filter(is_applicant=True)
-            .exclude(pk__in=Application.objects.filter(status__in=submitted_statuses).values('applicant'))
-            .annotate(
-                has_draft=Coalesce(
-                    Subquery(latest_draft.values('status')[:1]),
-                    Value('no_application')
-                ),
-                draft_started_at=Subquery(latest_draft.values('created_at')[:1]),
-            )
-            .order_by('-date_joined')
+        from accounts.prospective_students import (
+            annotate_prospective_list_fields,
+            apply_prospective_list_filters,
+            prospective_applicant_base_queryset,
+            prospective_list_stats,
+            serialize_prospective_student,
         )
 
-        data = [
-            {
-                'id': u.id,
-                'name': u.get_full_name() or u.email,
-                'email': u.email,
-                'phone': u.phone,
-                'date_joined': u.date_joined,
-                'last_login': u.last_login,
-                'status': 'Draft Started' if u.has_draft == 'draft' else 'Never Started',
-                'draft_started_at': u.draft_started_at,
-                'days_since_joined': (timezone.now() - u.date_joined).days if u.date_joined else None,
-            }
-            for u in prospective
+        search = (request.query_params.get("search") or "").strip()
+        status = (request.query_params.get("status") or "all").strip()
+        date_from = (request.query_params.get("date_from") or "").strip()
+        date_to = (request.query_params.get("date_to") or "").strip()
+        page = max(int(request.query_params.get("page") or 1), 1)
+        page_size = min(max(int(request.query_params.get("page_size") or 50), 1), 200)
+
+        filtered = apply_prospective_list_filters(
+            prospective_applicant_base_queryset(),
+            search=search,
+            status=status,
+            date_from=date_from,
+            date_to=date_to,
+        )
+        total = filtered.count()
+        offset = (page - 1) * page_size
+
+        results = [
+            serialize_prospective_student(u)
+            for u in annotate_prospective_list_fields(filtered)
+            .only(
+                "id",
+                "first_name",
+                "last_name",
+                "email",
+                "phone",
+                "date_joined",
+                "last_login",
+                "username",
+            )
+            .order_by("-date_joined")[offset : offset + page_size]
         ]
-        return Response({'count': len(data), 'results': data})
+
+        payload = {
+            "count": total,
+            "page": page,
+            "page_size": page_size,
+            "results": results,
+        }
+        if page == 1:
+            payload["stats"] = prospective_list_stats()
+        return Response(payload)
+
+
+class AssistApplicationContextView(APIView):
+    """Prospective student assist session — applicant profile + draft progress."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        from Drafts.views import _draft_for_user
+        from Drafts.models import DraftApplication
+        from accounts.assist_application import (
+            draft_progress_payload,
+            get_assistable_applicant,
+        )
+
+        applicant = get_assistable_applicant(request.user, pk)
+        draft = _draft_for_user(applicant, None)
+        has_portal_draft = DraftApplication.objects.filter(applicant=applicant).exists()
+
+        from payments.models import ApplicationPayment
+
+        pending_payment = (
+            ApplicationPayment.objects.filter(user=applicant, status="PENDING")
+            .order_by("-created_at")
+            .first()
+        )
+        pending_payload = None
+        if pending_payment:
+            pending_payload = {
+                "id": pending_payment.id,
+                "external_reference": pending_payment.external_reference,
+                "payment_reference": pending_payment.payment_reference,
+                "amount": str(pending_payment.amount),
+                "created_at": pending_payment.created_at.isoformat()
+                if pending_payment.created_at
+                else None,
+            }
+
+        from payments.utils.application_payment_status import confirmed_application_fee_payment
+
+        confirmed_payment = confirmed_application_fee_payment(applicant, draft=draft)
+
+        return Response(
+            {
+                "applicant": {
+                    "id": applicant.id,
+                    "name": applicant.get_full_name() or applicant.email,
+                    "email": applicant.email,
+                    "phone": applicant.phone,
+                },
+                "status": "Draft Started" if (draft or has_portal_draft) else "Never Started",
+                "draft_started_at": draft.updated_at if draft else None,
+                "has_draft": draft is not None,
+                "progress": draft_progress_payload(draft),
+                "pending_payment": pending_payload,
+                "application_fee_confirmed": confirmed_payment is not None,
+                "confirmed_external_reference": (
+                    confirmed_payment.external_reference if confirmed_payment else ""
+                ),
+            }
+        )
 
 
 class SendReminderEmail(APIView):
@@ -636,13 +884,16 @@ class DeleteProspectiveStudent(APIView):
 
     def delete(self, request, pk):
         from admissions.models import Application
-        submitted_statuses = ['submitted', 'under_review', 'accepted', 'Admitted', 'rejected']
+        from accounts.prospective_students import PROSPECTIVE_EXCLUDED_APPLICATION_STATUSES
+
         try:
             user = User.objects.get(pk=pk, is_applicant=True)
         except User.DoesNotExist:
             return Response({'detail': 'Prospective student not found.'}, status=status.HTTP_404_NOT_FOUND)
 
-        if Application.objects.filter(applicant=user, status__in=submitted_statuses).exists():
+        if Application.objects.filter(
+            applicant=user, status__in=PROSPECTIVE_EXCLUDED_APPLICATION_STATUSES
+        ).exists():
             return Response(
                 {'detail': 'Cannot delete — this user has a submitted application.'},
                 status=status.HTTP_400_BAD_REQUEST
@@ -656,7 +907,10 @@ class ProspectiveAnnouncement(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        from admissions.models import Application
+        from accounts.prospective_students import (
+            filter_prospective_queryset_by_status,
+            prospective_applicant_base_queryset,
+        )
         from ndu_portal.send_grid import send_configurable_email
 
         subject = (request.data.get('subject') or '').strip()
@@ -666,25 +920,8 @@ class ProspectiveAnnouncement(APIView):
         if not subject or not body:
             return Response({'detail': 'Subject and body are required.'}, status=400)
 
-        submitted_statuses = ['submitted', 'under_review', 'accepted', 'Admitted', 'rejected']
-
-        qs = User.objects.filter(
-            is_applicant=True,
-            is_active=True,
-        ).exclude(
-            pk__in=Application.objects.filter(
-                status__in=submitted_statuses
-            ).values('applicant')
-        )
-
-        if status_filter == 'Draft Started':
-            qs = qs.filter(
-                pk__in=Application.objects.filter(status='draft').values('applicant')
-            )
-        elif status_filter == 'Never Started':
-            qs = qs.exclude(
-                pk__in=Application.objects.values('applicant')
-            )
+        qs = prospective_applicant_base_queryset().filter(is_active=True)
+        qs = filter_prospective_queryset_by_status(qs, status_filter)
 
         recipients = list(qs.values('id', 'first_name', 'last_name', 'email'))
         if not recipients:
@@ -706,17 +943,29 @@ class ProspectiveAnnouncement(APIView):
 
 # ─── System Settings (NDU Portal) ────────────────────────────────────────────
 
+class PortalBrandingView(APIView):
+    """Public branding for login page (no auth required)."""
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        from .portal_branding import portal_branding_payload
+
+        settings_obj = SystemSettings.get_settings()
+        return Response(portal_branding_payload(settings_obj, request))
+
+
 class GetSystemSettings(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         settings_obj = SystemSettings.get_settings()
-        serializer = SystemSettingsSerializer(settings_obj)
+        serializer = SystemSettingsSerializer(settings_obj, context={"request": request})
         return Response(serializer.data)
 
 
 class UpdateSystemSettings(APIView):
     permission_classes = [IsAuthenticated]
+    parser_classes = [JSONParser, FormParser, MultiPartParser]
 
     def _format_validation_error(self, errors):
         if isinstance(errors, dict):
@@ -730,8 +979,19 @@ class UpdateSystemSettings(APIView):
         return "Invalid settings data."
 
     def _update(self, request):
+        if not (
+            user_is_super_admin(request.user)
+            or request.user.has_perm("accounts.access_system_settings")
+        ):
+            return Response({"detail": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
+
         settings_obj = SystemSettings.get_settings()
-        serializer = SystemSettingsSerializer(settings_obj, data=request.data, partial=True)
+        serializer = SystemSettingsSerializer(
+            settings_obj,
+            data=request.data,
+            partial=True,
+            context={"request": request},
+        )
         if serializer.is_valid():
             serializer.save(updated_by=request.user)
             return Response({'detail': 'Settings updated successfully.', **serializer.data})

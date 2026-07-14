@@ -85,7 +85,29 @@ class ApplicationAdmin(admin.ModelAdmin):
     list_filter = ['status', 'application_fee_paid', 'campus', 'batch', 'created_at']
     search_fields = ['first_name', 'last_name', 'email', 'phone']
     readonly_fields = ['created_at', 'updated_at']
+    fieldsets = (
+        (None, {
+            'fields': (
+                'applicant', 'first_name', 'last_name', 'middle_name', 'email', 'phone',
+                'status', 'batch', 'campus', 'academic_level',
+            ),
+        }),
+        ('Payment', {
+            'fields': ('application_fee_paid', 'application_fee_amount', 'application_reference', 'payment_proof'),
+        }),
+        ('Review / rejection', {
+            'fields': ('reviewed_by', 'reviewed_at', 'review_notes', 'pending_reason'),
+        }),
+        ('Revocation', {
+            'fields': ('is_revoked', 'revoked_by', 'revoked_at', 'revocation_reason'),
+        }),
+    )
     ordering = ['-created_at']
+
+@admin.register(ApplicationProgramChoice)
+class ApplicationProgramChoiceAdmin(admin.ModelAdmin):
+    list_display = ['application', 'program', 'choice_order']
+    search_fields = ['program__name', 'application__first_name', 'application__last_name']
 
 @admin.register(OLevelSubject)
 class OLevelSubjectAdmin(admin.ModelAdmin):
@@ -178,4 +200,17 @@ class EmailTemplateAdmin(admin.ModelAdmin):
     list_filter = ['is_active', 'key']
     search_fields = ['name', 'key', 'subject_template']
     readonly_fields = ['created_at', 'updated_at']
+
+
+@admin.register(WeeklyReportSettings)
+class WeeklyReportSettingsAdmin(admin.ModelAdmin):
+    list_display = ['is_enabled', 'schedule_day', 'schedule_hour', 'last_sent_at', 'updated_at']
+    readonly_fields = ['last_sent_at', 'last_sent_summary', 'updated_at']
+
+
+@admin.register(WeeklyReportRecipient)
+class WeeklyReportRecipientAdmin(admin.ModelAdmin):
+    list_display = ['email', 'name', 'is_active', 'created_at']
+    list_filter = ['is_active']
+    search_fields = ['email', 'name']
 

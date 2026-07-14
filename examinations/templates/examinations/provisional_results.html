@@ -4,13 +4,17 @@
   <meta charset="UTF-8" />
   <title>{{ document_title }} – {{ student.name }}</title>
   <style>
-    @page { size: A4 landscape; margin: 8mm 10mm; }
+    @page { size: A4 portrait; margin: 8mm 10mm; }
     * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      page-break-after: avoid;
+      page-break-inside: avoid;
+    }
     body {
       font-family: Arial, Helvetica, sans-serif;
-      font-size: 10.5px;
+      font-size: 10px;
       color: #000;
-      padding: 12px 16px;
+      padding: 8px 10px;
     }
 
     /* ── TOP HEADER ── */
@@ -21,20 +25,20 @@
     .uni-row td { vertical-align: middle; }
 
     .uni-word {
-      font-size: 46px;
+      font-size: 40px;
       font-weight: 900;
-      letter-spacing: 3px;
+      letter-spacing: 2px;
       font-family: Arial Black, Arial, sans-serif;
       line-height: 1;
       white-space: nowrap;
     }
 
     .crest-wrap { text-align: center; }
-    .crest-img { width: 76px; height: 76px; object-fit: contain; }
+    .crest-img { width: 68px; height: 68px; object-fit: contain; }
     .crest-placeholder {
       display: inline-block;
-      width: 76px;
-      height: 76px;
+      width: 68px;
+      height: 68px;
       border: 2px solid #8B0000;
       border-radius: 50%;
       font-size: 7px;
@@ -47,33 +51,33 @@
 
     .address-line {
       text-align: center;
-      font-size: 10px;
-      margin-top: 4px;
-      margin-bottom: 10px;
+      font-size: 9.5px;
+      margin-top: 2px;
+      margin-bottom: 6px;
     }
 
     .photo-box {
-      width: 88px;
-      height: 100px;
+      width: 80px;
+      height: 92px;
       border: 1px solid #999;
       background: #dce8f5;
       overflow: hidden;
       text-align: center;
     }
-    .photo-box img { width: 88px; height: 100px; object-fit: cover; }
+    .photo-box img { width: 80px; height: 92px; object-fit: cover; }
 
     /* ── OUTER BOX ── */
-    .outer-box { border: 3px solid #000; width: 100%; }
+    table.outer-box { border: 1px solid #000; width: 100%; border-collapse: collapse; }
 
     /* Title inside box */
     .title-row {
       text-align: center;
-      padding: 7px 0 6px;
-      border-bottom: 2px solid #000;
+      padding: 4px 0 3px;
+      border-bottom: 1px solid #000;
     }
     .title-row span {
       font-family: "Brush Script MT", "Comic Sans MS", cursive;
-      font-size: 28px;
+      font-size: 24px;
       font-weight: bold;
     }
 
@@ -82,11 +86,11 @@
       width: 100%;
       border-collapse: collapse;
       border: 0;
-      border-bottom: 2px solid #000000;
+      border-bottom: 1px solid #000000;
     }
     .bio-table td {
-      padding: 4px 8px;
-      font-size: 10.5px;
+      padding: 3px 6px;
+      font-size: 10px;
       vertical-align: top;
       border: 0;
       border-left: 0;
@@ -97,6 +101,14 @@
       border-bottom: 1px solid #000000;
     }
     .bio-table .lbl { font-weight: bold; white-space: nowrap; padding-right: 4px; }
+    .bio-table .bio-col {
+      width: 33%;
+      vertical-align: top;
+    }
+    .bio-table .bio-val {
+      display: inline;
+      word-wrap: break-word;
+    }
 
     /* ── RESULTS: one shell, centre line top → bottom (all years + award) ── */
     .results-shell {
@@ -112,7 +124,7 @@
     .results-col-left { width: 50%; }
     .results-col-right {
       width: 50%;
-      border-left: 2px solid #000000;
+      border-left: 1px solid #000000;
     }
 
     .year-block {
@@ -120,24 +132,24 @@
       border-collapse: collapse;
       border: none;
     }
-    .year-block.year-divider { border-top: 2px solid #000000; }
+    .year-block.year-divider { border-top: 1px solid #000000; }
 
-    /* Semester header bars — solid black, white text */
+    /* Semester header bars — solid black, white text (thin strip like ARMS) */
     .bar-black {
       background-color: #000000;
       color: #ffffff;
       font-weight: bold;
-      font-size: 10px;
-      padding: 4px 6px;
+      font-size: 9px;
+      padding: 1px 4px;
       border: 0;
       -pdf-background-color: #000000;
     }
 
-    /* Award row — thick black outline, white fill (ARMS footer style) */
+    /* Award row — single hairline outline */
     .award-outline {
       width: 100%;
       border-collapse: collapse;
-      border: 2px solid #000000;
+      border: 1px solid #000000;
     }
     .award-outline td {
       background-color: #ffffff;
@@ -158,8 +170,8 @@
     }
     .course-cols td {
       border: 0 none transparent;
-      padding: 1px 5px 2px 5px;
-      font-size: 10px;
+      padding: 0 4px 1px 4px;
+      font-size: 9.5px;
       vertical-align: top;
     }
     .course-cols tr.col-lbl td {
@@ -171,14 +183,14 @@
       border-bottom: 1px solid #000000;
     }
     .course-cols tr.course-data td {
-      height: 17px;
+      height: 14px;
       border: 0 none transparent;
     }
 
     .sem-totals {
       font-weight: bold;
-      font-size: 10px;
-      padding: 4px 6px 8px 6px;
+      font-size: 9.5px;
+      padding: 2px 5px 4px 5px;
       border: none;
     }
 
@@ -195,21 +207,81 @@
     .c-grade { width: 10%; text-align: center; }
 
     /* ── FOOTER ── */
-    .footer-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-    .footer-table td { vertical-align: bottom; font-size: 9.5px; }
+    .footer-table { width: 100%; border-collapse: collapse; margin-top: 6px; }
+    .footer-table td { vertical-align: bottom; font-size: 9px; }
     .footer-left { font-style: italic; line-height: 1.6; width: 58%; padding-right: 10px; }
     .footer-right { text-align: center; width: 42%; }
     .sig-line { border-top: 1px solid #000; width: 230px; margin: 0 auto 4px; height: 22px; }
 
     .printed-by {
-      margin-top: 8px;
-      font-size: 8.5px;
+      margin-top: 4px;
+      font-size: 8px;
       border-top: 1px solid #000;
-      padding-top: 3px;
+      padding-top: 2px;
     }
+
+    /* Density tiers — keep full transcript on one A4 portrait page */
+    body.layout-cozy {
+      font-size: 9.5px;
+      padding: 6px 8px;
+    }
+    body.layout-cozy .uni-word { font-size: 34px; }
+    body.layout-cozy .crest-img,
+    body.layout-cozy .crest-placeholder { width: 58px; height: 58px; }
+    body.layout-cozy .photo-box,
+    body.layout-cozy .photo-box img { width: 72px; height: 82px; }
+    body.layout-cozy .title-row span { font-size: 20px; }
+    body.layout-cozy .course-cols tr.course-data td { height: 12px; }
+    body.layout-cozy .bar-black { font-size: 9px; padding: 2px 4px; }
+
+    body.layout-compact {
+      font-size: 9px;
+      padding: 4px 6px;
+    }
+    body.layout-compact .uni-word { font-size: 28px; letter-spacing: 1px; }
+    body.layout-compact .crest-img,
+    body.layout-compact .crest-placeholder { width: 50px; height: 50px; font-size: 6px; }
+    body.layout-compact .photo-box,
+    body.layout-compact .photo-box img { width: 64px; height: 72px; }
+    body.layout-compact .address-line { font-size: 8.5px; margin-bottom: 4px; }
+    body.layout-compact .title-row { padding: 3px 0; }
+    body.layout-compact .title-row span { font-size: 17px; }
+    body.layout-compact .bio-table td { padding: 2px 4px; font-size: 9px; }
+    body.layout-compact .bar-black { font-size: 8.5px; padding: 2px 3px; }
+    body.layout-compact .course-cols td { font-size: 8.5px; padding: 0 3px; }
+    body.layout-compact .course-cols tr.course-data td { height: 10px; }
+    body.layout-compact .sem-totals { font-size: 8.5px; padding: 1px 4px 2px 4px; }
+    body.layout-compact .award-outline td { font-size: 9px; padding: 3px 5px; }
+    body.layout-compact .footer-table { margin-top: 4px; }
+    body.layout-compact .footer-table td { font-size: 8px; }
+    body.layout-compact .sig-line { height: 16px; }
+    body.layout-compact .printed-by { margin-top: 2px; font-size: 7.5px; }
+
+    body.layout-ultra {
+      font-size: 8px;
+      padding: 3px 5px;
+    }
+    body.layout-ultra .uni-word { font-size: 24px; letter-spacing: 1px; }
+    body.layout-ultra .crest-img,
+    body.layout-ultra .crest-placeholder { width: 44px; height: 44px; font-size: 5px; }
+    body.layout-ultra .photo-box,
+    body.layout-ultra .photo-box img { width: 56px; height: 64px; }
+    body.layout-ultra .address-line { font-size: 8px; margin-bottom: 3px; }
+    body.layout-ultra .title-row { padding: 2px 0; }
+    body.layout-ultra .title-row span { font-size: 15px; }
+    body.layout-ultra .bio-table td { padding: 1px 3px; font-size: 8px; }
+    body.layout-ultra .bar-black { font-size: 7.5px; padding: 1px 2px; }
+    body.layout-ultra .course-cols td { font-size: 7.5px; padding: 0 2px; }
+    body.layout-ultra .course-cols tr.course-data td { height: 8px; }
+    body.layout-ultra .sem-totals { font-size: 7.5px; padding: 1px 3px; }
+    body.layout-ultra .award-outline td { font-size: 8px; padding: 2px 4px; }
+    body.layout-ultra .footer-table { margin-top: 3px; }
+    body.layout-ultra .footer-table td { font-size: 7px; }
+    body.layout-ultra .sig-line { height: 12px; width: 180px; }
+    body.layout-ultra .printed-by { margin-top: 2px; font-size: 7px; }
   </style>
 </head>
-<body>
+<body class="layout-{{ layout_mode|default:'normal' }}">
 
   <!-- ══ TOP HEADER (outside the box) ══ -->
   <table class="top-header">
@@ -246,46 +318,66 @@
     </tr>
   </table>
 
-  <!-- ══ OUTER BOX ══ -->
-  <div class="outer-box">
+  <!-- ══ OUTER BOX (table — xhtml2pdf ignores div borders reliably) ══ -->
+  <table class="outer-box" border="0" cellspacing="0" cellpadding="0" width="100%"
+         style="border:1px solid #000000;border-collapse:collapse;">
 
     <!-- Title -->
-    <div class="title-row"><span>{{ document_title }}</span></div>
+    <tr>
+      <td class="title-row" style="text-align:center;padding:4px 0 3px;border-bottom:1px solid #000000;">
+        <span>{{ document_title }}</span>
+      </td>
+    </tr>
 
-    <!-- Bio (no vertical grid — only thin horizontal lines between rows) -->
+    <!-- Bio -->
+    <tr>
+      <td style="padding:0;border:0;">
     <table class="bio-table" border="0" cellspacing="0" cellpadding="0" width="100%">
       <tr class="bio-hline">
-        <td style="width:11%;border:0;border-bottom:1px solid #000;" class="lbl">NAME:</td>
-        <td style="width:22%;border:0;border-bottom:1px solid #000;">{{ student.name }}</td>
-        <td style="width:9%;border:0;border-bottom:1px solid #000;" class="lbl">SEX:</td>
-        <td style="width:10%;border:0;border-bottom:1px solid #000;">{{ student.sex }}</td>
-        <td style="width:13%;border:0;border-bottom:1px solid #000;" class="lbl">NATIONALITY:</td>
-        <td style="width:35%;border:0;border-bottom:1px solid #000;">{{ student.nationality }}</td>
+        <td class="bio-col" style="border:0;border-bottom:1px solid #000;">
+          <span class="lbl">NAME:</span> <span class="bio-val">{{ student.name }}</span>
+        </td>
+        <td class="bio-col" style="border:0;border-bottom:1px solid #000;">
+          <span class="lbl">SEX:</span> <span class="bio-val">{{ student.sex }}</span>
+        </td>
+        <td class="bio-col" style="border:0;border-bottom:1px solid #000;">
+          <span class="lbl">NATIONALITY:</span> <span class="bio-val">{{ student.nationality }}</span>
+        </td>
       </tr>
       <tr class="bio-hline">
-        <td style="border:0;border-bottom:1px solid #000;" class="lbl">REG No.:</td>
-        <td style="border:0;border-bottom:1px solid #000;">{{ student.reg_no }}</td>
-        <td style="border:0;border-bottom:1px solid #000;" class="lbl">HALL:</td>
-        <td style="border:0;border-bottom:1px solid #000;">{{ student.hall|default:"" }}</td>
-        <td style="border:0;border-bottom:1px solid #000;" class="lbl">FIRST REG.:</td>
-        <td style="border:0;border-bottom:1px solid #000;">{{ student.first_registration }}</td>
+        <td class="bio-col" style="border:0;border-bottom:1px solid #000;">
+          <span class="lbl">REG No.:</span> <span class="bio-val">{{ student.reg_no }}</span>
+        </td>
+        <td class="bio-col" style="border:0;border-bottom:1px solid #000;">
+          <span class="lbl">HALL:</span> <span class="bio-val">{{ student.hall|default:"" }}</span>
+        </td>
+        <td class="bio-col" style="border:0;border-bottom:1px solid #000;">
+          <span class="lbl">FIRST REG.:</span> <span class="bio-val">{{ student.first_registration }}</span>
+        </td>
       </tr>
       <tr>
-        <td style="border:0;" class="lbl">FACULTY:</td>
-        <td style="border:0;" colspan="3">{{ student.faculty }}</td>
-        <td style="border:0;" class="lbl">DATE OF BIRTH:</td>
-        <td style="border:0;">{{ student.date_of_birth|default:"" }}</td>
+        <td class="bio-col" style="border:0;" colspan="2">
+          <span class="lbl">FACULTY:</span> <span class="bio-val">{{ student.faculty }}</span>
+        </td>
+        <td class="bio-col" style="border:0;">
+          <span class="lbl">DATE OF BIRTH:</span> <span class="bio-val">{{ student.date_of_birth|default:"" }}</span>
+        </td>
       </tr>
     </table>
+      </td>
+    </tr>
 
-    <!-- Results: left | right columns — centre line runs full height -->
+    <!-- Results -->
+    <tr>
+      <td style="padding:0;border:0;">
     <table class="results-shell" border="0" cellspacing="0" cellpadding="0" width="100%">
       <tr>
         <td class="results-col-left" valign="top">
           {% for block in year_blocks %}
           <table class="year-block{% if not forloop.first %} year-divider{% endif %}" border="0" cellspacing="0" cellpadding="0" width="100%">
             <tr>
-              <td class="bar-black yr-hdr" bgcolor="#000000" style="background-color:#000000;color:#ffffff;font-weight:bold;font-size:10px;padding:4px 6px;border:0;">
+              <td class="bar-black yr-hdr" bgcolor="#000000"
+                  style="background-color:#000000;color:#ffffff;font-weight:bold;border:0;">
                 {{ block.left_header|safe }}
               </td>
             </tr>
@@ -299,13 +391,13 @@
                     <td class="c-score" style="border:0;border-bottom:1px solid #000;">Score</td>
                     <td class="c-grade" style="border:0;border-bottom:1px solid #000;">Grade</td>
                   </tr>
-                  {% for left_c, right_c in block.course_rows %}
+                  {% for c in block.left_courses %}
                   <tr class="course-data">
-                    <td class="c-code" style="border:0;">{% if left_c %}{{ left_c.code }}{% else %}&nbsp;{% endif %}</td>
-                    <td class="c-name" style="border:0;">{% if left_c %}{{ left_c.name }}{% else %}&nbsp;{% endif %}</td>
-                    <td class="c-cu" style="border:0;">{% if left_c %}{{ left_c.credit_units|default:"" }}{% else %}&nbsp;{% endif %}</td>
-                    <td class="c-score" style="border:0;">{% if show_scores and left_c %}{{ left_c.score }}{% else %}&nbsp;{% endif %}</td>
-                    <td class="c-grade" style="border:0;">{% if left_c %}{{ left_c.grade }}{% else %}&nbsp;{% endif %}</td>
+                    <td class="c-code" style="border:0;">{% if c %}{{ c.code }}{% else %}&nbsp;{% endif %}</td>
+                    <td class="c-name" style="border:0;">{% if c %}{{ c.name }}{% else %}&nbsp;{% endif %}</td>
+                    <td class="c-cu" style="border:0;">{% if c %}{{ c.credit_units|default:"" }}{% else %}&nbsp;{% endif %}</td>
+                    <td class="c-score" style="border:0;">{% if show_scores and c %}{{ c.score }}{% else %}&nbsp;{% endif %}</td>
+                    <td class="c-grade" style="border:0;">{% if c %}{{ c.grade }}{% else %}&nbsp;{% endif %}</td>
                   </tr>
                   {% endfor %}
                 </table>
@@ -316,11 +408,12 @@
           {% endfor %}
         </td>
 
-        <td class="results-col-right" valign="top" style="border-left: 2px solid #000000;">
+        <td class="results-col-right" valign="top" style="border-left: 1px solid #000000;">
           {% for block in year_blocks %}
           <table class="year-block{% if not forloop.first %} year-divider{% endif %}" border="0" cellspacing="0" cellpadding="0" width="100%">
             <tr>
-              <td class="bar-black yr-hdr" bgcolor="#000000" style="background-color:#000000;color:#ffffff;font-weight:bold;font-size:10px;padding:4px 6px;border:0;">
+              <td class="bar-black yr-hdr" bgcolor="#000000"
+                  style="background-color:#000000;color:#ffffff;font-weight:bold;border:0;">
                 {{ block.right_header|safe }}
               </td>
             </tr>
@@ -334,13 +427,13 @@
                     <td class="c-score" style="border:0;border-bottom:1px solid #000;">Score</td>
                     <td class="c-grade" style="border:0;border-bottom:1px solid #000;">Grade</td>
                   </tr>
-                  {% for left_c, right_c in block.course_rows %}
+                  {% for c in block.right_courses %}
                   <tr class="course-data">
-                    <td class="c-code" style="border:0;">{% if right_c %}{{ right_c.code }}{% else %}&nbsp;{% endif %}</td>
-                    <td class="c-name" style="border:0;">{% if right_c %}{{ right_c.name }}{% else %}&nbsp;{% endif %}</td>
-                    <td class="c-cu" style="border:0;">{% if right_c %}{{ right_c.credit_units|default:"" }}{% else %}&nbsp;{% endif %}</td>
-                    <td class="c-score" style="border:0;">{% if show_scores and right_c %}{{ right_c.score }}{% else %}&nbsp;{% endif %}</td>
-                    <td class="c-grade" style="border:0;">{% if right_c %}{{ right_c.grade }}{% else %}&nbsp;{% endif %}</td>
+                    <td class="c-code" style="border:0;">{% if c %}{{ c.code }}{% else %}&nbsp;{% endif %}</td>
+                    <td class="c-name" style="border:0;">{% if c %}{{ c.name }}{% else %}&nbsp;{% endif %}</td>
+                    <td class="c-cu" style="border:0;">{% if c %}{{ c.credit_units|default:"" }}{% else %}&nbsp;{% endif %}</td>
+                    <td class="c-score" style="border:0;">{% if show_scores and c %}{{ c.score }}{% else %}&nbsp;{% endif %}</td>
+                    <td class="c-grade" style="border:0;">{% if c %}{{ c.grade }}{% else %}&nbsp;{% endif %}</td>
                   </tr>
                   {% endfor %}
                 </table>
@@ -355,8 +448,8 @@
       <!-- Award: bordered box, bold text on white (not solid black fill) -->
       <tr class="award-row-wrap">
         <td colspan="2">
-          <table class="award-outline" border="2" cellspacing="0" cellpadding="0" bordercolor="#000000"
-                 width="100%" style="border:2px solid #000000;border-collapse:collapse;">
+          <table class="award-outline" border="1" cellspacing="0" cellpadding="0" bordercolor="#000000"
+                 width="100%" style="border:1px solid #000000;border-collapse:collapse;">
             <tr>
               <td width="50%" class="award-split"
                   style="background-color:#ffffff;color:#000000;font-weight:bold;font-size:10px;padding:5px 7px;border:0;border-right:1px solid #000000;">
@@ -371,7 +464,9 @@
         </td>
       </tr>
     </table>
-  </div><!-- /outer-box -->
+      </td>
+    </tr>
+  </table><!-- /outer-box -->
 
   <!-- ══ FOOTER ══ -->
   <table class="footer-table">

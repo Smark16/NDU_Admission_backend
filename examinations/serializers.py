@@ -9,6 +9,7 @@ from .models import (
     ExamSession,
     GradeBand,
     GradeScale,
+    MarksEntryWindow,
     ResultChangeRequest,
 )
 
@@ -378,6 +379,7 @@ class CourseUnitResultSerializer(serializers.ModelSerializer):
     course_code = serializers.CharField(source="enrollment.course_unit.code", read_only=True)
     course_name = serializers.CharField(source="enrollment.course_unit.name", read_only=True)
     is_published = serializers.SerializerMethodField()
+    has_pending_change_request = serializers.SerializerMethodField()
 
     class Meta:
         model = CourseUnitResult
@@ -398,11 +400,17 @@ class CourseUnitResultSerializer(serializers.ModelSerializer):
             "remark",
             "status",
             "is_published",
+            "has_pending_change_request",
             "published_at",
         ]
 
     def get_is_published(self, obj):
         return obj.status == CourseUnitResult.STATUS_PUBLISHED
+
+    def get_has_pending_change_request(self, obj):
+        return obj.change_requests.filter(
+            status=ResultChangeRequest.STATUS_PENDING
+        ).exists()
 
 
 class ResultChangeRequestSerializer(serializers.ModelSerializer):
@@ -438,6 +446,14 @@ class ExamSessionSerializer(serializers.ModelSerializer):
     course_name = serializers.CharField(source="course_unit.name", read_only=True)
     venue_display = serializers.SerializerMethodField()
     registered_retakes = serializers.SerializerMethodField()
+    effective_capacity = serializers.SerializerMethodField()
+    candidate_count = serializers.SerializerMethodField()
+    invigilators = serializers.SerializerMethodField()
+    invigilator_ids = serializers.ListField(
+        child=serializers.IntegerField(),
+        required=False,
+        write_only=True,
+    )
 
     class Meta:
         model = ExamSession
@@ -455,13 +471,17 @@ class ExamSessionSerializer(serializers.ModelSerializer):
             "venue_text",
             "venue_display",
             "max_candidates",
+            "effective_capacity",
+            "candidate_count",
             "is_published",
             "notes",
+            "invigilators",
+            "invigilator_ids",
             "registered_retakes",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["created_at", "updated_at"]
+        read_only_fields = ["created_at", "updated_at", "effective_capacity", "candidate_count", "invigilators"]
 
     def get_venue_display(self, obj):
         if obj.venue_id:
@@ -478,6 +498,114 @@ class ExamSessionSerializer(serializers.ModelSerializer):
                 ExamRetakeRegistration.STATUS_SCHEDULED,
             )
         ).count()
+
+    def get_effective_capacity(self, obj):
+        from .services.clash import effective_capacity
+
+        return effective_capacity(obj)
+
+    def get_candidate_count(self, obj):
+        from .services.clash import candidate_count
+
+        return candidate_count(obj.course_unit, obj.session_type)
+
+    def get_invigilators(self, obj):
+        return [
+            {
+                "id": s.id,
+                "name": s.get_full_name,
+                "staff_no": s.staff_no,
+            }
+            for s in obj.invigilators.all()
+        ]
+
+    def create(self, validated_data):
+        invigilator_ids = validated_data.pop("invigilator_ids", None)
+        session = super().create(validated_data)
+        if invigilator_ids is not None:
+            session.invigilators.set(invigilator_ids)
+        return session
+
+    def update(self, instance, validated_data):
+        invigilator_ids = validated_data.pop("invigilator_ids", None)
+        session = super().update(instance, validated_data)
+        if invigilator_ids is not None:
+            session.invigilators.set(invigilator_ids)
+        return session
+
+
+class MarksEntryWindowSerializer(serializers.ModelSerializer):
+    program_batch_name = serializers.CharField(source="program_batch.name", read_only=True)
+    semester_name = serializers.CharField(source="semester.name", read_only=True, allow_null=True)
+    course_code = serializers.CharField(source="course_unit.code", read_only=True, allow_null=True)
+    course_name = serializers.CharField(source="course_unit.name", read_only=True, allow_null=True)
+    scope = serializers.SerializerMethodField()
+
+    class Meta:
+        model = MarksEntryWindow
+        fields = [
+            "id",
+            "name",
+            "program_batch",
+            "program_batch_name",
+            "semester",
+            "semester_name",
+            "course_unit",
+            "course_code",
+            "course_name",
+            "scope",
+            "opens_at",
+            "closes_at",
+            "is_active",
+            "notes",
+            "closed_at",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["closed_at", "created_at", "updated_at"]
+
+    def get_scope(self, obj):
+        if obj.course_unit_id:
+            return "course"
+        if obj.semester_id:
+            return "semester"
+        return "batch"
+
+    def validate(self, attrs):
+        program_batch = attrs.get(
+            "program_batch",
+            getattr(self.instance, "program_batch", None) if self.instance else None,
+        )
+        semester = attrs.get(
+            "semester",
+            getattr(self.instance, "semester", None) if self.instance else None,
+        )
+        course_unit = attrs.get(
+            "course_unit",
+            getattr(self.instance, "course_unit", None) if self.instance else None,
+        )
+        opens_at = attrs.get(
+            "opens_at",
+            getattr(self.instance, "opens_at", None) if self.instance else None,
+        )
+        closes_at = attrs.get(
+            "closes_at",
+            getattr(self.instance, "closes_at", None) if self.instance else None,
+        )
+
+        if course_unit and program_batch and course_unit.program_batch_id != program_batch.id:
+            raise serializers.ValidationError(
+                {"course_unit": "Course unit must belong to the selected programme batch."}
+            )
+        if semester and course_unit and course_unit.semester_id != semester.id:
+            raise serializers.ValidationError(
+                {"course_unit": "Course unit must belong to the selected semester."}
+            )
+        if opens_at and closes_at and opens_at >= closes_at:
+            raise serializers.ValidationError(
+                {"closes_at": "Closing time must be after opening time."}
+            )
+        return attrs
 
 
 class ExamRetakeRegistrationSerializer(serializers.ModelSerializer):

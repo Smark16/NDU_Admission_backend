@@ -23,7 +23,8 @@ class StudentExamCardView(APIView):
         if not student:
             return Response({"detail": "Student record not found."}, status=404)
 
-        if request.query_params.get("format") == "pdf":
+        # Use `output=pdf` — `format=pdf` is reserved by DRF content negotiation and returns 404.
+        if request.query_params.get("output", "").lower() == "pdf":
             payload = build_exam_card_payload(student, request=request, issue_token=True)
             if not payload["can_print"]:
                 return Response(

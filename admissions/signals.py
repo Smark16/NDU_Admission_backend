@@ -32,6 +32,20 @@ def _safe_cache_delete(key: str) -> None:
 def invalidate_on_batch_change(sender, instance, **kwargs):
     bump_batch_version()
 
+
+def _connect_program_batch_cache_invalidation():
+    try:
+        from Programs.models import ProgramBatch
+    except ImportError:
+        return
+
+    @receiver([post_save, post_delete], sender=ProgramBatch)
+    def invalidate_on_program_batch_change(sender, instance, **kwargs):
+        bump_batch_version()
+
+
+_connect_program_batch_cache_invalidation()
+
 @receiver(m2m_changed, sender=Batch.programs.through)
 def invalidate_on_programs_change(sender, instance, action, **kwargs):
     if action in ('post_add', 'post_remove', 'post_clear'):

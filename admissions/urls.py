@@ -9,6 +9,26 @@ from admissions.email_template_views import (
     EmailTemplatePreviewView,
     EmailTemplateResetDefaultView,
 )
+from admissions.weekly_report_views import (
+    WeeklyReportPreviewView,
+    WeeklyReportRecipientDetailView,
+    WeeklyReportRecipientListCreateView,
+    WeeklyReportRecipientTestSendView,
+    WeeklyReportSendNowView,
+    WeeklyReportSettingsView,
+    WeeklyReportTestSendView,
+)
+
+from admissions.announcement_views import SendAnnouncementView, TestAnnouncementView
+from admissions.student_bulk_import_views import (
+    StudentBulkImportTemplateView,
+    StudentBulkImportView,
+)
+from admissions.student_fee_balance_import_views import (
+    StudentFeeBalanceImportTemplateView,
+    StudentFeeBalanceImportView,
+)
+
 from admissions.academic_year_views import AcademicYearDetailView, AcademicYearListCreateView
 
 app_name = 'admissions'
@@ -28,7 +48,22 @@ urlpatterns = [
     path('create_direct_applications', views.create_direct_applications),
     path('direct_entry_applications', views.ListDirectEntryApplications.as_view()),
     path('all_applications_report/', views.AllApplicationsReport.as_view()),
+
+    path('all_applications_detail_report/', views.AllApplicationDetailedReport.as_view()),
+    path(
+        'all_applications_detail_report_stats/',
+        views.AllApplicationsDetailReportStatsView.as_view(),
+    ),
+    path(
+        'all_applications_report_filter_options/',
+        views.ApplicationReportFilterOptionsView.as_view(),
+    ),
+    path('application_choice_stats/', views.ApplicationChoiceStatsView.as_view()),
+    path('test_announcement', TestAnnouncementView.as_view()),
+    path('send_announcement', SendAnnouncementView.as_view()),
+
     path('rejected_applications', views.ListRejectedApplications.as_view()),
+    path('revoked_applications', views.ListRevokedApplications.as_view()),
     path('reject_application/<int:application_id>', views.RejectStudent.as_view()),
     path('application_detail/<int:application_id>', views.application_detail),
     path('review_application/<int:application_id>', views.ReviewApplication.as_view()),
@@ -36,14 +71,30 @@ urlpatterns = [
     path('change_applicatio_status/<int:pk>', views.ChangeApplicationStatus.as_view()),
     path('edit_application_profile/<int:application_id>', views.EditApplicationProfile.as_view()),
     path('change_programme/<int:application_id>', views.ChangeApplicationProgramme.as_view()),
+    path(
+        'applicant_program_choices/<int:application_id>',
+        views.ApplicantProgramChoicesView.as_view(),
+    ),
+    path('applicant_change_programme/<int:application_id>', views.ApplicantChangeApplicationProgramme.as_view()),
     path('generate-reg-no/', views.generate_reg_no_view, name='generate_reg_no'),
+    path('list_selected_programs/<int:application_id>', views.ListSelectedPrograms.as_view(), name='list_selected_programs'),
 
+    #results
+    path('update_olevel_results/<int:application_id>/', views.UpdateOlevelResults.as_view()),
+    path('update_alevel_results/<int:application_id>/', views.UpdateAlevelResults.as_view()),
+    path('update_additional_qualifications/<int:application_id>/', views.UpdateAdditionalQualififcations.as_view()),
+    path('document/<int:doc_id>/update/', views.UpdateDocumentAPIView.as_view(), name='update-document'),
+    path('upload_document/<int:application_id>/', views.UploadDocumentAPIView.as_view()),
+    path('document/<int:doc_id>/', views.DeleteDocumentAPIView.as_view()),
+    path('personal-info/<int:application_id>/', views.UpdatePersonalInfoAPIView.as_view()),
+    path('update_education_setup/<int:application_id>/', views.update_education_setup),
+    path('admin_update_education_setup/<int:application_id>/', views.admin_update_education_setup),
     # Subject Urls
 
     # ========================Alevel=====================
     path('list_alevel_subject', views.ListAlevelSubjects.as_view()),
     path('create_alevel_subjects', views.CreateAlevelSubjects.as_view()),
-    path('edit_alevel_results/<int:pk>', views.EditAlevelSubjecgts.as_view()),
+    path('edit_alevel_results/<int:pk>', views.EditAlevelSubjects.as_view()),
     path('delete_alevel_subject/<int:pk>', views.DeleteAlevelSubjects.as_view()),
 
     # ====================olevel===============================
@@ -56,6 +107,7 @@ urlpatterns = [
     path('batches/', views.ListBatch.as_view()),
     path('active_batch', views.GetActiveApplicationBatch.as_view()),
     path('active_admission_batch', views.GetActiveAdmissionBatch.as_view()),
+    path('intake_eligible_programs', views.IntakeEligibleProgramsView.as_view()),
     path('create_batch', views.CreateBatch.as_view()),
     path('edit_batch/<int:pk>', views.EditBatch.as_view()),
     path('delete_batch/<int:pk>', views.DeleteBatch.as_view()),
@@ -84,8 +136,17 @@ urlpatterns = [
         'program_batches_options/<int:program_id>/',
         views.ListProgramBatchOptionsForAdmission.as_view(),
     ),
+    path(
+        'program_specializations/<int:program_id>/',
+        views.ProgramSpecializationsForAdmissionView.as_view(),
+    ),
     path('update_admission/<int:pk>/', views.UpdateAdmittedStudent.as_view()),
-    path('list_admitted_students',  views.ListAdmittedStudents.as_view()),
+    path('list_admitted_students/',  views.ListAdmittedStudents.as_view()),
+    path(
+        'list_admitted_students/filter_options/',
+        views.AdmittedStudentFilterOptionsView.as_view(),
+        name='list_admitted_students_filter_options',
+    ),
     path('admitted_students/<int:pk>/revoke/', views.RevokeAdmittedStudent.as_view()),
     path('admitted_students/<int:pk>/restore/', views.RestoreAdmittedStudent.as_view()),
     path(
@@ -107,6 +168,15 @@ urlpatterns = [
     path('email_templates/<str:key>/preview', EmailTemplatePreviewView.as_view(), name='email_template_preview'),
     path('email_templates/<str:key>/reset', EmailTemplateResetDefaultView.as_view(), name='email_template_reset'),
 
+    # Weekly admissions digest (project-health email)
+    path('weekly_report/settings', WeeklyReportSettingsView.as_view(), name='weekly_report_settings'),
+    path('weekly_report/recipients', WeeklyReportRecipientListCreateView.as_view(), name='weekly_report_recipients'),
+    path('weekly_report/recipients/<int:pk>', WeeklyReportRecipientDetailView.as_view(), name='weekly_report_recipient_detail'),
+    path('weekly_report/recipients/<int:pk>/test_send', WeeklyReportRecipientTestSendView.as_view(), name='weekly_report_recipient_test_send'),
+    path('weekly_report/preview', WeeklyReportPreviewView.as_view(), name='weekly_report_preview'),
+    path('weekly_report/test_send', WeeklyReportTestSendView.as_view(), name='weekly_report_test_send'),
+    path('weekly_report/send_now', WeeklyReportSendNowView.as_view(), name='weekly_report_send_now'),
+
     # Admission Change Requests
     path('change_requests/my', views.StudentChangeRequestListCreate.as_view(), name='student_change_requests'),
     path('change_requests/options', views.StudentChangeRequestOptions.as_view(), name='student_change_request_options'),
@@ -116,6 +186,22 @@ urlpatterns = [
     # Direct entry (admin / manual / legacy migration)
     path('direct_application_entry', views.DirectApplicationEntryView.as_view(), name='direct_application_entry'),
     path('direct_admission_entry', views.DirectAdmissionEntryView.as_view(), name='direct_admission_entry'),
+    path(
+        'students/bulk_import_template',
+        StudentBulkImportTemplateView.as_view(),
+        name='student_bulk_import_template',
+    ),
+    path('students/bulk_import', StudentBulkImportView.as_view(), name='student_bulk_import'),
+    path(
+        'students/fee_balance_import_template',
+        StudentFeeBalanceImportTemplateView.as_view(),
+        name='student_fee_balance_import_template',
+    ),
+    path(
+        'students/fee_balance_import',
+        StudentFeeBalanceImportView.as_view(),
+        name='student_fee_balance_import',
+    ),
 
     # Student ID cards (admin)
     path('id_cards/eligible', id_card_views.IdCardEligibleListView.as_view(), name='id_cards_eligible'),
@@ -127,6 +213,7 @@ urlpatterns = [
     ),
     path('id_cards/generate', id_card_views.IdCardGenerateView.as_view(), name='id_cards_generate'),
     path('id_cards/<int:card_id>/preview-data', id_card_views.IdCardPreviewDataView.as_view(), name='id_cards_preview'),
+    path('id_cards/<int:card_id>/print.pdf', id_card_views.IdCardPrintPdfView.as_view(), name='id_cards_print_pdf'),
     path('id_cards/<int:card_id>/revoke', id_card_views.IdCardRevokeView.as_view(), name='id_cards_revoke'),
     path('id_cards/<int:card_id>/reissue', id_card_views.IdCardReissueView.as_view(), name='id_cards_reissue'),
     path('id_cards', id_card_views.IdCardListView.as_view(), name='id_cards_list'),

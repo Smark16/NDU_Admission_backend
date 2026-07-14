@@ -8,11 +8,17 @@ from rest_framework_simplejwt.views import (
     TokenObtainPairView,
     TokenRefreshView,
 )
+from accounts.serializers import NduTokenRefreshSerializer
+
+
+class NduTokenRefreshView(TokenRefreshView):
+    serializer_class = NduTokenRefreshSerializer
+
 
 urlpatterns = [
     # auth
     path('api/token/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
-    path('api/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
+    path('api/token/refresh/', NduTokenRefreshView.as_view(), name='token_refresh'),
     path('api-auth/', include('rest_framework.urls')),
 
     path('django_admin/', admin.site.urls),
@@ -27,7 +33,8 @@ urlpatterns = [
     path('api/program/', include('Programs.urls')),
     path('api/courses/', include('Programs.course_urls')),
     path('api/offer_letter/', include('OfferLetter.AdmissionLetter.urls')),
-    path('api/admission_reports/', include('OfferLetter.AdmissionReports.urls'))
+    path('api/admission_reports/', include('OfferLetter.AdmissionReports.urls')),
+    path('api/hr/', include('hr.urls')),
 ]
 
 if settings.DEBUG:

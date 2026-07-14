@@ -25,6 +25,7 @@ from .batch_semester_fee_helpers import (
     tuition_head,
     upsert_rule,
 )
+from .billing_visibility import default_billing_date_for_semester, parse_billing_date
 from .feeplanrule_table import ensure_feeplanrule_table
 
 
@@ -63,6 +64,10 @@ class BatchSemesterFeeMatrixView(APIView):
             cell = amounts.get(key, {})
             ti = cell.get('tuition_international')
             fi = cell.get('functional_international')
+            stored_bd = cell.get('billing_date')
+            effective_bd = stored_bd or default_billing_date_for_semester(
+                sem, program_batch, program
+            )
             rows.append(
                 {
                     'program_batch_id': program_batch.id,
@@ -70,6 +75,8 @@ class BatchSemesterFeeMatrixView(APIView):
                     'semester_id': sem.id,
                     'semester_name': sem.name,
                     'order': sem.order,
+                    'year_of_study': sem.year_of_study,
+                    'term_number': sem.term_number,
                     'tuition_amount': str(cell.get('tuition') or '0'),
                     'functional_amount': str(cell.get('functional') or '0'),
                     'currency': cell.get('currency') or 'UGX',
@@ -77,6 +84,9 @@ class BatchSemesterFeeMatrixView(APIView):
                     'tuition_currency_international': cell.get('tuition_currency_international') or '',
                     'functional_amount_international': str(fi) if fi is not None else '',
                     'functional_currency_international': cell.get('functional_currency_international') or '',
+                    'billing_date': effective_bd.isoformat() if effective_bd else '',
+                    'billing_date_is_default': stored_bd is None,
+                    'semester_start_date': sem.start_date.isoformat() if sem.start_date else '',
                 }
             )
 
@@ -129,6 +139,8 @@ class BatchSemesterFeeMatrixView(APIView):
         except (InvalidOperation, TypeError, ValueError):
             return Response({'detail': 'Invalid amount'}, status=status.HTTP_400_BAD_REQUEST)
 
+        billing_date = parse_billing_date(request.data.get('billing_date'))
+
         upsert_rule(
             fee_plan,
             program,
@@ -139,6 +151,7 @@ class BatchSemesterFeeMatrixView(APIView):
             currency,
             amount_international=tuition_intl if tuition_intl and tuition_intl > 0 else None,
             currency_international=currency_intl,
+            billing_date=billing_date,
         )
         upsert_rule(
             fee_plan,
@@ -150,6 +163,7 @@ class BatchSemesterFeeMatrixView(APIView):
             currency,
             amount_international=func_intl if func_intl and func_intl > 0 else None,
             currency_international=currency_intl,
+            billing_date=billing_date,
         )
 
         return Response(
@@ -172,7 +186,7 @@ class BulkUploadSemesterTuitionView(APIView):
       - multipart file:    file (CSV)
 
     CSV columns (header row required):
-      semester_name*  tuition_amount*  functional_amount  currency
+      semester_name*  tuition_amount*  functional_amount  currency  billing_date
       tuition_amount_international  functional_amount_international  currency_international
     (* required)
 
@@ -289,6 +303,7 @@ class BulkUploadSemesterTuitionView(APIView):
 
             currency = (row.get('currency') or 'UGX').upper().strip()[:3]
             currency_intl = (row.get('currency_international') or '').upper().strip()[:3]
+            billing_date = parse_billing_date(row.get('billing_date'))
 
             raw_ti = row.get('tuition_amount_international') or ''
             raw_fi = row.get('functional_amount_international') or ''
@@ -304,12 +319,14 @@ class BulkUploadSemesterTuitionView(APIView):
                 tuition_amt, currency,
                 amount_international=tuition_intl if tuition_intl and tuition_intl > 0 else None,
                 currency_international=currency_intl,
+                billing_date=billing_date,
             )
             upsert_rule(
                 fee_plan, program, pb, sem, functional_head(),
                 func_amt, currency,
                 amount_international=func_intl if func_intl and func_intl > 0 else None,
                 currency_international=currency_intl,
+                billing_date=billing_date,
             )
             saved += 1
 

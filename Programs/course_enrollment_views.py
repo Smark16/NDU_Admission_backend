@@ -5,6 +5,13 @@ from django.utils import timezone
 
 from django.db.models import Q
 
+from admissions.faculty_scope import (
+    assert_course_unit_access,
+    assert_course_unit_enrollment_access,
+)
+
+from payments.admin_enrollment_requirements import batch_course_enrollment_block
+
 from rest_framework import generics, status
 from Programs.permissions import AcademicEnrollmentAdminPermission
 from rest_framework.permissions import IsAuthenticated
@@ -18,7 +25,12 @@ class ListCourseUnitEnrollments(generics.ListAPIView):
     
     def get_queryset(self):
         course_unit_id = self.kwargs.get('course_unit_id')
-        from .models import StudentCourseUnitEnrollment
+        from .models import StudentCourseUnitEnrollment, CourseUnit
+        course_unit = CourseUnit.objects.select_related("program_batch__program").filter(
+            pk=course_unit_id
+        ).first()
+        if course_unit:
+            assert_course_unit_access(self.request.user, course_unit)
         return StudentCourseUnitEnrollment.objects.filter(
             course_unit_id=course_unit_id
         ).select_related('student', 'student__application', 'course_unit')
@@ -53,9 +65,13 @@ class GetAvailableStudentsForCourseUnit(APIView):
         from .models import CourseUnit, StudentCourseUnitEnrollment
         
         try:
-            course_unit = CourseUnit.objects.get(id=course_unit_id)
+            course_unit = CourseUnit.objects.select_related(
+                "program_batch__program"
+            ).get(id=course_unit_id)
         except CourseUnit.DoesNotExist:
             return Response({'detail': 'Course unit not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        assert_course_unit_access(request.user, course_unit)
         
         # Get the program batch from the course unit
         program_batch = course_unit.program_batch
@@ -63,26 +79,56 @@ class GetAvailableStudentsForCourseUnit(APIView):
             return Response({'detail': 'Course unit is not associated with a program batch'}, status=status.HTTP_400_BAD_REQUEST)
         
         program = program_batch.program
-        admitted_students = _admitted_students_for_program_batch(program, program_batch)
-        
+        cohort_students = _admitted_students_for_program_batch(program, program_batch)
+
+        from payments.models import RegistrationSettings
+        from payments.admin_enrollment_requirements import batch_course_enrollment_block
+
+        reg_settings = RegistrationSettings.get_settings()
+        if reg_settings.require_programme_enrollment:
+            requirement_note = (
+                "Batch course enrollment requires academic programme enrollment (Enrolled) "
+                "and commitment fee confirmed, because "
+                "'Require active academic programme enrollment' is enabled in Registration Settings."
+            )
+        else:
+            requirement_note = (
+                "Batch course enrollment follows Registration Settings. "
+                "Commitment fee is not required for batch enrollment while "
+                "'Require active academic programme enrollment' is off. "
+                "Student course registration still uses the minimum tuition % you configured."
+            )
+
         # Get already enrolled student IDs
         enrolled_student_ids = StudentCourseUnitEnrollment.objects.filter(
             course_unit=course_unit
         ).values_list('student_id', flat=True)
-        
-        # Filter out already enrolled students
-        available_students = admitted_students.exclude(id__in=enrolled_student_ids)
-        
+
+        available_students = cohort_students.exclude(id__in=enrolled_student_ids)
+
         data = []
+        blocked_count = 0
         for student in available_students:
+            block = batch_course_enrollment_block(student)
+            if block:
+                blocked_count += 1
+                continue
             data.append({
                 'id': student.id,
                 'student_id': student.student_id,
                 'reg_no': student.reg_no,
                 'name': student.full_name,
             })
-        
-        return Response(data, status=status.HTTP_200_OK)
+
+        return Response({
+            'results': data,
+            'eligible_count': len(data),
+            'cohort_count': cohort_students.count(),
+            'blocked_count': blocked_count,
+            'requirement_note': requirement_note,
+            'require_programme_enrollment': reg_settings.require_programme_enrollment,
+            'min_tuition_payment_percentage': float(reg_settings.min_tuition_payment_percentage),
+        }, status=status.HTTP_200_OK)
 
 class EnrollStudentsInCourseUnit(APIView):
     """Enroll one or more students in a course unit"""
@@ -97,9 +143,13 @@ class EnrollStudentsInCourseUnit(APIView):
             return Response({'detail': 'No student IDs provided'}, status=status.HTTP_400_BAD_REQUEST)
         
         try:
-            course_unit = CourseUnit.objects.get(id=course_unit_id)
+            course_unit = CourseUnit.objects.select_related(
+                "program_batch__program"
+            ).get(id=course_unit_id)
         except CourseUnit.DoesNotExist:
             return Response({'detail': 'Course unit not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        assert_course_unit_access(request.user, course_unit)
 
         program_batch = course_unit.program_batch
         if not program_batch:
@@ -109,9 +159,8 @@ class EnrollStudentsInCourseUnit(APIView):
             )
         program = program_batch.program
 
-        allowed_ids = set(
-            _admitted_students_for_program_batch(program, program_batch).values_list("id", flat=True)
-        )
+        cohort_qs = _admitted_students_for_program_batch(program, program_batch)
+        cohort_ids = set(cohort_qs.values_list("id", flat=True))
         
         enrolled = []
         errors = []
@@ -120,11 +169,15 @@ class EnrollStudentsInCourseUnit(APIView):
             for student_id in student_ids:
                 try:
                     student = AdmittedStudent.objects.select_related("programme_enrollment").get(id=student_id)
-                    if student.id not in allowed_ids:
+                    if student.id not in cohort_ids:
                         errors.append(
                             f"Student {student.student_id} is not in this programme batch "
                             f"(intended cohort or programme enrollment must match)."
                         )
+                        continue
+                    block = batch_course_enrollment_block(student)
+                    if block:
+                        errors.append(f"Student {student.student_id}: {block}")
                         continue
                     # Check if already enrolled
                     if StudentCourseUnitEnrollment.objects.filter(
@@ -286,6 +339,9 @@ class GetAvailableCoursesForRegistration(APIView):
         from admissions.models import AdmittedStudent
 
         user = request.user
+        from payments.models import RegistrationSettings
+
+        reg_settings = RegistrationSettings.get_settings()
 
         try:
             from django.db.models import Q
@@ -310,7 +366,8 @@ class GetAvailableCoursesForRegistration(APIView):
             spe = StudentProgrammeEnrollment.objects.select_related(
                 'program_batch', 'program', 'curriculum_version'
             ).get(student=student)
-            using_spe = spe.is_enrolled
+            # Use SPE curriculum when enrolled, or when commitment gate is disabled for testing.
+            using_spe = spe.is_enrolled or not reg_settings.require_programme_enrollment
         except StudentProgrammeEnrollment.DoesNotExist:
             pass
 
@@ -554,6 +611,7 @@ class GetStudentEnrolledCourses(APIView):
         from payments.student_portal_finance import (
             get_admitted_student_for_user,
             offer_letter_portal_fields,
+            student_finance_totals,
         )
 
         admitted_student = get_admitted_student_for_user(request.user)
@@ -636,6 +694,8 @@ class GetStudentEnrolledCourses(APIView):
                 for lecturer in course_unit.lecturers.all()
             ]
 
+            from .course_material_views import published_outline_for_course
+
             active_courses.append({
                 'enrollment_id': enrollment.id,
                 'course_unit_id': course_unit.id,
@@ -661,6 +721,7 @@ class GetStudentEnrolledCourses(APIView):
                 'is_registered': enrollment.registration_date is not None,
                 'status': enrollment.status,
                 'grade': enrollment.grade,
+                'published_outline': published_outline_for_course(course_unit.id, request),
             })
 
         registered_courses = [c for c in active_courses if c['is_registered']]
@@ -674,6 +735,12 @@ class GetStudentEnrolledCourses(APIView):
         except Exception:
             pass
 
+        finance = student_finance_totals(admitted_student)
+
+        from payments.registration_eligibility import build_registration_eligibility_payload
+
+        registration = build_registration_eligibility_payload(admitted_student)
+
         return Response({
             'student_id': admitted_student.student_id,
             'reg_no': admitted_student.reg_no,
@@ -683,6 +750,18 @@ class GetStudentEnrolledCourses(APIView):
             'campus': admitted_student.admitted_campus.name if admitted_student.admitted_campus else None,
             'passport_photo': photo_url,
             'admission_fee_paid': admitted_student.admission_fee_paid,
+            'percentage_paid': finance['percentage_paid'],
+            'total_paid': finance['total_paid'],
+            'total_required': finance['total_required'],
+            'balance': finance['balance'],
+            'display_currency': finance['display_currency'],
+            'commitment_met': finance['commitment_met'],
+            'registration_eligible': registration.get('is_eligible'),
+            'registration_minimum_required': registration.get('minimum_required'),
+            'registration_percentage_paid': registration.get('percentage_paid'),
+            'registration_message': registration.get('message'),
+            'registration_block_messages': registration.get('block_messages', []),
+            'tuition_eligible': registration.get('tuition_eligible'),
             'current_year_of_study': current_year,
             'current_term_number': current_term,
             'enrolled_courses': active_courses,
@@ -953,7 +1032,10 @@ class RemoveStudentFromCourseUnit(APIView):
         from .models import StudentCourseUnitEnrollment
         
         try:
-            enrollment = StudentCourseUnitEnrollment.objects.get(id=enrollment_id)
+            enrollment = StudentCourseUnitEnrollment.objects.select_related(
+                "course_unit__program_batch__program"
+            ).get(id=enrollment_id)
+            assert_course_unit_enrollment_access(request.user, enrollment)
             student_id = enrollment.student.student_id
             enrollment.delete()
             return Response({
@@ -1352,7 +1434,10 @@ class StudentAcademicTrackerView(APIView):
         # ── Locate admitted student ──────────────────────────────────────────
         try:
             admitted_student = AdmittedStudent.objects.select_related(
-                'admitted_program', 'admitted_campus'
+                'admitted_program',
+                'admitted_campus',
+                'admitted_batch',
+                'intended_program_batch',
             ).filter(
                 Q(application__applicant=user) | Q(student_user=user) | Q(reg_no=user.username)
             ).first()
@@ -1370,9 +1455,65 @@ class StudentAcademicTrackerView(APIView):
                 'program', 'program_batch', 'curriculum_version'
             ).get(student=admitted_student)
         except StudentProgrammeEnrollment.DoesNotExist:
+            from .program_batch_resolution import academic_cohort_display_for_student
+
+            program = admitted_student.admitted_program
+            cal = getattr(program, "calendar_type", None) or "semester"
+            term_label = "Trimester" if cal == "trimester" else "Semester"
+            cohort_label, intake_label = academic_cohort_display_for_student(admitted_student)
+            has_spec = bool(getattr(program, "has_specialization", False))
             return Response(
-                {'detail': 'No academic enrollment record found.'},
-                status=status.HTTP_404_NOT_FOUND,
+                {
+                    "enrollment_pending": True,
+                    "message": (
+                        "You are admitted, but academic enrollment is not active yet. "
+                        "Visit My Enrollment or contact the admissions office."
+                    ),
+                    "academic_position": {
+                        "year_of_study": 1,
+                        "term_number": 1,
+                        "term_label": term_label,
+                        "program": program.name,
+                        "program_short": program.short_form,
+                        "batch": cohort_label,
+                        "academic_cohort": cohort_label,
+                        "admission_intake": intake_label,
+                        "calendar_type": cal,
+                        "min_years": program.min_years,
+                        "max_years": program.max_years,
+                        "entry_year": None,
+                        "entry_term": None,
+                    },
+                    "enrollment": {
+                        "status": "pending",
+                        "status_display": "Not yet enrolled",
+                        "is_enrolled": False,
+                        "enrolled_at": None,
+                    },
+                    "registration": {
+                        "status": "not_eligible",
+                        "label": "Not Eligible",
+                        "active_count": 0,
+                        "registered_count": 0,
+                    },
+                    "deferred": {"count": 0, "courses": []},
+                    "specialization": {
+                        "program_has_specialization": has_spec,
+                        "entry_year": getattr(program, "specialization_entry_year", None),
+                        "entry_term": getattr(program, "specialization_entry_term", None),
+                        "selected": None,
+                        "required_now": False,
+                        "is_missing": False,
+                        "before_specialization_entry": True,
+                        "available_specializations": [],
+                    },
+                    "promotion": {
+                        "has_record": False,
+                        "last_promoted_at": None,
+                        "promoted_to_semester": None,
+                    },
+                },
+                status=status.HTTP_200_OK,
             )
 
         program = spe.program
@@ -1503,6 +1644,12 @@ class StudentAcademicTrackerView(APIView):
         selected_spec = normalize_specialization(spe.specialization) or None
         spec_required_now = spec_gate['requires_specialization']
 
+        from .program_batch_resolution import academic_cohort_display_for_student
+
+        cohort_label, intake_label = academic_cohort_display_for_student(
+            admitted_student, spe
+        )
+
         return Response({
             'academic_position': {
                 'year_of_study': effective_year,
@@ -1510,8 +1657,11 @@ class StudentAcademicTrackerView(APIView):
                 'term_label': term_label,
                 'program': program.name,
                 'program_short': program.short_form,
-                'batch': spe.program_batch.name,
+                'batch': cohort_label,
+                'academic_cohort': cohort_label,
+                'admission_intake': intake_label,
                 'calendar_type': cal,
+                'min_years': program.min_years,
                 'max_years': program.max_years,
                 'entry_year': spe.entry_year_of_study,
                 'entry_term': spe.entry_term_number,

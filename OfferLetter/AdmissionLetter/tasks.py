@@ -8,10 +8,13 @@ import platform
 
 from django.core.files.base import ContentFile
 from django.db import close_old_connections
+from django.utils import timezone
 from tempfile import NamedTemporaryFile
 
 from admissions.models import Application
-from .utils.letters import convert_docx_to_pdf_bytes 
+from .utils.letters import convert_docx_to_pdf_bytes
+from .utils.offer_generation import generate_offer_letter_for_application, resolve_verify_base
+from .utils.bulk_report import append_bulk_report_row
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +33,7 @@ def send_offerletter_email(application_id):
     offerletter_email(application)
 
 @shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=True, retry_kwargs={"max_retries": 3})
-def convert_and_save_pdf_task(self, encoded_docx, applicant_id):
+def convert_and_save_pdf_task(self, encoded_docx, applicant_id, send_email=True):
     # 🔥 Always ensure fresh DB connection in Celery worker
     close_old_connections()
 
@@ -90,10 +93,10 @@ def convert_and_save_pdf_task(self, encoded_docx, applicant_id):
         applicant.status = "Admitted"
         applicant.save(update_fields=["admission_letter_pdf", "status"])
 
-        # Step 4: Send email
-        # send_offerletter_email.delay(applicant.id)
+        if send_email:
+            send_offerletter_email.delay(applicant.id)
 
-        applicant.offer_letter_status = "email_sent"
+        applicant.offer_letter_status = "email_sent" if send_email else "pdf_ready"
         applicant.offer_letter_progress = 100
         applicant.save(update_fields=["offer_letter_status", "offer_letter_progress"])
 
@@ -123,3 +126,128 @@ def convert_and_save_pdf_task(self, encoded_docx, applicant_id):
                 pythoncom.CoUninitialize()
             except Exception as e:
                 logger.warning(f"COM uninit failed: {e}")
+
+
+def _bulk_job_cache_key(job_id: str) -> str:
+    return f"offer_letter_bulk_job:{job_id}"
+
+
+def load_bulk_offer_letter_job(job_id: str):
+    from django.core.cache import cache
+
+    return cache.get(_bulk_job_cache_key(job_id))
+
+
+def save_bulk_offer_letter_job(job_id: str, payload: dict, timeout: int = 60 * 60 * 24 * 7) -> None:
+    from django.core.cache import cache
+
+    cache.set(_bulk_job_cache_key(job_id), payload, timeout=timeout)
+
+
+@shared_task(bind=True)
+def bulk_generate_offer_letters_task(
+    self,
+    job_id: str,
+    application_ids: list,
+    user_id: int,
+    send_email: bool = False,
+    skip_if_pdf_exists: bool = True,
+    verify_base: str | None = None,
+):
+    close_old_connections()
+
+    from django.contrib.auth import get_user_model
+
+    User = get_user_model()
+    user = User.objects.filter(pk=user_id).first()
+    verify_base = verify_base or resolve_verify_base()
+
+    job = load_bulk_offer_letter_job(job_id) or {}
+    job["status"] = "running"
+    job["celery_task_id"] = self.request.id
+    save_bulk_offer_letter_job(job_id, job)
+
+    for index, application_id in enumerate(application_ids, start=1):
+        close_old_connections()
+        try:
+            app = Application.objects.filter(pk=application_id).only("id", "admission_letter_pdf").first()
+            has_pdf = bool(app and app.admission_letter_pdf and getattr(app.admission_letter_pdf, "name", None))
+            if not app:
+                job["failed"] = job.get("failed", 0) + 1
+                append_bulk_report_row(job, application_id, "failed", "Applicant not found.")
+            elif skip_if_pdf_exists and has_pdf:
+                job["reused"] = job.get("reused", 0) + 1
+                append_bulk_report_row(
+                    job,
+                    application_id,
+                    "reused_existing_pdf",
+                    "PDF already on file; skipped regeneration.",
+                )
+                if send_email:
+                    send_offerletter_email.delay(application_id)
+            else:
+                result = generate_offer_letter_for_application(
+                    application_id,
+                    user,
+                    verify_base=verify_base,
+                    send_email=send_email,
+                    skip_if_pdf_exists=False,
+                )
+                if result.get("ok"):
+                    if result.get("status") == "skipped":
+                        job["reused"] = job.get("reused", 0) + 1
+                        append_bulk_report_row(
+                            job,
+                            application_id,
+                            "reused_existing_pdf",
+                            result.get("detail") or "Existing PDF reused.",
+                        )
+                    elif result.get("status") == "processing":
+                        job["generated"] = job.get("generated", 0) + 1
+                        append_bulk_report_row(
+                            job,
+                            application_id,
+                            "processing",
+                            "DOCX rendered; PDF conversion queued in background.",
+                        )
+                    else:
+                        job["generated"] = job.get("generated", 0) + 1
+                        append_bulk_report_row(
+                            job,
+                            application_id,
+                            "generated",
+                            result.get("detail") or "Offer letter PDF generated.",
+                        )
+                else:
+                    job["failed"] = job.get("failed", 0) + 1
+                    append_bulk_report_row(
+                        job,
+                        application_id,
+                        "failed",
+                        result.get("detail", "Generation failed."),
+                    )
+        except Exception as exc:
+            logger.error("Bulk offer letter failed for application %s: %s", application_id, exc, exc_info=True)
+            job["failed"] = job.get("failed", 0) + 1
+            message = str(exc).strip() or exc.__class__.__name__
+            append_bulk_report_row(job, application_id, "failed", f"Unexpected server error: {message[:400]}")
+
+        job["processed"] = index
+        if index % 25 == 0 or index == len(application_ids):
+            save_bulk_offer_letter_job(job_id, job)
+
+    job["status"] = "complete"
+    job["finished_at"] = timezone.now().isoformat()
+    job["errors"] = [
+        {"id": r["application_id"], "detail": r.get("detail") or "Generation failed."}
+        for r in job.get("report_rows", [])
+        if r.get("outcome") == "failed"
+    ]
+    save_bulk_offer_letter_job(job_id, job)
+    return {
+        "job_id": job_id,
+        "processed": job.get("processed", 0),
+        "generated": job.get("generated", 0),
+        "reused": job.get("reused", 0),
+        "failed": job.get("failed", 0),
+    }

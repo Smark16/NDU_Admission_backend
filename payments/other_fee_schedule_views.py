@@ -9,6 +9,7 @@ from rest_framework.views import APIView
 from Programs.models import Program, ProgramBatch
 
 from .batch_semester_fee_helpers import parse_decimal
+from .billing_visibility import billing_date_iso, parse_billing_date, resolve_billing_date_on_save
 from .models import FeeHead, FeePlan, FeePlanRule
 
 
@@ -55,6 +56,8 @@ def _rule_to_row(r: FeePlanRule) -> dict:
         "amount_international": str(r.amount_international) if r.amount_international is not None else "",
         "currency_international": r.currency_international or "",
         "payable_year_of_study": r.payable_year_of_study,
+        "payable_term_number": r.payable_term_number,
+        "billing_date": billing_date_iso(r) or "",
         "program_batch_id": r.program_batch_id,
         "program_batch_name": r.program_batch.name if r.program_batch_id else "",
         "scope": "batch" if r.program_batch_id else "program",
@@ -62,8 +65,6 @@ def _rule_to_row(r: FeePlanRule) -> dict:
 
 
 class OtherFeeScheduleView(APIView):
-    """GET list / POST create for /api/payments/other_fee_schedule"""
-
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -74,6 +75,7 @@ class OtherFeeScheduleView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         try:
+
             program = Program.objects.get(pk=int(program_id))
         except (Program.DoesNotExist, TypeError, ValueError):
             return Response({"detail": "Program not found"}, status=status.HTTP_404_NOT_FOUND)
@@ -89,7 +91,7 @@ class OtherFeeScheduleView(APIView):
                 payable_term_number__isnull=False,
             )
             .select_related("fee_head", "program_batch")
-            .order_by("payable_year_of_study","fee_head__name", "id")
+            .order_by("payable_year_of_study", "payable_term_number", "fee_head__name", "id")
         )
         if batch_id:
             try:
@@ -160,6 +162,14 @@ class OtherFeeScheduleView(APIView):
         if amount_international is None:
             currency_international = ""
 
+        billing_date = resolve_billing_date_on_save(
+            billing_date=request.data.get("billing_date"),
+            program=program,
+            program_batch=program_batch,
+            year_of_study=y,
+            term_number=t,
+        )
+
         fee_plan = get_or_create_other_schedule_fee_plan(program)
 
         existing = FeePlanRule.objects.filter(
@@ -175,6 +185,7 @@ class OtherFeeScheduleView(APIView):
             existing.currency = currency
             existing.amount_international = amount_international
             existing.currency_international = currency_international or ""
+            existing.billing_date = billing_date
             existing.is_active = True
             existing.trigger_stage = "semester_start"
             existing.save()
@@ -192,6 +203,7 @@ class OtherFeeScheduleView(APIView):
             currency_international=currency_international or "",
             payable_year_of_study=y,
             payable_term_number=t,
+            billing_date=billing_date,
             trigger_stage="semester_start",
             is_active=True,
             order=1,
@@ -268,6 +280,7 @@ class OtherFeeScheduleCloneView(APIView):
                         "currency": r.currency,
                         "amount_international": r.amount_international,
                         "currency_international": r.currency_international or "",
+                        "billing_date": r.billing_date,
                         "trigger_stage": "semester_start",
                         "is_active": True,
                         "order": 1,

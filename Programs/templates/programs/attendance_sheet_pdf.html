@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>{{ title }}</title>
+  <style>
+    @page { size: A4 portrait; margin: 1.2cm 1.4cm; }
+    body { font-family: Helvetica, Arial, sans-serif; font-size: 10pt; color: #222; }
+    .header-table { width: 100%; border-collapse: collapse; margin-bottom: 12px; }
+    .header-table td { vertical-align: middle; text-align: center; }
+    .logo { width: 120px; height: 120px; }
+    .doc-title { font-size: 13pt; font-weight: bold; margin-top: 6px; color: #3e397b; }
+    .meta { font-size: 9pt; color: #555; margin-top: 2px; }
+    .info-box {
+      margin: 0 0 12px 0; padding: 8px 10px; border: 1px solid #e0e0e0; background: #f7f7fb;
+    }
+    .info-box table { width: 100%; border-collapse: collapse; }
+    .info-box td { padding: 2px 4px; font-size: 9.5pt; vertical-align: top; }
+    .label { color: #666; width: 22%; }
+    .sessions-table { width: 100%; border-collapse: collapse; margin-top: 6px; }
+    .sessions-table th {
+      background: #3e397b; color: #fff; font-size: 8.5pt; text-align: left; padding: 6px 5px;
+    }
+    .sessions-table td {
+      border-bottom: 1px solid #e5e5e5; padding: 6px 5px; font-size: 9pt; vertical-align: middle;
+    }
+    .tick { width: 18px; height: 14px; border: 1px solid #444; display: inline-block; }
+    .summary { margin-top: 10px; font-size: 9pt; color: #444; }
+    .footer {
+      margin-top: 18px; font-size: 8pt; color: #666; border-top: 1px solid #ddd; padding-top: 8px;
+    }
+    .sign-row { margin-top: 28px; width: 100%; }
+    .sign-row td { width: 50%; font-size: 9pt; padding-top: 18px; }
+  </style>
+</head>
+<body>
+  <table class="header-table">
+    <tr>
+      <td>
+        {% if logo_b64 %}
+        <img class="logo" src="data:image/png;base64,{{ logo_b64 }}" alt="University logo" />
+        {% endif %}
+        <div class="doc-title">{{ title }}</div>
+        <div class="meta">Generated {{ generated_at }}</div>
+      </td>
+    </tr>
+  </table>
+
+  <div class="info-box">
+    <table>
+      <tr>
+        <td class="label">Course</td>
+        <td><strong>{{ course_code }}</strong> — {{ course_name }}</td>
+        <td class="label">Date</td>
+        <td><strong>{{ session_date_label }}</strong></td>
+      </tr>
+      <tr>
+        <td class="label">Programme</td>
+        <td>{{ programme_name|default:"—" }}</td>
+        <td class="label">Semester</td>
+        <td>{{ semester_name|default:"—" }}</td>
+      </tr>
+      <tr>
+        <td class="label">Venue</td>
+        <td>{{ venue_label }}</td>
+        <td class="label">Taken by</td>
+        <td>{{ taken_by_name }}</td>
+      </tr>
+    </table>
+  </div>
+
+  <table class="sessions-table">
+    <thead>
+      <tr>
+        <th style="width: 6%;">#</th>
+        <th style="width: 18%;">Reg No</th>
+        <th style="width: 34%;">Student Name</th>
+        {% if blank_sheet %}
+        <th style="width: 12%;">Present</th>
+        <th style="width: 12%;">Absent</th>
+        <th style="width: 18%;">Signature</th>
+        {% else %}
+        <th style="width: 14%;">Status</th>
+        <th style="width: 28%;">Remark</th>
+        {% endif %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in students %}
+      <tr>
+        <td>{{ forloop.counter }}</td>
+        <td>{{ row.reg_no }}</td>
+        <td>{{ row.name }}</td>
+        {% if blank_sheet %}
+        <td><span class="tick"></span></td>
+        <td><span class="tick"></span></td>
+        <td></td>
+        {% else %}
+        <td>{{ row.status_label }}</td>
+        <td>{{ row.remark }}</td>
+        {% endif %}
+      </tr>
+      {% empty %}
+      <tr>
+        <td colspan="6" style="text-align:center; color:#666; padding:20px;">No enrolled students.</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {% if not blank_sheet and student_count %}
+  <div class="summary">
+    Students: {{ student_count }} |
+    Present: {{ present_count }} |
+    Late: {{ late_count }} |
+    Excused: {{ excused_count }} |
+    Absent: {{ absent_count }}
+  </div>
+  {% endif %}
+
+  <table class="sign-row">
+    <tr>
+      <td>Lecturer signature: ______________________</td>
+      <td>Date: ______________________</td>
+    </tr>
+  </table>
+
+  <div class="footer">{{ disclaimer }}</div>
+</body>
+</html>

@@ -9,6 +9,7 @@ from rest_framework import status
 from .permissions import ProgramSchedulingAPIPermission
 from django.db.models import Prefetch
 from .models import Program, ProgramBatch, Semester, CourseUnit
+from admissions.faculty_scope import assert_program_in_user_faculties
 
 
 class ProgramStructureView(APIView):
@@ -22,6 +23,7 @@ class ProgramStructureView(APIView):
                 'faculty', 
                 'academic_level'
             ).prefetch_related('campuses').get(id=program_id)
+            assert_program_in_user_faculties(request.user, program)
             
             # Fetch program batches with semesters and course units
             batches = ProgramBatch.objects.filter(

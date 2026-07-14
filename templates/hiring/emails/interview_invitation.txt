@@ -1,0 +1,31 @@
+Interview Invitation — {{ stage_label }}
+
+Dear {{ applicant_name }},
+
+Thank you for your interest in joining {{ university_name }}.
+You have been scheduled for the {{ stage_label }} stage for {{ position_title }} ({{ department_name }}).
+
+Application reference: {{ reference }}
+Date & time: {{ interview_datetime }}
+Duration: {{ duration_minutes }} minutes
+Location: {{ location }}
+{% if meeting_link %}{% if is_online_assessment %}Assessment link{% else %}Meeting link{% endif %}: {{ meeting_link }}
+{% elif is_online_assessment %}Assessment link: Will be shared separately if not shown above.
+{% endif %}
+{% if notes %}
+Additional notes:
+{{ notes }}
+{% endif %}
+{% if track_url %}
+Track your application: {{ track_url }}
+{% endif %}
+{% if hr_contact_email %}
+Questions? Contact {{ hr_contact_email }}.
+{% endif %}
+
+Kind regards,
+Recruitment Team
+{{ university_name }}
+
+---
+This is an automated message from {{ from_email }}. Please do not reply directly to this email.

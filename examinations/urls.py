@@ -19,9 +19,12 @@ from .phase2_views import (
     CourseRetakeRegistrationsView,
     CourseSittingListView,
     ExamRetakeDetailView,
+    ExamSessionBulkGenerateView,
     ExamSessionDetailView,
+    ExamSessionListView,
     ExamSessionSittingListView,
     StudentMyExamScheduleView,
+    StudentRetakeRequestView,
 )
 from .policy_views import (
     ActivePolicyView,
@@ -40,6 +43,12 @@ from .grade_scale_views import (
     GradeScaleActivateView,
     GradeScaleDetailView,
     GradeScaleListCreateView,
+)
+from .marks_window_views import (
+    MarksEntryWindowCloseView,
+    MarksEntryWindowDetailView,
+    MarksEntryWindowListCreateView,
+    MarksEntryWindowOpenView,
 )
 from .views import (
     LecturerCourseMarksView,
@@ -84,6 +93,22 @@ urlpatterns = [
         "award-class/preview/",
         AwardClassPreviewView.as_view(),
         name="examinations-award-class-preview",
+    ),
+    path("marks-windows/", MarksEntryWindowListCreateView.as_view(), name="marks-windows"),
+    path(
+        "marks-windows/<int:window_id>/",
+        MarksEntryWindowDetailView.as_view(),
+        name="marks-window-detail",
+    ),
+    path(
+        "marks-windows/<int:window_id>/open/",
+        MarksEntryWindowOpenView.as_view(),
+        name="marks-window-open",
+    ),
+    path(
+        "marks-windows/<int:window_id>/close/",
+        MarksEntryWindowCloseView.as_view(),
+        name="marks-window-close",
     ),
     path("staff/courses/", StaffExaminationCoursesView.as_view(), name="staff-examination-courses"),
     path(
@@ -138,6 +163,21 @@ urlpatterns = [
         name="exam-card-verify",
     ),
     path("student/my-exam-schedule/", StudentMyExamScheduleView.as_view(), name="student-my-exam-schedule"),
+    path(
+        "student/retake-request/",
+        StudentRetakeRequestView.as_view(),
+        name="student-retake-request",
+    ),
+    path(
+        "exam-sessions/bulk-generate/",
+        ExamSessionBulkGenerateView.as_view(),
+        name="exam-sessions-bulk-generate",
+    ),
+    path(
+        "exam-sessions/",
+        ExamSessionListView.as_view(),
+        name="exam-sessions-list",
+    ),
     path(
         "courses/<int:course_unit_id>/exam-sessions/",
         CourseExamSessionsView.as_view(),

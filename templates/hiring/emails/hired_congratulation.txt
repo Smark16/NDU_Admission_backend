@@ -1,0 +1,27 @@
+Congratulations — You Have Been Selected
+
+Dear {{ applicant_name }},
+
+We are pleased to inform you that you have been selected for the position of {{ position_title }} ({{ department_name }}) at {{ university_name }}.
+
+Application reference: {{ reference }}
+Position: {{ position_title }}
+
+Our HR team will contact you shortly with onboarding instructions, documentation, and next steps.
+{% if track_url %}
+
+Review your application status: {{ track_url }}
+{% endif %}
+{% if hr_contact_email %}
+
+Questions? Contact {{ hr_contact_email }}.
+{% endif %}
+
+Welcome to {{ university_name }}.
+
+Kind regards,
+Recruitment Team
+{{ university_name }}
+
+---
+This is an automated message from {{ from_email }}. Please do not reply directly to this email.

@@ -28,6 +28,14 @@ from rest_framework.views import APIView
 
 from admissions.models import AdmittedStudent
 
+from admissions.faculty_scope import (
+    assert_admitted_student_program_access,
+    assert_program_batch_access,
+    assert_program_in_user_faculties,
+    assert_student_programme_enrollment_access,
+    filter_programme_enrollments_for_user,
+)
+
 from .curriculum_inheritance import curriculum_owner_program
 from .models import (
     CourseUnit,
@@ -54,10 +62,28 @@ from .specialization_rules import (
     resolve_specialization_for_program,
 )
 
+from payments.admin_enrollment_requirements import (
+    admin_programme_enrollment_activation_block,
+    admin_programme_enrollment_eligibility,
+)
+
 
 # ===========================================================================
 # Admin views
 # ===========================================================================
+
+class AdminStudentEnrollmentEligibilityView(APIView):
+    """Return whether staff may activate academic enrollment for a student."""
+    permission_classes = [AcademicEnrollmentAdminPermission]
+
+    def get(self, request, student_id):
+        student = get_object_or_404(
+            AdmittedStudent.objects.select_related("application"),
+            pk=student_id,
+        )
+        assert_admitted_student_program_access(request.user, student)
+        return Response(admin_programme_enrollment_eligibility(student))
+
 
 class AdminCreateEnrollmentView(APIView):
     """Create (or re-activate) academic enrollment for a student.
@@ -71,10 +97,15 @@ class AdminCreateEnrollmentView(APIView):
     def post(self, request, student_id):
         try:
             student = AdmittedStudent.objects.select_related(
-                'admitted_program', 'application', 'programme_enrollment'
+                'admitted_program',
+                'admitted_specialization',
+                'application',
+                'programme_enrollment',
             ).get(pk=student_id)
         except AdmittedStudent.DoesNotExist:
             return Response({'detail': 'Student not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        assert_admitted_student_program_access(request.user, student)
 
         if not student.is_admitted:
             return Response(
@@ -94,6 +125,11 @@ class AdminCreateEnrollmentView(APIView):
             if specialization_in_payload is not None
             else None
         )
+        if specialization is None and specialization_in_payload is None:
+            if student.admitted_specialization_id:
+                specialization = student.admitted_specialization.name
+            elif student.programme_enrollment_id and student.programme_enrollment.specialization:
+                specialization = normalize_specialization(student.programme_enrollment.specialization) or None
         notes            = request.data.get('notes', '')
 
         if not program_id:
@@ -118,6 +154,9 @@ class AdminCreateEnrollmentView(APIView):
                 {'detail': 'ProgramBatch not found or does not belong to this programme.'},
                 status=status.HTTP_404_NOT_FOUND,
             )
+
+        assert_program_in_user_faculties(request.user, program)
+        assert_program_batch_access(request.user, program_batch)
 
         if student.admitted_program_id != program.id:
             return Response(
@@ -207,6 +246,12 @@ class AdminCreateEnrollmentView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        activation_block = admin_programme_enrollment_activation_block(
+            student, target_status=enroll_status
+        )
+        if activation_block:
+            return Response({'detail': activation_block}, status=status.HTTP_400_BAD_REQUEST)
+
         # Idempotent create-or-update
         enrollment, created = StudentProgrammeEnrollment.objects.get_or_create(
             student=student,
@@ -274,6 +319,8 @@ class AdminListEnrollmentsView(APIView):
         if batch_id:
             qs = qs.filter(program_batch_id=batch_id)
 
+        qs = filter_programme_enrollments_for_user(qs, request.user)
+
         serializer = StudentProgrammeEnrollmentSerializer(qs, many=True)
         return Response({
             'count': qs.count(),
@@ -286,12 +333,14 @@ class AdminEnrollmentDetailView(APIView):
     permission_classes = [AcademicEnrollmentAdminPermission]
 
     def _get(self, pk):
-        return get_object_or_404(
+        enrollment = get_object_or_404(
             StudentProgrammeEnrollment.objects.select_related(
                 'student__application', 'program', 'program_batch', 'enrolled_by'
             ),
             pk=pk,
         )
+        assert_student_programme_enrollment_access(self.request.user, enrollment)
+        return enrollment
 
     def get(self, request, pk):
         return Response(StudentProgrammeEnrollmentSerializer(self._get(pk)).data)
@@ -308,6 +357,11 @@ class AdminEnrollmentDetailView(APIView):
 
         # If status is being changed to 'enrolled', record who did it
         if data.get('status') == 'enrolled' and enrollment.status != 'enrolled':
+            activation_block = admin_programme_enrollment_activation_block(
+                enrollment.student, target_status='enrolled'
+            )
+            if activation_block:
+                return Response({'detail': activation_block}, status=status.HTTP_400_BAD_REQUEST)
             # enrolled_at is auto-stamped in model.save()
             data['enrolled_by'] = request.user.id
 

@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>{{ title }}</title>
+  <style>
+    @page { size: A4 portrait; margin: 1.2cm 1.4cm; }
+    body { font-family: Helvetica, Arial, sans-serif; font-size: 10pt; color: #222; }
+    .header-table { width: 100%; border-collapse: collapse; margin-bottom: 14px; }
+    .header-table td { vertical-align: middle; text-align: center; }
+    .logo { width: 120px; height: 120px; }
+    .doc-title { font-size: 12pt; font-weight: bold; margin-top: 8px; color: #3e397b; }
+    .meta { font-size: 9pt; color: #555; margin-top: 2px; }
+    .person {
+      margin: 12px 0 16px 0; padding: 10px 12px; border: 1px solid #ddd; background: #fafafa;
+    }
+    .person-name { font-size: 11pt; font-weight: bold; }
+    .load-table { width: 100%; border-collapse: collapse; margin-bottom: 8px; }
+    .load-table th {
+      background: #3e397b; color: #fff; font-size: 8.5pt; text-align: left; padding: 6px 5px;
+    }
+    .load-table td {
+      border-bottom: 1px solid #e5e5e5; padding: 6px 5px; font-size: 9pt; vertical-align: top;
+    }
+    .num { text-align: right; }
+    .footer {
+      margin-top: 18px; font-size: 8pt; color: #666; border-top: 1px solid #ddd; padding-top: 8px;
+    }
+    .empty {
+      padding: 24px; text-align: center; color: #666; border: 1px dashed #ccc;
+    }
+    .summary { margin: 0 0 12px 0; padding: 8px 10px; border: 1px solid #e0e0e0; background: #f7f7fb; }
+  </style>
+</head>
+<body>
+  <table class="header-table">
+    <tr>
+      <td>
+        {% if logo_b64 %}
+        <img class="logo" src="data:image/png;base64,{{ logo_b64 }}" alt="University logo" />
+        {% endif %}
+        <div class="doc-title">{{ title }}</div>
+        <div class="meta">Generated {{ generated_at }}</div>
+      </td>
+    </tr>
+  </table>
+
+  <div class="person">
+    <div class="person-name">{{ program_name }}</div>
+    <div class="meta">Batch: {{ batch_name }}{% if academic_year %} · {{ academic_year }}{% endif %}</div>
+    <div class="meta">Semester: {{ semester_name }}</div>
+    <div class="meta">
+      Scope: {% if include_drafts %}Published + draft slots{% else %}Published slots only{% endif %}
+    </div>
+    {% for line in extra_lines %}
+    <div class="meta">{{ line }}</div>
+    {% endfor %}
+  </div>
+
+  <div class="summary">
+    <div class="meta"><strong>{{ lecturer_count }}</strong> lecturer(s) ·
+      <strong>{{ total_hours }}</strong> total hours ·
+      <strong>{{ total_sessions }}</strong> session assignments
+    </div>
+  </div>
+
+  {% if not load_rows %}
+  <div class="empty">No lecturer hours scheduled for this semester.</div>
+  {% else %}
+  <table class="load-table">
+    <thead>
+      <tr>
+        <th style="width: 6%;">#</th>
+        <th style="width: 28%;">Lecturer</th>
+        <th style="width: 22%;">Email</th>
+        <th style="width: 12%;" class="num">Hours</th>
+        <th style="width: 12%;" class="num">Sessions</th>
+        <th style="width: 20%;">By day</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in load_rows %}
+      <tr>
+        <td>{{ forloop.counter }}</td>
+        <td><strong>{{ row.name }}</strong></td>
+        <td>{{ row.email|default:"—" }}</td>
+        <td class="num">{{ row.total_hours }}</td>
+        <td class="num">{{ row.session_count }}</td>
+        <td>
+          {% for d in row.by_day %}
+            {{ d.day_label }}: {{ d.hours }}h{% if not forloop.last %}; {% endif %}
+          {% empty %}
+            —
+          {% endfor %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  <div class="footer">
+    {{ disclaimer }}<br />
+    For faculty / academic reporting.
+  </div>
+</body>
+</html>

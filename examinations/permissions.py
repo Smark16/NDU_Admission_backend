@@ -2,6 +2,7 @@
 from rest_framework.permissions import BasePermission
 
 from Programs.models import CourseUnit
+from accounts.super_admin import user_is_super_admin
 
 # Codenames on examinations.* models (no app prefix in has_perm).
 EXAM_ENTER_MARKS = "examinations.enter_marks"
@@ -10,6 +11,7 @@ EXAM_VIEW_ALL_RESULTS = "examinations.view_all_results"
 EXAM_MANAGE_SCHEDULE = "examinations.manage_exam_schedule"
 EXAM_MANAGE_RETAKES = "examinations.manage_retakes"
 EXAM_APPROVE_CHANGES = "examinations.approve_result_changes"
+EXAM_MANAGE_MARKS_WINDOWS = "examinations.manage_marks_windows"
 EXAM_ACCESS_MODULE = "accounts.access_examinations"
 
 OFFICE_CODENAMES = (
@@ -19,13 +21,14 @@ OFFICE_CODENAMES = (
     "manage_exam_schedule",
     "manage_retakes",
     "approve_result_changes",
+    "manage_marks_windows",
 )
 
 
 def _has(user, perm: str) -> bool:
     if not user or not user.is_authenticated:
         return False
-    if user.is_superuser:
+    if user_is_super_admin(user):
         return True
     return user.has_perm(perm)
 
@@ -34,7 +37,7 @@ def user_has_any_examination_perm(user, *codenames: str) -> bool:
     """True if user has module access or any listed examinations.* permission."""
     if not user or not user.is_authenticated:
         return False
-    if user.is_superuser:
+    if user_is_super_admin(user):
         return True
     if _has(user, EXAM_ACCESS_MODULE):
         return True
@@ -52,7 +55,7 @@ def user_can_manage_course_marks(user, course_unit: CourseUnit) -> bool:
     """
     if not user or not user.is_authenticated:
         return False
-    if user.is_superuser:
+    if user_is_super_admin(user):
         return True
     if user_can_access_examinations_office(user):
         if user_has_any_examination_perm(
@@ -60,6 +63,17 @@ def user_can_manage_course_marks(user, course_unit: CourseUnit) -> bool:
         ):
             return True
     return course_unit.lecturers.filter(pk=user.pk).exists()
+
+
+def user_can_publish_course(user, course_unit: CourseUnit) -> bool:
+    """Office users with publish_results may publish any course."""
+    if not user or not user.is_authenticated:
+        return False
+    if user_is_super_admin(user):
+        return True
+    if not _has(user, EXAM_PUBLISH_RESULTS):
+        return False
+    return user_can_access_examinations_office(user)
 
 
 # Backward-compatible alias used in views.
@@ -75,7 +89,7 @@ class CanManageAssessmentPolicies(BasePermission):
     def has_permission(self, request, view):
         if not request.user or not request.user.is_authenticated:
             return False
-        if request.user.is_superuser:
+        if user_is_super_admin(request.user):
             return True
         return user_has_any_examination_perm(request.user, "publish_results")
 
@@ -115,6 +129,17 @@ class CanManageExamSchedule(BasePermission):
         return user_has_any_examination_perm(request.user, "manage_exam_schedule")
 
 
+class CanManageMarksWindows(BasePermission):
+    message = "You do not have permission to manage marks entry windows."
+
+    def has_permission(self, request, view):
+        return user_has_any_examination_perm(
+            request.user,
+            "manage_marks_windows",
+            "publish_results",
+        )
+
+
 class CanManageRetakes(BasePermission):
     message = "You do not have permission to manage examination retakes."
 
@@ -136,7 +161,7 @@ class CanEnterMarksOrAssignedLecturer(BasePermission):
         user = request.user
         if not user.is_authenticated:
             return False
-        if user.is_superuser:
+        if user_is_super_admin(user):
             return True
         if user.is_lecturer and user_has_any_examination_perm(user, "enter_marks"):
             return True
@@ -168,6 +193,6 @@ class IsStaffUser(BasePermission):
         user = request.user
         if not user.is_authenticated:
             return False
-        if user.is_superuser:
+        if user_is_super_admin(user):
             return True
         return user.is_staff or user_can_access_examinations_office(user)

@@ -5,10 +5,14 @@ app_name = 'accounts'
 
 urlpatterns = [
     path("login", ObtainTokenView.as_view()),
+    path("session", SessionView.as_view()),
+    path("switch_portal_mode", SwitchPortalModeView.as_view()),
     path("register", RegisterView.as_view()),
     path('send_email', PasswordResetRequestView.as_view()),
+    path('erp_send_email', HorizonPasswordResetRequestView.as_view()),
     path("reset_password/confirm/", PasswordResetConfirmView.as_view()),
     path("reset_password/<uidb64>/<token>/", password_reset_redirect, name="password_reset_redirect"),
+    path('horizon_reset_password/<uidb64>/<token>/', password_horizon_reset_redirect, name='reset_erp_password'),
 
     path('list_users', ListUsers.as_view()),
     path('list_staff', ListStaff.as_view()),
@@ -35,11 +39,13 @@ urlpatterns = [
     path('student/change_password', StudentFirstLoginChangePassword.as_view()),
 
     path('prospective_students', ProspectiveStudentsView.as_view()),
+    path('prospective_students/<int:pk>/assist', AssistApplicationContextView.as_view()),
     path('send_reminder/<int:pk>', SendReminderEmail.as_view()),
     path('delete_prospective/<int:pk>', DeleteProspectiveStudent.as_view()),
     path('prospective_announcement', ProspectiveAnnouncement.as_view()),
 
     path('system_settings', GetSystemSettings.as_view()),
+    path('portal_branding', PortalBrandingView.as_view()),
     path('update_system_settings', UpdateSystemSettings.as_view()),
 
     path('system_usage_report', SystemUsageReport.as_view()),

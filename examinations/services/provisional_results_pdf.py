@@ -43,7 +43,73 @@ def _ordinal_year(n: int | None) -> str:
     return f"YEAR {words.get(n, str(n))}"
 
 
-MIN_COURSE_ROWS = 6
+MIN_COURSE_ROWS = 4
+
+
+def _row_count_for_semester(panel: dict, *, num_year_blocks: int) -> int:
+    """Row count per semester panel — ARMS does not pad empty semesters to match a filled sibling."""
+    actual = len(panel["courses"])
+    if actual == 0:
+        return 0
+    if actual < MIN_COURSE_ROWS and num_year_blocks <= 2:
+        return MIN_COURSE_ROWS
+    return actual
+
+
+def _pad_panels_to_program_years(
+    panels: list[dict], *, max_years: int, academic_year_label: str
+) -> list[dict]:
+    """Ensure every programme year appears (empty placeholders for future years)."""
+    if max_years < 1:
+        max_years = 3
+    by_year: dict[int, list[dict]] = {}
+    for panel in panels:
+        by_year.setdefault(panel.get("year_num") or 1, []).append(panel)
+
+    padded: list[dict] = list(panels)
+    for year_num in range(1, max_years + 1):
+        sems = by_year.get(year_num, [])
+        existing_terms = {p.get("term_num") for p in sems}
+        ay = sems[0]["academic_year"] if sems else academic_year_label
+        for term_num in (1, 2):
+            if term_num not in existing_terms:
+                padded.append(_empty_panel(year_num, term_num, ay))
+    return padded
+
+
+MAX_PROVISIONAL_SEMESTERS = 6
+
+
+def _provisional_grid_years(program) -> int:
+    """ARMS grid rows — programme length in years, capped at six semesters total."""
+    if not program:
+        return 3
+    terms_per_year = int(getattr(program, "max_terms_per_year", None) or 2)
+    if terms_per_year < 1:
+        terms_per_year = 2
+    nominal_years = int(getattr(program, "min_years", None) or 0)
+    if nominal_years < 1:
+        nominal_years = int(getattr(program, "max_years", None) or 3)
+    total_semesters = min(nominal_years * terms_per_year, MAX_PROVISIONAL_SEMESTERS)
+    return max(1, (total_semesters + terms_per_year - 1) // terms_per_year)
+
+
+def _layout_mode(year_blocks: list[dict]) -> str:
+    """Pick CSS density so header + bio + results + footer fit one A4 portrait page."""
+    if not year_blocks:
+        return "normal"
+    block_count = len(year_blocks)
+    max_rows = max(
+        max(len(b["left_courses"]), len(b["right_courses"])) for b in year_blocks
+    )
+    total_rows = block_count * max_rows
+    if block_count >= 5 or total_rows >= 24 or max_rows >= 10:
+        return "ultra"
+    if block_count >= 3 or total_rows >= 16 or max_rows >= 8:
+        return "compact"
+    if block_count >= 2 or total_rows >= 10 or max_rows >= 6:
+        return "cozy"
+    return "normal"
 
 
 def _empty_panel(year_num: int, term_num: int, academic_year_label: str) -> dict:
@@ -77,33 +143,38 @@ def _pad_course_rows(courses: list, row_count: int) -> list:
     return rows
 
 
-def _build_year_blocks(panels: list[dict]) -> list[dict]:
+def _build_year_blocks(panels: list[dict], *, max_years: int = 3) -> list[dict]:
     """Pair semesters per year (left = sem 1, right = sem 2) for ARMS grid."""
     from collections import defaultdict
 
     by_year: dict[int, list] = defaultdict(list)
     for p in panels:
         yn = p.get("year_num") or 1
-        by_year[yn].append(p)
+        if yn <= max_years:
+            by_year[yn].append(p)
 
     if not by_year:
         by_year = {1: [], 2: [], 3: []}
 
     year_blocks = []
-    is_first_year_block = True
     ay_fallback = panels[0]["academic_year"] if panels else ""
+    num_year_blocks = max_years
 
-    for year_num in sorted(by_year.keys()):
-        sems = sorted(by_year[year_num], key=lambda p: p.get("term_num", 1))
+    for year_num in range(1, num_year_blocks + 1):
+        sems = sorted(by_year.get(year_num, []), key=lambda p: p.get("term_num", 1))
         ay = sems[0]["academic_year"] if sems else ay_fallback
         while len(sems) < 2:
             term_num = len(sems) + 1
             sems.append(_empty_panel(year_num, term_num, ay))
 
         left, right = sems[0], sems[1]
-        row_count = max(len(left["courses"]), len(right["courses"]), MIN_COURSE_ROWS)
-        left_rows = _pad_course_rows(left["courses"], row_count)
-        right_rows = _pad_course_rows(right["courses"], row_count)
+        block_count = num_year_blocks or 1
+        left_rows = _pad_course_rows(
+            left["courses"], _row_count_for_semester(left, num_year_blocks=block_count)
+        )
+        right_rows = _pad_course_rows(
+            right["courses"], _row_count_for_semester(right, num_year_blocks=block_count)
+        )
 
         year_blocks.append(
             {
@@ -116,12 +187,13 @@ def _build_year_blocks(panels: list[dict]) -> list[dict]:
                     f"{_ordinal_year(year_num)}&nbsp;&nbsp;&nbsp; Academic Year: "
                     f"{right['academic_year']}&nbsp;&nbsp;&nbsp; {right['semester_heading']}"
                 ),
-                "course_rows": list(zip(left_rows, right_rows)),
-                "left_totals": _totals_text(left, tcu_label_only=is_first_year_block),
+                "left_courses": left_rows,
+                "right_courses": right_rows,
+                # ARMS: only Year One Semester 1 shows TCUs; all other panels use CTCUs + CGPA
+                "left_totals": _totals_text(left, tcu_label_only=(year_num == 1)),
                 "right_totals": _totals_text(right),
             }
         )
-        is_first_year_block = False
 
     return year_blocks
 
@@ -313,6 +385,13 @@ def build_provisional_results_context(
             for term in (1, 2):
                 panels.append(_empty_panel(year, term, academic_year_label))
 
+    max_years = 3
+    if student.admitted_program:
+        max_years = _provisional_grid_years(student.admitted_program)
+    panels = _pad_panels_to_program_years(
+        panels, max_years=max_years, academic_year_label=academic_year_label
+    )
+
     summary = build_student_transcript(student).get("summary", {})
     cgpa_final = summary.get("cgpa")
 
@@ -346,7 +425,8 @@ def build_provisional_results_context(
     nationality = (app.nationality.upper() if app and app.nationality else "UGANDAN") or "UGANDAN"
 
     graduated = doc_meta["is_graduated"]
-    year_blocks = _build_year_blocks(panels)
+    year_blocks = _build_year_blocks(panels, max_years=max_years)
+    layout_mode = _layout_mode(year_blocks)
 
     return {
         "student": {
@@ -361,6 +441,7 @@ def build_provisional_results_context(
             "photo_b64": photo_b64,
         },
         "year_blocks": year_blocks,
+        "layout_mode": layout_mode,
         "show_scores": show_scores,
         "logo_b64": _load_logo_b64(),
         "award": (student.admitted_program.name if student.admitted_program else "").upper(),
@@ -374,6 +455,22 @@ def build_provisional_results_context(
         "disclaimer": TRANSCRIPT_DISCLAIMER if graduated else PROVISIONAL_DISCLAIMER,
         "signatory_label": "Academic Registrar" if graduated else "Faculty Examination Coordinator",
     }
+
+
+def render_provisional_results_html(
+    student: AdmittedStudent,
+    *,
+    show_scores: bool | None = None,
+    printed_by: str = "",
+    request=None,
+) -> str:
+    """Render the same HTML string that is converted to PDF (use ?output=html to preview)."""
+    if show_scores is None:
+        show_scores = graduation_show_scores_default(student)
+    context = build_provisional_results_context(
+        student, show_scores=show_scores, printed_by=printed_by, request=request
+    )
+    return render_to_string("examinations/provisional_results.html", context)
 
 
 def render_provisional_results_pdf(
@@ -393,9 +490,10 @@ def render_provisional_results_pdf(
     html = render_to_string("examinations/provisional_results.html", context)
     from xhtml2pdf import pisa
 
+    from accounts.portal_branding import xhtml2pdf_link_callback
+
     pdf_buffer = io.BytesIO()
-    base_url = str(Path(settings.BASE_DIR).as_uri()) + "/"
-    result = pisa.CreatePDF(html, dest=pdf_buffer, link_callback=lambda *args: base_url)
+    result = pisa.CreatePDF(html, dest=pdf_buffer, link_callback=xhtml2pdf_link_callback)
     if result.err:
         raise RuntimeError("Results document PDF generation failed.")
     pdf_buffer.seek(0)

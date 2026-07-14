@@ -1,15 +1,9 @@
 from celery import shared_task
 from django.apps import apps
 from django.utils import timezone
-from payments.models import RegistrationSettings
-from Programs.models import StudentProgrammeEnrollment
-from Programs.program_batch_resolution import resolve_default_program_batch_for_program
 
 from .utils.email import send_application_email, send_admission_email, send_admission_update, send_student_login_credentials, send_rejection_email
 from .utils.notification import create_notification
-from django.db import transaction
-# from django.db import close_old_connections
-from accounts.models import User
 import logging
 
 logger = logging.getLogger(__name__)
@@ -61,77 +55,113 @@ def celery_admission_update(admission_id):
 
 @shared_task(bind=True, max_retries=5)
 def celery_create_student_account(self, admission_id, application_id):
+    """
+    Legacy Celery entry point — provisioning is synchronous on admission.
+
+    Re-runs ensure + auto-enroll if a worker retry is needed; credentials email only on create.
+    """
     try:
-        Admission = apps.get_model('admissions', 'AdmittedStudent')
-        Application = apps.get_model('admissions', 'Application')
+        from admissions.student_accounts import DEFAULT_STUDENT_PASSWORD, ensure_student_portal_account
+        from admissions.utils.email import send_student_login_credentials
+        from admissions.utils.student_portal_provisioning import auto_enroll_admitted_student
 
-        admission = Admission.objects.get(id=admission_id)
-        application = Application.objects.get(id=application_id)
+        Admission = apps.get_model("admissions", "AdmittedStudent")
+        admission = Admission.objects.select_related(
+            "application__applicant", "student_user"
+        ).get(id=admission_id)
 
-        if admission.student_user_id:
-                return
+        user, created = ensure_student_portal_account(admission)
+        if user is None:
+            logger.warning("Student account not provisioned for admission %s", admission_id)
+            return
 
-        student_username = str(admission.reg_no).strip()
-      
-        student_user, created = User.objects.get_or_create(
-                username=student_username,
-                defaults={
-                    'first_name': application.applicant.first_name or "",
-                    'last_name': application.applicant.last_name or "",
-                    'email': application.applicant.email,
-                    'is_student': True,
-                    'must_change_password': True,
-                        }
-                    )
         if created:
-                student_user.set_password('NDU@1234')
-                student_user.save()
+            send_student_login_credentials(
+                user, DEFAULT_STUDENT_PASSWORD, admission=admission
+            )
 
-                celery_send_student_credentials_email.delay(
-                    student_user.id,
-                    password='NDU@1234'
-                )
-
-        admission.student_user = student_user
-        admission.save(update_fields=['student_user'])
-
-        celery_auto_enroll_students.delay(
-            admission.id,
-            admission.admitted_by_id
-        )
+        auto_enroll_admitted_student(admission, admission.admitted_by_id)
 
     except Exception as e:
-        logger.exception(f"Student account creation failed: {e }")
+        logger.exception(f"Student account creation failed: {e}")
+        raise self.retry(exc=e, countdown=60)
+
+# update student account
+@shared_task(bind=True, max_retries=5)
+def celery_update_student_account(self, admission_id, application_id):
+    try:
+        from admissions.student_accounts import ensure_student_portal_account, DEFAULT_STUDENT_PASSWORD
+
+        Admission = apps.get_model('admissions', 'AdmittedStudent')
+        admission = Admission.objects.select_related(
+            'application__applicant', 'student_user'
+        ).get(id=admission_id)
+
+        user, created = ensure_student_portal_account(admission, reset_password=True)
+        if user is None:
+            logger.warning("Student account update skipped for admission %s", admission_id)
+            return
+
+        celery_send_student_credentials_email.delay(
+            user.id,
+            password=DEFAULT_STUDENT_PASSWORD,
+        )
+
+        celery_auto_enroll_students.delay(admission.id, admission.admitted_by_id)
+
+    except Admission.DoesNotExist:
+        logger.error(f"AdmittedStudent with id {admission_id} not found")
+    except Exception as e:
+        logger.exception(f"Student account update failed for admission {admission_id}: {e}")
+        raise self.retry(exc=e, countdown=60)
 
 # AutoEnroll Students
+def auto_enroll_admitted_student_task(admission_id, user_id):
+    """Celery wrapper — prefer admissions.utils.student_portal_provisioning.auto_enroll_admitted_student."""
+    from admissions.utils.student_portal_provisioning import auto_enroll_admitted_student
+
+    Admission = apps.get_model("admissions", "AdmittedStudent")
+    admission = Admission.objects.get(id=admission_id)
+    auto_enroll_admitted_student(admission, user_id)
+
+
 @shared_task(bind=True, max_retries=5)
 def celery_auto_enroll_students(self, admission_id, user_id):
-    Admission = apps.get_model('admissions', 'AdmittedStudent')
-    User = apps.get_model('accounts', 'User')
-
-    admission = Admission.objects.get(id=admission_id)
-    user = User.objects.get(id=user_id)
     try:
-        reg_settings = RegistrationSettings.get_settings()
-
-        today = timezone.now().date()
-        program_batch = admission.intended_program_batch or resolve_default_program_batch_for_program(
-            admission.admitted_program,
-            today=today,
-        )
-
-        if program_batch:
-            StudentProgrammeEnrollment.objects.get_or_create(
-                student=admission,
-                defaults={
-                    'program': admission.admitted_program,
-                    'program_batch': program_batch,
-                    'current_year_of_study': 1,
-                    'current_term_number': 1,
-                    'status': "enrolled" if reg_settings.auto_enroll_on_admission else "pending",
-                    'enrolled_by': user if reg_settings.auto_enroll_on_admission else None,
-                    'enrolled_at': timezone.now() if reg_settings.auto_enroll_on_admission else None,
-                }
-        )
+        auto_enroll_admitted_student_task(admission_id, user_id)
     except Exception as e:
         logger.exception(f"Auto-enrollment failed: {e}")
+        raise self.retry(exc=e, countdown=60)
+
+
+@shared_task
+def celery_send_weekly_admissions_digest(triggered_by_user_id=None):
+    from admissions.utils.weekly_report import send_weekly_admissions_digest
+
+    return send_weekly_admissions_digest(triggered_by_user_id=triggered_by_user_id)
+
+
+@shared_task
+def celery_maybe_send_weekly_admissions_digest():
+    """Hourly check: send digest when schedule matches and not already sent this week."""
+    from admissions.models import WeeklyReportSettings
+    from admissions.utils.weekly_report import send_weekly_admissions_digest
+
+    settings_row = WeeklyReportSettings.get_solo()
+    if not settings_row.is_enabled:
+        return {"skipped": "disabled"}
+
+    now = timezone.localtime()
+    if now.weekday() != settings_row.schedule_day:
+        return {"skipped": "wrong_day"}
+    if now.hour != settings_row.schedule_hour:
+        return {"skipped": "wrong_hour"}
+    if now.minute < settings_row.schedule_minute:
+        return {"skipped": "before_minute"}
+
+    if settings_row.last_sent_at:
+        days_since = (now.date() - timezone.localtime(settings_row.last_sent_at).date()).days
+        if days_since < 6:
+            return {"skipped": "already_sent_this_week"}
+
+    return send_weekly_admissions_digest()
