@@ -6,7 +6,9 @@ from django.db import migrations
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('admissions', '0024_merge_0021_merge_20260514_0211_0023_batch_offer_dates'),
+        # Former parent 0024_merge_0021_merge_... was removed during main merge;
+        # 0023_batch_offer_dates is the surviving leaf from that branch.
+        ('admissions', '0023_batch_offer_dates'),
         ('admissions', '0027_academicyear'),
     ]
 
