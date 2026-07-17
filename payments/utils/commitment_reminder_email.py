@@ -6,7 +6,7 @@ from ndu_portal.send_grid import send_configurable_email
 from payments.student_payment_allocation import COMMITMENT_FEE_THRESHOLD
 
 DEFAULT_SUBJECT = (
-    "RE: REMINDER TO PAY YOUR ADMISSION COMMITMENT FEE BY 17 JULY 2026"
+    "RE: REMINDER — COMMITMENT FEE DEADLINE EXTENDED TO MONDAY, 10 AUGUST 2026"
 )
 
 
@@ -37,7 +37,7 @@ def send_commitment_fee_reminder(
         balance_note = (
             f"\nOur records show that you have so far paid UGX {int(paid_amount):,} "
             f"toward the commitment fee. Kindly pay the remaining balance of "
-            f"UGX {int(remaining):,} on or before Friday, 17 July 2026 to complete "
+            f"UGX {int(remaining):,} on or before Monday, 10 August 2026 to complete "
             f"the {threshold} requirement.\n"
         )
     elif paid_amount > 0 and remaining is None:
@@ -46,7 +46,7 @@ def send_commitment_fee_reminder(
             balance_note = (
                 f"\nOur records show that you have so far paid UGX {int(paid_amount):,} "
                 f"toward the commitment fee. Kindly pay the remaining balance of "
-                f"UGX {int(remaining_calc):,} on or before Friday, 17 July 2026 to complete "
+                f"UGX {int(remaining_calc):,} on or before Monday, 10 August 2026 to complete "
                 f"the {threshold} requirement.\n"
             )
 
@@ -58,13 +58,13 @@ def send_commitment_fee_reminder(
 
     body = f"""Dear {full_name},
 
-RE: REMINDER TO PAY YOUR ADMISSION COMMITMENT FEE BY 17 JULY 2026
+RE: REMINDER — COMMITMENT FEE DEADLINE EXTENDED TO MONDAY, 10 AUGUST 2026
 
 Greetings from Ndejje University.
 
 Congratulations once again on your provisional admission to Ndejje University for the 2026/2027 Academic Year.
 
-This is a reminder to confirm your admission by paying the non-refundable commitment fee of {threshold} on or before Friday, 17 July 2026, using the SchoolPay Payment Code provided on your admission letter.
+Please note that the deadline to pay the non-refundable commitment fee of {threshold} has been extended to Monday, 10 August 2026. Kindly confirm your admission by paying on or before that date, using the SchoolPay Payment Code provided on your admission letter.
 {pay_code_line}{balance_note}
 You can conveniently make your payment using Mobile Money as follows:
 

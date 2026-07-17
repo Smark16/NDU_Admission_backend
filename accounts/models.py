@@ -57,17 +57,6 @@ class User(AbstractUser):
         help_text="If false, timetable blocks same lecturer on two campuses in one day.",
     )
     must_change_password = models.BooleanField(default=False)
-    allow_multi_campus_per_day = models.BooleanField(
-        default=False,
-        help_text="Allow the user to operate across multiple campuses on the same day.",
-    )
-    primary_campus = models.ForeignKey(
-        Campus,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="primary_campus_users",
-    )
     faculties = models.ManyToManyField(
         "admissions.Faculty",
         blank=True,
