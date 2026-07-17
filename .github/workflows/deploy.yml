@@ -60,6 +60,7 @@ jobs:
           python manage.py migrate Programs 0017_attendance_check_in_qr_token --fake
           python manage.py migrate Programs 0018_lecture_attendance_multi_slot --fake
           python manage.py migrate examinations 0013_examsession_invigilators --fake
+          python manage.py migrate Programs0019_course_material --fake
         
           # Final migrate (this should now be safe)
           python manage.py migrate
