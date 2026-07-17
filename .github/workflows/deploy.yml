@@ -58,6 +58,7 @@ jobs:
           # python manage.py migrate leave 0002_initial --fake
           # python manage.py migrate staff 0002_payscale --fake
           python manage.py migrate Programs 0017_attendance_check_in_qr_token --fake
+          python manage.py migrate Programs 0018_lecture_attendance_multi_slot --fake
         
           # Final migrate (this should now be safe)
           python manage.py migrate
