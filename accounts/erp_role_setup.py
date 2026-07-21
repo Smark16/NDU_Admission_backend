@@ -150,9 +150,23 @@ ERP_TEAM_ROLE_MATRIX = {
         ("accounts", "manage_communication_templates"),
         ("admissions", "view_emailtemplate"),
         ("admissions", "change_emailtemplate"),
+        # Subjects & Templates (offer letter PDF mapper) — not the same as email templates
         ("AdmissionReports", "view_setup"),
+        ("AdmissionLetter", "view_offerlettertemplate"),
+        ("AdmissionLetter", "add_offerlettertemplate"),
+        ("AdmissionLetter", "change_offerlettertemplate"),
+        ("AdmissionLetter", "delete_offerlettertemplate"),
         ("accounts", "view_campus"),
         ("accounts", "change_campus"),
+    ],
+    "Offer Letter Template Manager": [
+        ("AdmissionReports", "view_setup"),
+        ("AdmissionLetter", "view_offerlettertemplate"),
+        ("AdmissionLetter", "add_offerlettertemplate"),
+        ("AdmissionLetter", "change_offerlettertemplate"),
+        ("AdmissionLetter", "delete_offerlettertemplate"),
+        ("admissions", "view_admittedstudent"),
+        ("Programs", "view_program"),
     ],
     # ── Audit ──────────────────────────────────────────────────────────────────
     "Auditor": [
@@ -169,6 +183,7 @@ PERMISSION_APPS = (
     "auth",
     "admissions",
     "AdmissionReports",
+    "AdmissionLetter",
     "payments",
     "Programs",
     "audit",
