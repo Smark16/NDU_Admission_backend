@@ -125,9 +125,20 @@ def suggest_next_academic_year_label() -> str:
     return get_current_academic_year()
 
 
-def suggest_academic_year_options(*, count: int = 6) -> list[str]:
+def suggest_academic_year_options(
+    *,
+    count: int = 6,
+    past_count: int | None = None,
+) -> list[str]:
     """
-    Rolling list of labels for pickers: calendar year plus the next years.
+    Rolling list of labels for pickers: recent past years, the calendar year,
+    and upcoming years — so staff can register previous years for historical batches.
     """
     start = parse_academic_year_start(get_current_academic_year())
-    return [format_academic_year_from_start(start + offset) for offset in range(count)]
+    ahead = max(int(count), 1)
+    behind = past_count if past_count is not None else ahead
+    behind = max(int(behind), 0)
+    return [
+        format_academic_year_from_start(start + offset)
+        for offset in range(-behind, ahead)
+    ]
