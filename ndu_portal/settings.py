@@ -21,7 +21,8 @@ ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=[
     'applications-admin.ndu.ac.ug',
     'https://www.schoolpaytest.servicecops.com',
     '.ndu.ac.ug',           
-    '794e-41-75-173-12.ngrok-free.app'
+    '794e-41-75-173-12.ngrok-free.app',
+    'jobs.ndu.ac.ug'
 ])
 # Application definition
 DJANGO_APPS = [
@@ -286,7 +287,8 @@ CSRF_TRUSTED_ORIGINS = [
     "https://erp.ndejje.ndu.ac.ug",
     "http://test.ndu.ac.ug",
     "https://test.ndu.ac.ug",
-    "http://137.63.139.78"
+    "http://137.63.139.78",
+    'http://jobs.ndu.ac.ug'
 ]
 
 # CORS_ALLOW_ALL_ORIGINS = True
@@ -307,6 +309,7 @@ CORS_ALLOWED_ORIGINS = [
     "https://schoolpaytest.servicecops.com",
     "http://test.ndu.ac.ug",
     "https://test.ndu.ac.ug",
+    "http://jobs.ndu.ac.ug"
 ]
 
 # More flexible option - Recommended for your case
