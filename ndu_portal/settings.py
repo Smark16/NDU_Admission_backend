@@ -146,7 +146,7 @@ else:
         "USER": env("DB_USER"),
         "PASSWORD": env("DB_PASSWORD"),
         "HOST": env("DB_HOST"),
-        "PORT": 6432,
+        "PORT": 5432,
         "CONN_MAX_AGE": 0, 
     }
 }
