@@ -46,11 +46,27 @@ class UpdateProgram(generics.UpdateAPIView):
 
     def put(self, request, *args, **kwargs):
         instance = self.get_object()
+        old_min_years = int(instance.min_years or 0)
         serializer = self.serializer_class(instance, data=request.data)
         serializer.is_valid(raise_exception=True)
-        serializer.save()
+        program = serializer.save()
 
-        return Response(serializer.data, status=200)
+        data = dict(serializer.data)
+        new_min_years = int(program.min_years or 0)
+        # When minimum duration grows, fill missing Year/Term slots on existing batches.
+        if new_min_years > old_min_years:
+            from Programs.batch_views import sync_program_batch_semesters_to_min_years
+
+            sync = sync_program_batch_semesters_to_min_years(program)
+            data["semesters_synced"] = sync
+            if sync.get("semesters_created"):
+                data["detail"] = (
+                    f"Programme updated. Added {sync['semesters_created']} semester/term "
+                    f"slot(s) across {sync['batches_touched']} batch(es) to match "
+                    f"min years ({new_min_years})."
+                )
+
+        return Response(data, status=200)
     
 # delete program
 class DeleteProgram(generics.RetrieveDestroyAPIView):

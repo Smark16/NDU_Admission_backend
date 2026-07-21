@@ -807,19 +807,19 @@ def _add_months(d: date, n: int) -> date:
 
 def _auto_create_semesters(batch: "ProgramBatch", program: "Program") -> int:
     """
-    Auto-create the full minimum-duration term structure for a new ProgramBatch.
+    Ensure the batch has the full minimum-duration term structure.
 
     Term count = program.min_years × terms_per_year, where:
       semester  calendar → 2 terms/year, ~6 months each
       trimester calendar → 3 terms/year, ~4 months each
 
-    Each Semester is named "Year Y Semester T" / "Year Y Trimester T" and has
-    year_of_study and term_number populated so they align with the curriculum.
+    Existing semesters are left untouched. Only missing (year_of_study, term_number)
+    slots are created — so raising min_years on a programme can grow existing batches.
 
-    Dates are generated as sequential month-offsets from batch.start_date so
-    they span the full minimum programme duration regardless of batch.end_date.
+    Dates for new slots continue from batch.start_date using sequential month offsets
+    based on the new order number.
 
-    Returns the total number of Semester rows created.
+    Returns the number of Semester rows newly created (0 if already complete).
     """
     cal_type = getattr(program, "calendar_type", None) or "semester"
     terms_per_year = 3 if cal_type == "trimester" else 2
@@ -830,13 +830,28 @@ def _auto_create_semesters(batch: "ProgramBatch", program: "Program") -> int:
     min_years = max(int(raw_min), 1) if raw_min else 1
 
     start = batch.start_date
-    order = 1  # absolute sequence number across all years (unique per batch)
+    existing = list(
+        Semester.objects.filter(program_batch=batch).only(
+            "id", "order", "year_of_study", "term_number"
+        )
+    )
+    occupied = {
+        (s.year_of_study, s.term_number)
+        for s in existing
+        if s.year_of_study is not None and s.term_number is not None
+    }
+    next_order = max((s.order or 0 for s in existing), default=0) + 1
+    created = 0
 
     for year in range(1, min_years + 1):
         for term in range(1, terms_per_year + 1):
+            if (year, term) in occupied:
+                continue
+
+            order = next_order
             offset = order - 1
             term_start = _add_months(start, offset * months_each)
-            term_end   = _add_months(start, order * months_each)
+            term_end = _add_months(start, order * months_each)
 
             Semester.objects.create(
                 program_batch=batch,
@@ -847,9 +862,43 @@ def _auto_create_semesters(batch: "ProgramBatch", program: "Program") -> int:
                 start_date=term_start,
                 end_date=term_end,
             )
-            order += 1
+            occupied.add((year, term))
+            next_order += 1
+            created += 1
 
-    return order - 1  # total created
+    return created
+
+
+def sync_program_batch_semesters_to_min_years(program: "Program") -> dict:
+    """
+    For every batch of ``program``, create any missing Y/T slots up to min_years.
+
+    Does not delete surplus terms if min_years was lowered.
+    """
+    batches = ProgramBatch.objects.filter(program=program).prefetch_related("semesters")
+    batches_touched = 0
+    semesters_created = 0
+    batches_complete = 0
+    errors: list[str] = []
+
+    for batch in batches:
+        try:
+            with transaction.atomic():
+                n = _auto_create_semesters(batch, program)
+            if n > 0:
+                batches_touched += 1
+                semesters_created += n
+            else:
+                batches_complete += 1
+        except Exception as exc:
+            errors.append(f"Batch '{batch.name}': {exc}")
+
+    return {
+        "batches_touched": batches_touched,
+        "semesters_created": semesters_created,
+        "batches_already_complete": batches_complete,
+        "errors": errors,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1521,18 +1570,19 @@ class AutoCreateSemestersView(_BatchUnavailableMixin, APIView):
     """
     POST /api/program/batches/auto_create_semesters
 
-    Finds every ProgramBatch that currently has zero Semester rows and
-    auto-generates the full minimum-duration term structure for it using
-    the program's calendar_type and min_years.
+    Ensures every ProgramBatch has the full min_years × terms_per_year structure.
+    Batches that already have some semesters get only the missing Year/Term slots
+    (e.g. after raising programme min_years from 3 → 4).
 
     Optional body param:
       program_id (int) — limit to batches of one specific program.
 
     Returns:
       {
-        "batches_processed": N,
+        "batches_processed": N,   # batches that gained new terms
         "semesters_created": M,
-        "skipped_already_have_semesters": K,
+        "skipped_already_have_semesters": K,  # already complete (legacy key)
+        "batches_already_complete": K,
         "errors": [...]
       }
     """
@@ -1563,14 +1613,14 @@ class AutoCreateSemestersView(_BatchUnavailableMixin, APIView):
         errors = []
 
         for batch in qs:
-            if batch.semesters.exists():
-                skipped += 1
-                continue
             try:
                 with transaction.atomic():
                     n = _auto_create_semesters(batch, batch.program)
+                if n > 0:
                     semesters_created += n
                     batches_processed += 1
+                else:
+                    skipped += 1
             except Exception as exc:
                 errors.append(
                     f"Batch '{batch.name}' ({batch.program.code}): {exc}"
@@ -1578,10 +1628,11 @@ class AutoCreateSemestersView(_BatchUnavailableMixin, APIView):
 
         return Response(
             {
-                "batches_processed":              batches_processed,
-                "semesters_created":              semesters_created,
+                "batches_processed": batches_processed,
+                "semesters_created": semesters_created,
                 "skipped_already_have_semesters": skipped,
-                "errors":                         errors,
+                "batches_already_complete": skipped,
+                "errors": errors,
             },
             status=status.HTTP_200_OK,
         )
