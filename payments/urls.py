@@ -8,6 +8,8 @@ from .adhoc_views import (
     StudentAdHocChargeDetailView,
     StudentAdHocChargeListCreate,
     StudentAdHocChargeWaiveView,
+    StudentBulkChargesCreateView,
+    StudentExemptionChargesCreateView,
 )
 from .admin_ledger_views import (
     AdminTuitionLedgerFiltersView,
@@ -48,6 +50,15 @@ from .other_fee_schedule_views import (
     OtherFeeScheduleCloneView,
     OtherFeeScheduleRuleDetailView,
     OtherFeeScheduleView,
+)
+from .scholarship_views import (
+    ScholarshipAwardApplyView,
+    ScholarshipAwardDetailView,
+    ScholarshipAwardRevokeView,
+    ScholarshipCreditReverseView,
+    ScholarshipProgrammeAwardsView,
+    ScholarshipProgrammeDetailView,
+    ScholarshipProgrammeListCreateView,
 )
 from payments.tuition_payment_views import (
     TuitionLedgerListView,
@@ -150,6 +161,16 @@ urlpatterns = [
         name='student_adhoc_charges',
     ),
     path(
+        'admin/student/<int:student_id>/bulk_charges',
+        StudentBulkChargesCreateView.as_view(),
+        name='student_bulk_charges',
+    ),
+    path(
+        'admin/student/<int:student_id>/exemption_charges',
+        StudentExemptionChargesCreateView.as_view(),
+        name='student_exemption_charges',
+    ),
+    path(
         'admin/charge/<int:pk>',
         StudentAdHocChargeDetailView.as_view(),
         name='adhoc_charge_detail',
@@ -196,6 +217,43 @@ urlpatterns = [
         'application-fee-exceptions/applications/<int:application_id>/sync/',
         SyncUnpaidApplicationFeeView.as_view(),
         name='application-fee-sync-application',
+    ),
+
+    # Scholarships
+    path(
+        'scholarships/',
+        ScholarshipProgrammeListCreateView.as_view(),
+        name='scholarship-list',
+    ),
+    path(
+        'scholarships/<int:pk>/',
+        ScholarshipProgrammeDetailView.as_view(),
+        name='scholarship-detail',
+    ),
+    path(
+        'scholarships/<int:pk>/awards/',
+        ScholarshipProgrammeAwardsView.as_view(),
+        name='scholarship-awards',
+    ),
+    path(
+        'scholarship-awards/<int:pk>/',
+        ScholarshipAwardDetailView.as_view(),
+        name='scholarship-award-detail',
+    ),
+    path(
+        'scholarship-awards/<int:pk>/apply/',
+        ScholarshipAwardApplyView.as_view(),
+        name='scholarship-award-apply',
+    ),
+    path(
+        'scholarship-awards/<int:pk>/revoke/',
+        ScholarshipAwardRevokeView.as_view(),
+        name='scholarship-award-revoke',
+    ),
+    path(
+        'scholarship-credits/<int:pk>/reverse/',
+        ScholarshipCreditReverseView.as_view(),
+        name='scholarship-credit-reverse',
     ),
 
     # payments

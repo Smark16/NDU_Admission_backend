@@ -11,6 +11,7 @@ ERP_TEAM_ROLE_MATRIX = {
         ("accounts", "access_finance"),
         ("accounts", "access_reports"),
         ("accounts", "configure_fee_plans"),
+        ("accounts", "manage_scholarships"),
         ("accounts", "manage_payment_reconciliation"),
         ("admissions", "view_admittedstudent"),
         ("payments", "view_applicationpayment"),
@@ -33,6 +34,7 @@ ERP_TEAM_ROLE_MATRIX = {
         # Operational finance: student directory, tuition matrices, ad-hoc charges, payments
         ("accounts", "access_finance"),
         ("accounts", "configure_fee_plans"),
+        ("accounts", "manage_scholarships"),
         ("admissions", "view_admittedstudent"),
         ("Programs", "view_program"),
         ("Programs", "view_programbatch"),
@@ -125,6 +127,13 @@ ERP_TEAM_ROLE_MATRIX = {
         ("admissions", "view_admissionchangerequest"),
         ("admissions", "manage_admission_change_requests"),
         ("admissions", "view_admittedstudent"),
+    ],
+    "Exemption Approver": [
+        ("accounts", "access_academics"),
+        ("admissions", "view_admissionchangerequest"),
+        ("admissions", "approve_exemption_requests"),
+        ("admissions", "view_admittedstudent"),
+        ("Programs", "view_program"),
     ],
     "Course Catalog Manager": [
         ("accounts", "access_academics"),

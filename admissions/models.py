@@ -528,6 +528,49 @@ class AdmittedStudent(models.Model):
             return ""
 
 
+class StudentPortalAccountAction(models.Model):
+    """History of portal login deactivate / activate actions (with reason)."""
+
+    ACTION_DEACTIVATE = "deactivate"
+    ACTION_ACTIVATE = "activate"
+    ACTION_CHOICES = [
+        (ACTION_DEACTIVATE, "Deactivate"),
+        (ACTION_ACTIVATE, "Activate"),
+    ]
+
+    student = models.ForeignKey(
+        AdmittedStudent,
+        on_delete=models.CASCADE,
+        related_name="portal_account_actions",
+    )
+    portal_user = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="student_portal_account_actions_as_subject",
+        help_text="The student login user that was toggled.",
+    )
+    action = models.CharField(max_length=16, choices=ACTION_CHOICES)
+    reason = models.TextField()
+    performed_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="student_portal_account_actions_performed",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "Student portal account action"
+        verbose_name_plural = "Student portal account actions"
+
+    def __str__(self):
+        return f"{self.action} · student={self.student_id} · {self.created_at}"
+
+
 class StudentIdCard(models.Model):
     """Physical / digital student ID card issuance tied to an admission record."""
 
@@ -638,6 +681,7 @@ class AdmissionChangeRequest(models.Model):
         ('study_mode', 'Study Mode Change'),
         ('dead_semester', 'Dead Semester'),
         ('dead_year', 'Dead Year'),
+        ('exemption', 'Course Exemption'),
     ]
     STATUS_CHOICES = [
         ('pending', 'Pending Review'),
@@ -683,6 +727,17 @@ class AdmissionChangeRequest(models.Model):
 
     reason = models.TextField(help_text="Student's reason for requesting the change")
 
+    # Exemption form fee (UGX 50,000 one-time access charge)
+    form_fee_charge = models.ForeignKey(
+        'payments.StudentTuitionPayment',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='exemption_form_fee_for_requests',
+        help_text="Ad-hoc charge that unlocks the exemption application form.",
+    )
+    form_fee_paid_at = models.DateTimeField(null=True, blank=True)
+
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     reviewed_by = models.ForeignKey(
         User, on_delete=models.SET_NULL, null=True, blank=True, related_name='reviewed_change_requests'
@@ -703,10 +758,44 @@ class AdmissionChangeRequest(models.Model):
                 'manage_admission_change_requests',
                 'Can approve or reject admission change requests (programme, campus, etc.)',
             ),
+            (
+                'approve_exemption_requests',
+                'Can approve or reject course exemption change requests',
+            ),
         ]
 
     def __str__(self):
         return f"{self.admitted_student.student_id} — {self.get_change_type_display()} [{self.status}]"
+
+
+class ExemptionRequestLine(models.Model):
+    """Course unit selected on an exemption change request."""
+
+    change_request = models.ForeignKey(
+        AdmissionChangeRequest,
+        on_delete=models.CASCADE,
+        related_name='exemption_lines',
+    )
+    curriculum_line = models.ForeignKey(
+        'Programs.ProgramCurriculumLine',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='exemption_request_lines',
+    )
+    course_code = models.CharField(max_length=40, blank=True, default='')
+    course_name = models.CharField(max_length=255, blank=True, default='')
+    year_of_study = models.PositiveSmallIntegerField(null=True, blank=True)
+    term_number = models.PositiveSmallIntegerField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['year_of_study', 'term_number', 'course_code', 'id']
+        verbose_name = "Exemption Request Line"
+        verbose_name_plural = "Exemption Request Lines"
+
+    def __str__(self):
+        return f"{self.course_code or self.curriculum_line_id} ({self.change_request_id})"
 
 
 class PortalNotification(models.Model):

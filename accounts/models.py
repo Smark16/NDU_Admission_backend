@@ -226,6 +226,10 @@ class ErpAccessPolicy(models.Model):
                 "configure_fee_plans",
                 "Configure fee plans, tuition matrices, and billing schedules",
             ),
+            (
+                "manage_scholarships",
+                "Manage scholarship programmes, student awards, and fee waivers",
+            ),
             ("manage_communication_templates", "Manage system email templates and communications"),
             (
                 "access_examinations",

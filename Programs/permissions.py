@@ -34,6 +34,17 @@ def user_can_configure_fee_plans(user) -> bool:
     )
 
 
+def user_can_manage_student_charges(user) -> bool:
+    """Create/edit ad-hoc student charges (manual billing)."""
+    if user_can_configure_fee_plans(user):
+        return True
+    if not user.is_authenticated:
+        return False
+    return user.has_perm("payments.change_studenttuitionpayment") or user.has_perm(
+        "payments.add_studenttuitionpayment"
+    )
+
+
 class CurriculumAPIPermission(BasePermission):
     """Curriculum blueprint APIs: read for academics/scheduling; write for curriculum managers."""
 
@@ -160,6 +171,15 @@ class FeePlanConfigurationPermission(BasePermission):
 
     def has_permission(self, request, view):
         return user_can_configure_fee_plans(request.user)
+
+
+class StudentChargesPermission(BasePermission):
+    """Manual / ad-hoc billing on individual students."""
+
+    message = "You do not have permission to manage student charges."
+
+    def has_permission(self, request, view):
+        return user_can_manage_student_charges(request.user)
 
 
 class CommunicationTemplatesPermission(BasePermission):

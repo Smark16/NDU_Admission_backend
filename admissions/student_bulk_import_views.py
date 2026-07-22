@@ -32,8 +32,8 @@ class StudentBulkImportTemplateView(APIView):
 class StudentBulkImportView(APIView):
     """POST multipart: program_batch_id (academic cohort), campus_id, file.
 
-    ``program_batch_id`` is the academic ``Programs.ProgramBatch``. Admission intake is resolved
-    automatically from the active intake unless ``admission_batch_id`` is supplied.
+    ``program_batch_id`` is the academic ``Programs.ProgramBatch``. Admission intake defaults to
+    the Continuing / Legacy intake (auto-created) unless ``admission_batch_id`` is supplied.
 
     SchoolPay registration is on by default (register_schoolpay=true).
 

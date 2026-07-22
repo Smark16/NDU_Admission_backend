@@ -418,6 +418,75 @@ def student_billing_lines(student: AdmittedStudent) -> list[dict[str, Any]]:
             )
     return lines
 
+def registration_card_payment_history(
+    student: AdmittedStudent, *, limit: int = 12
+) -> list[dict[str, Any]]:
+    """
+    Compact completed-payment rows for the printed registration card (A4).
+    Excludes pending/failed/waived and scholarship ledger credits.
+    """
+    rows: list[dict[str, Any]] = []
+
+    for row in (
+        tuition_ledger_queryset_for_student(student)
+        .filter(transaction_completion_status="Completed")
+        .order_by("-payment_date_time")[:40]
+    ):
+        rows.append(
+            {
+                "paid_at": row.payment_date_time.isoformat() if row.payment_date_time else None,
+                "amount": float(row.amount or 0),
+                "currency": "UGX",
+                "channel": (row.source_payment_channel or "SchoolPay").strip() or "SchoolPay",
+                "receipt": (row.schoolpay_receipt_number or "").strip(),
+                "description": (row.source_channel_trans_detail or "Tuition payment").strip()
+                or "Tuition payment",
+            }
+        )
+
+    for p in (
+        StudentTuitionPayment.objects.filter(
+            student=student,
+            status="completed",
+            is_waived=False,
+        )
+        .exclude(source="scholarship")
+        .order_by("-paid_at", "-created_at")[:40]
+    ):
+        paid_at = p.paid_at or p.created_at
+        channel = (p.payment_method or "").replace("_", " ").strip() or "Portal"
+        if p.source == "ad_hoc":
+            desc = (p.label or (p.fee_head.name if p.fee_head_id else "Charge")).strip()
+        else:
+            desc = "Tuition"
+            if p.fee_plan_rule_id and p.fee_plan_rule and p.fee_plan_rule.fee_head_id:
+                desc = p.fee_plan_rule.fee_head.name
+        rows.append(
+            {
+                "paid_at": paid_at.isoformat() if paid_at else None,
+                "amount": float(p.amount or 0),
+                "currency": (p.currency or "UGX").strip() or "UGX",
+                "channel": channel.title() if channel else "Portal",
+                "receipt": (p.receipt_number or p.payment_reference or "").strip(),
+                "description": desc or "Payment",
+            }
+        )
+
+    # Deduplicate by receipt+amount+date when SchoolPay also mirrored as portal row
+    seen: set[str] = set()
+    unique: list[dict[str, Any]] = []
+    for r in sorted(rows, key=lambda h: h.get("paid_at") or "", reverse=True):
+        key = f"{r.get('receipt')}|{r.get('amount')}|{(r.get('paid_at') or '')[:10]}"
+        if r.get("receipt") and key in seen:
+            continue
+        if r.get("receipt"):
+            seen.add(key)
+        unique.append(r)
+        if len(unique) >= limit:
+            break
+    return unique
+
+
 def payment_status_dict(student: AdmittedStudent, request=None) -> dict:
     totals = student_finance_totals(student)
     other_fee_rows, _ = other_schedule_rows_and_due_by_currency(student)

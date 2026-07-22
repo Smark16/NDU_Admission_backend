@@ -24,7 +24,12 @@ from rest_framework.views import APIView
 
 from admissions.models import AdmittedStudent
 from Programs.models import ProgramBatch, Semester
-from Programs.permissions import FeePlanConfigurationPermission, user_can_configure_fee_plans
+from Programs.permissions import (
+    FeePlanConfigurationPermission,
+    StudentChargesPermission,
+    user_can_configure_fee_plans,
+    user_can_manage_student_charges,
+)
 
 from .models import FeeHead, StudentTuitionPayment
 
@@ -204,7 +209,10 @@ class FeeHeadListView(APIView):
         return Response([_feehead_to_dict(h) for h in qs.order_by('category', 'name')])
 
     def post(self, request):
-        if not user_can_configure_fee_plans(request.user):
+        if not (
+            user_can_configure_fee_plans(request.user)
+            or user_can_manage_student_charges(request.user)
+        ):
             return Response(
                 {"detail": "You do not have permission to create fee heads."},
                 status=status.HTTP_403_FORBIDDEN,
@@ -284,7 +292,7 @@ class StudentAdHocChargeListCreate(APIView):
     GET  /api/payments/admin/student/<student_id>/charges — list charges
     POST /api/payments/admin/student/<student_id>/charges — create charge
     """
-    permission_classes = [FeePlanConfigurationPermission]
+    permission_classes = [StudentChargesPermission]
 
     def get(self, request, student_id):
         student = get_object_or_404(
@@ -345,21 +353,37 @@ class StudentAdHocChargeListCreate(APIView):
 
         fee_head = get_object_or_404(FeeHead, pk=fee_head_id, is_active=True)
 
+        raw_semester_id = request.data.get("semester_id")
         semester = _resolve_charge_semester(student, request.data)
+        if raw_semester_id not in (None, "") and semester is None:
+            return Response(
+                {
+                    "detail": (
+                        "Selected academic period is not valid for this student's programme batch. "
+                        "Pick a semester from the list, or leave it blank."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        charge = StudentTuitionPayment.objects.create(
-            student=student,
-            source='ad_hoc',
-            fee_head=fee_head,
-            label=label,
-            amount=amount,
-            currency=currency,
-            status='pending',
-            payment_method='',
-            notes=notes,
-            charged_by=request.user,
-            semester=semester,
-        )
+        try:
+            charge = StudentTuitionPayment.objects.create(
+                student=student,
+                source='ad_hoc',
+                fee_head=fee_head,
+                label=label[:200],
+                amount=amount,
+                currency=currency[:3],
+                status='pending',
+                notes=notes or "",
+                charged_by=request.user,
+                semester=semester,
+            )
+        except Exception as exc:
+            return Response(
+                {"detail": f"Could not create charge: {exc}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         return Response(_charge_to_dict(charge), status=status.HTTP_201_CREATED)
 
@@ -371,7 +395,7 @@ class StudentAdHocChargeDetailView(APIView):
     POST   /api/payments/admin/charge/<pk>/waive   — waive
     DELETE /api/payments/admin/charge/<pk>         — hard delete (pending only)
     """
-    permission_classes = [FeePlanConfigurationPermission]
+    permission_classes = [StudentChargesPermission]
 
     def _get(self, pk):
         return get_object_or_404(
@@ -436,7 +460,7 @@ class StudentAdHocChargeDetailView(APIView):
 
 class StudentAdHocChargeWaiveView(APIView):
     """POST /api/payments/admin/charge/<pk>/waive"""
-    permission_classes = [FeePlanConfigurationPermission]
+    permission_classes = [StudentChargesPermission]
 
     def post(self, request, pk):
         charge = get_object_or_404(
@@ -456,3 +480,290 @@ class StudentAdHocChargeWaiveView(APIView):
             "detail": f"Charge '{charge.label}' has been waived.",
             **_charge_to_dict(charge),
         })
+
+
+def _semesters_for_split(student: AdmittedStudent, semester_ids: list[int]) -> list[Semester]:
+    program_batch_id = _student_program_batch_id(student)
+    semesters = list(
+        Semester.objects.filter(pk__in=semester_ids, is_active=True).order_by(
+            "year_of_study", "term_number", "order", "id"
+        )
+    )
+    if program_batch_id:
+        semesters = [s for s in semesters if s.program_batch_id == program_batch_id]
+    return semesters
+
+
+def _create_split_adhoc_charges(
+    *,
+    student: AdmittedStudent,
+    fee_head: FeeHead,
+    label_base: str,
+    amount,
+    currency: str,
+    notes: str,
+    semesters: list[Semester],
+    charged_by,
+) -> list[dict]:
+    """Split one amount equally across semesters into pending ad-hoc charges."""
+    from decimal import Decimal, ROUND_HALF_UP
+
+    amount = Decimal(str(amount))
+    n = len(semesters)
+    if n < 1:
+        raise ValueError("At least one semester is required.")
+    if amount <= 0:
+        raise ValueError("Amount must be positive.")
+
+    per = (amount / Decimal(n)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    allocated = Decimal("0.00")
+    created = []
+    for idx, semester in enumerate(semesters):
+        part = per if idx < n - 1 else (amount - allocated)
+        allocated += part
+        charge = StudentTuitionPayment.objects.create(
+            student=student,
+            source="ad_hoc",
+            fee_head=fee_head,
+            label=(f"{label_base} · {_semester_label(semester)}" if n > 1 else label_base)[:200],
+            amount=part,
+            currency=currency[:3] if currency else "UGX",
+            status="pending",
+            notes=(
+                f"{notes} Split {idx + 1}/{n}."
+                if notes
+                else f"Manual ad-hoc charge; split {idx + 1}/{n}."
+            )[:2000],
+            charged_by=charged_by,
+            semester=semester,
+        )
+        created.append(_charge_to_dict(charge))
+    return created
+
+
+class StudentBulkChargesCreateView(APIView):
+    """
+    POST /api/payments/admin/student/<student_id>/bulk_charges
+
+    General manual billing (tuition top-ups, international differentials, etc.).
+
+    Body:
+      lines: [{ fee_head_id, label, amount, currency?, notes? }]
+      semester_ids: [int, ...]  — each line amount split equally across these
+    """
+
+    permission_classes = [StudentChargesPermission]
+
+    def post(self, request, student_id):
+        student = get_object_or_404(
+            AdmittedStudent.objects.select_related(
+                "admitted_program",
+                "programme_enrollment",
+                "programme_enrollment__program_batch",
+            ),
+            pk=student_id,
+        )
+
+        lines = request.data.get("lines") or []
+        semester_ids = request.data.get("semester_ids") or []
+
+        if not lines:
+            return Response(
+                {"detail": "lines with fee_head_id, label, and amount are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not semester_ids:
+            return Response(
+                {"detail": "Select at least one semester to bill against."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            semester_ids = [int(x) for x in semester_ids]
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "semester_ids must be integers."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        semesters = _semesters_for_split(student, semester_ids)
+        if not semesters:
+            return Response(
+                {"detail": "No valid semesters found for this student."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        created = []
+        for raw in lines:
+            fee_head_id = raw.get("fee_head_id")
+            label = (raw.get("label") or "").strip()
+            if not fee_head_id:
+                return Response(
+                    {"detail": "Each line needs fee_head_id."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if not label:
+                return Response(
+                    {"detail": "Each line needs a label."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            try:
+                fee_head = FeeHead.objects.get(pk=fee_head_id, is_active=True)
+            except FeeHead.DoesNotExist:
+                return Response(
+                    {"detail": f"Fee head {fee_head_id} not found."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            currency = (raw.get("currency") or "UGX").strip().upper() or "UGX"
+            notes = (raw.get("notes") or "").strip()
+            try:
+                created.extend(
+                    _create_split_adhoc_charges(
+                        student=student,
+                        fee_head=fee_head,
+                        label_base=label,
+                        amount=raw.get("amount"),
+                        currency=currency,
+                        notes=notes,
+                        semesters=semesters,
+                        charged_by=request.user,
+                    )
+                )
+            except ValueError as exc:
+                return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(
+            {
+                "detail": f"Created {len(created)} charge(s).",
+                "charges": created,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class StudentExemptionChargesCreateView(APIView):
+    """
+    POST /api/payments/admin/student/<student_id>/exemption_charges
+
+    Body:
+      change_request_id: int
+      lines: [{ curriculum_line_id?, course_code?, amount }]
+      semester_ids: [int, ...]  — split each line amount equally across these semesters
+    """
+
+    permission_classes = [StudentChargesPermission]
+
+    def post(self, request, student_id):
+        from admissions.exemption_services import (
+            EXEMPTION_COURSE_FEE_CODE,
+            ensure_exemption_fee_heads,
+        )
+        from admissions.models import AdmissionChangeRequest
+
+        student = get_object_or_404(
+            AdmittedStudent.objects.select_related(
+                "admitted_program",
+                "programme_enrollment",
+                "programme_enrollment__program_batch",
+            ),
+            pk=student_id,
+        )
+
+        change_request_id = request.data.get("change_request_id")
+        lines = request.data.get("lines") or []
+        semester_ids = request.data.get("semester_ids") or []
+
+        if not change_request_id:
+            return Response(
+                {"detail": "change_request_id is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not lines:
+            return Response(
+                {"detail": "lines with amounts are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not semester_ids:
+            return Response(
+                {"detail": "Select at least one semester to bill against."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        req = get_object_or_404(
+            AdmissionChangeRequest.objects.prefetch_related("exemption_lines"),
+            pk=change_request_id,
+            admitted_student=student,
+            change_type="exemption",
+        )
+        if req.status != "approved":
+            return Response(
+                {"detail": "Exemption request must be approved before billing."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            semester_ids = [int(x) for x in semester_ids]
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "semester_ids must be integers."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        semesters = _semesters_for_split(student, semester_ids)
+        if not semesters:
+            return Response(
+                {"detail": "No valid semesters found for this student."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        _, course_head = ensure_exemption_fee_heads()
+        created = []
+
+        for raw in lines:
+            code = (raw.get("course_code") or "").strip()
+            name = (raw.get("course_name") or "").strip()
+            line_id = raw.get("curriculum_line_id")
+            if not code and line_id:
+                match = next(
+                    (
+                        el
+                        for el in req.exemption_lines.all()
+                        if el.curriculum_line_id == int(line_id)
+                    ),
+                    None,
+                )
+                if match:
+                    code = match.course_code
+                    name = match.course_name
+
+            label_base = f"Course exemption — {code or 'unit'}"
+            if name:
+                label_base = f"{label_base} ({name})"
+
+            try:
+                created.extend(
+                    _create_split_adhoc_charges(
+                        student=student,
+                        fee_head=course_head,
+                        label_base=label_base,
+                        amount=raw.get("amount"),
+                        currency="UGX",
+                        notes=(
+                            f"Exemption change request #{req.id}; "
+                            f"fee head {EXEMPTION_COURSE_FEE_CODE}."
+                        ),
+                        semesters=semesters,
+                        charged_by=request.user,
+                    )
+                )
+            except ValueError as exc:
+                return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(
+            {
+                "detail": f"Created {len(created)} exemption charge(s).",
+                "change_request_id": req.id,
+                "charges": created,
+            },
+            status=status.HTTP_201_CREATED,
+        )

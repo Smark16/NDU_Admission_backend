@@ -32,11 +32,26 @@ def apply_user_token_claims(token, user) -> None:
     # Embedding hundreds of perms in the JWT blows past nginx header limits (HTTP 431).
 
 
+def _all_permission_strings() -> list[str]:
+    from django.contrib.auth.models import Permission
+
+    return [
+        f"{p.content_type.app_label}.{p.codename}"
+        for p in Permission.objects.select_related("content_type").iterator()
+    ]
+
+
 def session_payload(user) -> dict:
     """Live session snapshot for /api/accounts/session/ (no new JWT required)."""
+    from accounts.super_admin import user_is_super_admin
+
     portal_mode = resolve_portal_mode(user)
     portal_modes = user_portal_modes(user)
     roles = list(user.groups.order_by("name").values_list("name", flat=True))
+    is_super = user_is_super_admin(user)
+    # Super Admin always gets every permission, even if the group was not
+    # re-seeded after a new custom permission was added.
+    permissions = _all_permission_strings() if is_super else list(user.get_all_permissions())
 
     return {
         "first_name": user.first_name,
@@ -50,6 +65,7 @@ def session_payload(user) -> dict:
         "is_applicant": user.is_applicant,
         "is_student": user.is_student,
         "is_lecturer": user.is_lecturer,
+        "is_super_admin": is_super,
         "must_change_password": user.must_change_password,
-        "permissions": list(user.get_all_permissions()),
+        "permissions": permissions,
     }

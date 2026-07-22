@@ -611,6 +611,7 @@ class GetStudentEnrolledCourses(APIView):
         from payments.student_portal_finance import (
             get_admitted_student_for_user,
             offer_letter_portal_fields,
+            registration_card_payment_history,
             student_finance_totals,
         )
 
@@ -771,6 +772,7 @@ class GetStudentEnrolledCourses(APIView):
             'total_deferred': len(deferred_courses),
             'total_registered': len(registered_courses),
             'total_courses': len(active_courses) + len(deferred_courses),
+            'payment_history': registration_card_payment_history(admitted_student, limit=12),
             **offer_letter_portal_fields(admitted_student, request),
         }, status=status.HTTP_200_OK)
 

@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from django.conf import settings
 from django.db import models
 
@@ -326,6 +328,7 @@ class StudentTuitionPayment(models.Model):
     SOURCE_CHOICES = [
         ('scheduled', 'Scheduled (semester fee)'),
         ('ad_hoc', 'Ad-hoc (individual charge)'),
+        ('scholarship', 'Scholarship credit'),
     ]
 
     student = models.ForeignKey(
@@ -349,7 +352,7 @@ class StudentTuitionPayment(models.Model):
     )
 
     # --- ad-hoc charge fields (null for scheduled fees) ---
-    source = models.CharField(max_length=10, choices=SOURCE_CHOICES, default='scheduled')
+    source = models.CharField(max_length=12, choices=SOURCE_CHOICES, default='scheduled')
     fee_head = models.ForeignKey(
         FeeHead,
         on_delete=models.SET_NULL,
@@ -509,13 +512,309 @@ class RegistrationSettings(models.Model):
         return settings
 
 
+# ---------------------------------------------------------------------------
+# Scholarships (programmes, student awards, fee-head waivers → ledger credits)
+# ---------------------------------------------------------------------------
 
 
+class ScholarshipProgramme(models.Model):
+    """Named scholarship pot, e.g. State House, HESFB, Sports."""
+
+    name = models.CharField(max_length=150)
+    code = models.CharField(
+        max_length=40,
+        unique=True,
+        help_text="Unique code e.g. STATE_HOUSE, HESFB, SPORTS",
+    )
+    sponsor = models.CharField(max_length=150, blank=True, default="")
+    description = models.TextField(blank=True, default="")
+    fund_amount = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Optional programme ceiling. Null = no hard cap.",
+    )
+    currency = models.CharField(max_length=3, default="UGX")
+    academic_year = models.CharField(
+        max_length=20,
+        blank=True,
+        default="",
+        help_text="e.g. 2025/2026",
+    )
+    # by_programme = use programme_rates as default amounts (HESFB);
+    # per_student = each award amount entered manually (Sports).
+    AWARDING_BY_PROGRAMME = "by_programme"
+    AWARDING_PER_STUDENT = "per_student"
+    AWARDING_MODE_CHOICES = [
+        (AWARDING_BY_PROGRAMME, "By academic programme (rate table)"),
+        (AWARDING_PER_STUDENT, "Per student (manual amount)"),
+    ]
+    awarding_mode = models.CharField(
+        max_length=20,
+        choices=AWARDING_MODE_CHOICES,
+        default=AWARDING_PER_STUDENT,
+        help_text="HESFB-style rates vs Sports-style per-student amounts.",
+    )
+    is_active = models.BooleanField(default=True)
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_scholarship_programmes",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name"]
+        verbose_name = "Scholarship programme"
+        verbose_name_plural = "Scholarship programmes"
+
+    def __str__(self):
+        return f"{self.code} — {self.name}"
 
 
+class ScholarshipProgrammeWaiver(models.Model):
+    """Default fee-head waiver template copied onto awards when a student is attached."""
+
+    WAIVER_FULL = "full"
+    WAIVER_PERCENT = "percent"
+    WAIVER_MODE_CHOICES = [
+        (WAIVER_FULL, "Entire fee (100%)"),
+        (WAIVER_PERCENT, "Percentage of fee"),
+    ]
+
+    programme = models.ForeignKey(
+        ScholarshipProgramme,
+        on_delete=models.CASCADE,
+        related_name="default_waivers",
+    )
+    fee_head = models.ForeignKey(
+        FeeHead,
+        on_delete=models.PROTECT,
+        related_name="scholarship_programme_waivers",
+    )
+    waiver_mode = models.CharField(
+        max_length=10,
+        choices=WAIVER_MODE_CHOICES,
+        default=WAIVER_FULL,
+    )
+    percent = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Required when waiver_mode=percent (e.g. 50.00).",
+    )
+
+    class Meta:
+        unique_together = [("programme", "fee_head")]
+        ordering = ["fee_head__code"]
+        verbose_name = "Scholarship programme waiver"
+        verbose_name_plural = "Scholarship programme waivers"
+
+    def __str__(self):
+        return f"{self.programme.code} / {self.fee_head.code} ({self.waiver_mode})"
 
 
+class ScholarshipProgrammeRate(models.Model):
+    """Amount this scholarship pays for a given academic programme (e.g. HESFB Engineering 3.5M)."""
 
+    scholarship = models.ForeignKey(
+        ScholarshipProgramme,
+        on_delete=models.CASCADE,
+        related_name="programme_rates",
+    )
+    academic_program = models.ForeignKey(
+        Program,
+        on_delete=models.CASCADE,
+        related_name="scholarship_rates",
+        help_text="Student's admitted academic programme (e.g. BSc Computer Science).",
+    )
+    amount = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        help_text="Award amount for students on this academic programme.",
+    )
+    notes = models.CharField(max_length=255, blank=True, default="")
+
+    class Meta:
+        unique_together = [("scholarship", "academic_program")]
+        ordering = ["academic_program__name"]
+        verbose_name = "Scholarship programme rate"
+        verbose_name_plural = "Scholarship programme rates"
+
+    def __str__(self):
+        return f"{self.scholarship.code} / {self.academic_program} = {self.amount}"
+
+
+class ScholarshipAward(models.Model):
+    """A student attached to a scholarship programme with an award ceiling."""
+
+    STATUS_ACTIVE = "active"
+    STATUS_REVOKED = "revoked"
+    STATUS_EXHAUSTED = "exhausted"
+    STATUS_CHOICES = [
+        (STATUS_ACTIVE, "Active"),
+        (STATUS_REVOKED, "Revoked"),
+        (STATUS_EXHAUSTED, "Exhausted"),
+    ]
+
+    programme = models.ForeignKey(
+        ScholarshipProgramme,
+        on_delete=models.CASCADE,
+        related_name="awards",
+    )
+    student = models.ForeignKey(
+        "admissions.AdmittedStudent",
+        on_delete=models.CASCADE,
+        related_name="scholarship_awards",
+    )
+    award_amount = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        help_text="Maximum credit this student may receive from this award.",
+    )
+    currency = models.CharField(max_length=3, default="UGX")
+    status = models.CharField(
+        max_length=12,
+        choices=STATUS_CHOICES,
+        default=STATUS_ACTIVE,
+        db_index=True,
+    )
+    notes = models.TextField(blank=True, default="")
+    applied_amount = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        default=Decimal("0"),
+        help_text="Sum of active (non-reversed) scholarship credits posted.",
+    )
+    awarded_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="issued_scholarship_awards",
+    )
+    awarded_at = models.DateTimeField(auto_now_add=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    revoked_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="revoked_scholarship_awards",
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-awarded_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["programme", "student"],
+                condition=models.Q(status="active"),
+                name="uniq_active_scholarship_award_per_student",
+            ),
+        ]
+        verbose_name = "Scholarship award"
+        verbose_name_plural = "Scholarship awards"
+
+    def __str__(self):
+        return f"{self.programme.code} → {self.student_id} ({self.status})"
+
+    @property
+    def remaining_amount(self):
+        rem = (self.award_amount or Decimal("0")) - (self.applied_amount or Decimal("0"))
+        return rem if rem > 0 else Decimal("0")
+
+
+class ScholarshipAwardWaiver(models.Model):
+    """Per-award fee-head waiver (entire or %)."""
+
+    award = models.ForeignKey(
+        ScholarshipAward,
+        on_delete=models.CASCADE,
+        related_name="waivers",
+    )
+    fee_head = models.ForeignKey(
+        FeeHead,
+        on_delete=models.PROTECT,
+        related_name="scholarship_award_waivers",
+    )
+    waiver_mode = models.CharField(
+        max_length=10,
+        choices=ScholarshipProgrammeWaiver.WAIVER_MODE_CHOICES,
+        default=ScholarshipProgrammeWaiver.WAIVER_FULL,
+    )
+    percent = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        null=True,
+        blank=True,
+    )
+
+    class Meta:
+        unique_together = [("award", "fee_head")]
+        ordering = ["fee_head__code"]
+        verbose_name = "Scholarship award waiver"
+        verbose_name_plural = "Scholarship award waivers"
+
+    def __str__(self):
+        return f"Award {self.award_id} / {self.fee_head.code}"
+
+
+class ScholarshipCredit(models.Model):
+    """Ledger credit posted for an award (backed by a completed StudentTuitionPayment)."""
+
+    award = models.ForeignKey(
+        ScholarshipAward,
+        on_delete=models.CASCADE,
+        related_name="credits",
+    )
+    fee_head = models.ForeignKey(
+        FeeHead,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="scholarship_credits",
+    )
+    amount = models.DecimalField(max_digits=14, decimal_places=2)
+    currency = models.CharField(max_length=3, default="UGX")
+    payment = models.OneToOneField(
+        StudentTuitionPayment,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="scholarship_credit",
+    )
+    applied_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="applied_scholarship_credits",
+    )
+    applied_at = models.DateTimeField(auto_now_add=True)
+    is_reversed = models.BooleanField(default=False)
+    reversed_at = models.DateTimeField(null=True, blank=True)
+    reversed_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="reversed_scholarship_credits",
+    )
+    notes = models.TextField(blank=True, default="")
+
+    class Meta:
+        ordering = ["-applied_at"]
+        verbose_name = "Scholarship credit"
+        verbose_name_plural = "Scholarship credits"
+
+    def __str__(self):
+        return f"Credit {self.amount} on award {self.award_id}"
 
 
 

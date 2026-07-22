@@ -7,7 +7,6 @@ import logging
 import re
 from datetime import date, datetime, timedelta
 from django.db import transaction
-from django.db.models import Q
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError as DRFValidationError
 
@@ -339,11 +338,61 @@ def _parse_upload_file(uploaded_file) -> tuple[list[str], list[dict]]:
     return headers, rows
 
 
-def _resolve_admission_intake_batch(admission_batch_id: int | None) -> Batch:
+CONTINUING_INTAKE_CODE = "CONTINUING"
+CONTINUING_INTAKE_NAME = "Continuing / Legacy Students"
+
+
+def get_or_create_continuing_admission_intake(*, created_by) -> Batch:
     """
-    Admissions intake (``admissions.Batch``) is still stored on each student for legacy
-    fields and SchoolPay, but import targets the **academic** ``ProgramBatch``. When the
-    client does not send an intake id, use the current active admission intake.
+    Dedicated admission intake for bulk-imported / continuing students.
+
+    Kept inactive so it never appears as the live offer window. Academic placement
+    still uses ``ProgramBatch``; this intake is only an admissions tag.
+    """
+    existing = Batch.objects.filter(code=CONTINUING_INTAKE_CODE).first()
+    if existing:
+        # Ensure it stays out of the live offer pool
+        dirty = False
+        if existing.is_active:
+            existing.is_active = False
+            dirty = True
+        if existing.name != CONTINUING_INTAKE_NAME:
+            existing.name = CONTINUING_INTAKE_NAME
+            dirty = True
+        if dirty:
+            existing.save(update_fields=["is_active", "name", "updated_at"])
+        return existing
+
+    today = timezone.now().date()
+    # Closed historical window — not an open application/offer period
+    start = today.replace(year=max(today.year - 10, 2000), month=1, day=1)
+    end = today.replace(year=max(today.year - 1, 2001), month=12, day=31)
+
+    return Batch.objects.create(
+        name=CONTINUING_INTAKE_NAME,
+        code=CONTINUING_INTAKE_CODE,
+        academic_year="",
+        application_start_date=start,
+        application_end_date=end,
+        admission_start_date=start,
+        admission_end_date=end,
+        offer_start_date=None,
+        offer_end_date=end,
+        is_active=False,
+        created_by=created_by,
+    )
+
+
+def _resolve_admission_intake_batch(
+    admission_batch_id: int | None,
+    *,
+    created_by=None,
+) -> Batch:
+    """
+    Resolve admissions intake for bulk import.
+
+    - Explicit ``admission_batch_id`` → that intake
+    - Otherwise → Continuing / Legacy intake (never the live offer intake)
     """
     if admission_batch_id is not None:
         try:
@@ -351,31 +400,12 @@ def _resolve_admission_intake_batch(admission_batch_id: int | None) -> Batch:
         except Batch.DoesNotExist as exc:
             raise ValueError("Admission intake batch not found.") from exc
 
-    from admissions.utils.batch_offer_filters import batch_offer_window_q
-
-    now = timezone.now().date()
-    batch = (
-        Batch.objects.filter(is_active=True)
-        .filter(batch_offer_window_q())
-        .filter(
-            Q(application_start_date__lte=now, application_end_date__gte=now)
-            | Q(admission_start_date__lte=now, admission_end_date__gte=now)
-        )
-        .order_by("-created_at")
-        .first()
-    )
-    if batch is None:
-        batch = (
-            Batch.objects.filter(is_active=True)
-            .order_by("-created_at")
-            .first()
-        )
-    if batch is None:
+    if created_by is None:
         raise ValueError(
-            "No active admission intake batch. Configure one under Admissions → Admission Intakes."
+            "Cannot resolve Continuing intake without a user. "
+            "Pass admission_batch_id or ensure the importer is authenticated."
         )
-    return batch
-
+    return get_or_create_continuing_admission_intake(created_by=created_by)
 
 def _require_columns(headers: list[str]) -> list[str]:
     missing = []
@@ -623,7 +653,10 @@ def process_student_batch_import(
     except ProgramBatch.DoesNotExist:
         raise ValueError("Academic programme batch not found.")
 
-    admission_batch = _resolve_admission_intake_batch(admission_batch_id)
+    admission_batch = _resolve_admission_intake_batch(
+        admission_batch_id,
+        created_by=admitted_by,
+    )
 
     try:
         campus = Campus.objects.get(pk=campus_id)
@@ -778,6 +811,8 @@ def process_student_batch_import(
         "program_batch_id": program_batch.id,
         "program_batch_name": program_batch.name,
         "program_name": program.name,
+        "admission_batch_id": admission_batch.id,
+        "admission_batch_name": admission_batch.name,
         "created": created,
         "updated": updated,
         "skipped": skipped,

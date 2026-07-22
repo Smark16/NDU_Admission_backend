@@ -2,6 +2,8 @@ from django.urls import path
 from admissions import views
 from admissions import id_card_views
 from admissions import id_card_template_views
+from admissions import bonafide_admin_views
+from admissions.headcount_views import UniversityHeadcountView
 from admissions.analytics_views import AnalyticsDashboardView
 from admissions.email_template_views import (
     EmailTemplateDetailView,
@@ -146,6 +148,33 @@ urlpatterns = [
     ),
     path('update_admission/<int:pk>/', views.UpdateAdmittedStudent.as_view()),
     path('list_admitted_students/',  views.ListAdmittedStudents.as_view()),
+    path('list_bonafide_students/', views.ListBonafideStudents.as_view()),
+    path(
+        'university_headcount/',
+        UniversityHeadcountView.as_view(),
+        name='university_headcount',
+    ),
+    path('list_bonafide_students/<int:pk>/', views.BonafideStudentDetail.as_view()),
+    path(
+        'list_bonafide_students/<int:pk>/portal/',
+        views.BonafideStudentPortalSnapshot.as_view(),
+        name='bonafide_student_portal',
+    ),
+    path(
+        'list_bonafide_students/<int:pk>/portal-account/',
+        bonafide_admin_views.BonafidePortalAccountToggleView.as_view(),
+        name='bonafide_portal_account',
+    ),
+    path(
+        'list_bonafide_students/<int:pk>/documents/transcript/',
+        bonafide_admin_views.BonafideTranscriptPdfView.as_view(),
+        name='bonafide_transcript_pdf',
+    ),
+    path(
+        'list_bonafide_students/<int:pk>/documents/exam-card/',
+        bonafide_admin_views.BonafideExamCardPdfView.as_view(),
+        name='bonafide_exam_card_pdf',
+    ),
     path(
         'list_admitted_students/filter_options/',
         views.AdmittedStudentFilterOptionsView.as_view(),
@@ -184,6 +213,16 @@ urlpatterns = [
     # Admission Change Requests
     path('change_requests/my', views.StudentChangeRequestListCreate.as_view(), name='student_change_requests'),
     path('change_requests/options', views.StudentChangeRequestOptions.as_view(), name='student_change_request_options'),
+    path(
+        'change_requests/exemption/access',
+        views.ExemptionFormFeeAccessView.as_view(),
+        name='exemption_form_fee_access',
+    ),
+    path(
+        'change_requests/exemption/eligible_courses',
+        views.ExemptionEligibleCoursesView.as_view(),
+        name='exemption_eligible_courses',
+    ),
     path('change_requests/all', views.AdminChangeRequestList.as_view(), name='admin_change_requests'),
     path('change_requests/<int:pk>/review', views.AdminChangeRequestReview.as_view(), name='review_change_request'),
 

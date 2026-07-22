@@ -14,8 +14,11 @@ from .permissions import (
     user_can_approve_application,
     user_can_admit_applicant,
     user_can_restore_revoked_admission,
+    user_can_manage_admission_change_requests,
+    user_can_approve_exemption_requests,
     CanAdmitApplicant,
     CanManageAdmissionChangeRequests,
+    CanViewAdmissionChangeRequests,
 )
 from .faculty_scope import (
     filter_applications_for_user,
@@ -3187,6 +3190,144 @@ class ListAdmittedStudents(generics.ListAPIView):
         return filter_admitted_students_for_user(queryset.distinct(), self.request.user)
 
 
+class ListBonafideStudents(generics.ListAPIView):
+    """Admitted students as bonafide records: bio, identity, and placement only."""
+
+    queryset = AdmittedStudent.objects.filter(is_admitted=True).select_related(
+        "admitted_program__faculty",
+        "admitted_batch",
+        "admitted_campus",
+        "intended_program_batch",
+        "programme_enrollment__program_batch",
+        "application",
+    )
+    serializer_class = BonafideStudentSerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    pagination_class = StandardPagination
+    ordering_fields = ["created_at", "admission_date", "id", "reg_no", "student_id"]
+    ordering = ["-created_at"]
+    filter_backends = [SearchFilter, OrderingFilter]
+    search_fields = [
+        "student_id",
+        "reg_no",
+        "schoolpay_code",
+        "application__first_name",
+        "application__last_name",
+        "application__phone",
+        "application__email",
+        "admitted_program__name",
+        "admitted_program__faculty__name",
+    ]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        search = self.request.query_params.get("search", "").strip()
+        campus = self.request.query_params.get("campus")
+        faculty = self.request.query_params.get("faculty")
+        program = self.request.query_params.get("program")
+        academic_batch_id = self.request.query_params.get("academic_batch_id")
+        enrollment_status = self.request.query_params.get("enrollment_status")
+
+        if search:
+            queryset = queryset.annotate(
+                applicant_full_name=Concat(
+                    "application__first_name",
+                    Value(" "),
+                    "application__last_name",
+                )
+            ).filter(
+                Q(student_id__icontains=search)
+                | Q(reg_no__icontains=search)
+                | Q(schoolpay_code__icontains=search)
+                | Q(application__first_name__icontains=search)
+                | Q(applicant_full_name__icontains=search)
+                | Q(application__last_name__icontains=search)
+                | Q(application__phone__icontains=search)
+                | Q(application__email__icontains=search)
+                | Q(admitted_program__name__icontains=search)
+                | Q(admitted_program__faculty__name__icontains=search)
+            )
+
+        if campus and campus != "all":
+            queryset = queryset.filter(admitted_campus__name=campus)
+        if program and program != "all":
+            queryset = queryset.filter(admitted_program__name__icontains=program)
+        if faculty and faculty != "all":
+            queryset = queryset.filter(admitted_program__faculty__name__icontains=faculty)
+        if academic_batch_id and academic_batch_id != "all":
+            try:
+                queryset = queryset.filter(intended_program_batch_id=int(academic_batch_id))
+            except (TypeError, ValueError):
+                pass
+        if enrollment_status and enrollment_status != "all":
+            queryset = queryset.filter(programme_enrollment__status=enrollment_status)
+
+        commitment_met = self.request.query_params.get("commitment_met")
+        if commitment_met is not None and str(commitment_met).lower() not in ("all", ""):
+            from payments.commitment_queryset import filter_by_commitment_met
+
+            raw = str(commitment_met).lower()
+            if raw in ("1", "true", "yes"):
+                queryset = filter_by_commitment_met(queryset, True)
+            elif raw in ("0", "false", "no"):
+                queryset = filter_by_commitment_met(queryset, False)
+
+        return filter_admitted_students_for_user(queryset.distinct(), self.request.user)
+
+
+class BonafideStudentDetail(generics.RetrieveAPIView):
+    """Single bonafide student profile: personal info + placement (no qualifications)."""
+
+    queryset = AdmittedStudent.objects.filter(is_admitted=True).select_related(
+        "admitted_program__faculty",
+        "admitted_batch",
+        "admitted_campus",
+        "intended_program_batch",
+        "programme_enrollment__program_batch",
+        "application",
+    )
+    serializer_class = BonafideStudentProfileSerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+    def get_queryset(self):
+        return filter_admitted_students_for_user(super().get_queryset(), self.request.user)
+
+    def retrieve(self, request, *args, **kwargs):
+        instance = self.get_object()
+        assert_admitted_student_access(request.user, instance)
+        return Response(self.get_serializer(instance).data)
+
+
+class BonafideStudentPortalSnapshot(APIView):
+    """Admin view of student-portal essentials: finance, results, exam permit, courses."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        if not request.user.has_perm("admissions.view_admittedstudent"):
+            return Response(
+                {"detail": "You do not have permission to view bonafide students."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        qs = filter_admitted_students_for_user(
+            AdmittedStudent.objects.filter(is_admitted=True, pk=pk).select_related(
+                "admitted_program",
+                "admitted_campus",
+                "application",
+                "student_user",
+                "programme_enrollment__program_batch",
+            ),
+            request.user,
+        )
+        student = qs.first()
+        if not student:
+            return Response({"detail": "Student not found."}, status=status.HTTP_404_NOT_FOUND)
+        assert_admitted_student_access(request.user, student)
+        from admissions.bonafide_portal import build_bonafide_portal_snapshot
+
+        return Response(build_bonafide_portal_snapshot(student, request))
+
+
 class AdmittedStudentFilterOptionsView(APIView):
     """Lightweight distinct filter values for the admitted students directory."""
 
@@ -3638,7 +3779,9 @@ class StudentChangeRequestListCreate(APIView):
             return Response({'detail': 'No active admission found.'}, status=404)
         qs = AdmissionChangeRequest.objects.filter(
             admitted_student=admission
-        ).select_related('new_program', 'new_campus', 'reviewed_by')
+        ).select_related('new_program', 'new_campus', 'reviewed_by').prefetch_related(
+            'exemption_lines'
+        )
 
         return Response(AdmissionChangeRequestSerializer(qs, many=True).data)
     def post(self, request):
@@ -3658,14 +3801,141 @@ class StudentChangeRequestListCreate(APIView):
 
         serializer = AdmissionChangeRequestCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        obj = serializer.save(
+        data = dict(serializer.validated_data)
+        curriculum_line_ids = data.pop('curriculum_line_ids', None)
+
+        if change_type == 'exemption':
+            from admissions.exemption_services import (
+                ensure_exemption_form_fee_access,
+                list_eligible_exemption_courses,
+            )
+            from Programs.models import ProgramCurriculumLine
+
+            access = ensure_exemption_form_fee_access(admission, charged_by=None)
+            if not access["paid"]:
+                return Response(
+                    {
+                        "detail": (
+                            f"Pay the exemption form fee of UGX {int(access['amount']):,} "
+                            "via SchoolPay before submitting."
+                        ),
+                        "form_fee": access,
+                    },
+                    status=402,
+                )
+
+            eligible = {
+                c["id"]: c for c in list_eligible_exemption_courses(admission)
+            }
+            invalid = [i for i in (curriculum_line_ids or []) if i not in eligible]
+            if invalid:
+                return Response(
+                    {"detail": f"Invalid or ineligible curriculum line(s): {invalid}"},
+                    status=400,
+                )
+
+            with transaction.atomic():
+                obj = AdmissionChangeRequest.objects.create(
+                    admitted_student=admission,
+                    requested_by=request.user,
+                    current_program=admission.admitted_program,
+                    current_campus=admission.admitted_campus,
+                    current_study_mode=admission.study_mode,
+                    change_type="exemption",
+                    reason=data.get("reason", ""),
+                    form_fee_charge_id=access["charge_id"],
+                    form_fee_paid_at=timezone.now(),
+                )
+                lines = ProgramCurriculumLine.objects.filter(
+                    pk__in=curriculum_line_ids
+                ).select_related("catalog_course")
+                for line in lines:
+                    course = line.catalog_course
+                    ExemptionRequestLine.objects.create(
+                        change_request=obj,
+                        curriculum_line=line,
+                        course_code=course.code if course else "",
+                        course_name=course.name if course else "",
+                        year_of_study=line.year_of_study,
+                        term_number=line.term_number,
+                    )
+            obj = (
+                AdmissionChangeRequest.objects.select_related(
+                    "new_program", "new_campus", "reviewed_by"
+                )
+                .prefetch_related("exemption_lines")
+                .get(pk=obj.pk)
+            )
+            return Response(AdmissionChangeRequestSerializer(obj).data, status=201)
+
+        obj = AdmissionChangeRequest.objects.create(
             admitted_student=admission,
             requested_by=request.user,
             current_program=admission.admitted_program,
             current_campus=admission.admitted_campus,
             current_study_mode=admission.study_mode,
+            **data,
         )
         return Response(AdmissionChangeRequestSerializer(obj).data, status=201)
+
+
+class ExemptionFormFeeAccessView(APIView):
+    """Student: ensure / check UGX 50k exemption form fee."""
+
+    permission_classes = [IsAuthenticated]
+
+    def _get_admission(self, user):
+        try:
+            return AdmittedStudent.objects.select_related(
+                "admitted_program", "admitted_campus"
+            ).filter(
+                Q(application__applicant=user) | Q(student_user=user) | Q(reg_no=user.username),
+                is_admitted=True,
+            ).first()
+        except Exception:
+            return None
+
+    def get(self, request):
+        from admissions.exemption_services import ensure_exemption_form_fee_access
+
+        admission = self._get_admission(request.user)
+        if not admission:
+            return Response({"detail": "No active admission found."}, status=404)
+        return Response(ensure_exemption_form_fee_access(admission))
+
+    def post(self, request):
+        return self.get(request)
+
+
+class ExemptionEligibleCoursesView(APIView):
+    """Student: curriculum lines available for exemption."""
+
+    permission_classes = [IsAuthenticated]
+
+    def _get_admission(self, user):
+        try:
+            return AdmittedStudent.objects.select_related(
+                "admitted_program", "admitted_campus", "programme_enrollment"
+            ).filter(
+                Q(application__applicant=user) | Q(student_user=user) | Q(reg_no=user.username),
+                is_admitted=True,
+            ).first()
+        except Exception:
+            return None
+
+    def get(self, request):
+        from admissions.exemption_services import (
+            ensure_exemption_form_fee_access,
+            list_eligible_exemption_courses,
+        )
+
+        admission = self._get_admission(request.user)
+        if not admission:
+            return Response({"detail": "No active admission found."}, status=404)
+        access = ensure_exemption_form_fee_access(admission)
+        courses = list_eligible_exemption_courses(admission) if access["paid"] else []
+        return Response({"form_fee": access, "courses": courses})
+
 
 class StudentChangeRequestOptions(APIView):
     """Student: fetch available program/campus options for change requests."""
@@ -3706,7 +3976,7 @@ class StudentChangeRequestOptions(APIView):
 
 class AdminChangeRequestList(APIView):
     """Admin: list all requests with optional status filter."""
-    permission_classes = [IsAuthenticated, CanViewAdmissionQueues]
+    permission_classes = [IsAuthenticated, CanViewAdmissionChangeRequests]
 
     def get(self, request):
         qs = AdmissionChangeRequest.objects.select_related(
@@ -3716,7 +3986,7 @@ class AdminChangeRequestList(APIView):
             'current_program', 'current_campus',
             'new_program', 'new_campus',
             'reviewed_by',
-        ).order_by('-created_at')
+        ).prefetch_related('exemption_lines').order_by('-created_at')
 
         status_filter = request.query_params.get('status')
         if status_filter:
@@ -3732,10 +4002,13 @@ class AdminChangeRequestList(APIView):
 
 class AdminChangeRequestReview(APIView):
     """Admin: approve or reject a specific request."""
-    permission_classes = [IsAuthenticated, CanManageAdmissionChangeRequests]
+    permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
-        req_obj = get_object_or_404(AdmissionChangeRequest, pk=pk)
+        req_obj = get_object_or_404(
+            AdmissionChangeRequest.objects.prefetch_related("exemption_lines"),
+            pk=pk,
+        )
 
         if req_obj.status != 'pending':
             return Response({'detail': 'This request has already been reviewed.'}, status=400)
@@ -3746,6 +4019,18 @@ class AdminChangeRequestReview(APIView):
         if action not in ('approve', 'reject'):
             return Response({'detail': 'action must be "approve" or "reject".'}, status=400)
 
+        if req_obj.change_type == "exemption":
+            if not user_can_approve_exemption_requests(request.user):
+                return Response(
+                    {"detail": "You do not have permission to review exemption requests."},
+                    status=403,
+                )
+        elif not user_can_manage_admission_change_requests(request.user):
+            return Response(
+                {"detail": "You do not have permission to review this change request."},
+                status=403,
+            )
+
         with transaction.atomic():
             req_obj.status = 'approved' if action == 'approve' else 'rejected'
             req_obj.reviewed_by = request.user
@@ -3754,15 +4039,44 @@ class AdminChangeRequestReview(APIView):
             if action == 'approve':
                 admission = req_obj.admitted_student
                 if req_obj.change_type == 'program' and req_obj.new_program:
-                    admission.admitted_program = req_obj.new_program
+                    from admissions.placement_sync import apply_program_campus_study_mode
+
+                    apply_program_campus_study_mode(
+                        admission,
+                        program=req_obj.new_program,
+                        regenerate_reg_no=True,
+                    )
                 elif req_obj.change_type == 'campus' and req_obj.new_campus:
-                    admission.admitted_campus = req_obj.new_campus
+                    from admissions.placement_sync import apply_program_campus_study_mode
+
+                    apply_program_campus_study_mode(
+                        admission,
+                        campus=req_obj.new_campus,
+                        regenerate_reg_no=True,
+                    )
                 elif req_obj.change_type == 'study_mode' and req_obj.new_study_mode:
-                    admission.study_mode = req_obj.new_study_mode
-                admission.save()
+                    from admissions.placement_sync import apply_program_campus_study_mode
+
+                    apply_program_campus_study_mode(
+                        admission,
+                        study_mode=req_obj.new_study_mode,
+                        regenerate_reg_no=True,
+                    )
+                elif req_obj.change_type == 'exemption':
+                    from admissions.exemption_services import apply_exemption_overrides
+
+                    try:
+                        apply_exemption_overrides(req_obj, decided_by=request.user)
+                    except ValueError as exc:
+                        return Response({"detail": str(exc)}, status=400)
 
             req_obj.save()
 
+        req_obj = (
+            AdmissionChangeRequest.objects.select_related("reviewed_by")
+            .prefetch_related("exemption_lines")
+            .get(pk=req_obj.pk)
+        )
         return Response(AdmissionChangeRequestSerializer(req_obj).data)
 
 # Generate reg no

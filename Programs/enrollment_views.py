@@ -307,10 +307,15 @@ class AdminListEnrollmentsView(APIView):
             'enrolled_by',
         )
 
-        # Filters
+        # Filters — accept program_batch or legacy alias "batch" from Horizon UI
         filter_status = request.query_params.get('status')
         program_id    = request.query_params.get('program')
-        batch_id      = request.query_params.get('program_batch')
+        batch_id      = (
+            request.query_params.get('program_batch')
+            or request.query_params.get('batch')
+        )
+        year = request.query_params.get('year')
+        term = request.query_params.get('term')
 
         if filter_status:
             qs = qs.filter(status=filter_status)
@@ -318,6 +323,16 @@ class AdminListEnrollmentsView(APIView):
             qs = qs.filter(program_id=program_id)
         if batch_id:
             qs = qs.filter(program_batch_id=batch_id)
+        if year:
+            try:
+                qs = qs.filter(current_year_of_study=int(year))
+            except (TypeError, ValueError):
+                pass
+        if term:
+            try:
+                qs = qs.filter(current_term_number=int(term))
+            except (TypeError, ValueError):
+                pass
 
         qs = filter_programme_enrollments_for_user(qs, request.user)
 

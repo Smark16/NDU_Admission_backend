@@ -67,6 +67,16 @@ def user_can_manage_admission_change_requests(user) -> bool:
     return False
 
 
+def user_can_approve_exemption_requests(user) -> bool:
+    if not user.is_authenticated:
+        return False
+    if user_is_super_admin(user):
+        return True
+    if user.has_perm("admissions.approve_exemption_requests"):
+        return True
+    return False
+
+
 def user_can_edit_application_registration(user) -> bool:
     """Edit demographics / programme choices on an application (admin-side)."""
     if not user.is_authenticated:
@@ -150,6 +160,35 @@ class CanManageAdmissionChangeRequests(BasePermission):
 
     def has_permission(self, request, view):
         return user_can_manage_admission_change_requests(request.user)
+
+
+class CanViewAdmissionChangeRequests(BasePermission):
+    """List / view admission change requests (including exemption approvers)."""
+
+    message = "You do not have permission to view admission change requests."
+
+    def has_permission(self, request, view):
+        u = request.user
+        if not u.is_authenticated:
+            return False
+        if user_is_super_admin(u):
+            return True
+        if u.has_perm("admissions.view_admissionchangerequest"):
+            return True
+        if user_can_manage_admission_change_requests(u):
+            return True
+        if user_can_approve_exemption_requests(u):
+            return True
+        if user_has_any_erp_perm(u, "approve_admissions", "access_admissions"):
+            return True
+        return False
+
+
+class CanApproveExemptionRequests(BasePermission):
+    message = "You do not have permission to approve or reject course exemption requests."
+
+    def has_permission(self, request, view):
+        return user_can_approve_exemption_requests(request.user)
 
 
 class EditApplicationRegistrationPermission(BasePermission):
