@@ -188,9 +188,9 @@ class GradeScaleWriteSerializer(serializers.ModelSerializer):
             _deactivate_active_for_level(GradeScale, level_pk)
         scale = GradeScale.objects.create(**validated_data)
         for idx, band_data in enumerate(bands_data):
-            GradeBand.objects.create(
-                grade_scale=scale, order=band_data.get("order", idx), **band_data
-            )
+            payload = {k: v for k, v in dict(band_data).items() if k != "id" and v is not None}
+            payload["order"] = payload.get("order", idx)
+            GradeBand.objects.create(grade_scale=scale, **payload)
         return scale
 
     def update(self, instance, validated_data):
@@ -321,9 +321,9 @@ class AwardSchemeWriteSerializer(serializers.ModelSerializer):
             _deactivate_active_for_level(AwardClassificationScheme, level_pk)
         scheme = AwardClassificationScheme.objects.create(**validated_data)
         for idx, band_data in enumerate(bands_data):
-            AwardClassBand.objects.create(
-                scheme=scheme, order=band_data.get("order", idx), **band_data
-            )
+            payload = {k: v for k, v in dict(band_data).items() if k != "id" and v is not None}
+            payload["order"] = payload.get("order", idx)
+            AwardClassBand.objects.create(scheme=scheme, **payload)
         return scheme
 
     def update(self, instance, validated_data):
