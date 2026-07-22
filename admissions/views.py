@@ -3067,7 +3067,16 @@ class RestoreAdmittedStudent(APIView):
  
 # list Admitted students
 class ListAdmittedStudents(generics.ListAPIView):
-    queryset = AdmittedStudent.objects.filter(is_admitted=True).select_related(
+    """
+    New-admission / offer-letter directory.
+
+    CSV bulk imports (application.source=legacy_import) are excluded — they already
+    have offers and belong on Bonafide / Headcount instead.
+    """
+
+    queryset = AdmittedStudent.objects.filter(is_admitted=True).exclude(
+        application__source=Application.SOURCE_LEGACY,
+    ).select_related(
         'admitted_program__faculty',
         'admitted_batch',
         'admitted_campus',

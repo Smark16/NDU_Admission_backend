@@ -253,9 +253,13 @@ def _apply_offer_letter_scope_filters(qs, scope: dict):
 
 
 def _admitted_students_in_scope(scope: dict):
+    from admissions.models import Application
+
     qs = AdmittedStudent.objects.filter(
         is_admitted=True,
         application__is_revoked=False,
+    ).exclude(
+        application__source=Application.SOURCE_LEGACY,
     )
     return _apply_offer_letter_scope_filters(qs, scope)
 
@@ -273,7 +277,11 @@ def _eligible_offer_letter_application_ids(
 ) -> list[int]:
     """
     Admitted, non-revoked students whose programme has an active offer-letter template.
+
+    Legacy CSV imports are excluded — they already have historical offer letters.
     """
+    from admissions.models import Application
+
     program_ids = _active_template_program_ids()
     if not program_ids:
         return []
@@ -290,6 +298,8 @@ def _eligible_offer_letter_application_ids(
         is_admitted=True,
         application__is_revoked=False,
         admitted_program_id__in=program_ids,
+    ).exclude(
+        application__source=Application.SOURCE_LEGACY,
     )
     qs = _apply_offer_letter_scope_filters(qs, scope)
 
@@ -327,6 +337,8 @@ def _offer_letter_scope_summary(scope: dict, *, only_missing_pdf: bool = True) -
             is_admitted=True,
             application__is_revoked=False,
             admitted_program_id__in=program_ids,
+        ).exclude(
+            application__source=Application.SOURCE_LEGACY,
         ),
         scope,
     )
