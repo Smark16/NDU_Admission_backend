@@ -3349,7 +3349,14 @@ class BonafideStudentPortalSnapshot(APIView):
         assert_admitted_student_access(request.user, student)
         from admissions.bonafide_portal import build_bonafide_portal_snapshot
 
-        return Response(build_bonafide_portal_snapshot(student, request))
+        try:
+            return Response(build_bonafide_portal_snapshot(student, request))
+        except Exception as exc:
+            logger.exception("Bonafide portal snapshot failed for student pk=%s", pk)
+            return Response(
+                {"detail": f"Could not load portal details: {exc}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
 
 class AdmittedStudentFilterOptionsView(APIView):
