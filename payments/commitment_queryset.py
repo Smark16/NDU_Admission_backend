@@ -15,6 +15,7 @@ from django.db.models import (
     Value,
 )
 from django.db.models.functions import Coalesce
+from django.utils import timezone
 
 from payments.models import StudentTuitionPayment, TuitionLedger
 from payments.student_payment_allocation import COMMITMENT_FEE_THRESHOLD
@@ -102,12 +103,7 @@ def _ledger_fk_enough_exists():
 
 
 def _ledger_code_enough_exists():
-    """
-    Ledger credits matched by payment code (student_id / schoolpay / reg_no).
-
-    Kept separate from the FK path so Postgres can use student_payment_code indexes
-    without forcing a full OR scan for every admitted row during list filters.
-    """
+    """Ledger credits matched by payment code (student_id / schoolpay / reg_no)."""
     return Exists(
         TuitionLedger.objects.filter(
             transaction_completion_status="Completed",
@@ -125,12 +121,7 @@ def _ledger_code_enough_exists():
 
 
 def commitment_met_q() -> Q:
-    """
-    Commitment met without annotating every row.
-
-    Prefer admission_fee_paid (denormalized when payments land), then Exists checks.
-    Avoids the old annotate+filter pattern that made bonafide list COUNT/ORDER crawl.
-    """
+    """Full payment-math commitment check (slow on large ledgers — avoid on list pages)."""
     return (
         Q(admission_fee_paid=True)
         | _portal_enough_exists()
@@ -139,15 +130,59 @@ def commitment_met_q() -> Q:
     )
 
 
-def filter_by_commitment_met(qs, commitment_met: bool | None):
+def filter_by_commitment_met(
+    qs,
+    commitment_met: bool | None,
+    *,
+    strict: bool = False,
+):
     """
     Filter admitted students by commitment fee status.
 
-    Met when admission_fee_paid is true or total UGX credits >= threshold.
+    Fast path (default, ``strict=False``): indexed ``admission_fee_paid`` only.
+    Use this for bonafide / directory lists and headcount KPIs.
+
+    Strict path (``strict=True``): also sums portal + SchoolPay ledger credits.
+    Keep for finance tooling / reminder jobs — not list COUNT queries.
     """
     if commitment_met is None:
         return qs
+    if not strict:
+        return qs.filter(admission_fee_paid=bool(commitment_met))
     met = commitment_met_q()
     if commitment_met:
         return qs.filter(met)
     return qs.filter(~met)
+
+
+def sync_admission_fee_paid_flags(*, batch_size: int = 500, max_students: int | None = None) -> dict:
+    """
+    Backfill ``admission_fee_paid`` for admitted students who already met commitment
+    via portal/ledger but still have the flag false.
+
+    Run once on production after deploy so the fast list filter matches reality::
+
+        python manage.py sync_commitment_flags
+    """
+    from admissions.models import AdmittedStudent
+
+    unpaid = (
+        AdmittedStudent.objects.filter(is_admitted=True, admission_fee_paid=False)
+        .order_by("id")
+        .values_list("id", flat=True)
+    )
+    ids = list(unpaid[:max_students] if max_students else unpaid)
+    updated = 0
+    for i in range(0, len(ids), batch_size):
+        chunk = ids[i : i + batch_size]
+        chunk_qs = AdmittedStudent.objects.filter(id__in=chunk)
+        to_mark = list(
+            filter_by_commitment_met(chunk_qs, True, strict=True).values_list("id", flat=True)
+        )
+        if to_mark:
+            updated += AdmittedStudent.objects.filter(id__in=to_mark).update(
+                admission_fee_paid=True,
+                admission_fee_paid_at=timezone.now(),
+            )
+    return {"candidates": len(ids), "updated": updated}
+

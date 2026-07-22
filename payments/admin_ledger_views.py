@@ -283,7 +283,7 @@ def _commitment_students_queryset(
     if cohort:
         qs = _apply_student_cohort_filters(qs, cohort)
     if commitment_met is not None:
-        qs = filter_by_commitment_met(qs, commitment_met)
+        qs = filter_by_commitment_met(qs, commitment_met, strict=True)
     else:
         qs = annotate_commitment_ugx_paid(qs)
     return qs
@@ -496,7 +496,9 @@ class AdminTuitionLedgerStudentsView(APIView):
                 AdmittedStudent.objects.filter(is_admitted=True),
                 cohort,
             )
-            commitment_met_count = filter_by_commitment_met(summary_qs, True).count()
+            commitment_met_count = filter_by_commitment_met(
+                summary_qs, True, strict=True
+            ).count()
             payment_totals = _apply_transaction_cohort_filters(
                 StudentTuitionPayment.objects.filter(status="completed"),
                 cohort,

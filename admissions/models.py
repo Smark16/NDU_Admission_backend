@@ -429,7 +429,7 @@ class AdmittedStudent(models.Model):
     is_admitted= models.BooleanField(default=False)
     
     # Registration information (official registration only — do not conflate with document checks)
-    admission_fee_paid = models.BooleanField(default=False)
+    admission_fee_paid = models.BooleanField(default=False, db_index=True)
     admission_fee_paid_at = models.DateTimeField(
         null=True,
         blank=True
@@ -483,6 +483,10 @@ class AdmittedStudent(models.Model):
             models.Index(fields=['admitted_batch', 'is_admitted']),
             models.Index(fields=['is_admitted']),
             models.Index(fields=['physical_documents_verified']),
+            models.Index(
+                fields=['is_admitted', 'admission_fee_paid', '-created_at'],
+                name='admitted_bonafide_list_idx',
+            ),
         ]
     
     def __str__(self):

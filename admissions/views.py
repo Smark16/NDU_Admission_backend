@@ -3182,10 +3182,15 @@ class ListAdmittedStudents(generics.ListAPIView):
             from payments.commitment_queryset import filter_by_commitment_met
 
             raw = str(commitment_met).lower()
+            strict = str(self.request.query_params.get("commitment_strict", "")).lower() in (
+                "1",
+                "true",
+                "yes",
+            )
             if raw in ("1", "true", "yes"):
-                queryset = filter_by_commitment_met(queryset, True)
+                queryset = filter_by_commitment_met(queryset, True, strict=strict)
             elif raw in ("0", "false", "no"):
-                queryset = filter_by_commitment_met(queryset, False)
+                queryset = filter_by_commitment_met(queryset, False, strict=strict)
 
         return filter_admitted_students_for_user(queryset.distinct(), self.request.user)
 
@@ -3267,10 +3272,16 @@ class ListBonafideStudents(generics.ListAPIView):
             from payments.commitment_queryset import filter_by_commitment_met
 
             raw = str(commitment_met).lower()
+            # Default fast path: admission_fee_paid index only (no ledger subqueries).
+            strict = str(self.request.query_params.get("commitment_strict", "")).lower() in (
+                "1",
+                "true",
+                "yes",
+            )
             if raw in ("1", "true", "yes"):
-                queryset = filter_by_commitment_met(queryset, True)
+                queryset = filter_by_commitment_met(queryset, True, strict=strict)
             elif raw in ("0", "false", "no"):
-                queryset = filter_by_commitment_met(queryset, False)
+                queryset = filter_by_commitment_met(queryset, False, strict=strict)
 
         queryset = filter_admitted_students_for_user(queryset, self.request.user)
         # distinct only when joins can duplicate rows (search annotate / enrollment filter)

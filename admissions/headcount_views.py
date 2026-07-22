@@ -36,8 +36,8 @@ class UniversityHeadcountView(APIView):
         )
 
         total = base.count()
-        met_qs = filter_by_commitment_met(base, True)
-        unpaid_qs = filter_by_commitment_met(base, False)
+        met_qs = filter_by_commitment_met(base, True, strict=False)
+        unpaid_qs = filter_by_commitment_met(base, False, strict=False)
         commitment_met = met_qs.count()
         commitment_unpaid = unpaid_qs.count()
 

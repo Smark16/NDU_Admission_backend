@@ -126,7 +126,7 @@ def _unpaid_commitment_queryset(cohort=None):
         .select_related("application")
     )
     qs = _apply_student_cohort_filters(qs, cohort or {})
-    return filter_by_commitment_met(qs, False)
+    return filter_by_commitment_met(qs, False, strict=True)
 
 
 def queue_bulk_commitment_reminders(cohort=None):
