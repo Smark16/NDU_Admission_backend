@@ -535,10 +535,10 @@ class ExamSessionSerializer(serializers.ModelSerializer):
 
 
 class MarksEntryWindowSerializer(serializers.ModelSerializer):
-    program_batch_name = serializers.CharField(source="program_batch.name", read_only=True)
-    semester_name = serializers.CharField(source="semester.name", read_only=True, allow_null=True)
-    course_code = serializers.CharField(source="course_unit.code", read_only=True, allow_null=True)
-    course_name = serializers.CharField(source="course_unit.name", read_only=True, allow_null=True)
+    program_batch_name = serializers.SerializerMethodField()
+    semester_name = serializers.SerializerMethodField()
+    course_code = serializers.SerializerMethodField()
+    course_name = serializers.SerializerMethodField()
     scope = serializers.SerializerMethodField()
 
     class Meta:
@@ -563,6 +563,18 @@ class MarksEntryWindowSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
         read_only_fields = ["closed_at", "created_at", "updated_at"]
+
+    def get_program_batch_name(self, obj):
+        return obj.program_batch.name if obj.program_batch_id else None
+
+    def get_semester_name(self, obj):
+        return obj.semester.name if obj.semester_id else None
+
+    def get_course_code(self, obj):
+        return obj.course_unit.code if obj.course_unit_id else None
+
+    def get_course_name(self, obj):
+        return obj.course_unit.name if obj.course_unit_id else None
 
     def get_scope(self, obj):
         if obj.course_unit_id:
@@ -596,6 +608,10 @@ class MarksEntryWindowSerializer(serializers.ModelSerializer):
         if course_unit and program_batch and course_unit.program_batch_id != program_batch.id:
             raise serializers.ValidationError(
                 {"course_unit": "Course unit must belong to the selected programme batch."}
+            )
+        if semester and program_batch and semester.program_batch_id != program_batch.id:
+            raise serializers.ValidationError(
+                {"semester": "Semester must belong to the selected programme batch."}
             )
         if semester and course_unit and course_unit.semester_id != semester.id:
             raise serializers.ValidationError(

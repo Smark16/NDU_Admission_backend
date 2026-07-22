@@ -1,5 +1,9 @@
+import logging
+
+from django.db import DatabaseError, IntegrityError
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -8,37 +12,71 @@ from .models import MarksEntryWindow
 from .permissions import CanManageMarksWindows
 from .serializers import MarksEntryWindowSerializer
 
+logger = logging.getLogger(__name__)
+
 
 class MarksEntryWindowListCreateView(APIView):
     permission_classes = [IsAuthenticated, CanManageMarksWindows]
 
     def get(self, request):
-        qs = MarksEntryWindow.objects.select_related(
-            "program_batch",
-            "semester",
-            "course_unit",
-        ).order_by("-is_active", "program_batch__name", "semester__order", "course_unit__code")
+        try:
+            qs = MarksEntryWindow.objects.select_related(
+                "program_batch",
+                "semester",
+                "course_unit",
+            ).order_by("-is_active", "-updated_at", "id")
 
-        program_batch_id = request.query_params.get("program_batch_id")
-        semester_id = request.query_params.get("semester_id")
-        course_unit_id = request.query_params.get("course_unit_id")
-        active = request.query_params.get("active")
+            program_batch_id = request.query_params.get("program_batch_id")
+            semester_id = request.query_params.get("semester_id")
+            course_unit_id = request.query_params.get("course_unit_id")
+            active = request.query_params.get("active")
 
-        if program_batch_id:
-            qs = qs.filter(program_batch_id=program_batch_id)
-        if semester_id:
-            qs = qs.filter(semester_id=semester_id)
-        if course_unit_id:
-            qs = qs.filter(course_unit_id=course_unit_id)
-        if active and active.lower() in ("1", "true", "yes"):
-            qs = qs.filter(is_active=True)
+            if program_batch_id:
+                qs = qs.filter(program_batch_id=program_batch_id)
+            if semester_id:
+                qs = qs.filter(semester_id=semester_id)
+            if course_unit_id:
+                qs = qs.filter(course_unit_id=course_unit_id)
+            if active and active.lower() in ("1", "true", "yes"):
+                qs = qs.filter(is_active=True)
 
-        return Response({"windows": MarksEntryWindowSerializer(qs[:200], many=True).data})
+            windows = list(qs[:200])
+            return Response({"windows": MarksEntryWindowSerializer(windows, many=True).data})
+        except DatabaseError as exc:
+            logger.exception("Marks windows list DB error")
+            return Response(
+                {
+                    "detail": (
+                        "Marks entry windows are unavailable in the database. "
+                        f"Ask IT to run: python manage.py migrate examinations. ({exc})"
+                    )
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        except Exception as exc:
+            logger.exception("Marks windows list failed")
+            return Response(
+                {"detail": f"Could not load marks windows: {exc}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
     def post(self, request):
         serializer = MarksEntryWindowSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        window = serializer.save(created_by=request.user)
+        try:
+            window = serializer.save(created_by=request.user)
+        except (DatabaseError, IntegrityError) as exc:
+            logger.exception("Marks window create DB error")
+            return Response(
+                {"detail": f"Could not create marks window: {exc}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        except Exception as exc:
+            logger.exception("Marks window create failed")
+            return Response(
+                {"detail": f"Could not create marks window: {exc}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
         return Response(MarksEntryWindowSerializer(window).data, status=201)
 
 
