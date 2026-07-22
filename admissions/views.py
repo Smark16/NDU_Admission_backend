@@ -3333,7 +3333,11 @@ class BonafideStudentPortalSnapshot(APIView):
 
 
 class AdmittedStudentFilterOptionsView(APIView):
-    """Lightweight distinct filter values for the admitted students directory."""
+    """Lightweight distinct filter values for the admitted / bonafide directories.
+
+    Optional query params (campus, faculty, program) cascade dependent dropdowns —
+    e.g. selecting Law only returns Law academic batches.
+    """
 
     permission_classes = [IsAuthenticated]
 
@@ -3343,10 +3347,16 @@ class AdmittedStudentFilterOptionsView(APIView):
                 {"detail": "You do not have permission to view admitted students."},
                 status=status.HTTP_403_FORBIDDEN,
             )
+        campus = (request.query_params.get("campus") or "").strip()
+        faculty = (request.query_params.get("faculty") or "").strip()
+        program = (request.query_params.get("program") or "").strip()
+
         base = filter_admitted_students_for_user(
             AdmittedStudent.objects.filter(is_admitted=True),
             request.user,
         )
+
+        # Campuses always from full staff scope
         campuses = sorted(
             {
                 name
@@ -3354,43 +3364,83 @@ class AdmittedStudentFilterOptionsView(APIView):
                 if name
             }
         )
+
+        by_campus = base
+        if campus and campus != "all":
+            by_campus = by_campus.filter(admitted_campus__name=campus)
+
         faculties = sorted(
             {
                 name
-                for name in base.values_list("admitted_program__faculty__name", flat=True)
+                for name in by_campus.values_list(
+                    "admitted_program__faculty__name", flat=True
+                )
                 if name
             }
         )
+
+        by_faculty = by_campus
+        if faculty and faculty != "all":
+            by_faculty = by_faculty.filter(
+                admitted_program__faculty__name__icontains=faculty
+            )
+
         programs = sorted(
             {
                 name
-                for name in base.values_list("admitted_program__name", flat=True)
+                for name in by_faculty.values_list("admitted_program__name", flat=True)
                 if name
             }
         )
+
+        by_program = by_faculty
+        if program and program != "all":
+            by_program = by_program.filter(admitted_program__name__icontains=program)
+
         batches = sorted(
             {
                 name
-                for name in base.values_list("admitted_batch__name", flat=True)
+                for name in by_program.values_list("admitted_batch__name", flat=True)
                 if name
             }
         )
+
         from Programs.models import ProgramBatch
         from Programs.program_batch_resolution import format_program_batch_display
+        from admissions.faculty_scope import user_faculty_ids
 
-        batch_ids = {
-            bid
-            for bid in base.values_list("intended_program_batch_id", flat=True)
-            if bid
-        }
-        academic_batches = []
-        for pb in ProgramBatch.objects.filter(pk__in=batch_ids).order_by("-start_date", "name"):
-            academic_batches.append(
-                {
-                    "id": pb.id,
-                    "label": format_program_batch_display(pb),
-                }
+        # Academic batches: programme/faculty scoped via ProgramBatch.program,
+        # otherwise only cohorts already attached to students in the current scope.
+        if program and program != "all":
+            pb_qs = ProgramBatch.objects.filter(program__name__icontains=program)
+        elif faculty and faculty != "all":
+            pb_qs = ProgramBatch.objects.filter(
+                program__faculty__name__icontains=faculty
             )
+        else:
+            batch_ids = {
+                bid
+                for bid in by_program.values_list("intended_program_batch_id", flat=True)
+                if bid
+            }
+            pb_qs = ProgramBatch.objects.filter(pk__in=batch_ids)
+
+        faculty_ids = user_faculty_ids(request.user, context="admissions")
+        if faculty_ids is not None:
+            pb_qs = (
+                pb_qs.filter(program__faculty_id__in=faculty_ids)
+                if faculty_ids
+                else pb_qs.none()
+            )
+
+        academic_batches = [
+            {
+                "id": pb.id,
+                "label": format_program_batch_display(pb),
+            }
+            for pb in pb_qs.select_related("program").order_by("-start_date", "name")
+        ]
+
         return Response(
             {
                 "campuses": campuses,
@@ -3400,7 +3450,8 @@ class AdmittedStudentFilterOptionsView(APIView):
                 "academic_batches": academic_batches,
             }
         )
- 
+
+
 class MarkPhysicalDocumentsVerified(APIView):
     permission_classes = [IsAuthenticated, VerifyPhysicalDocumentsPermission]
 
