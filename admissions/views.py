@@ -3272,7 +3272,11 @@ class ListBonafideStudents(generics.ListAPIView):
             elif raw in ("0", "false", "no"):
                 queryset = filter_by_commitment_met(queryset, False)
 
-        return filter_admitted_students_for_user(queryset.distinct(), self.request.user)
+        queryset = filter_admitted_students_for_user(queryset, self.request.user)
+        # distinct only when joins can duplicate rows (search annotate / enrollment filter)
+        if search or (enrollment_status and enrollment_status != "all"):
+            return queryset.distinct()
+        return queryset
 
 
 class BonafideStudentDetail(generics.RetrieveAPIView):

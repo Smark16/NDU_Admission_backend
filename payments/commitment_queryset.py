@@ -3,7 +3,17 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from django.db.models import DecimalField, F, IntegerField, OuterRef, Q, Subquery, Sum, Value
+from django.db.models import (
+    DecimalField,
+    Exists,
+    F,
+    IntegerField,
+    OuterRef,
+    Q,
+    Subquery,
+    Sum,
+    Value,
+)
 from django.db.models.functions import Coalesce
 
 from payments.models import StudentTuitionPayment, TuitionLedger
@@ -33,7 +43,7 @@ def _portal_ugx_subquery():
 
 
 def _ledger_ugx_subquery():
-    """Sum all completed SchoolPay ledger credits matching this student's identifiers."""
+    """Sum completed SchoolPay ledger credits matching this student's identifiers."""
     return Subquery(
         TuitionLedger.objects.filter(
             transaction_completion_status="Completed",
@@ -63,6 +73,72 @@ def annotate_commitment_ugx_paid(qs):
     ).annotate(commitment_paid_ugx=F("_portal_ugx_paid") + F("_ledger_ugx_paid"))
 
 
+def _portal_enough_exists():
+    """Portal UGX credits >= commitment threshold (indexed on student_id)."""
+    return Exists(
+        StudentTuitionPayment.objects.filter(
+            student_id=OuterRef("pk"),
+            status="completed",
+            is_waived=False,
+            currency="UGX",
+        )
+        .values("student_id")
+        .annotate(total=Sum("amount"))
+        .filter(total__gte=COMMITMENT_FEE_THRESHOLD)
+    )
+
+
+def _ledger_fk_enough_exists():
+    """Ledger credits linked by student FK >= threshold (fast path)."""
+    return Exists(
+        TuitionLedger.objects.filter(
+            student_id=OuterRef("pk"),
+            transaction_completion_status="Completed",
+        )
+        .values("student_id")
+        .annotate(total=Sum("amount"))
+        .filter(total__gte=COMMITMENT_FEE_THRESHOLD)
+    )
+
+
+def _ledger_code_enough_exists():
+    """
+    Ledger credits matched by payment code (student_id / schoolpay / reg_no).
+
+    Kept separate from the FK path so Postgres can use student_payment_code indexes
+    without forcing a full OR scan for every admitted row during list filters.
+    """
+    return Exists(
+        TuitionLedger.objects.filter(
+            transaction_completion_status="Completed",
+        )
+        .filter(
+            Q(student_payment_code=OuterRef("student_id"))
+            | Q(student_payment_code=OuterRef("schoolpay_code"))
+            | Q(student_payment_code=OuterRef("reg_no"))
+        )
+        .annotate(grp=Value(1, output_field=IntegerField()))
+        .values("grp")
+        .annotate(total=Sum("amount"))
+        .filter(total__gte=COMMITMENT_FEE_THRESHOLD)
+    )
+
+
+def commitment_met_q() -> Q:
+    """
+    Commitment met without annotating every row.
+
+    Prefer admission_fee_paid (denormalized when payments land), then Exists checks.
+    Avoids the old annotate+filter pattern that made bonafide list COUNT/ORDER crawl.
+    """
+    return (
+        Q(admission_fee_paid=True)
+        | _portal_enough_exists()
+        | _ledger_fk_enough_exists()
+        | _ledger_code_enough_exists()
+    )
+
+
 def filter_by_commitment_met(qs, commitment_met: bool | None):
     """
     Filter admitted students by commitment fee status.
@@ -71,13 +147,7 @@ def filter_by_commitment_met(qs, commitment_met: bool | None):
     """
     if commitment_met is None:
         return qs
-    qs = annotate_commitment_ugx_paid(qs)
-    met_q = Q(admission_fee_paid=True) | Q(
-        commitment_paid_ugx__gte=COMMITMENT_FEE_THRESHOLD
-    )
+    met = commitment_met_q()
     if commitment_met:
-        return qs.filter(met_q)
-    return qs.filter(admission_fee_paid=False).filter(
-        Q(commitment_paid_ugx__lt=COMMITMENT_FEE_THRESHOLD)
-        | Q(commitment_paid_ugx__isnull=True)
-    )
+        return qs.filter(met)
+    return qs.filter(~met)
