@@ -1,6 +1,9 @@
 """Marks-entry window resolution and enforcement."""
 from __future__ import annotations
 
+import logging
+
+from django.db import DatabaseError
 from django.utils import timezone
 
 from accounts.super_admin import user_is_super_admin
@@ -9,12 +12,16 @@ from Programs.models import CourseUnit
 from ..models import MarksEntryWindow
 from ..permissions import user_can_access_examinations_office
 
+logger = logging.getLogger(__name__)
+
 
 def user_can_override_marks_window(user) -> bool:
     """Exam-office users can manage marks outside lecturer entry windows."""
-    return bool(user and user.is_authenticated and (
-        user_is_super_admin(user) or user_can_access_examinations_office(user)
-    ))
+    return bool(
+        user
+        and user.is_authenticated
+        and (user_is_super_admin(user) or user_can_access_examinations_office(user))
+    )
 
 
 def resolve_marks_entry_window(course_unit: CourseUnit) -> MarksEntryWindow | None:
@@ -29,35 +36,57 @@ def resolve_marks_entry_window(course_unit: CourseUnit) -> MarksEntryWindow | No
     if not course_unit.program_batch_id:
         return None
 
-    qs = MarksEntryWindow.objects.filter(
-        is_active=True,
-        program_batch_id=course_unit.program_batch_id,
-    ).select_related("program_batch", "semester", "course_unit")
+    try:
+        qs = MarksEntryWindow.objects.filter(
+            is_active=True,
+            program_batch_id=course_unit.program_batch_id,
+        ).select_related("program_batch", "semester", "course_unit")
 
-    course_window = qs.filter(course_unit_id=course_unit.id).order_by("-updated_at").first()
-    if course_window:
-        return course_window
+        course_window = qs.filter(course_unit_id=course_unit.id).order_by("-updated_at").first()
+        if course_window:
+            return course_window
 
-    if course_unit.semester_id:
-        semester_window = (
-            qs.filter(semester_id=course_unit.semester_id, course_unit__isnull=True)
+        if course_unit.semester_id:
+            semester_window = (
+                qs.filter(semester_id=course_unit.semester_id, course_unit__isnull=True)
+                .order_by("-updated_at")
+                .first()
+            )
+            if semester_window:
+                return semester_window
+
+        return (
+            qs.filter(semester__isnull=True, course_unit__isnull=True)
             .order_by("-updated_at")
             .first()
         )
-        if semester_window:
-            return semester_window
-
-    return (
-        qs.filter(semester__isnull=True, course_unit__isnull=True)
-        .order_by("-updated_at")
-        .first()
-    )
+    except DatabaseError:
+        # Table/migration missing on some environments — treat as no window.
+        logger.exception(
+            "MarksEntryWindow lookup failed for course_unit_id=%s",
+            getattr(course_unit, "pk", None),
+        )
+        return None
 
 
 def marks_entry_status(course_unit: CourseUnit, *, user=None) -> dict:
-    window = resolve_marks_entry_window(course_unit)
+    try:
+        window = resolve_marks_entry_window(course_unit)
+        override = user_can_override_marks_window(user)
+    except Exception:
+        logger.exception(
+            "marks_entry_status failed for course_unit_id=%s",
+            getattr(course_unit, "pk", None),
+        )
+        return {
+            "is_open": True,
+            "can_enter": True,
+            "override": False,
+            "detail": "Marks-entry window status unavailable; entry allowed.",
+            "window": None,
+        }
+
     now = timezone.now()
-    override = user_can_override_marks_window(user)
 
     if window is None:
         return {

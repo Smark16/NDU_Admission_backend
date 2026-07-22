@@ -6,6 +6,8 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+import logging
+
 from admissions.models import AdmittedStudent
 from Programs.models import CourseUnit, StudentCourseUnitEnrollment
 
@@ -28,6 +30,10 @@ from .serializers import (
     GradeBandSerializer,
     SaveMarksSerializer,
 )
+
+logger = logging.getLogger(__name__)
+
+
 def _get_course_unit_or_404(course_unit_id):
     return CourseUnit.objects.select_related(
         "semester", "program_batch", "program_batch__program__academic_level"
@@ -53,54 +59,80 @@ class StaffExaminationCoursesView(APIView):
         program_batch_id = request.query_params.get("program_batch_id")
         semester_id = request.query_params.get("semester_id")
 
-        qs = (
-            CourseUnit.objects.filter(is_active=True)
-            .filter(Q(semester_id__isnull=False) | Q(program_batch_id__isnull=False))
-            .annotate(
-                students_count=Count(
-                    "student_enrollments",
-                    filter=Q(student_enrollments__status="enrolled"),
-                    distinct=True,
-                ),
-            )
-            .select_related("semester", "program_batch", "program_batch__program")
-        )
-
-        if program_id:
-            qs = qs.filter(program_batch__program_id=program_id)
-        if program_batch_id:
-            qs = qs.filter(program_batch_id=program_batch_id)
-        if semester_id:
-            qs = qs.filter(semester_id=semester_id)
-
-        qs = qs.order_by("semester__order", "code", "name")
-
-        raw = request.query_params.get("with_students_only", "1")
-        if raw.lower() in ("1", "true", "yes"):
-            qs = qs.filter(students_count__gt=0)
-
-        courses = []
-        for cu in qs:
-            entry_status = marks_entry_status(cu, user=request.user)
-            courses.append(
-                {
-                    "course_unit_id": cu.id,
-                    "course_code": cu.code,
-                    "course_name": cu.name,
-                    "students_count": cu.students_count,
-                    "semester_name": cu.semester.name if cu.semester else None,
-                    "batch_name": cu.program_batch.name if cu.program_batch else None,
-                    "program_name": (
-                        cu.program_batch.program.name
-                        if cu.program_batch and cu.program_batch.program
-                        else None
+        try:
+            qs = (
+                CourseUnit.objects.filter(is_active=True)
+                .filter(Q(semester_id__isnull=False) | Q(program_batch_id__isnull=False))
+                .annotate(
+                    students_count=Count(
+                        "student_enrollments",
+                        filter=Q(student_enrollments__status="enrolled"),
+                        distinct=True,
                     ),
-                    "marks_entry": entry_status,
-                }
+                )
+                .select_related("semester", "program_batch", "program_batch__program")
             )
 
-        return Response({"courses": courses, "total": len(courses)})
+            if program_id:
+                qs = qs.filter(program_batch__program_id=program_id)
+            if program_batch_id:
+                qs = qs.filter(program_batch_id=program_batch_id)
+            if semester_id:
+                qs = qs.filter(semester_id=semester_id)
 
+            qs = qs.order_by("semester__order", "code", "name")
+
+            raw = request.query_params.get("with_students_only", "1")
+            if raw.lower() in ("1", "true", "yes"):
+                qs = qs.filter(students_count__gt=0)
+
+            # Evaluate once so annotation filter errors surface clearly.
+            course_units = list(qs)
+
+            courses = []
+            for cu in course_units:
+                try:
+                    entry_status = marks_entry_status(cu, user=request.user)
+                except Exception:
+                    logger.exception(
+                        "marks_entry_status failed in staff courses list cu=%s", cu.pk
+                    )
+                    entry_status = {
+                        "is_open": True,
+                        "can_enter": True,
+                        "override": False,
+                        "detail": "Marks-entry window status unavailable.",
+                        "window": None,
+                    }
+                courses.append(
+                    {
+                        "course_unit_id": cu.id,
+                        "course_code": cu.code,
+                        "course_name": cu.name,
+                        "students_count": int(getattr(cu, "students_count", 0) or 0),
+                        "semester_name": cu.semester.name if cu.semester_id else None,
+                        "batch_name": cu.program_batch.name if cu.program_batch_id else None,
+                        "program_name": (
+                            cu.program_batch.program.name
+                            if cu.program_batch_id and cu.program_batch.program_id
+                            else None
+                        ),
+                        "marks_entry": entry_status,
+                    }
+                )
+
+            return Response({"courses": courses, "total": len(courses)})
+        except Exception as exc:
+            logger.exception(
+                "StaffExaminationCoursesView failed program=%s batch=%s semester=%s",
+                program_id,
+                program_batch_id,
+                semester_id,
+            )
+            return Response(
+                {"detail": f"Could not load examination courses: {exc}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
 class LecturerCourseMarksView(APIView):
     """List or save draft marks for one course unit."""

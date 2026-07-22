@@ -21,6 +21,10 @@ from django.db import transaction
 from django.db.models.deletion import ProtectedError
 from django.db.utils import IntegrityError
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 from django.utils.http import urlsafe_base64_decode
 from django.shortcuts import redirect
 from django.contrib.auth.tokens import default_token_generator
@@ -60,8 +64,20 @@ class SessionView(APIView):
         from accounts.jwt_utils import session_payload
         from accounts.portal_login import assert_session_allowed_on_portal
 
-        assert_session_allowed_on_portal(request.user, request)
-        return Response(session_payload(request.user), status=status.HTTP_200_OK)
+        try:
+            assert_session_allowed_on_portal(request.user, request)
+            return Response(session_payload(request.user), status=status.HTTP_200_OK)
+        except Exception as exc:
+            # PermissionDenied / AuthenticationFailed should keep their status codes
+            from rest_framework.exceptions import APIException
+
+            if isinstance(exc, APIException):
+                raise
+            logger.exception("SessionView failed for user_id=%s", getattr(request.user, "pk", None))
+            return Response(
+                {"detail": f"Session refresh failed: {exc}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
 
 class SwitchPortalModeView(APIView):
