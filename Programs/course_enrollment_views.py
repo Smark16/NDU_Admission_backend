@@ -190,7 +190,9 @@ class EnrollStudentsInCourseUnit(APIView):
                     enrollment = StudentCourseUnitEnrollment.objects.create(
                         student=student,
                         course_unit=course_unit,
-                        status='enrolled'
+                        status="enrolled",
+                        source="admin_assigned",
+                        registration_date=timezone.now(),
                     )
                     enrolled.append({
                         'id': enrollment.id,

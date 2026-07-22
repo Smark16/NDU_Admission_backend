@@ -163,7 +163,6 @@ class LecturerCourseMarksView(APIView):
             StudentCourseUnitEnrollment.objects.filter(
                 course_unit=course_unit,
                 status="enrolled",
-                registration_date__isnull=False,
             )
             .select_related("student", "student__application", "course_result")
             .order_by("student__reg_no")
