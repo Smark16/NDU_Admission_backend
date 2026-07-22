@@ -163,15 +163,12 @@ class AdminCreateEnrollmentView(APIView):
                 {'detail': "Selected programme does not match this student's admitted programme."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        in_cohort = (
-            student.intended_program_batch_id == program_batch.id
-            or (
-                student.programme_enrollment_id
-                and student.programme_enrollment.program_batch_id == program_batch.id
-            )
-            or student.intended_program_batch_id is None
-        )
-        if not in_cohort:
+        # Block placing a student into a different cohort than their intended batch.
+        # Unset intended is allowed (first placement onto a programme batch).
+        if (
+            student.intended_program_batch_id
+            and student.intended_program_batch_id != program_batch.id
+        ):
             return Response(
                 {
                     'detail': (
