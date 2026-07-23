@@ -1,6 +1,8 @@
 """University-wide student headcount (census) vs commitment-fee status."""
 from __future__ import annotations
 
+from collections import defaultdict
+
 from django.db.models import Count
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -10,6 +12,27 @@ from admissions.faculty_scope import filter_admitted_students_for_user
 from admissions.models import AdmittedStudent
 from payments.commitment_queryset import filter_by_commitment_met
 from payments.student_payment_allocation import COMMITMENT_FEE_THRESHOLD
+
+
+def _nest_cohorts_by_batch(by_cohort: list[dict]) -> list[dict]:
+    """Group flat batch×programme rows into batches with nested programmes."""
+    grouped: dict[str, dict[str, int]] = defaultdict(dict)
+    batch_totals: dict[str, int] = defaultdict(int)
+    for row in by_cohort:
+        batch = row["intended_program_batch__name"] or "—"
+        program = row["admitted_program__name"] or "—"
+        count = int(row["count"] or 0)
+        grouped[batch][program] = count
+        batch_totals[batch] += count
+
+    by_batch = []
+    for batch, total in sorted(batch_totals.items(), key=lambda x: (-x[1], x[0])):
+        programs = [
+            {"program": program, "count": count}
+            for program, count in sorted(grouped[batch].items(), key=lambda x: (-x[1], x[0]))
+        ]
+        by_batch.append({"batch": batch, "count": total, "programs": programs})
+    return by_batch
 
 
 class UniversityHeadcountView(APIView):
@@ -56,6 +79,7 @@ class UniversityHeadcountView(APIView):
             .annotate(count=Count("id"))
             .order_by("-count")
         )
+        by_batch = _nest_cohorts_by_batch(by_cohort)
 
         unpaid_by_campus = list(
             unpaid_qs.values("admitted_campus__name")
@@ -94,6 +118,7 @@ class UniversityHeadcountView(APIView):
                     }
                     for r in by_cohort
                 ],
+                "by_batch": by_batch,
                 "unpaid_by_campus": [
                     {
                         "name": r["admitted_campus__name"] or "—",

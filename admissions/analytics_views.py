@@ -5,7 +5,7 @@ Query params: batch_id, campus_id, academic_level_id, date_from, date_to
 
 AdmittedStudent breakdowns also respect academic_level_id and application created_at dates.
 """
-from django.db.models import Count, Sum, Q, F, Value, Max, Case, When, CharField
+from django.db.models import Count, Q, F, Value, Max, Case, When, CharField
 from django.db.models.functions import TruncMonth, Trim, Lower, Coalesce
 from django.utils.dateparse import parse_date
 from rest_framework.views import APIView
@@ -18,7 +18,6 @@ from .models import Application, AdmittedStudent, Batch, AcademicLevel
 from .utils.batch_offer_filters import batch_offer_window_q
 from .utils.school_name_normalize import aggregate_top_schools
 from accounts.models import Campus
-from payments.models import ApplicationPayment
 from django.db.utils import ProgrammingError
 from Programs.models import Program
 try:
@@ -111,18 +110,6 @@ class AnalyticsDashboardView(APIView):
                 admitted_qs = admitted_qs.filter(application__created_at__date__lte=d)
         total_registered = admitted_qs.filter(is_registered=True).count()
         total_admitted_students = admitted_qs.filter(is_admitted=True).count()
-
-        # Application fee collections
-        pay_qs = ApplicationPayment.objects.all()
-        if batch_id:
-            pay_qs = pay_qs.filter(application__batch_id=batch_id)
-        if campus_id:
-            pay_qs = pay_qs.filter(application__campus_id=campus_id)
-
-        fees_collected = pay_qs.filter(status="PAID").aggregate(
-            total=Sum("amount"))["total"] or 0
-        fees_pending   = pay_qs.filter(status="PENDING").aggregate(
-            total=Sum("amount"))["total"] or 0
 
         active_batches = Batch.objects.filter(is_active=True).filter(batch_offer_window_q()).count()
 
@@ -278,8 +265,6 @@ class AnalyticsDashboardView(APIView):
                 "total_rejected":         total_rejected,
                 "total_registered":       total_registered,
                 "total_admitted_students": total_admitted_students,
-                "fees_collected":         float(fees_collected),
-                "fees_pending":           float(fees_pending),
                 "active_batches":         active_batches,
                 "apps_portal":            apps_portal,
                 "apps_direct_entry":      apps_direct_entry,
