@@ -44,23 +44,23 @@ class UniversityHeadcountView(APIView):
         by_campus = list(
             base.values("admitted_campus__name")
             .annotate(count=Count("id"))
-            .order_by("-count")[:20]
+            .order_by("-count")
         )
         by_faculty = list(
             base.values("admitted_program__faculty__name")
             .annotate(count=Count("id"))
-            .order_by("-count")[:20]
+            .order_by("-count")
         )
         by_cohort = list(
             base.values("intended_program_batch__name", "admitted_program__name")
             .annotate(count=Count("id"))
-            .order_by("-count")[:25]
+            .order_by("-count")
         )
 
         unpaid_by_campus = list(
             unpaid_qs.values("admitted_campus__name")
             .annotate(count=Count("id"))
-            .order_by("-count")[:15]
+            .order_by("-count")
         )
 
         return Response(
