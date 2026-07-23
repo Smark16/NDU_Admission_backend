@@ -12,7 +12,7 @@ from django.utils import timezone
 
 from admissions.models import AdmittedStudent, Application
 from accounts.portal_branding import get_university_display_name
-from payments.commitment_queryset import annotate_commitment_ugx_paid
+from payments.commitment_queryset import annotate_commitment_ugx_paid, filter_by_commitment_met
 from payments.models import BursarWeeklyReportSettings, TuitionLedger
 from payments.student_payment_allocation import COMMITMENT_FEE_THRESHOLD
 
@@ -53,8 +53,9 @@ def build_bursar_weekly_metrics(*, reference: date | None = None) -> dict[str, A
     """
     Build report metrics from the live portal DB.
 
-    Paid = admission_fee_paid (ops commitment flag). Amounts use annotated
-    commitment UGX paid where available.
+    Paid / not-paid headcounts use the same strict commitment check as
+    Tuition Ledger → Download paid/unpaid CSV (portal + SchoolPay ledger math,
+    not only the admission_fee_paid flag).
     """
     week_start, week_end = week_bounds_for(reference)
     settings_row = BursarWeeklyReportSettings.get_solo()
@@ -68,22 +69,38 @@ def build_bursar_weekly_metrics(*, reference: date | None = None) -> dict[str, A
 
     admitted_qs = _admitted_base()
     admitted_total = admitted_qs.count()
-    paid_qs = admitted_qs.filter(admission_fee_paid=True)
-    paid_total = paid_qs.count()
-    not_paid_total = max(admitted_total - paid_total, 0)
+    # Same definition as AdminTuitionLedgerStudentsExportView (strict=True).
+    # annotate fallback covers SQLite (Exists+Sum HAVING breaks there); Postgres uses strict.
+    try:
+        paid_ids = list(
+            filter_by_commitment_met(admitted_qs, True, strict=True).values_list("id", flat=True)
+        )
+        not_paid_total = filter_by_commitment_met(admitted_qs, False, strict=True).count()
+    except Exception:
+        _ann = annotate_commitment_ugx_paid(admitted_qs)
+        _met = Q(admission_fee_paid=True) | Q(commitment_paid_ugx__gte=threshold)
+        paid_ids = list(_ann.filter(_met).values_list("id", flat=True))
+        not_paid_total = _ann.exclude(_met).count()
+    paid_id_set = set(paid_ids)
+    paid_total = len(paid_ids)
     collection_rate = _pct(paid_total, admitted_total)
     revenue_at_risk = Decimal(not_paid_total) * threshold
 
     annotated = annotate_commitment_ugx_paid(admitted_qs)
-    total_collected = annotated.aggregate(s=Sum("commitment_paid_ugx"))["s"] or Decimal("0")
+    paid_filter = Q(pk__in=paid_id_set) if paid_id_set else Q(pk__in=[])
+    total_collected = (
+        annotated.filter(paid_filter).aggregate(s=Sum("commitment_paid_ugx"))["s"]
+        or Decimal("0")
+    )
+    flag_paid_total = admitted_qs.filter(admission_fee_paid=True).count()
 
     # Faculty breakdown
     faculty_rows_raw = list(
         annotated.values("admitted_program__faculty__name")
         .annotate(
             admitted=Count("id"),
-            paid=Count("id", filter=Q(admission_fee_paid=True)),
-            amount=Sum("commitment_paid_ugx"),
+            paid=Count("id", filter=paid_filter),
+            amount=Sum("commitment_paid_ugx", filter=paid_filter),
         )
         .order_by("-admitted")
     )
@@ -112,8 +129,8 @@ def build_bursar_weekly_metrics(*, reference: date | None = None) -> dict[str, A
         annotated.values("admitted_campus__name")
         .annotate(
             admitted=Count("id"),
-            paid=Count("id", filter=Q(admission_fee_paid=True)),
-            amount=Sum("commitment_paid_ugx"),
+            paid=Count("id", filter=paid_filter),
+            amount=Sum("commitment_paid_ugx", filter=paid_filter),
         )
         .order_by("-admitted")
     )
@@ -316,10 +333,13 @@ def build_bursar_weekly_metrics(*, reference: date | None = None) -> dict[str, A
     )
 
     reconciliation_note = (
-        f"Paid headcount uses admission_fee_paid ({paid_total:,} students). "
-        f"Amount collected uses commitment UGX annotations ({_money(total_collected)}). "
-        "If these feel out of sync, run SchoolPay sync / sync_commitment_flags — "
-        "timing differences between ledger and flags are expected until flags catch up."
+        f"Paid headcount uses the same strict commitment check as Tuition Ledger "
+        f"paid-students export ({paid_total:,} students with portal/SchoolPay credits "
+        f"≥ {_money(threshold)} or admission_fee_paid). "
+        f"Flag-only count (admission_fee_paid) is {flag_paid_total:,} — "
+        f"run sync_commitment_flags if those diverge. "
+        f"Amount collected sums commitment UGX for strictly-paid students "
+        f"({_money(total_collected)})."
     )
 
     intake_label = (settings_row.intake_label or "").strip() or "Current admitted cohort"
@@ -379,7 +399,9 @@ def build_bursar_weekly_metrics(*, reference: date | None = None) -> dict[str, A
         "top_faculty_admissions": top_faculty_admissions,
         "top_faculty_collections": top_faculty_collections,
         "source_note": (
-            "Generated from live NDU portal data (AdmittedStudent.admission_fee_paid, "
-            "commitment UGX annotations, Application pipeline, TuitionLedger)."
+            "Generated from live NDU portal data. Paid counts match Tuition Ledger "
+            "commitment export (strict portal + SchoolPay ledger check). "
+            "Application pipeline and TuitionLedger monthly trends included."
         ),
+        "flag_paid_total": flag_paid_total,
     }
