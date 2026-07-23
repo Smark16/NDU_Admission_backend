@@ -121,10 +121,15 @@ def _ledger_code_enough_exists():
 
 
 def commitment_met_q() -> Q:
-    """Full payment-math commitment check (slow on large ledgers — avoid on list pages)."""
+    """
+    Payment-math commitment check (slow on large ledgers — avoid on list pages).
+
+    Does **not** trust ``admission_fee_paid`` alone — false-positive flags would
+    inflate bursar / Tuition Ledger paid headcounts. Use ``strict=False`` when
+    the denormalized flag is intentional (bonafide lists, headcount KPIs).
+    """
     return (
-        Q(admission_fee_paid=True)
-        | _portal_enough_exists()
+        _portal_enough_exists()
         | _ledger_fk_enough_exists()
         | _ledger_code_enough_exists()
     )
@@ -142,7 +147,8 @@ def filter_by_commitment_met(
     Fast path (default, ``strict=False``): indexed ``admission_fee_paid`` only.
     Use this for bonafide / directory lists and headcount KPIs.
 
-    Strict path (``strict=True``): also sums portal + SchoolPay ledger credits.
+    Strict path (``strict=True``): portal + SchoolPay ledger credits ≥ threshold.
+    Does not treat ``admission_fee_paid`` alone as paid (avoids false-positive flags).
     Keep for finance tooling / reminder jobs — not list COUNT queries.
     """
     if commitment_met is None:

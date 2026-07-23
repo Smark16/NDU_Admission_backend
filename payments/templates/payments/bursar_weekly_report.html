@@ -120,8 +120,10 @@
   <h2>3. Commitment Fee Payment Status</h2>
   <p>{{ m.reconciliation_note }}</p>
   <p>
-    Commitment is tracked via <code>admission_fee_paid</code> and commitment UGX annotations
-    (threshold {{ m.threshold_display }}). Unique paid students = {{ m.paid_total }}.
+    Paid = portal + SchoolPay ledger credits ≥ {{ m.threshold_display }}
+    (not the <code>admission_fee_paid</code> flag alone). Unique paid students = {{ m.paid_total }}.
+    Flag-only count = {{ m.flag_paid_total }}{% if m.flag_without_ledger %}
+    ({{ m.flag_without_ledger }} flagged without ledger proof){% endif %}.
   </p>
   <p>
     This week’s ledger transactions: {{ m.payment_size.week_transactions }}

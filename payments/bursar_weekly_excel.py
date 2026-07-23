@@ -60,13 +60,15 @@ def render_bursar_weekly_excel(metrics: dict[str, Any]) -> tuple[bytes, str]:
         ("Week", f"{metrics.get('week_start')} – {metrics.get('week_end')}"),
         ("", ""),
         ("Admitted", metrics.get("admitted_total")),
-        ("Paid (strict)", metrics.get("paid_total")),
+        ("Paid (ledger/portal ≥ threshold)", metrics.get("paid_total")),
         ("Not paid", metrics.get("not_paid_total")),
         ("Collection rate %", metrics.get("collection_rate")),
         ("Total collected", metrics.get("total_collected_display")),
         ("Revenue at risk", metrics.get("revenue_at_risk_display")),
         ("Commitment threshold", metrics.get("threshold_display")),
-        ("Flag-only paid (admission_fee_paid)", metrics.get("flag_paid_total")),
+        ("Flag-only (admission_fee_paid) — do not use as paid KPI", metrics.get("flag_paid_total")),
+        ("Flagged but no ledger proof", metrics.get("flag_without_ledger")),
+        ("Ledger paid but flag still false", metrics.get("ledger_without_flag")),
         ("Applications this week", metrics.get("applications_received_week")),
         ("Pipeline pending", metrics.get("applications_pending")),
         ("Programme enrolled", metrics.get("enrolled_count")),
@@ -78,9 +80,9 @@ def render_bursar_weekly_excel(metrics: dict[str, Any]) -> tuple[bytes, str]:
     for label, value in rows:
         ws.cell(row=r, column=1, value=label)
         cell = ws.cell(row=r, column=2, value=value)
-        if label == "Paid (strict)":
+        if label.startswith("Paid (ledger"):
             cell.font = good_font
-        if label in ("Not paid", "Revenue at risk"):
+        if label in ("Not paid", "Revenue at risk", "Flagged but no ledger proof"):
             cell.font = bad_font
         r += 1
     r += 1

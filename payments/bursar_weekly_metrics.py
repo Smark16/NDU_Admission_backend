@@ -69,20 +69,20 @@ def build_bursar_weekly_metrics(*, reference: date | None = None) -> dict[str, A
 
     admitted_qs = _admitted_base()
     admitted_total = admitted_qs.count()
-    # Same definition as AdminTuitionLedgerStudentsExportView (strict=True).
+    # Same definition as AdminTuitionLedgerStudentsExportView (strict=True):
+    # portal + SchoolPay ledger credits >= threshold (not the admission_fee_paid flag alone).
     # annotate fallback covers SQLite (Exists+Sum HAVING breaks there); Postgres uses strict.
     try:
-        paid_ids = list(
+        paid_id_set = set(
             filter_by_commitment_met(admitted_qs, True, strict=True).values_list("id", flat=True)
         )
         not_paid_total = filter_by_commitment_met(admitted_qs, False, strict=True).count()
     except Exception:
         _ann = annotate_commitment_ugx_paid(admitted_qs)
-        _met = Q(admission_fee_paid=True) | Q(commitment_paid_ugx__gte=threshold)
-        paid_ids = list(_ann.filter(_met).values_list("id", flat=True))
+        _met = Q(commitment_paid_ugx__gte=threshold)
+        paid_id_set = set(_ann.filter(_met).values_list("id", flat=True))
         not_paid_total = _ann.exclude(_met).count()
-    paid_id_set = set(paid_ids)
-    paid_total = len(paid_ids)
+    paid_total = len(paid_id_set)
     collection_rate = _pct(paid_total, admitted_total)
     revenue_at_risk = Decimal(not_paid_total) * threshold
 
@@ -93,26 +93,49 @@ def build_bursar_weekly_metrics(*, reference: date | None = None) -> dict[str, A
         or Decimal("0")
     )
     flag_paid_total = admitted_qs.filter(admission_fee_paid=True).count()
-
-    # Faculty breakdown
-    faculty_rows_raw = list(
-        annotated.values("admitted_program__faculty__name")
-        .annotate(
-            admitted=Count("id"),
-            paid=Count("id", filter=paid_filter),
-            amount=Sum("commitment_paid_ugx", filter=paid_filter),
-        )
-        .order_by("-admitted")
+    flag_without_ledger = admitted_qs.filter(admission_fee_paid=True).exclude(
+        pk__in=paid_id_set
+    ).count() if paid_id_set else admitted_qs.filter(admission_fee_paid=True).count()
+    ledger_without_flag = (
+        AdmittedStudent.objects.filter(pk__in=paid_id_set, admission_fee_paid=False).count()
+        if paid_id_set
+        else 0
     )
+
+    # Faculty / campus paid headcounts from the same paid_id_set (avoids SQL Count quirks).
+    faculty_totals: dict[str, dict[str, Any]] = defaultdict(
+        lambda: {"admitted": 0, "paid": 0, "amount": Decimal("0")}
+    )
+    campus_totals: dict[str, dict[str, Any]] = defaultdict(
+        lambda: {"admitted": 0, "paid": 0, "amount": Decimal("0")}
+    )
+    for row in annotated.values(
+        "id",
+        "admitted_program__faculty__name",
+        "admitted_campus__name",
+        "commitment_paid_ugx",
+    ):
+        fac = _safe_name(row["admitted_program__faculty__name"])
+        camp = _safe_name(row["admitted_campus__name"])
+        sid = row["id"]
+        amt = Decimal(row["commitment_paid_ugx"] or 0)
+        faculty_totals[fac]["admitted"] += 1
+        campus_totals[camp]["admitted"] += 1
+        if sid in paid_id_set:
+            faculty_totals[fac]["paid"] += 1
+            campus_totals[camp]["paid"] += 1
+            faculty_totals[fac]["amount"] += amt
+            campus_totals[camp]["amount"] += amt
+
     by_faculty = []
-    for row in faculty_rows_raw:
-        admitted = int(row["admitted"] or 0)
-        paid = int(row["paid"] or 0)
+    for name, totals in sorted(faculty_totals.items(), key=lambda x: -x[1]["admitted"]):
+        admitted = int(totals["admitted"])
+        paid = int(totals["paid"])
         not_paid = max(admitted - paid, 0)
-        amount = Decimal(row["amount"] or 0)
+        amount = Decimal(totals["amount"] or 0)
         by_faculty.append(
             {
-                "name": _safe_name(row["admitted_program__faculty__name"]),
+                "name": name,
                 "admitted": admitted,
                 "paid": paid,
                 "not_paid": not_paid,
@@ -124,25 +147,15 @@ def build_bursar_weekly_metrics(*, reference: date | None = None) -> dict[str, A
             }
         )
 
-    # Campus breakdown
-    campus_rows_raw = list(
-        annotated.values("admitted_campus__name")
-        .annotate(
-            admitted=Count("id"),
-            paid=Count("id", filter=paid_filter),
-            amount=Sum("commitment_paid_ugx", filter=paid_filter),
-        )
-        .order_by("-admitted")
-    )
     by_campus = []
-    for row in campus_rows_raw:
-        admitted = int(row["admitted"] or 0)
-        paid = int(row["paid"] or 0)
+    for name, totals in sorted(campus_totals.items(), key=lambda x: -x[1]["admitted"]):
+        admitted = int(totals["admitted"])
+        paid = int(totals["paid"])
         not_paid = max(admitted - paid, 0)
-        amount = Decimal(row["amount"] or 0)
+        amount = Decimal(totals["amount"] or 0)
         by_campus.append(
             {
-                "name": _safe_name(row["admitted_campus__name"]),
+                "name": name,
                 "admitted": admitted,
                 "paid": paid,
                 "not_paid": not_paid,
@@ -333,12 +346,13 @@ def build_bursar_weekly_metrics(*, reference: date | None = None) -> dict[str, A
     )
 
     reconciliation_note = (
-        f"Paid headcount uses the same strict commitment check as Tuition Ledger "
-        f"paid-students export ({paid_total:,} students with portal/SchoolPay credits "
-        f"≥ {_money(threshold)} or admission_fee_paid). "
-        f"Flag-only count (admission_fee_paid) is {flag_paid_total:,} — "
-        f"run sync_commitment_flags if those diverge. "
-        f"Amount collected sums commitment UGX for strictly-paid students "
+        f"Paid headcount uses portal + SchoolPay ledger credits >= {_money(threshold)} "
+        f"({paid_total:,} students) — same as Tuition Ledger paid export. "
+        f"Flag-only count (admission_fee_paid) is {flag_paid_total:,}"
+        f"{f' ({flag_without_ledger:,} flagged without ledger proof)' if flag_without_ledger else ''}"
+        f"{f'; {ledger_without_flag:,} paid in ledger but flag still false' if ledger_without_flag else ''}. "
+        f"Run sync_commitment_flags to backfill missing flags. "
+        f"Amount collected sums commitment UGX for ledger-paid students "
         f"({_money(total_collected)})."
     )
 
@@ -400,8 +414,10 @@ def build_bursar_weekly_metrics(*, reference: date | None = None) -> dict[str, A
         "top_faculty_collections": top_faculty_collections,
         "source_note": (
             "Generated from live NDU portal data. Paid counts match Tuition Ledger "
-            "commitment export (strict portal + SchoolPay ledger check). "
+            "commitment export (portal + SchoolPay ledger ≥ threshold; not the flag alone). "
             "Application pipeline and TuitionLedger monthly trends included."
         ),
         "flag_paid_total": flag_paid_total,
+        "flag_without_ledger": flag_without_ledger,
+        "ledger_without_flag": ledger_without_flag,
     }
