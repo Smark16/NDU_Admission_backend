@@ -28,6 +28,7 @@ from .application_fee_exception_views import (
     VerifyApplicationFeePaymentView,
 )
 from .bursar_weekly_views import (
+    BursarWeeklyDownloadExcelView,
     BursarWeeklyDownloadPdfView,
     BursarWeeklyPreviewMetricsView,
     BursarWeeklyRecipientDetailView,
@@ -282,6 +283,7 @@ urlpatterns = [
     path('bursar_weekly/recipients/<int:pk>/test_send', BursarWeeklyRecipientTestSendView.as_view()),
     path('bursar_weekly/preview', BursarWeeklyPreviewMetricsView.as_view()),
     path('bursar_weekly/download_pdf', BursarWeeklyDownloadPdfView.as_view()),
+    path('bursar_weekly/download_excel', BursarWeeklyDownloadExcelView.as_view()),
     path('bursar_weekly/test_send', BursarWeeklyTestSendView.as_view()),
     path('bursar_weekly/send_now', BursarWeeklySendNowView.as_view()),
 ]

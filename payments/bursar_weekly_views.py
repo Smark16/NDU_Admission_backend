@@ -10,6 +10,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.erp_drf_permissions import FinanceModuleAdminPermission
+from payments.bursar_weekly_excel import render_bursar_weekly_excel
 from payments.bursar_weekly_metrics import build_bursar_weekly_metrics
 from payments.bursar_weekly_pdf import render_bursar_weekly_pdf
 from payments.bursar_weekly_send import send_bursar_report_to_email, send_bursar_weekly_report
@@ -174,6 +175,25 @@ class BursarWeeklyDownloadPdfView(APIView):
         except Exception as exc:
             return Response({"detail": f"PDF generation failed: {exc}"}, status=500)
         response = HttpResponse(pdf_bytes, content_type="application/pdf")
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return response
+
+
+class BursarWeeklyDownloadExcelView(APIView):
+    permission_classes = [FinanceModuleAdminPermission]
+
+    def get(self, request):
+        try:
+            metrics = build_bursar_weekly_metrics()
+            xlsx_bytes, filename = render_bursar_weekly_excel(metrics)
+        except DatabaseError as exc:
+            return _db_error_response(exc)
+        except Exception as exc:
+            return Response({"detail": f"Excel generation failed: {exc}"}, status=500)
+        response = HttpResponse(
+            xlsx_bytes,
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
         response["Content-Disposition"] = f'attachment; filename="{filename}"'
         return response
 

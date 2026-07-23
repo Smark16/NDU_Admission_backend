@@ -1,4 +1,4 @@
-"""Email delivery for the Bursar weekly PDF report."""
+"""Email delivery for the Bursar weekly PDF + Excel report."""
 from __future__ import annotations
 
 import logging
@@ -7,6 +7,7 @@ from typing import Any
 from django.utils import timezone
 
 from ndu_portal.send_grid import send_configurable_email
+from payments.bursar_weekly_excel import render_bursar_weekly_excel
 from payments.bursar_weekly_metrics import build_bursar_weekly_metrics
 from payments.bursar_weekly_pdf import render_bursar_weekly_pdf
 from payments.models import BursarWeeklyReportRecipient, BursarWeeklyReportSettings
@@ -22,14 +23,15 @@ def _plain_summary(metrics: dict[str, Any]) -> str:
         f"Not paid: {metrics['not_paid_total']:,}\n"
         f"Total collected: {metrics['total_collected_display']}\n"
         f"Revenue at risk: {metrics['revenue_at_risk_display']}\n\n"
-        "Full report attached as PDF."
+        "Full report attached as PDF and Excel."
     )
 
 
 def send_bursar_report_to_email(to_email: str, metrics: dict[str, Any] | None = None) -> tuple[bool, str]:
     if metrics is None:
         metrics = build_bursar_weekly_metrics()
-    pdf_bytes, filename = render_bursar_weekly_pdf(metrics)
+    pdf_bytes, pdf_filename = render_bursar_weekly_pdf(metrics)
+    xlsx_bytes, xlsx_filename = render_bursar_weekly_excel(metrics)
     subject = f"Weekly Admissions & Commitment Fee Report — {metrics['report_date']}"
     body = _plain_summary(metrics)
     ok = send_configurable_email(
@@ -40,9 +42,14 @@ def send_bursar_report_to_email(to_email: str, metrics: dict[str, Any] | None = 
         attachments=[
             {
                 "content": pdf_bytes,
-                "filename": filename,
+                "filename": pdf_filename,
                 "mime_type": "application/pdf",
-            }
+            },
+            {
+                "content": xlsx_bytes,
+                "filename": xlsx_filename,
+                "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            },
         ],
     )
     return ok, subject
