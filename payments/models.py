@@ -817,6 +817,77 @@ class ScholarshipCredit(models.Model):
         return f"Credit {self.amount} on award {self.award_id}"
 
 
+class BursarWeeklyReportSettings(models.Model):
+    """Singleton config for the weekly Bursar admissions & commitment fee PDF report."""
+
+    WEEKDAY_CHOICES = [
+        (0, "Monday"),
+        (1, "Tuesday"),
+        (2, "Wednesday"),
+        (3, "Thursday"),
+        (4, "Friday"),
+        (5, "Saturday"),
+        (6, "Sunday"),
+    ]
+
+    is_enabled = models.BooleanField(default=False)
+    schedule_day = models.PositiveSmallIntegerField(choices=WEEKDAY_CHOICES, default=0)
+    schedule_hour = models.PositiveSmallIntegerField(default=8)
+    schedule_minute = models.PositiveSmallIntegerField(default=0)
+    intake_label = models.CharField(
+        max_length=120,
+        blank=True,
+        default="",
+        help_text="Optional label shown on the PDF (e.g. AUG 2026 intake).",
+    )
+    last_sent_at = models.DateTimeField(null=True, blank=True)
+    last_sent_summary = models.CharField(max_length=255, blank=True, default="")
+    updated_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="updated_bursar_weekly_report_settings",
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Bursar weekly report settings"
+        verbose_name_plural = "Bursar weekly report settings"
+
+    @classmethod
+    def get_solo(cls):
+        obj, _ = cls.objects.get_or_create(pk=1)
+        return obj
+
+    def __str__(self):
+        return "Bursar weekly report settings"
+
+
+class BursarWeeklyReportRecipient(models.Model):
+    """Recipients of the weekly Bursar PDF report (Bursar, finance CC, etc.)."""
+
+    email = models.EmailField(unique=True)
+    name = models.CharField(max_length=120, blank=True, default="")
+    is_active = models.BooleanField(default=True)
+    notes = models.CharField(max_length=255, blank=True, default="")
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="bursar_weekly_report_recipients_created",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["email"]
+        verbose_name = "Bursar weekly report recipient"
+        verbose_name_plural = "Bursar weekly report recipients"
+
+    def __str__(self):
+        return self.name.strip() or self.email
 
 
 

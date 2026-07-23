@@ -27,6 +27,16 @@ from .application_fee_exception_views import (
     SyncUnpaidApplicationFeeView,
     VerifyApplicationFeePaymentView,
 )
+from .bursar_weekly_views import (
+    BursarWeeklyDownloadPdfView,
+    BursarWeeklyPreviewMetricsView,
+    BursarWeeklyRecipientDetailView,
+    BursarWeeklyRecipientListCreateView,
+    BursarWeeklyRecipientTestSendView,
+    BursarWeeklySendNowView,
+    BursarWeeklySettingsView,
+    BursarWeeklyTestSendView,
+)
 from .registration_lookup_views import (
     AdminRegistrationLookupDetailView,
     AdminRegistrationLookupSearchView,
@@ -263,5 +273,15 @@ urlpatterns = [
     path("transactions/", TuitionLedgerListView.as_view(), name="transactions-list"),
     path("manual-reconcile/", ManualHistoricalReconciliationView.as_view(), name="manual-reconcile"),
     path("student-transactions/", StudentTransactions.as_view(), name="student-transactions"),
-    path('export_tution/', ExportTutionExcel.as_view())
+    path('export_tution/', ExportTutionExcel.as_view()),
+
+    # Bursar weekly admissions & commitment PDF report
+    path('bursar_weekly/settings', BursarWeeklySettingsView.as_view()),
+    path('bursar_weekly/recipients', BursarWeeklyRecipientListCreateView.as_view()),
+    path('bursar_weekly/recipients/<int:pk>', BursarWeeklyRecipientDetailView.as_view()),
+    path('bursar_weekly/recipients/<int:pk>/test_send', BursarWeeklyRecipientTestSendView.as_view()),
+    path('bursar_weekly/preview', BursarWeeklyPreviewMetricsView.as_view()),
+    path('bursar_weekly/download_pdf', BursarWeeklyDownloadPdfView.as_view()),
+    path('bursar_weekly/test_send', BursarWeeklyTestSendView.as_view()),
+    path('bursar_weekly/send_now', BursarWeeklySendNowView.as_view()),
 ]

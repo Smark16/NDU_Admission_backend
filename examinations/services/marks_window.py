@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 
 from django.db import DatabaseError
+from django.db.models import QuerySet
 from django.utils import timezone
 
 from accounts.super_admin import user_is_super_admin
@@ -24,42 +25,50 @@ def user_can_override_marks_window(user) -> bool:
     )
 
 
+def _pick_most_specific(qs: QuerySet[MarksEntryWindow], course_unit: CourseUnit) -> MarksEntryWindow | None:
+    """Prefer course → semester → batch scope; newest updated wins within a scope."""
+    course_window = qs.filter(course_unit_id=course_unit.id).order_by("-updated_at").first()
+    if course_window:
+        return course_window
+
+    if course_unit.semester_id:
+        semester_window = (
+            qs.filter(semester_id=course_unit.semester_id, course_unit__isnull=True)
+            .order_by("-updated_at")
+            .first()
+        )
+        if semester_window:
+            return semester_window
+
+    return (
+        qs.filter(semester__isnull=True, course_unit__isnull=True)
+        .order_by("-updated_at")
+        .first()
+    )
+
+
 def resolve_marks_entry_window(course_unit: CourseUnit) -> MarksEntryWindow | None:
     """
-    Return the most specific active window for a course.
+    Return the most specific window for a course.
 
-    Specificity order:
-    1. Course-specific window
-    2. Semester window
-    3. Programme batch window
+    Prefers an active window. If none is active at that scope, falls back to the
+    matching inactive window so deactivation still closes lecturer entry
+    (instead of treating "no active window" as permanently open).
     """
     if not course_unit.program_batch_id:
         return None
 
     try:
-        qs = MarksEntryWindow.objects.filter(
-            is_active=True,
+        base = MarksEntryWindow.objects.filter(
             program_batch_id=course_unit.program_batch_id,
         ).select_related("program_batch", "semester", "course_unit")
 
-        course_window = qs.filter(course_unit_id=course_unit.id).order_by("-updated_at").first()
-        if course_window:
-            return course_window
+        active = _pick_most_specific(base.filter(is_active=True), course_unit)
+        if active:
+            return active
 
-        if course_unit.semester_id:
-            semester_window = (
-                qs.filter(semester_id=course_unit.semester_id, course_unit__isnull=True)
-                .order_by("-updated_at")
-                .first()
-            )
-            if semester_window:
-                return semester_window
-
-        return (
-            qs.filter(semester__isnull=True, course_unit__isnull=True)
-            .order_by("-updated_at")
-            .first()
-        )
+        # Deactivated / soft-deleted window still governs this scope → closed.
+        return _pick_most_specific(base.filter(is_active=False), course_unit)
     except DatabaseError:
         # Table/migration missing on some environments — treat as no window.
         logger.exception(
@@ -78,26 +87,30 @@ def marks_entry_status(course_unit: CourseUnit, *, user=None) -> dict:
             "marks_entry_status failed for course_unit_id=%s",
             getattr(course_unit, "pk", None),
         )
+        override = user_can_override_marks_window(user)
         return {
-            "is_open": True,
-            "can_enter": True,
-            "override": False,
-            "detail": "Marks-entry window status unavailable; entry allowed.",
+            "is_open": False,
+            "can_enter": override,
+            "override": override,
+            "detail": "Marks-entry window status unavailable; entry closed.",
             "window": None,
         }
 
     now = timezone.now()
 
     if window is None:
+        # Lecturers cannot enter until exam office opens a window.
         return {
-            "is_open": True,
-            "can_enter": True,
+            "is_open": False,
+            "can_enter": override,
             "override": override,
-            "detail": "No marks-entry window configured; entry is open.",
+            "detail": "No marks-entry window configured; entry is closed.",
             "window": None,
         }
 
-    blockers = []
+    blockers: list[str] = []
+    if not window.is_active:
+        blockers.append("Marks entry window is deactivated.")
     if window.opens_at and now < window.opens_at:
         blockers.append("Marks entry has not opened yet.")
     if window.closes_at and now > window.closes_at:

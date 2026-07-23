@@ -244,6 +244,10 @@ CELERY_BEAT_SCHEDULE = {
         "task": "admissions.tasks.celery_maybe_send_weekly_admissions_digest",
         "schedule": crontab(minute="*/15"),
     },
+    "check-weekly-bursar-report": {
+        "task": "payments.tasks.celery_maybe_send_bursar_weekly_report",
+        "schedule": crontab(minute="*/15"),
+    },
     # Hiring: auto-open drafts at published_date; auto-close after application_deadline
     "sync-job-opening-statuses": {
         "task": "hr.hiring.tasks.celery_sync_job_opening_statuses",

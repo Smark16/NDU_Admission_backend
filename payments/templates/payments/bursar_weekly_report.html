@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <style>
+    @page { size: A4; margin: 1.4cm 1.2cm; }
+    body { font-family: Helvetica, Arial, sans-serif; font-size: 10pt; color: #222; }
+    h1 { color: #1F3A5F; font-size: 16pt; margin: 0 0 4px 0; }
+    h2 { color: #1F3A5F; font-size: 12pt; border-bottom: 1px solid #1F3A5F; padding-bottom: 3px; margin-top: 16px; }
+    .meta { color: #555; font-size: 9pt; margin-bottom: 10px; }
+    .kpi-row { width: 100%; margin: 8px 0 12px 0; }
+    .kpi { background: #F2F4F7; border: 1px solid #D8DEE6; padding: 8px; text-align: center; }
+    .kpi .label { font-size: 8pt; color: #555; text-transform: uppercase; }
+    .kpi .value { font-size: 13pt; font-weight: bold; color: #1F3A5F; margin-top: 2px; }
+    .kpi .value.good { color: #1B7A3D; }
+    .kpi .value.bad { color: #A11C1C; }
+    p { margin: 6px 0; line-height: 1.35; }
+    .risk { font-weight: bold; color: #A11C1C; }
+    table { width: 100%; border-collapse: collapse; margin: 8px 0 12px 0; font-size: 9pt; }
+    th { background: #1F3A5F; color: #fff; text-align: left; padding: 5px 6px; }
+    td { padding: 4px 6px; border-bottom: 1px solid #E2E6EC; }
+    tr:nth-child(even) td { background: #EEF4FB; }
+    ul { margin: 6px 0 10px 18px; padding: 0; }
+    li { margin-bottom: 4px; }
+    .footer { margin-top: 18px; font-size: 8pt; color: #666; border-top: 1px solid #ccc; padding-top: 6px; }
+  </style>
+</head>
+<body>
+  <h1>{{ m.report_title }}</h1>
+  <div class="meta">
+    {{ m.university_name }} · {{ m.intake_label }}<br/>
+    Prepared for: <strong>{{ m.prepared_for }}</strong><br/>
+    Report date: {{ m.report_date }} · Data as of: {{ m.data_as_of }}<br/>
+    Week window: {{ m.week_start }} – {{ m.week_end }}
+  </div>
+
+  <h2>1. Executive Summary</h2>
+  {% for p in m.exec_paragraphs %}
+    <p {% if forloop.last %}class="risk"{% endif %}>{{ p }}</p>
+  {% endfor %}
+
+  <table class="kpi-row">
+    <tr>
+      <td width="33%"><div class="kpi"><div class="label">Admitted</div><div class="value">{{ m.admitted_total }}</div></div></td>
+      <td width="33%"><div class="kpi"><div class="label">Paid</div><div class="value good">{{ m.paid_total }} ({{ m.collection_rate }}%)</div></div></td>
+      <td width="33%"><div class="kpi"><div class="label">Not Paid</div><div class="value bad">{{ m.not_paid_total }}</div></div></td>
+    </tr>
+  </table>
+  <table class="kpi-row">
+    <tr>
+      <td width="33%"><div class="kpi"><div class="label">Total Collected</div><div class="value">{{ m.total_collected_display }}</div></div></td>
+      <td width="33%"><div class="kpi"><div class="label">Unique Paid</div><div class="value good">{{ m.paid_total }}</div></div></td>
+      <td width="33%"><div class="kpi"><div class="label">Revenue at Risk</div><div class="value bad">{{ m.revenue_at_risk_display }}</div></div></td>
+    </tr>
+  </table>
+
+  <h2>2. Admissions Overview</h2>
+  <p>
+    Applications this week: <strong>{{ m.applications_received_week }}</strong>.
+    Pipeline pending (submitted / under review): <strong>{{ m.applications_pending }}</strong>.
+    Programme enrolled: <strong>{{ m.enrolled_count }}</strong>; enrolment pending: <strong>{{ m.enrolment_pending }}</strong>.
+    Local: {{ m.local_count }} · International: {{ m.international_count }}.
+  </p>
+
+  <p><strong>Admitted by faculty</strong></p>
+  <table>
+    <thead>
+      <tr>
+        <th>Faculty</th><th>Admitted</th><th>Paid</th><th>Not paid</th><th>Rate</th><th>Amount</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in m.by_faculty %}
+      <tr>
+        <td>{{ r.name }}</td>
+        <td>{{ r.admitted }}</td>
+        <td>{{ r.paid }}</td>
+        <td>{{ r.not_paid }}</td>
+        <td>{{ r.collection_rate }}%</td>
+        <td>{{ r.amount_display }}</td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="6">No admitted students found.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <p><strong>By campus</strong></p>
+  <table>
+    <thead><tr><th>Campus</th><th>Admitted</th><th>Paid</th><th>Not paid</th><th>Rate</th></tr></thead>
+    <tbody>
+      {% for r in m.by_campus %}
+      <tr>
+        <td>{{ r.name }}</td><td>{{ r.admitted }}</td><td>{{ r.paid }}</td>
+        <td>{{ r.not_paid }}</td><td>{{ r.collection_rate }}%</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <p><strong>Academic level</strong> —
+    {% for r in m.by_level %}{{ r.name }}: {{ r.count }} ({{ r.pct }}%){% if not forloop.last %}; {% endif %}{% endfor %}
+  </p>
+  <p><strong>Gender</strong> —
+    {% for r in m.by_gender %}{{ r.name }}: {{ r.count }} ({{ r.pct }}%){% if not forloop.last %}; {% endif %}{% endfor %}
+  </p>
+
+  <p><strong>Monthly application trend</strong></p>
+  <table>
+    <thead><tr><th>Month</th><th>Applications</th></tr></thead>
+    <tbody>
+      {% for r in m.monthly_applications %}
+      <tr><td>{{ r.month }}</td><td>{{ r.count }}</td></tr>
+      {% empty %}
+      <tr><td colspan="2">No trend data.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <h2>3. Commitment Fee Payment Status</h2>
+  <p>{{ m.reconciliation_note }}</p>
+  <p>
+    Commitment is tracked via <code>admission_fee_paid</code> and commitment UGX annotations
+    (threshold {{ m.threshold_display }}). Unique paid students = {{ m.paid_total }}.
+  </p>
+  <p>
+    This week’s ledger transactions: {{ m.payment_size.week_transactions }}
+    (exact commitment {{ m.payment_size.exact_commitment_pct }}%,
+    above threshold {{ m.payment_size.above_commitment_pct }}%).
+  </p>
+
+  <p><strong>Payment status by faculty</strong></p>
+  <table>
+    <thead>
+      <tr>
+        <th>Faculty</th><th>Admitted</th><th>Paid</th><th>Not paid</th>
+        <th>Rate</th><th>Amount</th><th>At risk</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in m.by_faculty %}
+      <tr>
+        <td>{{ r.name }}</td>
+        <td>{{ r.admitted }}</td>
+        <td>{{ r.paid }}</td>
+        <td>{{ r.not_paid }}</td>
+        <td>{{ r.collection_rate }}%</td>
+        <td>{{ r.amount_display }}</td>
+        <td>{{ r.revenue_at_risk_display }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <p><strong>Monthly collection trend (SchoolPay ledger)</strong></p>
+  <table>
+    <thead><tr><th>Month</th><th>Transactions</th><th>Amount</th></tr></thead>
+    <tbody>
+      {% for r in m.monthly_collections %}
+      <tr><td>{{ r.month }}</td><td>{{ r.transactions }}</td><td>{{ r.amount_display }}</td></tr>
+      {% empty %}
+      <tr><td colspan="3">No ledger collections in range.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <h2>4. Key Observations</h2>
+  <ul>
+    {% for o in m.observations %}<li>{{ o }}</li>{% endfor %}
+  </ul>
+
+  <h2>5. Recommendations</h2>
+  <ul>
+    {% for r in m.recommendations %}<li>{{ r }}</li>{% endfor %}
+  </ul>
+
+  <div class="footer">{{ m.source_note }}</div>
+</body>
+</html>

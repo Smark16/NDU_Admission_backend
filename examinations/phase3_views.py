@@ -22,7 +22,11 @@ from .permissions import (
     user_can_publish_course,
 )
 from .serializers import CourseUnitResultSerializer
-from .services.import_marks import import_marks_for_course, parse_marks_workbook
+from .services.import_marks import (
+    build_marks_entry_csv,
+    import_marks_for_course,
+    parse_marks_upload,
+)
 from .services.mark_completeness import collect_incomplete_results
 from .services.marks_window import assert_marks_entry_allowed
 from .services.publish import publish_result, sync_enrollment_from_result, verify_result
@@ -35,9 +39,9 @@ from .views import _get_course_unit_or_404, _student_for_user
 
 
 class VerifyCourseMarksView(APIView):
-    """Move draft marks to verified (ready for publish)."""
+    """Move draft marks to verified/submitted (ready for a publisher to publish)."""
 
-    permission_classes = [IsAuthenticated, CanPublishResults]
+    permission_classes = [IsAuthenticated, CanEnterMarksOrAssignedLecturer]
 
     def post(self, request, course_unit_id):
         try:
@@ -45,11 +49,16 @@ class VerifyCourseMarksView(APIView):
         except CourseUnit.DoesNotExist:
             return Response({"detail": "Course unit not found."}, status=404)
 
-        if not user_can_publish_course(request.user, course_unit):
+        if not user_can_manage_course_marks(request.user, course_unit):
             return Response(
-                {"detail": "You do not have permission to verify marks for this course."},
+                {"detail": "You do not have permission to submit marks for this course."},
                 status=403,
             )
+
+        try:
+            assert_marks_entry_allowed(course_unit, user=request.user)
+        except PermissionError as exc:
+            return Response({"detail": str(exc)}, status=403)
 
         drafts = CourseUnitResult.objects.filter(
             enrollment__course_unit=course_unit,
@@ -60,7 +69,7 @@ class VerifyCourseMarksView(APIView):
         if incomplete:
             return Response(
                 {
-                    "detail": "Cannot verify: some draft results have incomplete marks.",
+                    "detail": "Cannot submit: some draft results have incomplete marks.",
                     "incomplete": incomplete,
                 },
                 status=400,
@@ -76,7 +85,7 @@ class VerifyCourseMarksView(APIView):
             {
                 "course_unit_id": course_unit_id,
                 "verified_count": verified,
-                "message": f"Verified {verified} result(s).",
+                "message": f"Submitted {verified} result(s).",
             }
         )
 
@@ -172,15 +181,33 @@ class ImportCourseMarksView(APIView):
             return Response({"detail": str(exc)}, status=403)
         upload = request.FILES.get("file")
         if not upload:
-            return Response({"detail": "Upload an Excel file as 'file'."}, status=400)
+            return Response({"detail": "Upload a CSV or Excel file as 'file'."}, status=400)
 
         try:
-            rows = parse_marks_workbook(upload.read())
+            rows = parse_marks_upload(upload.name, upload.read())
             outcome = import_marks_for_course(course_unit, rows, user=request.user)
         except Exception as exc:
             return Response({"detail": str(exc)}, status=400)
 
         return Response(outcome)
+
+
+class MarksEntryTemplateView(APIView):
+    """Download CSV template with enrolled students for marks entry."""
+
+    permission_classes = [IsAuthenticated, CanEnterMarksOrAssignedLecturer]
+
+    def get(self, request, course_unit_id):
+        course_unit = get_object_or_404(CourseUnit, pk=course_unit_id, is_active=True)
+        if not user_can_manage_course_marks(request.user, course_unit):
+            return Response(
+                {"detail": "You are not assigned to this course."},
+                status=403,
+            )
+        filename, csv_text = build_marks_entry_csv(course_unit)
+        response = HttpResponse(csv_text, content_type="text/csv; charset=utf-8")
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return response
 
 
 class StudentTranscriptView(APIView):

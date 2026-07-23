@@ -272,3 +272,38 @@ def run_bulk_commitment_reminders(cohort=None):
 def celery_bulk_send_commitment_reminders(self, cohort=None):
     """Background job: send commitment reminders for unpaid admitted students."""
     return run_bulk_commitment_reminders(cohort)
+
+
+@shared_task
+def celery_send_bursar_weekly_report(triggered_by_user_id=None):
+    from payments.bursar_weekly_send import send_bursar_weekly_report
+
+    return send_bursar_weekly_report(triggered_by_user_id=triggered_by_user_id)
+
+
+@shared_task
+def celery_maybe_send_bursar_weekly_report():
+    """Periodic check: send bursar PDF when schedule matches and not already sent this week."""
+    from payments.bursar_weekly_send import send_bursar_weekly_report
+    from payments.models import BursarWeeklyReportSettings
+
+    settings_row = BursarWeeklyReportSettings.get_solo()
+    if not settings_row.is_enabled:
+        return {"skipped": "disabled"}
+
+    now = timezone.localtime()
+    if now.weekday() != settings_row.schedule_day:
+        return {"skipped": "wrong_day"}
+    if now.hour != settings_row.schedule_hour:
+        return {"skipped": "wrong_hour"}
+    if settings_row.schedule_minute and now.minute < settings_row.schedule_minute:
+        return {"skipped": "too_early"}
+    if settings_row.schedule_minute and now.minute > settings_row.schedule_minute + 20:
+        return {"skipped": "too_late"}
+
+    if settings_row.last_sent_at:
+        last = timezone.localtime(settings_row.last_sent_at)
+        if last.isocalendar()[:2] == now.isocalendar()[:2]:
+            return {"skipped": "already_sent_this_week"}
+
+    return send_bursar_weekly_report()

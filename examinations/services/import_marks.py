@@ -1,4 +1,8 @@
-"""Import CA and exam marks from Excel (reg_no, ca_mark, exam_mark)."""
+"""Import CA and exam marks from Excel or CSV (reg_no, ca_mark, exam_mark)."""
+from __future__ import annotations
+
+import csv
+import io
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
 
@@ -7,7 +11,7 @@ from openpyxl import load_workbook
 
 from Programs.models import StudentCourseUnitEnrollment
 
-from ..models import CourseUnitResult, GradeScale
+from ..models import CourseUnitResult
 from .policy_resolver import resolve_assessment_policy
 
 
@@ -23,10 +27,32 @@ def _cell_value(cell):
 def _decimal_or_none(raw):
     if raw is None:
         return None
+    if isinstance(raw, str) and not raw.strip():
+        return None
     try:
         return Decimal(str(raw).strip())
     except (InvalidOperation, ValueError):
         raise ValidationError(f"Invalid number: {raw!r}")
+
+
+def _normalize_header(h: str) -> str:
+    return str(h or "").strip().lower().replace(" ", "_")
+
+
+def _map_headers(headers: list[str]) -> dict[str, int]:
+    col_map: dict[str, int] = {}
+    for idx, h in enumerate(headers):
+        key = _normalize_header(h)
+        if key in ("reg_no", "regno", "registration", "registration_number"):
+            col_map["reg_no"] = idx
+        elif key in ("ca", "ca_mark", "continuous_assessment", "coursework"):
+            col_map["ca_mark"] = idx
+        elif key in ("exam", "exam_mark", "examination"):
+            col_map["exam_mark"] = idx
+        # student_name / name columns are ignored on import
+    if "reg_no" not in col_map:
+        raise ValidationError("File must have a reg_no (or regno) column.")
+    return col_map
 
 
 def parse_marks_workbook(file_bytes: bytes) -> list[dict]:
@@ -38,18 +64,8 @@ def parse_marks_workbook(file_bytes: bytes) -> list[dict]:
     if not header_cells:
         raise ValidationError("Empty spreadsheet.")
 
-    headers = [str(_cell_value(c) or "").strip().lower().replace(" ", "_") for c in header_cells]
-    col_map = {}
-    for idx, h in enumerate(headers):
-        if h in ("reg_no", "regno", "registration", "registration_number"):
-            col_map["reg_no"] = idx
-        elif h in ("ca", "ca_mark", "continuous_assessment", "coursework"):
-            col_map["ca_mark"] = idx
-        elif h in ("exam", "exam_mark", "examination"):
-            col_map["exam_mark"] = idx
-
-    if "reg_no" not in col_map:
-        raise ValidationError("Sheet must have a reg_no (or regno) column.")
+    headers = [str(_cell_value(c) or "") for c in header_cells]
+    col_map = _map_headers(headers)
 
     out = []
     for cells in rows_iter:
@@ -68,6 +84,100 @@ def parse_marks_workbook(file_bytes: bytes) -> list[dict]:
         out.append(row)
     wb.close()
     return out
+
+
+def parse_marks_csv(file_bytes: bytes) -> list[dict]:
+    """Return rows from CSV: reg_no, ca_mark, exam_mark (student_name ignored)."""
+    text = file_bytes.decode("utf-8-sig")
+    reader = csv.reader(io.StringIO(text))
+    try:
+        headers = next(reader)
+    except StopIteration:
+        raise ValidationError("Empty CSV.")
+    col_map = _map_headers(headers)
+
+    out = []
+    for cells in reader:
+        if not cells:
+            continue
+        reg_idx = col_map["reg_no"]
+        reg = cells[reg_idx].strip() if reg_idx < len(cells) else ""
+        if not reg:
+            continue
+        row: dict = {"reg_no": reg}
+        if "ca_mark" in col_map and col_map["ca_mark"] < len(cells):
+            row["ca_mark"] = _decimal_or_none(cells[col_map["ca_mark"]])
+        else:
+            row["ca_mark"] = None
+        if "exam_mark" in col_map and col_map["exam_mark"] < len(cells):
+            row["exam_mark"] = _decimal_or_none(cells[col_map["exam_mark"]])
+        else:
+            row["exam_mark"] = None
+        out.append(row)
+    return out
+
+
+def parse_marks_upload(filename: str, file_bytes: bytes) -> list[dict]:
+    """Detect CSV vs Excel from filename and parse."""
+    name = (filename or "").lower()
+    if name.endswith(".csv"):
+        return parse_marks_csv(file_bytes)
+    if name.endswith((".xlsx", ".xls")):
+        return parse_marks_workbook(file_bytes)
+    sample = file_bytes[:64].lstrip()
+    if sample.lower().startswith(b"reg") or b"," in sample[:200]:
+        return parse_marks_csv(file_bytes)
+    return parse_marks_workbook(file_bytes)
+
+
+def build_marks_entry_csv(course_unit) -> tuple[str, str]:
+    """
+    CSV template for marks entry: reg_no, student_name, ca_mark, exam_mark.
+    Pre-fills existing marks when present.
+    Returns (filename, csv_text).
+    """
+    enrollments = (
+        StudentCourseUnitEnrollment.objects.filter(
+            course_unit=course_unit,
+            status="enrolled",
+        )
+        .select_related("student", "student__application", "course_result")
+        .order_by("student__reg_no")
+    )
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["reg_no", "student_name", "ca_mark", "exam_mark"])
+
+    for enr in enrollments:
+        application = getattr(enr.student, "application", None)
+        if application is not None and getattr(application, "is_revoked", False):
+            continue
+        result = getattr(enr, "course_result", None)
+        try:
+            student_name = enr.student.full_name or ""
+        except Exception:
+            student_name = ""
+        ca = ""
+        exam = ""
+        if result is not None:
+            if result.ca_mark is not None:
+                ca = str(result.ca_mark)
+            if result.exam_mark is not None:
+                exam = str(result.exam_mark)
+        writer.writerow(
+            [
+                enr.student.reg_no or "",
+                student_name,
+                ca,
+                exam,
+            ]
+        )
+
+    code = (course_unit.code or "course").replace("/", "-")
+    filename = f"marks_entry_{code}.csv"
+    # BOM so Excel opens UTF-8 names correctly
+    return filename, "\ufeff" + buf.getvalue()
 
 
 def import_marks_for_course(course_unit, rows: list[dict], *, user) -> dict:
@@ -124,6 +234,8 @@ def import_marks_for_course(course_unit, rows: list[dict], *, user) -> dict:
         result.entered_by = user
         if result.status == CourseUnitResult.STATUS_PUBLISHED:
             result.status = CourseUnitResult.STATUS_VERIFIED
+        elif result.status != CourseUnitResult.STATUS_VERIFIED:
+            result.status = CourseUnitResult.STATUS_DRAFT
 
         try:
             result.recompute()

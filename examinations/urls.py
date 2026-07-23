@@ -4,6 +4,7 @@ from .exam_card_views import ExamCardVerifyView, StudentExamCardView
 from .phase3_views import (
     BulkPublishView,
     ImportCourseMarksView,
+    MarksEntryTemplateView,
     ResultsReportView,
     StudentTranscriptView,
     VerifyCourseMarksView,
@@ -130,6 +131,11 @@ urlpatterns = [
         "courses/<int:course_unit_id>/import-marks/",
         ImportCourseMarksView.as_view(),
         name="import-course-marks",
+    ),
+    path(
+        "courses/<int:course_unit_id>/marks-entry-template/",
+        MarksEntryTemplateView.as_view(),
+        name="marks-entry-template",
     ),
     path("bulk-publish/", BulkPublishView.as_view(), name="bulk-publish"),
     path("reports/summary/", ResultsReportView.as_view(), name="results-report"),

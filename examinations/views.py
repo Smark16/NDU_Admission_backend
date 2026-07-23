@@ -98,8 +98,8 @@ class StaffExaminationCoursesView(APIView):
                         "marks_entry_status failed in staff courses list cu=%s", cu.pk
                     )
                     entry_status = {
-                        "is_open": True,
-                        "can_enter": True,
+                        "is_open": False,
+                        "can_enter": False,
                         "override": False,
                         "detail": "Marks-entry window status unavailable.",
                         "window": None,

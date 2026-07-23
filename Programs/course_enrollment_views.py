@@ -809,6 +809,7 @@ class GetLecturerCourses(APIView):
     
     def get(self, request):
         from .models import StudentCourseUnitEnrollment
+        from examinations.services.marks_window import marks_entry_status
         
         user = request.user
         
@@ -878,6 +879,7 @@ class GetLecturerCourses(APIView):
                 } if program_batch and program_batch.program else None,
                 'students_count': students_count,
                 'students': students,
+                'marks_entry': marks_entry_status(course_unit, user=user),
             })
         
         return Response({
