@@ -341,9 +341,7 @@ def _adhoc_charges_for_student(student: AdmittedStudent):
     )
 
 
-def student_finance_totals(student: AdmittedStudent) -> dict[str, Any]:
-    """Programme billing totals (payments pooled; credit applied tuition → other → ad-hoc)."""
-    alloc = build_finance_allocation(student)
+def _finance_totals_from_alloc(alloc) -> dict[str, Any]:
     return {
         "commitment_threshold": float(COMMITMENT_FEE_THRESHOLD),
         "commitment_paid_ugx": float(alloc.commitment_paid_ugx),
@@ -363,9 +361,7 @@ def student_finance_totals(student: AdmittedStudent) -> dict[str, Any]:
     }
 
 
-def student_billing_lines(student: AdmittedStudent) -> list[dict[str, Any]]:
-    """Fee lines with allocated paid/balance from the shared payment pool."""
-    alloc = build_finance_allocation(student)
+def _billing_lines_from_alloc(alloc) -> list[dict[str, Any]]:
     lines: list[dict[str, Any]] = []
     for line in alloc.demand_lines:
         if not _line_is_billable(line):
@@ -417,6 +413,26 @@ def student_billing_lines(student: AdmittedStudent) -> list[dict[str, Any]]:
                 }
             )
     return lines
+
+
+def student_finance_totals(student: AdmittedStudent) -> dict[str, Any]:
+    """Programme billing totals (payments pooled; credit applied tuition → other → ad-hoc)."""
+    return _finance_totals_from_alloc(build_finance_allocation(student))
+
+
+def student_billing_lines(student: AdmittedStudent) -> list[dict[str, Any]]:
+    """Fee lines with allocated paid/balance from the shared payment pool."""
+    return _billing_lines_from_alloc(build_finance_allocation(student))
+
+
+def student_finance_bundle(student: AdmittedStudent) -> dict[str, Any]:
+    """Totals + fee lines from one allocation (Bonafide / admin snapshots)."""
+    alloc = build_finance_allocation(student)
+    return {
+        "totals": _finance_totals_from_alloc(alloc),
+        "lines": _billing_lines_from_alloc(alloc),
+    }
+
 
 def registration_card_payment_history(
     student: AdmittedStudent, *, limit: int = 12

@@ -9,8 +9,7 @@ from admissions.models import AdmittedStudent
 from payments.registration_lookup import _course_rows_for_student
 from payments.student_portal_finance import (
     registration_card_payment_history,
-    student_billing_lines,
-    student_finance_totals,
+    student_finance_bundle,
 )
 
 logger = logging.getLogger(__name__)
@@ -128,7 +127,14 @@ def build_bonafide_portal_snapshot(student: AdmittedStudent, request=None) -> di
     """
     errors: dict[str, str] = {}
 
-    finance = _safe("finance", errors, lambda: student_finance_totals(student), {})
+    bundle = _safe(
+        "finance",
+        errors,
+        lambda: student_finance_bundle(student),
+        {"totals": {}, "lines": []},
+    )
+    finance = bundle.get("totals") or {}
+    billing = bundle.get("lines") or []
     history = _safe(
         "payment_history",
         errors,
@@ -154,7 +160,6 @@ def build_bonafide_portal_snapshot(student: AdmittedStudent, request=None) -> di
         },
     )
     courses = _safe("registered_courses", errors, lambda: _course_rows_for_student(student), [])
-    billing = _safe("billing", errors, lambda: student_billing_lines(student), [])
     portal_account = _safe(
         "portal_account",
         errors,
@@ -162,7 +167,8 @@ def build_bonafide_portal_snapshot(student: AdmittedStudent, request=None) -> di
         {"has_portal_user": False, "is_active": False, "username": None, "history": []},
     )
 
-    outstanding = [
+    # Full fee schedule breakdown (paid + outstanding) — not only unpaid lines.
+    fee_lines = [
         {
             "kind": ln.get("kind"),
             "fee_head": ln.get("fee_head"),
@@ -174,8 +180,9 @@ def build_bonafide_portal_snapshot(student: AdmittedStudent, request=None) -> di
             "status": ln.get("status"),
         }
         for ln in billing
-        if float(ln.get("balance") or 0) > 0.01
-    ][:30]
+    ][:40]
+
+    outstanding = [ln for ln in fee_lines if float(ln.get("balance") or 0) > 0.01]
 
     return {
         "student_id": student.student_id,
@@ -190,6 +197,8 @@ def build_bonafide_portal_snapshot(student: AdmittedStudent, request=None) -> di
             "commitment_paid_ugx": finance.get("commitment_paid_ugx"),
             "commitment_threshold": finance.get("commitment_threshold"),
             "payment_history": history,
+            "fee_lines": fee_lines,
+            # Keep for older clients; prefer fee_lines in UI.
             "outstanding_lines": outstanding,
         },
         "results": results,
