@@ -3164,10 +3164,10 @@ class ListAdmittedStudents(generics.ListAPIView):
             queryset = queryset.filter(admitted_campus__name=campus)
 
         if program and program != "all":
-            queryset = queryset.filter(admitted_program__name__icontains=program)
+            queryset = queryset.filter(admitted_program__name=program)
 
         if faculty and faculty != "all":
-            queryset = queryset.filter(admitted_program__faculty__name__icontains=faculty)
+            queryset = queryset.filter(admitted_program__faculty__name=faculty)
 
         # Boolean filters
         if is_registered is not None and is_registered.lower() != "all":
@@ -3266,9 +3266,9 @@ class ListBonafideStudents(generics.ListAPIView):
         if campus and campus != "all":
             queryset = queryset.filter(admitted_campus__name=campus)
         if program and program != "all":
-            queryset = queryset.filter(admitted_program__name__icontains=program)
+            queryset = queryset.filter(admitted_program__name=program)
         if faculty and faculty != "all":
-            queryset = queryset.filter(admitted_program__faculty__name__icontains=faculty)
+            queryset = queryset.filter(admitted_program__faculty__name=faculty)
         if academic_batch_id and academic_batch_id != "all":
             try:
                 queryset = queryset.filter(intended_program_batch_id=int(academic_batch_id))
@@ -3438,46 +3438,60 @@ class AdmittedStudentFilterOptionsView(APIView):
             request.user,
         )
 
-        # Campuses always from full staff scope
+        # Apply sibling filters so each dropdown stays campus/faculty/programme aware.
+        scoped = base
+        if campus and campus != "all":
+            scoped = scoped.filter(admitted_campus__name=campus)
+        if faculty and faculty != "all":
+            scoped = scoped.filter(admitted_program__faculty__name=faculty)
+        if program and program != "all":
+            scoped = scoped.filter(admitted_program__name=program)
+
+        # Campuses: respect faculty/programme selection (ignore own campus filter)
+        campus_qs = base
+        if faculty and faculty != "all":
+            campus_qs = campus_qs.filter(admitted_program__faculty__name=faculty)
+        if program and program != "all":
+            campus_qs = campus_qs.filter(admitted_program__name=program)
         campuses = sorted(
             {
                 name
-                for name in base.values_list("admitted_campus__name", flat=True)
+                for name in campus_qs.values_list("admitted_campus__name", flat=True)
                 if name
             }
         )
 
-        by_campus = base
+        # Faculties: respect campus/programme selection
+        faculty_qs = base
         if campus and campus != "all":
-            by_campus = by_campus.filter(admitted_campus__name=campus)
-
+            faculty_qs = faculty_qs.filter(admitted_campus__name=campus)
+        if program and program != "all":
+            faculty_qs = faculty_qs.filter(admitted_program__name=program)
         faculties = sorted(
             {
                 name
-                for name in by_campus.values_list(
+                for name in faculty_qs.values_list(
                     "admitted_program__faculty__name", flat=True
                 )
                 if name
             }
         )
 
-        by_faculty = by_campus
+        # Programmes: respect campus/faculty selection
+        program_qs = base
+        if campus and campus != "all":
+            program_qs = program_qs.filter(admitted_campus__name=campus)
         if faculty and faculty != "all":
-            by_faculty = by_faculty.filter(
-                admitted_program__faculty__name__icontains=faculty
-            )
-
+            program_qs = program_qs.filter(admitted_program__faculty__name=faculty)
         programs = sorted(
             {
                 name
-                for name in by_faculty.values_list("admitted_program__name", flat=True)
+                for name in program_qs.values_list("admitted_program__name", flat=True)
                 if name
             }
         )
 
-        by_program = by_faculty
-        if program and program != "all":
-            by_program = by_program.filter(admitted_program__name__icontains=program)
+        by_program = scoped
 
         batches = sorted(
             {
@@ -3494,11 +3508,9 @@ class AdmittedStudentFilterOptionsView(APIView):
         # Academic batches: programme/faculty scoped via ProgramBatch.program,
         # otherwise only cohorts already attached to students in the current scope.
         if program and program != "all":
-            pb_qs = ProgramBatch.objects.filter(program__name__icontains=program)
+            pb_qs = ProgramBatch.objects.filter(program__name=program)
         elif faculty and faculty != "all":
-            pb_qs = ProgramBatch.objects.filter(
-                program__faculty__name__icontains=faculty
-            )
+            pb_qs = ProgramBatch.objects.filter(program__faculty__name=faculty)
         else:
             batch_ids = {
                 bid
@@ -3506,6 +3518,17 @@ class AdmittedStudentFilterOptionsView(APIView):
                 if bid
             }
             pb_qs = ProgramBatch.objects.filter(pk__in=batch_ids)
+
+        # Keep academic batches campus-aware when a campus filter is active.
+        if campus and campus != "all":
+            campus_batch_ids = {
+                bid
+                for bid in by_program.values_list("intended_program_batch_id", flat=True)
+                if bid
+            }
+            pb_qs = (
+                pb_qs.filter(pk__in=campus_batch_ids) if campus_batch_ids else pb_qs.none()
+            )
 
         faculty_ids = user_faculty_ids(request.user, context="admissions")
         if faculty_ids is not None:
