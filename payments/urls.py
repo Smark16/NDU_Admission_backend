@@ -11,6 +11,10 @@ from .adhoc_views import (
     StudentBulkChargesCreateView,
     StudentExemptionChargesCreateView,
 )
+from .fee_exemption_views import (
+    StudentFeeExemptionListCreateView,
+    StudentFeeExemptionRevokeView,
+)
 from .admin_ledger_views import (
     AdminTuitionLedgerFiltersView,
     AdminTuitionLedgerStudentDetailView,
@@ -180,6 +184,16 @@ urlpatterns = [
         'admin/student/<int:student_id>/exemption_charges',
         StudentExemptionChargesCreateView.as_view(),
         name='student_exemption_charges',
+    ),
+    path(
+        'admin/student/<int:student_id>/fee_exemptions',
+        StudentFeeExemptionListCreateView.as_view(),
+        name='student_fee_exemptions',
+    ),
+    path(
+        'admin/fee_exemption/<int:pk>/revoke',
+        StudentFeeExemptionRevokeView.as_view(),
+        name='student_fee_exemption_revoke',
     ),
     path(
         'admin/charge/<int:pk>',

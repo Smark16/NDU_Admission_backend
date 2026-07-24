@@ -437,7 +437,7 @@ class AdmittedStudent(models.Model):
     is_registered = models.BooleanField(default=False)
     registration_date = models.DateTimeField(null=True, blank=True)
 
-    # Physical document verification (original hard-copy check — separate from registration)
+    # Physical document verification (original hard-copy check — after accounts clearance)
     physical_documents_verified = models.BooleanField(default=False)
     physical_documents_verified_at = models.DateTimeField(null=True, blank=True)
     physical_documents_verified_by = models.ForeignKey(
@@ -452,6 +452,26 @@ class AdmittedStudent(models.Model):
         help_text="Staff notes when documents were verified at the desk",
     )
 
+    # Accounts clearance for registration card / desk clearance after payment
+    # (required for new and continuing students before the portal registration card appears)
+    accounts_registration_cleared = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text=(
+            "Accounts confirmed payment and cleared this student. Required before the "
+            "student portal registration card is available (new and continuing students)."
+        ),
+    )
+    accounts_registration_cleared_at = models.DateTimeField(null=True, blank=True)
+    accounts_registration_cleared_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="accounts_registration_clearances",
+    )
+    accounts_registration_clearance_notes = models.TextField(blank=True)
+
     # Notes
     admission_notes = models.TextField(blank=True, help_text="Notes about the admission")
     admitted_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='admitted_students')
@@ -465,6 +485,7 @@ class AdmittedStudent(models.Model):
         verbose_name_plural = "Admitted Students"
         permissions = [
             ("verify_physical_documents", "Can verify physical admission documents"),
+            ("clear_accounts_registration", "Can clear students for registration after payment"),
             ("revoke_admission", "Can revoke admitted students"),
             ("restore_revoked_admission", "Can restore revoked admissions"),
         ]
@@ -483,6 +504,7 @@ class AdmittedStudent(models.Model):
             models.Index(fields=['admitted_batch', 'is_admitted']),
             models.Index(fields=['is_admitted']),
             models.Index(fields=['physical_documents_verified']),
+            models.Index(fields=['accounts_registration_cleared']),
             models.Index(
                 fields=['is_admitted', 'admission_fee_paid', '-created_at'],
                 name='admitted_bonafide_list_idx',

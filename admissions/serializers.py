@@ -789,6 +789,8 @@ class BonafideStudentSerializer(serializers.ModelSerializer):
     date_of_birth = serializers.DateField(source="application.date_of_birth", read_only=True)
     nationality = serializers.CharField(source="application.nationality", default="", read_only=True)
     program = serializers.CharField(source="admitted_program.name", default="", read_only=True)
+    program_id = serializers.IntegerField(source="admitted_program_id", read_only=True)
+    academic_batch_id = serializers.SerializerMethodField()
     faculty = serializers.SerializerMethodField()
     campus = serializers.CharField(source="admitted_campus.name", default="", read_only=True)
     academic_batch = serializers.SerializerMethodField()
@@ -796,6 +798,8 @@ class BonafideStudentSerializer(serializers.ModelSerializer):
     current_year_of_study = serializers.SerializerMethodField()
     current_term_number = serializers.SerializerMethodField()
     enrollment_status = serializers.SerializerMethodField()
+    registration_stage = serializers.SerializerMethodField()
+    registration_stage_label = serializers.SerializerMethodField()
 
     class Meta:
         model = AdmittedStudent
@@ -816,6 +820,8 @@ class BonafideStudentSerializer(serializers.ModelSerializer):
             "schoolpay_code",
             "campus",
             "program",
+            "program_id",
+            "academic_batch_id",
             "faculty",
             "academic_batch",
             "admission_intake",
@@ -823,6 +829,13 @@ class BonafideStudentSerializer(serializers.ModelSerializer):
             "current_year_of_study",
             "current_term_number",
             "enrollment_status",
+            "admission_fee_paid",
+            "accounts_registration_cleared",
+            "accounts_registration_cleared_at",
+            "physical_documents_verified",
+            "physical_documents_verified_at",
+            "registration_stage",
+            "registration_stage_label",
         ]
 
     def get_name(self, obj):
@@ -854,6 +867,18 @@ class BonafideStudentSerializer(serializers.ModelSerializer):
             return format_program_batch_display(intended)
         return "—"
 
+    def get_academic_batch_id(self, obj):
+        try:
+            enrollment = obj.programme_enrollment
+        except Exception:
+            enrollment = None
+        if enrollment is not None and enrollment.program_batch_id:
+            return enrollment.program_batch_id
+        intended = getattr(obj, "intended_program_batch", None)
+        if intended is not None and getattr(intended, "pk", None):
+            return intended.pk
+        return None
+
     def _enrollment(self, obj):
         try:
             return obj.programme_enrollment
@@ -871,6 +896,23 @@ class BonafideStudentSerializer(serializers.ModelSerializer):
     def get_enrollment_status(self, obj):
         enr = self._enrollment(obj)
         return getattr(enr, "status", None) if enr else None
+
+    def get_registration_stage(self, obj):
+        if obj.physical_documents_verified:
+            return "docs_verified"
+        if obj.accounts_registration_cleared:
+            return "awaiting_docs"
+        if obj.admission_fee_paid:
+            return "awaiting_accounts"
+        return "unpaid"
+
+    def get_registration_stage_label(self, obj):
+        return {
+            "unpaid": "1. Payment pending",
+            "awaiting_accounts": "2. Awaiting Accounts clear",
+            "awaiting_docs": "3. Awaiting AR (documents)",
+            "docs_verified": "Cleared — Accounts + AR done",
+        }.get(self.get_registration_stage(obj), "—")
 
 
 class BonafideStudentProfileSerializer(BonafideStudentSerializer):
@@ -897,6 +939,8 @@ class BonafideStudentProfileSerializer(BonafideStudentSerializer):
         source="application.next_of_kin_relationship", default="", read_only=True
     )
     passport_photo = serializers.SerializerMethodField()
+    accounts_registration_cleared_by_name = serializers.SerializerMethodField()
+    physical_documents_verified_by_name = serializers.SerializerMethodField()
 
     class Meta(BonafideStudentSerializer.Meta):
         fields = BonafideStudentSerializer.Meta.fields + [
@@ -911,6 +955,10 @@ class BonafideStudentProfileSerializer(BonafideStudentSerializer):
             "next_of_kin_contact",
             "next_of_kin_relationship",
             "passport_photo",
+            "accounts_registration_clearance_notes",
+            "accounts_registration_cleared_by_name",
+            "physical_documents_notes",
+            "physical_documents_verified_by_name",
         ]
 
     def get_passport_photo(self, obj):
@@ -921,6 +969,20 @@ class BonafideStudentProfileSerializer(BonafideStudentSerializer):
             return app.passport_photo.url
         except ValueError:
             return None
+
+    def get_accounts_registration_cleared_by_name(self, obj):
+        u = getattr(obj, "accounts_registration_cleared_by", None)
+        if not u:
+            return None
+        full = (getattr(u, "get_full_name", lambda: "")() or "").strip()
+        return full or getattr(u, "username", None) or getattr(u, "email", None)
+
+    def get_physical_documents_verified_by_name(self, obj):
+        u = getattr(obj, "physical_documents_verified_by", None)
+        if not u:
+            return None
+        full = (getattr(u, "get_full_name", lambda: "")() or "").strip()
+        return full or getattr(u, "username", None) or getattr(u, "email", None)
 
 
 # admission detail serializer

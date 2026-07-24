@@ -10,6 +10,7 @@ from rest_framework.exceptions import ValidationError as DRFValidationError
 from .serializers import *
 from .permissions import (
     VerifyPhysicalDocumentsPermission,
+    ClearAccountsRegistrationPermission,
     user_can_reject_application,
     user_can_approve_application,
     user_can_admit_applicant,
@@ -3292,6 +3293,23 @@ class ListBonafideStudents(generics.ListAPIView):
             elif raw in ("0", "false", "no"):
                 queryset = filter_by_commitment_met(queryset, False, strict=strict)
 
+        registration_stage = (self.request.query_params.get("registration_stage") or "").strip().lower()
+        if registration_stage and registration_stage not in ("all", ""):
+            if registration_stage == "unpaid":
+                queryset = queryset.filter(admission_fee_paid=False)
+            elif registration_stage == "awaiting_accounts":
+                queryset = queryset.filter(
+                    admission_fee_paid=True,
+                    accounts_registration_cleared=False,
+                )
+            elif registration_stage == "awaiting_docs":
+                queryset = queryset.filter(
+                    accounts_registration_cleared=True,
+                    physical_documents_verified=False,
+                )
+            elif registration_stage == "docs_verified":
+                queryset = queryset.filter(physical_documents_verified=True)
+
         queryset = filter_admitted_students_for_user(queryset, self.request.user)
         # distinct only when joins can duplicate rows (search annotate / enrollment filter)
         if search or (enrollment_status and enrollment_status != "all"):
@@ -3309,6 +3327,8 @@ class BonafideStudentDetail(generics.RetrieveAPIView):
         "intended_program_batch",
         "programme_enrollment__program_batch",
         "application",
+        "accounts_registration_cleared_by",
+        "physical_documents_verified_by",
     )
     serializer_class = BonafideStudentProfileSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
@@ -3488,6 +3508,17 @@ class MarkPhysicalDocumentsVerified(APIView):
             AdmittedStudent.objects.select_related("application"),
             pk=pk,
         )
+        assert_admitted_student_access(request.user, student)
+        if not student.accounts_registration_cleared:
+            return Response(
+                {
+                    "detail": (
+                        "Accounts must clear this student for registration "
+                        "(after confirming payment) before document verification."
+                    )
+                },
+                status=400,
+            )
         student.physical_documents_verified = True
         student.physical_documents_verified_at = timezone.now()
         student.physical_documents_verified_by = request.user
@@ -3512,12 +3543,13 @@ class MarkPhysicalDocumentsVerified(APIView):
         log_audit_event(request.user, "phys_verify", student, desc, request)
         student = AdmittedStudent.objects.select_related(
             "physical_documents_verified_by",
+            "accounts_registration_cleared_by",
             "admitted_program__faculty",
             "admitted_batch",
             "admitted_campus",
             "application__applicant",
         ).get(pk=student.pk)
-        return Response(AdmittedStudentListSerializer(student).data, status=200)
+        return Response(BonafideStudentProfileSerializer(student).data, status=200)
 
 
 class ClearPhysicalDocumentsVerification(APIView):
@@ -3531,6 +3563,7 @@ class ClearPhysicalDocumentsVerification(APIView):
                 status=400,
             )
         student = get_object_or_404(AdmittedStudent, pk=pk)
+        assert_admitted_student_access(request.user, student)
         if not student.physical_documents_verified:
             return Response({"detail": "This student is not marked as physically verified."}, status=400)
         student.physical_documents_verified = False
@@ -3556,12 +3589,133 @@ class ClearPhysicalDocumentsVerification(APIView):
         )
         student = AdmittedStudent.objects.select_related(
             "physical_documents_verified_by",
+            "accounts_registration_cleared_by",
             "admitted_program__faculty",
             "admitted_batch",
             "admitted_campus",
             "application__applicant",
         ).get(pk=student.pk)
-        return Response(AdmittedStudentListSerializer(student).data, status=200)
+        return Response(BonafideStudentProfileSerializer(student).data, status=200)
+
+
+class MarkAccountsRegistrationCleared(APIView):
+    """Accounts confirms payment and clears student for first-time registration / docs."""
+
+    permission_classes = [IsAuthenticated, ClearAccountsRegistrationPermission]
+
+    def post(self, request, pk):
+        notes = (request.data.get("notes") or "").strip()
+        student = get_object_or_404(
+            AdmittedStudent.objects.select_related("application"),
+            pk=pk,
+            is_admitted=True,
+        )
+        assert_admitted_student_access(request.user, student)
+        if not student.admission_fee_paid:
+            return Response(
+                {
+                    "detail": (
+                        "Commitment / admission fee is not marked paid yet. "
+                        "Confirm payment before clearing for registration."
+                    )
+                },
+                status=400,
+            )
+        if student.accounts_registration_cleared:
+            return Response(
+                {"detail": "Student is already cleared by accounts for registration."},
+                status=400,
+            )
+        student.accounts_registration_cleared = True
+        student.accounts_registration_cleared_at = timezone.now()
+        student.accounts_registration_cleared_by = request.user
+        if notes:
+            student.accounts_registration_clearance_notes = notes[:4000]
+        student.save(
+            update_fields=[
+                "accounts_registration_cleared",
+                "accounts_registration_cleared_at",
+                "accounts_registration_cleared_by",
+                "accounts_registration_clearance_notes",
+                "updated_at",
+            ]
+        )
+        log_audit_event(
+            request.user,
+            "accounts_clear",
+            student,
+            f"Accounts cleared for registration id={student.pk} "
+            f"student_id={student.student_id}. Notes: {notes[:500]}",
+            request,
+        )
+        student = AdmittedStudent.objects.select_related(
+            "accounts_registration_cleared_by",
+            "physical_documents_verified_by",
+            "admitted_program__faculty",
+            "admitted_batch",
+            "admitted_campus",
+            "application",
+            "programme_enrollment__program_batch",
+            "intended_program_batch",
+        ).get(pk=student.pk)
+        return Response(BonafideStudentProfileSerializer(student).data, status=200)
+
+
+class ClearAccountsRegistrationClearance(APIView):
+    permission_classes = [IsAuthenticated, ClearAccountsRegistrationPermission]
+
+    def post(self, request, pk):
+        confirm = request.data.get("confirm")
+        if confirm is not True and str(confirm).lower() not in ("true", "1", "yes"):
+            return Response(
+                {"detail": 'Send JSON body {"confirm": true} to revoke accounts clearance.'},
+                status=400,
+            )
+        student = get_object_or_404(AdmittedStudent, pk=pk, is_admitted=True)
+        assert_admitted_student_access(request.user, student)
+        if not student.accounts_registration_cleared:
+            return Response({"detail": "Student is not accounts-cleared."}, status=400)
+        if student.physical_documents_verified:
+            return Response(
+                {
+                    "detail": (
+                        "Clear document verification first before revoking accounts clearance."
+                    )
+                },
+                status=400,
+            )
+        student.accounts_registration_cleared = False
+        student.accounts_registration_cleared_at = None
+        student.accounts_registration_cleared_by = None
+        student.accounts_registration_clearance_notes = ""
+        student.save(
+            update_fields=[
+                "accounts_registration_cleared",
+                "accounts_registration_cleared_at",
+                "accounts_registration_cleared_by",
+                "accounts_registration_clearance_notes",
+                "updated_at",
+            ]
+        )
+        log_audit_event(
+            request.user,
+            "accounts_unclear",
+            student,
+            f"Accounts registration clearance revoked id={student.pk}",
+            request,
+        )
+        student = AdmittedStudent.objects.select_related(
+            "accounts_registration_cleared_by",
+            "physical_documents_verified_by",
+            "admitted_program__faculty",
+            "admitted_batch",
+            "admitted_campus",
+            "application",
+            "programme_enrollment__program_batch",
+            "intended_program_batch",
+        ).get(pk=student.pk)
+        return Response(BonafideStudentProfileSerializer(student).data, status=200)
+
 
 # update admitted students
 # class UpdateAdmittedStudent(generics.UpdateAPIView):

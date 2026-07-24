@@ -374,6 +374,19 @@ def verify_registration_card_public(request, student_id: str):
             status=status.HTTP_404_NOT_FOUND,
         )
 
+    if not getattr(student, "accounts_registration_cleared", False):
+        return Response(
+            {
+                "valid": False,
+                "detail": (
+                    "This registration card is not valid until Accounts has cleared "
+                    "the student (new and continuing students)."
+                ),
+                "accounts_registration_cleared": False,
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
     finance = student_finance_totals(student)
     registered_count = StudentCourseUnitEnrollment.objects.filter(
         student=student,

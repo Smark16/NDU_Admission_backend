@@ -78,9 +78,12 @@ def refresh_award_applied_amount(award: ScholarshipAward) -> Decimal:
 
 def demand_amount_for_fee_head(student: AdmittedStudent, fee_head: FeeHead) -> Decimal:
     """Gross demand for a fee head (billable lines only), before payment allocation."""
+    from payments.fee_exemptions import active_fee_exemptions_for_student, is_fee_head_exempted
+
     international = is_international_student(student)
     total = Decimal("0")
     fh_id = fee_head.id
+    exemptions = active_fee_exemptions_for_student(student)
 
     for rule in _rules_for_student(student):
         if rule.fee_head_id != fh_id:
@@ -93,6 +96,10 @@ def demand_amount_for_fee_head(student: AdmittedStudent, fee_head: FeeHead) -> D
 
     for rule in _applicable_other_schedule_rules(student):
         if rule.fee_head_id != fh_id:
+            continue
+        py = int(rule.payable_year_of_study) if rule.payable_year_of_study else None
+        pt = int(rule.payable_term_number) if rule.payable_term_number else None
+        if is_fee_head_exempted(exemptions, fh_id, payable_year=py, payable_term=pt):
             continue
         if not billing_date_reached(rule):
             continue

@@ -110,6 +110,13 @@ def build_registration_eligibility_payload(student: AdmittedStudent) -> dict:
     if enroll_msg:
         block_messages.append(enroll_msg)
 
+    accounts_cleared = bool(getattr(student, "accounts_registration_cleared", False))
+    if not accounts_cleared:
+        block_messages.append(
+            "Accounts has not cleared you yet. Course registration (and your registration card) "
+            "open only after Accounts confirms payment — for new and continuing students."
+        )
+
     if not tuition["tuition_eligible"]:
         block_messages.append(tuition["tuition_message"])
 
@@ -126,6 +133,7 @@ def build_registration_eligibility_payload(student: AdmittedStudent) -> dict:
         "display_currency": tuition["display_currency"],
         "tuition_check_skipped": tuition["tuition_check_skipped"],
         "tuition_eligible": tuition["tuition_eligible"],
+        "accounts_registration_cleared": accounts_cleared,
         "message": message,
         "block_messages": block_messages,
         **enroll_info,

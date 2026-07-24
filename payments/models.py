@@ -512,6 +512,82 @@ class RegistrationSettings(models.Model):
         return settings
 
 
+class StudentFeeExemption(models.Model):
+    """
+    Per-student exemption from a scheduled fee head (e.g. hostel for non-boarders).
+
+    When active, matching ``scheduled_other`` demand lines are omitted from the
+    student's balance. Null year/term = all milestones for that fee head.
+    """
+
+    student = models.ForeignKey(
+        "admissions.AdmittedStudent",
+        on_delete=models.CASCADE,
+        related_name="fee_exemptions",
+    )
+    fee_head = models.ForeignKey(
+        FeeHead,
+        on_delete=models.PROTECT,
+        related_name="student_exemptions",
+    )
+    payable_year_of_study = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        help_text="If set, only this curriculum year. Blank = all years.",
+    )
+    payable_term_number = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        help_text="If set, only this term (requires year). Blank = all terms in scope.",
+    )
+    reason = models.CharField(max_length=255, blank=True, default="")
+    is_active = models.BooleanField(default=True)
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_fee_exemptions",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    revoked_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="revoked_fee_exemptions",
+    )
+    revoked_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "Student fee exemption"
+        verbose_name_plural = "Student fee exemptions"
+        indexes = [
+            models.Index(fields=["student", "is_active"]),
+            models.Index(fields=["fee_head", "is_active"]),
+        ]
+
+    def __str__(self):
+        scope = "all milestones"
+        if self.payable_year_of_study:
+            scope = f"Y{self.payable_year_of_study}"
+            if self.payable_term_number:
+                scope += f"T{self.payable_term_number}"
+        return f"{self.student_id} / {self.fee_head.code} ({scope})"
+
+    def matches_milestone(self, payable_year: int | None, payable_term: int | None) -> bool:
+        if self.payable_year_of_study is None:
+            return True
+        if payable_year is None or int(payable_year) != int(self.payable_year_of_study):
+            return False
+        if self.payable_term_number is None:
+            return True
+        if payable_term is None:
+            return False
+        return int(payable_term) == int(self.payable_term_number)
+
+
 # ---------------------------------------------------------------------------
 # Scholarships (programmes, student awards, fee-head waivers → ledger credits)
 # ---------------------------------------------------------------------------

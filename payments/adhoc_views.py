@@ -32,6 +32,7 @@ from Programs.permissions import (
 )
 
 from .models import FeeHead, StudentTuitionPayment
+from .fee_exemptions import active_fee_exemptions_for_student, exemption_to_dict
 
 
 # ---------------------------------------------------------------------------
@@ -319,6 +320,9 @@ class StudentAdHocChargeListCreate(APIView):
             ],
             "charges":      [_charge_to_dict(c) for c in charges],
             "total_count":  charges.count(),
+            "fee_exemptions": [
+                exemption_to_dict(r) for r in active_fee_exemptions_for_student(student)
+            ],
         })
 
     def post(self, request, student_id):

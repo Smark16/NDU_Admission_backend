@@ -438,6 +438,7 @@ class ListPermissions(generics.ListAPIView):
                 "manage_admission_change_requests",
                 "revoke_admission",
                 "verify_physical_documents",
+                "clear_accounts_registration",
                 "edit_application_registration",
                 "restore_revoked_admission",
             )

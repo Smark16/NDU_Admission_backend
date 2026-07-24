@@ -114,6 +114,7 @@ def _line_is_billable(line: DemandLine) -> bool:
 
 
 def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[DemandLine]:
+    from payments.fee_exemptions import active_fee_exemptions_for_student, is_fee_head_exempted
     from payments.student_portal_finance import (
         _adhoc_charges_for_student,
         _applicable_other_schedule_rules,
@@ -124,6 +125,7 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
 
     lines: list[DemandLine] = []
     cy, ct = _student_curriculum_year_term(student)
+    exemptions = active_fee_exemptions_for_student(student)
 
     tuition_rules = sorted(_rules_for_student(student), key=_tuition_rule_sort_key)
     for rule in tuition_rules:
@@ -154,6 +156,7 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
                     "installment_number": rule.installment_number,
                     "due_date_days": rule.due_date_days,
                     "billing_date": billing_date_iso(rule),
+                    "fee_head_id": rule.fee_head_id,
                 },
             )
         )
@@ -161,6 +164,13 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
     for rule in _applicable_other_schedule_rules(student):
         py = int(rule.payable_year_of_study)
         pt = int(rule.payable_term_number)
+        if is_fee_head_exempted(
+            exemptions,
+            rule.fee_head_id,
+            payable_year=py,
+            payable_term=pt,
+        ):
+            continue
         reached = _milestone_reached(cy, ct, py, pt)
         billable = billing_date_reached(rule)
         amt, cur = effective_amount_currency(rule, international)
@@ -184,6 +194,7 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
                         rule.program_batch.name if rule.program_batch_id else None
                     ),
                     "billing_date": billing_date_iso(rule),
+                    "fee_head_id": rule.fee_head_id,
                 },
             )
         )
@@ -203,7 +214,7 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
                 description=charge.label or "Ad-hoc charge",
                 amount=amt,
                 currency=cur,
-                extra={"charge_status": charge.status},
+                extra={"charge_status": charge.status, "fee_head_id": charge.fee_head_id},
             )
         )
 

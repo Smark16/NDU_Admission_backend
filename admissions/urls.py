@@ -190,6 +190,14 @@ urlpatterns = [
         'admitted_students/<int:pk>/clear_physical_documents/',
         views.ClearPhysicalDocumentsVerification.as_view(),
     ),
+    path(
+        'admitted_students/<int:pk>/clear_accounts_registration/',
+        views.MarkAccountsRegistrationCleared.as_view(),
+    ),
+    path(
+        'admitted_students/<int:pk>/revoke_accounts_registration/',
+        views.ClearAccountsRegistrationClearance.as_view(),
+    ),
     path('delete_admission/<int:pk>/', views.DeleteAdmittedStudent.as_view()),
     path('candidate_admission/<int:admission_id>/', views.CandidateAdmission.as_view()),
     path('student-profile/pdf/<int:application_id>/', views.DownloadAdmissionPDF.as_view(), name='download_admission_pdf'),

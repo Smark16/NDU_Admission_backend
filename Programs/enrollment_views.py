@@ -331,6 +331,13 @@ class AdminListEnrollmentsView(APIView):
             except (TypeError, ValueError):
                 pass
 
+        student_id = request.query_params.get('student') or request.query_params.get('admitted_id')
+        if student_id:
+            try:
+                qs = qs.filter(student_id=int(student_id))
+            except (TypeError, ValueError):
+                pass
+
         qs = filter_programme_enrollments_for_user(qs, request.user)
 
         serializer = StudentProgrammeEnrollmentSerializer(qs, many=True)

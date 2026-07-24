@@ -775,6 +775,21 @@ class GetStudentEnrolledCourses(APIView):
             'total_registered': len(registered_courses),
             'total_courses': len(active_courses) + len(deferred_courses),
             'payment_history': registration_card_payment_history(admitted_student, limit=12),
+            'accounts_registration_cleared': bool(
+                getattr(admitted_student, "accounts_registration_cleared", False)
+            ),
+            'registration_card_available': bool(
+                getattr(admitted_student, "accounts_registration_cleared", False)
+            ),
+            'registration_card_message': (
+                None
+                if getattr(admitted_student, "accounts_registration_cleared", False)
+                else (
+                    "Your registration card is not available yet. "
+                    "Accounts must clear you after payment confirmation "
+                    "(applies to new and continuing students)."
+                )
+            ),
             **offer_letter_portal_fields(admitted_student, request),
         }, status=status.HTTP_200_OK)
 
