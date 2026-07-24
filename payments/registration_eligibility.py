@@ -96,6 +96,12 @@ def _compute_tuition_eligibility(student: AdmittedStudent, settings: Registratio
     }
 
 
+def student_tuition_eligible(student: AdmittedStudent) -> bool:
+    """True when current-term tuition payment meets RegistrationSettings minimum %."""
+    settings = RegistrationSettings.get_settings()
+    return bool(_compute_tuition_eligibility(student, settings)["tuition_eligible"])
+
+
 def build_registration_eligibility_payload(student: AdmittedStudent) -> dict:
     settings = RegistrationSettings.get_settings()
     enroll_info = get_programme_enrollment_status(student)

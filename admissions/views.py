@@ -3293,6 +3293,33 @@ class ListBonafideStudents(generics.ListAPIView):
             elif raw in ("0", "false", "no"):
                 queryset = filter_by_commitment_met(queryset, False, strict=strict)
 
+        # Narrow Accounts clearance before expensive tuition-% evaluation when both are set.
+        accounts_cleared = self.request.query_params.get("accounts_registration_cleared")
+        if accounts_cleared is not None and str(accounts_cleared).lower() not in ("all", ""):
+            raw = str(accounts_cleared).lower()
+            if raw in ("1", "true", "yes"):
+                queryset = queryset.filter(accounts_registration_cleared=True)
+            elif raw in ("0", "false", "no"):
+                queryset = queryset.filter(accounts_registration_cleared=False)
+
+        # True semester tuition % gate (registration minimum), NOT the 150k commitment fee.
+        tuition_pct_met = self.request.query_params.get("tuition_pct_met")
+        if tuition_pct_met is not None and str(tuition_pct_met).lower() not in ("all", ""):
+            from payments.tuition_pct_queryset import filter_by_tuition_pct_met
+
+            raw = str(tuition_pct_met).lower()
+            min_raw = self.request.query_params.get("tuition_pct_min")
+            min_pct = None
+            if min_raw not in (None, ""):
+                try:
+                    min_pct = float(min_raw)
+                except (TypeError, ValueError):
+                    min_pct = None
+            if raw in ("1", "true", "yes"):
+                queryset = filter_by_tuition_pct_met(queryset, True, min_pct=min_pct)
+            elif raw in ("0", "false", "no"):
+                queryset = filter_by_tuition_pct_met(queryset, False, min_pct=min_pct)
+
         registration_stage = (self.request.query_params.get("registration_stage") or "").strip().lower()
         if registration_stage and registration_stage not in ("all", ""):
             if registration_stage == "unpaid":
