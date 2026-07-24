@@ -3206,9 +3206,12 @@ class ListAdmittedStudents(generics.ListAPIView):
 
 
 class ListBonafideStudents(generics.ListAPIView):
-    """Admitted students as bonafide records: bio, identity, and placement only."""
+    """Commitment-paid admitted students (bonafide ops): bio, identity, and placement."""
 
-    queryset = AdmittedStudent.objects.filter(is_admitted=True).select_related(
+    queryset = AdmittedStudent.objects.filter(
+        is_admitted=True,
+        admission_fee_paid=True,
+    ).select_related(
         "admitted_program__faculty",
         "admitted_batch",
         "admitted_campus",
@@ -3330,13 +3333,11 @@ class ListBonafideStudents(generics.ListAPIView):
 
         registration_stage = (self.request.query_params.get("registration_stage") or "").strip().lower()
         if registration_stage and registration_stage not in ("all", ""):
+            # Bonafide is commitment-paid only; "unpaid" kept for API compatibility but empty.
             if registration_stage == "unpaid":
-                queryset = queryset.filter(admission_fee_paid=False)
+                queryset = queryset.none()
             elif registration_stage == "awaiting_accounts":
-                queryset = queryset.filter(
-                    admission_fee_paid=True,
-                    accounts_registration_cleared=False,
-                )
+                queryset = queryset.filter(accounts_registration_cleared=False)
             elif registration_stage == "awaiting_docs":
                 queryset = queryset.filter(
                     accounts_registration_cleared=True,
@@ -3437,6 +3438,12 @@ class AdmittedStudentFilterOptionsView(APIView):
             AdmittedStudent.objects.filter(is_admitted=True),
             request.user,
         )
+        # Bonafide list passes commitment_met=true so dropdowns match commitment-paid students.
+        commitment_met = (request.query_params.get("commitment_met") or "").strip().lower()
+        if commitment_met in ("1", "true", "yes"):
+            base = base.filter(admission_fee_paid=True)
+        elif commitment_met in ("0", "false", "no"):
+            base = base.filter(admission_fee_paid=False)
 
         # Apply sibling filters so each dropdown stays campus/faculty/programme aware.
         scoped = base
