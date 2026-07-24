@@ -3505,46 +3505,25 @@ class AdmittedStudentFilterOptionsView(APIView):
         from Programs.program_batch_resolution import format_program_batch_display
         from admissions.faculty_scope import user_faculty_ids
 
-        # Academic batches: programme/faculty scoped via ProgramBatch.program,
-        # otherwise only cohorts already attached to students in the current scope.
+        # Academic batches only for the selected programme (not faculty-wide / all cohorts).
         if program and program != "all":
             pb_qs = ProgramBatch.objects.filter(program__name=program)
-        elif faculty and faculty != "all":
-            pb_qs = ProgramBatch.objects.filter(program__faculty__name=faculty)
+            faculty_ids = user_faculty_ids(request.user, context="admissions")
+            if faculty_ids is not None:
+                pb_qs = (
+                    pb_qs.filter(program__faculty_id__in=faculty_ids)
+                    if faculty_ids
+                    else pb_qs.none()
+                )
+            academic_batches = [
+                {
+                    "id": pb.id,
+                    "label": format_program_batch_display(pb),
+                }
+                for pb in pb_qs.select_related("program").order_by("-start_date", "name")
+            ]
         else:
-            batch_ids = {
-                bid
-                for bid in by_program.values_list("intended_program_batch_id", flat=True)
-                if bid
-            }
-            pb_qs = ProgramBatch.objects.filter(pk__in=batch_ids)
-
-        # Keep academic batches campus-aware when a campus filter is active.
-        if campus and campus != "all":
-            campus_batch_ids = {
-                bid
-                for bid in by_program.values_list("intended_program_batch_id", flat=True)
-                if bid
-            }
-            pb_qs = (
-                pb_qs.filter(pk__in=campus_batch_ids) if campus_batch_ids else pb_qs.none()
-            )
-
-        faculty_ids = user_faculty_ids(request.user, context="admissions")
-        if faculty_ids is not None:
-            pb_qs = (
-                pb_qs.filter(program__faculty_id__in=faculty_ids)
-                if faculty_ids
-                else pb_qs.none()
-            )
-
-        academic_batches = [
-            {
-                "id": pb.id,
-                "label": format_program_batch_display(pb),
-            }
-            for pb in pb_qs.select_related("program").order_by("-start_date", "name")
-        ]
+            academic_batches = []
 
         return Response(
             {
