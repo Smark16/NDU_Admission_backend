@@ -353,15 +353,27 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
     return lines
 
 
-def _prior_line_sort_key(line: DemandLine) -> tuple:
-    start = _as_date(line.extra.get("semester_start_date")) or date.min
+def _billing_line_sort_key(line: DemandLine) -> tuple:
+    """Oldest semester first; tuition → other programme fees → scheduled (e.g. room) → ad-hoc."""
     y = line.extra.get("semester_year_of_study") or line.payable_year or 0
     t = line.extra.get("semester_term_number") or line.payable_term or 0
     try:
         yi, ti = int(y), int(t)
     except (TypeError, ValueError):
         yi, ti = 0, 0
-    return (start, yi, ti, line.kind, line.rule_id or 0, line.charge_id or 0)
+    start = _as_date(line.extra.get("semester_start_date")) or date.min
+    head = (line.fee_head or "").lower()
+    if line.kind == "tuition_structure":
+        rank = 0 if "tuition" in head else 1
+    elif line.kind == "scheduled_other":
+        rank = 2
+    else:
+        rank = 3
+    return (yi, ti, start, rank, line.rule_id or 0, line.charge_id or 0)
+
+
+def _prior_line_sort_key(line: DemandLine) -> tuple:
+    return _billing_line_sort_key(line)
 
 
 def _allocate_pools_to_lines(
@@ -394,11 +406,14 @@ def _allocate_pools_to_lines(
             key=_prior_line_sort_key,
         )
     elif target == "open":
-        ordered = [
-            ln
-            for ln in lines
-            if not ln.extra.get("prior_period_settled") and _line_is_billable(ln)
-        ]
+        ordered = sorted(
+            (
+                ln
+                for ln in lines
+                if not ln.extra.get("prior_period_settled") and _line_is_billable(ln)
+            ),
+            key=_billing_line_sort_key,
+        )
     else:
         ordered = [
             ln

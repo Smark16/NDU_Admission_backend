@@ -11,6 +11,10 @@ from .adhoc_views import (
     StudentBulkChargesCreateView,
     StudentExemptionChargesCreateView,
 )
+from .legacy_fee_import_views import (
+    LegacyFeeImportIndexView,
+    StudentLegacyFeeImportListDeleteView,
+)
 from .fee_exemption_views import (
     StudentFeeExemptionListCreateView,
     StudentFeeExemptionRevokeView,
@@ -174,6 +178,26 @@ urlpatterns = [
         'admin/student/<int:student_id>/charges',
         StudentAdHocChargeListCreate.as_view(),
         name='student_adhoc_charges',
+    ),
+    path(
+        'admin/legacy_fee_imports/',
+        LegacyFeeImportIndexView.as_view(),
+        name='legacy_fee_imports_index',
+    ),
+    path(
+        'admin/legacy_fee_imports',
+        LegacyFeeImportIndexView.as_view(),
+        name='legacy_fee_imports_index_noslash',
+    ),
+    path(
+        'admin/student/<int:student_id>/legacy_fee_imports/',
+        StudentLegacyFeeImportListDeleteView.as_view(),
+        name='student_legacy_fee_imports',
+    ),
+    path(
+        'admin/student/<int:student_id>/legacy_fee_imports',
+        StudentLegacyFeeImportListDeleteView.as_view(),
+        name='student_legacy_fee_imports_noslash',
     ),
     path(
         'admin/student/<int:student_id>/bulk_charges',

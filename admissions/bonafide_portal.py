@@ -179,6 +179,9 @@ def build_bonafide_portal_snapshot(student: AdmittedStudent, request=None) -> di
             "currency": ln.get("currency"),
             "status": ln.get("status"),
             "prior_term": bool(ln.get("prior_term")),
+            "year_of_study": ln.get("year_of_study"),
+            "term_number": ln.get("term_number"),
+            "semester_label": ln.get("semester_label"),
         }
         for ln in billing
     ][:60]

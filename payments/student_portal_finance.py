@@ -426,11 +426,28 @@ def _finance_totals_from_alloc(alloc) -> dict[str, Any]:
 
 
 def _billing_lines_from_alloc(alloc) -> list[dict[str, Any]]:
-    lines: list[dict[str, Any]] = []
+    from payments.student_payment_allocation import _billing_line_sort_key
+
+    paired: list[tuple] = []
     for line in alloc.demand_lines:
         is_prior = bool(line.extra.get("prior_period_settled"))
         if not is_prior and not _line_is_billable(line):
             continue
+
+        y = line.extra.get("semester_year_of_study") or line.payable_year
+        t = line.extra.get("semester_term_number") or line.payable_term
+        try:
+            yi = int(y) if y is not None else None
+            ti = int(t) if t is not None else None
+        except (TypeError, ValueError):
+            yi, ti = None, None
+        if yi and ti:
+            semester_label = f"Year {yi}, Term {ti}"
+            if line.extra.get("semester_name"):
+                semester_label = str(line.extra.get("semester_name"))
+        else:
+            semester_label = (line.extra.get("semester_name") or "").strip() or "Other fees"
+
         if line.kind == "tuition_structure":
             ex = line.extra
             batch_name = ex.get("program_batch_name") or ""
@@ -438,57 +455,65 @@ def _billing_lines_from_alloc(alloc) -> list[dict[str, Any]]:
             context = " · ".join(part for part in (batch_name, semester_name) if part)
             if is_prior:
                 context = (context + " · prior term").strip(" ·")
-            lines.append(
-                {
-                    "kind": "tuition_structure",
-                    "rule_id": line.rule_id,
-                    "fee_head": line.fee_head,
-                    "description": context or "Programme tuition",
-                    "amount": float(line.amount),
-                    "paid_amount": float(line.paid_amount),
-                    "balance": float(line.balance),
-                    "currency": line.currency,
-                    "status": line.status,
-                    "prior_term": is_prior,
-                }
-            )
+            row = {
+                "kind": "tuition_structure",
+                "rule_id": line.rule_id,
+                "fee_head": line.fee_head,
+                "description": context or "Programme tuition",
+                "amount": float(line.amount),
+                "paid_amount": float(line.paid_amount),
+                "balance": float(line.balance),
+                "currency": line.currency,
+                "status": line.status,
+                "prior_term": is_prior,
+                "year_of_study": yi,
+                "term_number": ti,
+                "semester_label": semester_label,
+            }
         elif line.kind == "scheduled_other":
-            lines.append(
-                {
-                    "kind": "scheduled_other_fee",
-                    "rule_id": line.rule_id,
-                    "fee_head": line.fee_head,
-                    "description": (
-                        f"{line.description} · prior term"
-                        if is_prior
-                        else line.description
-                    ),
-                    "amount": float(line.amount),
-                    "paid_amount": float(line.paid_amount),
-                    "balance": float(line.balance),
-                    "currency": line.currency,
-                    "status": line.status,
-                    "prior_term": is_prior,
-                }
-            )
+            row = {
+                "kind": "scheduled_other_fee",
+                "rule_id": line.rule_id,
+                "fee_head": line.fee_head,
+                "description": (
+                    f"{line.description} · prior term"
+                    if is_prior
+                    else line.description
+                ),
+                "amount": float(line.amount),
+                "paid_amount": float(line.paid_amount),
+                "balance": float(line.balance),
+                "currency": line.currency,
+                "status": line.status,
+                "prior_term": is_prior,
+                "year_of_study": yi,
+                "term_number": ti,
+                "semester_label": semester_label,
+            }
         elif line.kind == "ad_hoc":
             if is_prior:
                 continue
-            lines.append(
-                {
-                    "kind": "ad_hoc",
-                    "charge_id": line.charge_id,
-                    "fee_head": line.fee_head,
-                    "description": line.description,
-                    "amount": float(line.amount),
-                    "paid_amount": float(line.paid_amount),
-                    "balance": float(line.balance),
-                    "currency": line.currency,
-                    "status": line.extra.get("charge_status", line.status),
-                    "prior_term": False,
-                }
-            )
-    return lines
+            row = {
+                "kind": "ad_hoc",
+                "charge_id": line.charge_id,
+                "fee_head": line.fee_head,
+                "description": line.description,
+                "amount": float(line.amount),
+                "paid_amount": float(line.paid_amount),
+                "balance": float(line.balance),
+                "currency": line.currency,
+                "status": line.extra.get("charge_status", line.status),
+                "prior_term": False,
+                "year_of_study": yi,
+                "term_number": ti,
+                "semester_label": "Ad-hoc charges",
+            }
+        else:
+            continue
+        paired.append((line, row))
+
+    paired.sort(key=lambda item: _billing_line_sort_key(item[0]))
+    return [row for _line, row in paired]
 
 
 def student_finance_totals(student: AdmittedStudent) -> dict[str, Any]:
