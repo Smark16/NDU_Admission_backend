@@ -614,6 +614,16 @@ def _import_one_row(
         register_schoolpay=register_schoolpay,
     )
 
+    try:
+        from payments.utils.tuition_ledger_linking import relink_tuition_ledgers_for_student
+
+        relink_tuition_ledgers_for_student(admitted)
+    except Exception:
+        logger.exception(
+            "Failed to relink tuition ledgers after bulk import for student pk=%s",
+            admitted.pk,
+        )
+
     ext = _apply_import_extensions(
         admitted,
         program=program,

@@ -106,8 +106,8 @@ def apply_legacy_fee_balances(
             )
         StudentTuitionPayment.objects.create(
             student=admitted,
-            source="ad_hoc",
-            label="Legacy system — tuition paid (import)",
+            source="scholarship",
+            label="Legacy system — fees paid (import credit)",
             amount=paid_ugx,
             currency="UGX",
             payment_method="other",
@@ -118,7 +118,10 @@ def apply_legacy_fee_balances(
             paid_at=timezone.now(),
             verified_by=admitted_by,
             verified_at=timezone.now(),
-            notes="Fee balance import: legacy tuition paid.",
+            notes=(
+                "Fee balance import: legacy fees paid recorded as credit only "
+                "(not an ad-hoc charge)."
+            ),
         )
         result["fees_paid_recorded"] = True
         result["fees_paid_ugx"] = float(paid_ugx)

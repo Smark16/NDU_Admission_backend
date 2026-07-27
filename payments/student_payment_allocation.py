@@ -1,5 +1,10 @@
 """
-Pool SchoolPay + portal payments and allocate credit across fee lines (commitment = first UGX slice of tuition).
+Pool SchoolPay + portal payments and allocate credit across fee lines.
+
+Open demand is scoped to the student's current curriculum year/term so continuing
+/ batch-imported students are not charged historical tuition that would absorb
+SchoolPay credit before functional and other fees. Commitment is the first UGX
+slice of the payment pool.
 """
 from __future__ import annotations
 
@@ -105,7 +110,52 @@ def _tuition_rule_sort_key(rule: FeePlanRule) -> tuple:
     )
 
 
+def _curriculum_pair(year, term) -> tuple[int, int] | None:
+    try:
+        if year is None or term is None:
+            return None
+        y, t = int(year), int(term)
+    except (TypeError, ValueError):
+        return None
+    if y < 1 or t < 1:
+        return None
+    return y, t
+
+
+def _line_is_prior_curriculum_term(line: DemandLine, cy: int, ct: int) -> bool:
+    """True when the fee line belongs to a year/term before the student's current position."""
+    if line.kind == "tuition_structure":
+        pair = _curriculum_pair(
+            line.extra.get("semester_year_of_study"),
+            line.extra.get("semester_term_number"),
+        )
+    elif line.kind == "scheduled_other":
+        pair = _curriculum_pair(line.payable_year, line.payable_term)
+    else:
+        return False
+    if pair is None:
+        return False
+    return pair < (cy, ct)
+
+
+def _line_is_future_curriculum_term(line: DemandLine, cy: int, ct: int) -> bool:
+    if line.kind == "tuition_structure":
+        pair = _curriculum_pair(
+            line.extra.get("semester_year_of_study"),
+            line.extra.get("semester_term_number"),
+        )
+    elif line.kind == "scheduled_other":
+        pair = _curriculum_pair(line.payable_year, line.payable_term)
+    else:
+        return False
+    if pair is None:
+        return False
+    return pair > (cy, ct)
+
+
 def _line_is_billable(line: DemandLine) -> bool:
+    if line.extra.get("prior_period_settled"):
+        return False
     if not line.billing_reached:
         return False
     if line.kind == "scheduled_other" and not line.milestone_reached:
@@ -134,32 +184,38 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
             continue
         sem = rule.semester
         billable = billing_date_reached(rule)
-        lines.append(
-            DemandLine(
-                kind="tuition_structure",
-                rule_id=rule.id,
-                fee_head=rule.fee_head.name if rule.fee_head_id else "Tuition",
-                description=sem.name if sem else "Programme tuition",
-                amount=amt,
-                currency=cur,
-                billing_reached=billable,
-                extra={
-                    "semester_id": rule.semester_id,
-                    "semester_name": sem.name if sem else "",
-                    "semester_year_of_study": sem.year_of_study if sem else None,
-                    "semester_term_number": sem.term_number if sem else None,
-                    "semester_order": sem.order if sem else None,
-                    "program_batch_id": rule.program_batch_id,
-                    "program_batch_name": (
-                        rule.program_batch.name if rule.program_batch_id else None
-                    ),
-                    "installment_number": rule.installment_number,
-                    "due_date_days": rule.due_date_days,
-                    "billing_date": billing_date_iso(rule),
-                    "fee_head_id": rule.fee_head_id,
-                },
-            )
+        line = DemandLine(
+            kind="tuition_structure",
+            rule_id=rule.id,
+            fee_head=rule.fee_head.name if rule.fee_head_id else "Tuition",
+            description=sem.name if sem else "Programme tuition",
+            amount=amt,
+            currency=cur,
+            billing_reached=billable,
+            extra={
+                "semester_id": rule.semester_id,
+                "semester_name": sem.name if sem else "",
+                "semester_year_of_study": sem.year_of_study if sem else None,
+                "semester_term_number": sem.term_number if sem else None,
+                "semester_order": sem.order if sem else None,
+                "program_batch_id": rule.program_batch_id,
+                "program_batch_name": (
+                    rule.program_batch.name if rule.program_batch_id else None
+                ),
+                "installment_number": rule.installment_number,
+                "due_date_days": rule.due_date_days,
+                "billing_date": billing_date_iso(rule),
+                "fee_head_id": rule.fee_head_id,
+            },
         )
+        # Continuing / batch-imported cohorts: only current curriculum term is open.
+        # Past terms are treated as settled outside the portal so SchoolPay credit
+        # can cover current tuition + functional/other fees (not historical tuition).
+        if _line_is_prior_curriculum_term(line, cy, ct):
+            line.extra["prior_period_settled"] = True
+        elif _line_is_future_curriculum_term(line, cy, ct):
+            line.billing_reached = False
+        lines.append(line)
 
     for rule in _applicable_other_schedule_rules(student):
         py = int(rule.payable_year_of_study)
@@ -176,31 +232,36 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
         amt, cur = effective_amount_currency(rule, international)
         if amt <= 0:
             continue
-        lines.append(
-            DemandLine(
-                kind="scheduled_other",
-                rule_id=rule.id,
-                fee_head=rule.fee_head.name if rule.fee_head_id else "",
-                description=f"Year {py}, Term {pt}",
-                amount=amt,
-                currency=cur,
-                payable_year=py,
-                payable_term=pt,
-                milestone_reached=reached,
-                billing_reached=billable,
-                extra={
-                    "program_batch_id": rule.program_batch_id,
-                    "program_batch_name": (
-                        rule.program_batch.name if rule.program_batch_id else None
-                    ),
-                    "billing_date": billing_date_iso(rule),
-                    "fee_head_id": rule.fee_head_id,
-                },
-            )
+        line = DemandLine(
+            kind="scheduled_other",
+            rule_id=rule.id,
+            fee_head=rule.fee_head.name if rule.fee_head_id else "",
+            description=f"Year {py}, Term {pt}",
+            amount=amt,
+            currency=cur,
+            payable_year=py,
+            payable_term=pt,
+            milestone_reached=reached,
+            billing_reached=billable,
+            extra={
+                "program_batch_id": rule.program_batch_id,
+                "program_batch_name": (
+                    rule.program_batch.name if rule.program_batch_id else None
+                ),
+                "billing_date": billing_date_iso(rule),
+                "fee_head_id": rule.fee_head_id,
+            },
         )
+        if _line_is_prior_curriculum_term(line, cy, ct):
+            line.extra["prior_period_settled"] = True
+        lines.append(line)
 
     for charge in _adhoc_charges_for_student(student):
         if charge.is_waived:
+            continue
+        # Only open (pending) charges are demand. Completed ad-hoc rows are already paid
+        # (and completed amounts are already in the credit pool).
+        if getattr(charge, "status", None) != "pending":
             continue
         cur = _norm_ccy(charge.currency)
         amt = charge.amount or Decimal("0")
@@ -234,6 +295,12 @@ def _allocate_pools_to_lines(
         return applied
 
     for line in lines:
+        if line.extra.get("prior_period_settled"):
+            # Prior curriculum terms are outside open demand for continuing students.
+            line.paid_amount = Decimal("0")
+            line.balance = line.amount
+            line.status = "not_due"
+            continue
         if not _line_is_billable(line):
             line.paid_amount = Decimal("0")
             line.balance = line.amount
