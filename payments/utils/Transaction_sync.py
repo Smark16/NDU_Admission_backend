@@ -1,4 +1,6 @@
 from decimal import Decimal
+
+from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
 from payments.models import TuitionLedger
@@ -84,13 +86,26 @@ def reconcile_transactions(data):
         receipt_number = tx.get(
             "schoolpayReceiptNumber"
         )
+        if not receipt_number:
+            continue
 
-        payment_code = tx.get(
-            "studentPaymentCode"
-        )
+        payment_code = (tx.get("studentPaymentCode") or "").strip()
 
         # FIND STUDENT (payment code may match student_id, schoolpay_code, or reg_no)
-        student = find_admitted_student_by_payment_code(payment_code)
+        student = find_admitted_student_by_payment_code(payment_code) if payment_code else None
+
+        # DB column is NOT NULL (CharField blank=True, null=False). SchoolPay often omits reg no.
+        reg_no = (
+            (tx.get("studentRegistrationNumber") or "").strip()
+            or (getattr(student, "reg_no", None) or "").strip()
+            or ""
+        )
+
+        paid_at = parse_datetime(tx.get("paymentDateAndTime"))
+        if paid_at is None:
+            continue
+        if timezone.is_naive(paid_at):
+            paid_at = timezone.make_aware(paid_at, timezone.get_current_timezone())
 
         # CREATE TRANSACTION SAFELY
         ledger, created = (
@@ -112,11 +127,7 @@ def reconcile_transactions(data):
                         ),
 
                     "payment_date_time":
-                        parse_datetime(
-                            tx.get(
-                                "paymentDateAndTime"
-                            )
-                        ),
+                        paid_at,
 
                     "settlement_bank_code":
                         tx.get(
@@ -126,35 +137,33 @@ def reconcile_transactions(data):
                     "source_channel_trans_detail":
                         tx.get(
                             "sourceChannelTransDetail"
-                        ),
+                        ) or "",
 
                     "source_channel_transaction_id":
                         tx.get(
                             "sourceChannelTransactionId"
-                        ),
+                        ) or "",
 
                     "source_payment_channel":
                         tx.get(
                             "sourcePaymentChannel"
-                        ),
+                        ) or "",
 
                     "student_name":
                         tx.get(
                             "studentName"
-                        ),
+                        ) or "",
 
                     "student_payment_code":
                         payment_code,
 
                     "student_registration_number":
-                        tx.get(
-                            "studentRegistrationNumber"
-                        ),
+                        reg_no,
 
                     "transaction_completion_status":
                         tx.get(
                             "transactionCompletionStatus"
-                        ),
+                        ) or "Completed",
 
                     "raw_response":
                         tx,
