@@ -438,6 +438,7 @@ def _check_in_payload(session: LectureAttendanceSession | None) -> dict:
             LectureAttendanceRecord.STATUS_EXCUSED,
         ]
     ).count()
+    code = (session.check_in_token or "").strip()
     return {
         "check_in_open": session.student_check_in_open,
         "check_in_opened_at": session.check_in_opened_at.isoformat() if session.check_in_opened_at else None,
@@ -445,44 +446,40 @@ def _check_in_payload(session: LectureAttendanceSession | None) -> dict:
         "check_in_closed_at": session.check_in_closed_at.isoformat() if session.check_in_closed_at else None,
         "check_in_duration_minutes": session.check_in_duration_minutes or 30,
         "checked_in_count": checked_in,
-        "has_qr_token": bool((session.check_in_token or "").strip()) and session.student_check_in_open,
+        "has_attendance_code": bool(code) and session.student_check_in_open,
+        "attendance_code": code if session.student_check_in_open else "",
+        # Backward-compatible aliases for older clients
+        "has_qr_token": bool(code) and session.student_check_in_open,
     }
 
 
-QR_TOKEN_ROTATE_SECONDS = 30
+WRITABLE_ATTENDANCE_STATUSES = frozenset(
+    {
+        LectureAttendanceRecord.STATUS_PRESENT,
+        LectureAttendanceRecord.STATUS_ABSENT,
+    }
+)
 
 
 def _issue_check_in_token(session: LectureAttendanceSession, *, force: bool = False) -> LectureAttendanceSession:
-    """Create or rotate the QR token while check-in is open."""
+    """Issue a stable 6-digit attendance code (no rotation while open)."""
     import secrets
-    from datetime import timedelta
 
     from django.utils import timezone as dj_tz
 
-    now = dj_tz.now()
-    issued = session.check_in_token_issued_at
-    needs_rotate = force or not (session.check_in_token or "").strip()
-    if not needs_rotate and issued:
-        needs_rotate = (now - issued) >= timedelta(seconds=QR_TOKEN_ROTATE_SECONDS)
-    if not needs_rotate:
+    existing = (session.check_in_token or "").strip()
+    if not force and existing:
         return session
 
-    session.check_in_token = secrets.token_urlsafe(24)
-    session.check_in_token_issued_at = now
+    # Avoid leading zeros looking like a truncated number in some UIs — still allow 0xxxxx.
+    session.check_in_token = f"{secrets.randbelow(1_000_000):06d}"
+    session.check_in_token_issued_at = dj_tz.now()
     session.save(update_fields=["check_in_token", "check_in_token_issued_at", "updated_at"])
     return session
 
 
-def _qr_payload_for_session(session: LectureAttendanceSession) -> dict:
-    """Payload encoded in the QR (students scan this)."""
-    return {
-        "v": 1,
-        "type": "ndu_attendance",
-        "session_id": session.id,
-        "token": (session.check_in_token or "").strip(),
-        "course_code": session.course_unit.code if session.course_unit_id else "",
-        "session_date": session.session_date.isoformat() if session.session_date else "",
-    }
+def _normalize_attendance_code(raw) -> str:
+    return "".join(ch for ch in str(raw or "").strip() if ch.isalnum())
 
 
 def _serialize_session(session: LectureAttendanceSession, *, include_records: bool = False) -> dict:
@@ -627,7 +624,9 @@ def _roster_payload(
         "min_attendance_percent_to_sit_exam": min_attendance_percent_to_sit_exam(),
         "is_locked": bool(session and session.locked_at),
         "status_choices": [
-            {"value": value, "label": label} for value, label in LectureAttendanceRecord.STATUS_CHOICES
+            {"value": value, "label": label}
+            for value, label in LectureAttendanceRecord.STATUS_CHOICES
+            if value in WRITABLE_ATTENDANCE_STATUSES
         ],
         **_check_in_payload(session),
     }
@@ -680,12 +679,12 @@ def _save_session(
         if not status_code:
             clear_student_ids.add(student_id)
             continue
-        if status_code not in VALID_STATUSES:
+        if status_code not in WRITABLE_ATTENDANCE_STATUSES:
             raise ValueError(
                 f"Invalid status for student {student_id}. "
-                f"Use one of: {', '.join(sorted(VALID_STATUSES))}."
+                "Use present or absent only."
             )
-        # Lecturer/admin save always owns the mark (overrides QR / self-check-in).
+        # Lecturer/admin save always owns the mark (overrides code / self-check-in).
         cleaned_records.append(
             {
                 "student_id": student_id,
@@ -744,11 +743,7 @@ def _save_session(
                         remark=row["remark"],
                         marked_via=via,
                         checked_in_at=now
-                        if row["status"]
-                        in (
-                            LectureAttendanceRecord.STATUS_PRESENT,
-                            LectureAttendanceRecord.STATUS_LATE,
-                        )
+                        if row["status"] == LectureAttendanceRecord.STATUS_PRESENT
                         else None,
                     )
                 )
@@ -877,7 +872,7 @@ def _close_check_in(session: LectureAttendanceSession) -> LectureAttendanceSessi
 
 
 def _lock_session(session: LectureAttendanceSession) -> LectureAttendanceSession:
-    """Finalize attendance: close QR registration and prevent further edits."""
+    """Finalize attendance: close student registration and prevent further edits."""
     if session.student_check_in_open or session.check_in_opened_at:
         session = _close_check_in(session)
     if session.locked_at:
@@ -1429,7 +1424,7 @@ class LecturerAttendanceOpenCheckInView(APIView):
 
 
 class LecturerAttendanceCheckInQrView(APIView):
-    """Return / rotate the QR payload for an open check-in window (projector display)."""
+    """Return the stable attendance code for an open check-in window."""
 
     permission_classes = [IsAuthenticated]
 
@@ -1466,10 +1461,9 @@ class LecturerAttendanceCheckInQrView(APIView):
                 },
                 status=400,
             )
-        session = _issue_check_in_token(session)
-        payload = _qr_payload_for_session(session)
-        import json
-
+        # Never rotate — only ensure a code exists (e.g. after reopen edge cases).
+        session = _issue_check_in_token(session, force=False)
+        code = (session.check_in_token or "").strip()
         return Response(
             {
                 "session_id": session.id,
@@ -1487,13 +1481,11 @@ class LecturerAttendanceCheckInQrView(APIView):
                         LectureAttendanceRecord.STATUS_EXCUSED,
                     ]
                 ).count(),
-                "token": session.check_in_token,
+                "attendance_code": code,
+                "token": code,
                 "token_issued_at": session.check_in_token_issued_at.isoformat()
                 if session.check_in_token_issued_at
                 else None,
-                "rotate_seconds": QR_TOKEN_ROTATE_SECONDS,
-                "qr_payload": json.dumps(payload, separators=(",", ":")),
-                "qr_data": payload,
             }
         )
 
@@ -2036,11 +2028,13 @@ class AdminAttendanceMissingView(APIView):
 
 
 class StudentAttendanceCheckInView(APIView):
-    """Student marks themselves present while the lecturer window is open."""
+    """Student marks themselves present with the lecturer's attendance code."""
 
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        from datetime import timedelta
+
         from django.utils import timezone as dj_tz
         from payments.student_portal_finance import get_admitted_student_for_user
 
@@ -2048,75 +2042,98 @@ class StudentAttendanceCheckInView(APIView):
         if not admitted:
             return Response({"detail": "Admitted student profile not found."}, status=404)
 
-        session_id = request.data.get("session_id")
+        code = _normalize_attendance_code(
+            request.data.get("code") or request.data.get("token")
+        )
+        if not code:
+            return Response(
+                {
+                    "detail": (
+                        "Enter the attendance code from your lecturer. "
+                        "If you do not have it, ask them to mark you present on the roster."
+                    )
+                },
+                status=400,
+            )
+
+        enrolled_cu_ids = list(
+            StudentCourseUnitEnrollment.objects.filter(
+                student=admitted, status="enrolled"
+            ).values_list("course_unit_id", flat=True)
+        )
+        if not enrolled_cu_ids:
+            return Response({"detail": "You are not enrolled in any course units."}, status=403)
+
         session = None
+        session_id = request.data.get("session_id")
         if session_id:
             session = (
                 LectureAttendanceSession.objects.select_related("course_unit")
-                .filter(pk=session_id)
+                .filter(pk=session_id, course_unit_id__in=enrolled_cu_ids)
                 .first()
             )
-        else:
-            try:
-                course_unit_id = int(request.data.get("course_unit_id") or 0)
-            except (TypeError, ValueError):
-                course_unit_id = 0
-            session_date = _parse_date(request.data.get("session_date") or request.data.get("date"))
-            if course_unit_id and session_date:
-                session = (
-                    LectureAttendanceSession.objects.filter(
-                        course_unit_id=course_unit_id, session_date=session_date
-                    )
-                    .select_related("course_unit")
-                    .first()
+            if not session:
+                return Response({"detail": "Attendance session not found."}, status=404)
+            if not session.student_check_in_open:
+                return Response(
+                    {
+                        "detail": (
+                            "Registration is closed. If you attended, ask the lecturer "
+                            "to mark you present on the roster."
+                        )
+                    },
+                    status=400,
                 )
-
-        if not session:
-            return Response({"detail": "Attendance session not found."}, status=404)
-
-        enrolled = StudentCourseUnitEnrollment.objects.filter(
-            student=admitted, course_unit=session.course_unit, status="enrolled"
-        ).exists()
-        if not enrolled:
-            return Response({"detail": "You are not enrolled in this course."}, status=403)
-
-        if not session.student_check_in_open:
-            return Response(
-                {
-                    "detail": (
-                        "Self-check-in is closed. If you attended, ask the lecturer "
-                        "to mark you present (or sign the paper register)."
-                    )
-                },
-                status=400,
+            current = _normalize_attendance_code(session.check_in_token)
+            if not current or code != current:
+                return Response(
+                    {
+                        "detail": (
+                            "That attendance code is incorrect or no longer valid. "
+                            "Ask the lecturer for the current code."
+                        )
+                    },
+                    status=400,
+                )
+        else:
+            today = timezone_today()
+            candidates = list(
+                LectureAttendanceSession.objects.filter(
+                    course_unit_id__in=enrolled_cu_ids,
+                    session_date__gte=today - timedelta(days=1),
+                    session_date__lte=today,
+                    check_in_opened_at__isnull=False,
+                    check_in_token=code,
+                )
+                .select_related("course_unit")
+                .order_by("-session_date", "-id")
             )
-
-        token = str(request.data.get("token") or "").strip()
-        if not token:
-            return Response(
-                {
-                    "detail": (
-                        "Scan the lecturer's QR code to check in. "
-                        "If you do not have a smartphone, go to the lecturer to be marked present."
-                    )
-                },
-                status=400,
-            )
-        current = (session.check_in_token or "").strip()
-        if not current or token != current:
-            return Response(
-                {
-                    "detail": (
-                        "This QR code is expired or invalid. Ask the lecturer to show "
-                        "the current code on the screen. Without a phone, go to the lecturer."
-                    )
-                },
-                status=400,
-            )
+            open_matches = [s for s in candidates if s.student_check_in_open]
+            if not open_matches:
+                return Response(
+                    {
+                        "detail": (
+                            "No open class matches that code. Check the code, "
+                            "or ask the lecturer if registration is still open."
+                        )
+                    },
+                    status=400,
+                )
+            if len(open_matches) > 1:
+                return Response(
+                    {
+                        "detail": (
+                            "More than one open class uses that code. "
+                            "Ask your lecturer which course to check in for."
+                        )
+                    },
+                    status=400,
+                )
+            session = open_matches[0]
 
         now = dj_tz.now()
         marked_via = LectureAttendanceRecord.SOURCE_QR
-        remark = "QR scan check-in"
+        remark = "Attendance code check-in"
         rec, created = LectureAttendanceRecord.objects.get_or_create(
             attendance_session=session,
             student=admitted,
@@ -2155,6 +2172,8 @@ class StudentAttendanceCheckInView(APIView):
                         "detail": "You are already marked for this class.",
                         "status": rec.status,
                         "status_label": STATUS_LABELS.get(rec.status, ""),
+                        "session_id": session.id,
+                        "course_code": session.course_unit.code,
                     }
                 )
             rec.status = LectureAttendanceRecord.STATUS_PRESENT
@@ -2170,6 +2189,8 @@ class StudentAttendanceCheckInView(APIView):
             {
                 "detail": "Attendance recorded. You are marked present.",
                 "session_id": session.id,
+                "course_code": session.course_unit.code,
+                "course_name": session.course_unit.name,
                 "status": LectureAttendanceRecord.STATUS_PRESENT,
                 "status_label": "Present",
                 "checked_in_at": now.isoformat(),

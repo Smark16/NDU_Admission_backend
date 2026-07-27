@@ -3,13 +3,18 @@ Pool SchoolPay + portal payments and allocate credit across fee lines.
 
 Open demand is scoped to the student's current curriculum year/term so continuing
 / batch-imported students are not charged historical tuition that would absorb
-SchoolPay credit before functional and other fees. Commitment is the first UGX
-slice of the payment pool.
+SchoolPay credit before functional and other fees.
+
+When prior terms are treated as settled outside the portal, only payments dated
+on/after the current term start (semester start / billing date) are applied to
+open demand — so historical SchoolPay balances do not mark the current term paid.
+Commitment still uses the full UGX credit pool.
 """
 from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -66,14 +71,42 @@ def _norm_ccy(currency: str | None) -> str:
     return (currency or "UGX").strip()[:3].upper() or "UGX"
 
 
-def payment_credits_by_currency(student: AdmittedStudent) -> dict[str, Decimal]:
-    """Completed portal payments + SchoolPay ledger, deduplicated by receipt/reference."""
+def _as_date(value) -> date | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        return None
+
+
+def payment_credits_by_currency(
+    student: AdmittedStudent,
+    *,
+    on_or_after: date | None = None,
+) -> dict[str, Decimal]:
+    """Completed portal payments + SchoolPay ledger, deduplicated by receipt/reference.
+
+    When ``on_or_after`` is set, only payments on/after that date count (used so
+    continuing students' historical SchoolPay credit does not clear the current term).
+    """
     out: defaultdict[str, Decimal] = defaultdict(Decimal)
     seen: set[str] = set()
 
     for p in StudentTuitionPayment.objects.filter(
         student=student, status="completed", is_waived=False
     ):
+        if on_or_after is not None:
+            paid_d = _as_date(p.paid_at) or _as_date(p.created_at)
+            if paid_d is None or paid_d < on_or_after:
+                continue
         ref = (p.receipt_number or p.payment_reference or p.transaction_id or "").strip()
         key = f"stp:{ref}" if ref else f"stp:id:{p.id}"
         if key in seen:
@@ -85,6 +118,10 @@ def payment_credits_by_currency(student: AdmittedStudent) -> dict[str, Decimal]:
     for row in tuition_ledger_queryset_for_student(student).filter(
         transaction_completion_status="Completed"
     ):
+        if on_or_after is not None:
+            paid_d = _as_date(row.payment_date_time)
+            if paid_d is None or paid_d < on_or_after:
+                continue
         ref = (row.schoolpay_receipt_number or row.source_channel_transaction_id or "").strip()
         key = f"led:{ref}" if ref else f"led:id:{row.id}"
         if key in seen:
@@ -93,6 +130,24 @@ def payment_credits_by_currency(student: AdmittedStudent) -> dict[str, Decimal]:
         out["UGX"] += row.amount or Decimal("0")
 
     return dict(out)
+
+
+def _open_demand_credit_cutoff(lines: list[DemandLine]) -> date | None:
+    """
+    If prior curriculum terms were settled outside the portal, only payments from
+    the current term window should clear open demand.
+    """
+    if not any(ln.extra.get("prior_period_settled") for ln in lines):
+        return None
+    cutoffs: list[date] = []
+    for ln in lines:
+        if not _line_is_billable(ln):
+            continue
+        for key in ("semester_start_date", "billing_date"):
+            d = _as_date(ln.extra.get(key))
+            if d is not None:
+                cutoffs.append(d)
+    return min(cutoffs) if cutoffs else None
 
 
 def _tuition_rule_sort_key(rule: FeePlanRule) -> tuple:
@@ -198,6 +253,9 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
                 "semester_year_of_study": sem.year_of_study if sem else None,
                 "semester_term_number": sem.term_number if sem else None,
                 "semester_order": sem.order if sem else None,
+                "semester_start_date": (
+                    sem.start_date.isoformat() if sem and sem.start_date else None
+                ),
                 "program_batch_id": rule.program_batch_id,
                 "program_batch_name": (
                     rule.program_batch.name if rule.program_batch_id else None
@@ -209,8 +267,8 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
             },
         )
         # Continuing / batch-imported cohorts: only current curriculum term is open.
-        # Past terms are treated as settled outside the portal so SchoolPay credit
-        # can cover current tuition + functional/other fees (not historical tuition).
+        # Past terms are outside open demand; credits for open demand are date-scoped
+        # separately so historical SchoolPay does not clear the current term.
         if _line_is_prior_curriculum_term(line, cy, ct):
             line.extra["prior_period_settled"] = True
         elif _line_is_future_curriculum_term(line, cy, ct):
@@ -318,9 +376,15 @@ def _allocate_pools_to_lines(
 
 def build_finance_allocation(student: AdmittedStudent) -> FinanceAllocation:
     international = is_international_student(student)
-    credits = payment_credits_by_currency(student)
+    credits_all = payment_credits_by_currency(student)
     lines = _build_demand_lines(student, international)
-    _allocate_pools_to_lines(lines, credits)
+    cutoff = _open_demand_credit_cutoff(lines)
+    credits_open = (
+        payment_credits_by_currency(student, on_or_after=cutoff)
+        if cutoff is not None
+        else credits_all
+    )
+    _allocate_pools_to_lines(lines, credits_open)
 
     required_by: defaultdict[str, Decimal] = defaultdict(Decimal)
     for line in lines:
@@ -339,11 +403,12 @@ def build_finance_allocation(student: AdmittedStudent) -> FinanceAllocation:
         primary = "USD" if international else "UGX"
 
     total_required = required_by.get(primary, Decimal("0"))
-    total_paid = credits.get(primary, Decimal("0"))
+    # Paid toward open demand only (scoped credits), not the full historical pool.
+    total_paid = credits_open.get(primary, Decimal("0"))
     balance = max(total_required - total_paid, Decimal("0"))
     pct = float((total_paid / total_required * Decimal("100"))) if total_required > 0 else 0.0
 
-    ugx_credit = credits.get("UGX", Decimal("0"))
+    ugx_credit = credits_all.get("UGX", Decimal("0"))
     commitment_paid = min(ugx_credit, COMMITMENT_FEE_THRESHOLD)
     admission_paid = bool(getattr(student, "admission_fee_paid", False))
     commitment_met = commitment_paid >= COMMITMENT_FEE_THRESHOLD or admission_paid
@@ -366,12 +431,12 @@ def build_finance_allocation(student: AdmittedStudent) -> FinanceAllocation:
         and line.currency == primary
     )
 
-    paid_by = {k: float(v) for k, v in credits.items()}
+    paid_by = {k: float(v) for k, v in credits_open.items()}
 
     return FinanceAllocation(
         international=international,
         primary_currency=primary,
-        credits_by_currency=credits,
+        credits_by_currency=credits_open,
         commitment_paid_ugx=commitment_paid,
         commitment_met=commitment_met,
         commitment_balance=commitment_balance,
@@ -384,7 +449,7 @@ def build_finance_allocation(student: AdmittedStudent) -> FinanceAllocation:
             line.amount
             for line in lines
             if line.kind == "tuition_structure"
-            and line.billing_reached
+            and _line_is_billable(line)
             and line.currency == primary
         ),
         scheduled_other_due=scheduled_due,

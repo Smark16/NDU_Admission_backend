@@ -1513,7 +1513,7 @@ class LectureAttendanceRecord(models.Model):
         (SOURCE_STUDENT, "Student self-check-in"),
         (SOURCE_ADMIN, "Faculty / admin"),
         (SOURCE_PAPER, "Paper register"),
-        (SOURCE_QR, "QR scan"),
+        (SOURCE_QR, "Attendance code"),
     ]
 
     attendance_session = models.ForeignKey(

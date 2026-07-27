@@ -245,6 +245,7 @@ urlpatterns = [
     path('lecturer/attendance/sessions', LecturerAttendanceSaveView.as_view(), name='lecturer_attendance_save'),
     path('lecturer/attendance/check_in/open', LecturerAttendanceOpenCheckInView.as_view(), name='lecturer_attendance_open_check_in'),
     path('lecturer/attendance/check_in/qr', LecturerAttendanceCheckInQrView.as_view(), name='lecturer_attendance_check_in_qr'),
+    path('lecturer/attendance/check_in/code', LecturerAttendanceCheckInQrView.as_view(), name='lecturer_attendance_check_in_code'),
     path('lecturer/attendance/check_in/close', LecturerAttendanceCloseCheckInView.as_view(), name='lecturer_attendance_close_check_in'),
     path('lecturer/attendance/lock', LecturerAttendanceLockView.as_view(), name='lecturer_attendance_lock'),
     path('lecturer/attendance/sessions/<int:session_id>/pdf', LecturerAttendanceSessionPdfView.as_view(), name='lecturer_attendance_session_pdf'),
