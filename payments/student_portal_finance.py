@@ -253,14 +253,67 @@ def _default_programme_semester_label(student: AdmittedStudent) -> str:
     return "Programme fees"
 
 
-def _payment_history_semester_label(payment: StudentTuitionPayment, student: AdmittedStudent) -> str:
+def _semester_windows_for_student(student: AdmittedStudent) -> list[tuple]:
+    """Unique cohort semesters with date windows, earliest first."""
+    from datetime import date as date_cls
+
+    windows: list[tuple] = []
+    seen: set[int] = set()
+    for rule in _rules_for_student(student):
+        sem = rule.semester
+        if sem is None or not rule.semester_id or rule.semester_id in seen:
+            continue
+        start = getattr(sem, "start_date", None)
+        if start is None:
+            continue
+        seen.add(int(rule.semester_id))
+        end = getattr(sem, "end_date", None)
+        name = (sem.name or "").strip() or f"Semester {sem.order or ''}".strip()
+        windows.append((start, end if isinstance(end, date_cls) else end, name))
+    windows.sort(key=lambda w: w[0])
+    return windows
+
+
+def _semester_label_for_paid_at(paid_at, student: AdmittedStudent, windows: list[tuple] | None = None) -> str:
+    """Map a payment timestamp to the cohort semester that owned that date."""
+    from payments.student_payment_allocation import _as_date
+
+    d = _as_date(paid_at)
+    wins = windows if windows is not None else _semester_windows_for_student(student)
+    if d is None or not wins:
+        return _default_programme_semester_label(student)
+
+    for start, end, name in wins:
+        if d < start:
+            continue
+        if end is None or d <= end:
+            return name
+
+    if d < wins[0][0]:
+        return wins[0][2]
+
+    best = wins[0][2]
+    for start, _end, name in wins:
+        if start <= d:
+            best = name
+        else:
+            break
+    return best
+
+
+def _payment_history_semester_label(
+    payment: StudentTuitionPayment,
+    student: AdmittedStudent,
+    windows: list[tuple] | None = None,
+) -> str:
     if payment.semester_id and payment.semester:
         return payment.semester.name
     rule = payment.fee_plan_rule
     if rule is not None and rule.semester_id and rule.semester:
         return rule.semester.name
-    if payment.source == "ad_hoc" and payment.semester_id and payment.semester:
-        return payment.semester.name
+    paid_at = payment.paid_at or payment.created_at
+    if paid_at:
+        return _semester_label_for_paid_at(paid_at, student, windows)
     return _default_programme_semester_label(student)
 
 
@@ -309,12 +362,17 @@ def _tuition_structure_item_from_line(line) -> dict[str, Any]:
 
 def tuition_structure_dict(student: AdmittedStudent) -> dict:
     alloc = build_finance_allocation(student)
-    items = [
-        _tuition_structure_item_from_line(line)
-        for line in alloc.demand_lines
-        if line.kind in ("tuition_structure", "scheduled_other")
-        and _line_is_billable(line)
-    ]
+    items = []
+    for line in alloc.demand_lines:
+        if line.kind not in ("tuition_structure", "scheduled_other"):
+            continue
+        is_prior = bool(line.extra.get("prior_period_settled"))
+        if not is_prior and not _line_is_billable(line):
+            continue
+        item = _tuition_structure_item_from_line(line)
+        item["status"] = line.status
+        item["prior_term"] = is_prior
+        items.append(item)
     batch = student.admitted_batch
     return {
         "student_id": student.student_id,
@@ -342,6 +400,9 @@ def _adhoc_charges_for_student(student: AdmittedStudent):
 
 
 def _finance_totals_from_alloc(alloc) -> dict[str, Any]:
+    lifetime = getattr(alloc, "lifetime_paid_by_currency", None) or {}
+    primary = alloc.primary_currency
+    lifetime_primary = float(lifetime.get(primary, 0) or 0)
     return {
         "commitment_threshold": float(COMMITMENT_FEE_THRESHOLD),
         "commitment_paid_ugx": float(alloc.commitment_paid_ugx),
@@ -358,19 +419,25 @@ def _finance_totals_from_alloc(alloc) -> dict[str, Any]:
         "scheduled_other_fees_due": float(alloc.scheduled_other_due),
         "required_by_currency": {k: float(v) for k, v in alloc.required_by_currency.items()},
         "paid_by_currency": alloc.paid_by_currency,
+        # Full SchoolPay + portal history (all semesters), separate from current-term open paid.
+        "lifetime_paid": lifetime_primary,
+        "lifetime_paid_by_currency": lifetime,
     }
 
 
 def _billing_lines_from_alloc(alloc) -> list[dict[str, Any]]:
     lines: list[dict[str, Any]] = []
     for line in alloc.demand_lines:
-        if not _line_is_billable(line):
+        is_prior = bool(line.extra.get("prior_period_settled"))
+        if not is_prior and not _line_is_billable(line):
             continue
         if line.kind == "tuition_structure":
             ex = line.extra
             batch_name = ex.get("program_batch_name") or ""
             semester_name = ex.get("semester_name") or ""
             context = " · ".join(part for part in (batch_name, semester_name) if part)
+            if is_prior:
+                context = (context + " · prior term").strip(" ·")
             lines.append(
                 {
                     "kind": "tuition_structure",
@@ -382,6 +449,7 @@ def _billing_lines_from_alloc(alloc) -> list[dict[str, Any]]:
                     "balance": float(line.balance),
                     "currency": line.currency,
                     "status": line.status,
+                    "prior_term": is_prior,
                 }
             )
         elif line.kind == "scheduled_other":
@@ -390,15 +458,22 @@ def _billing_lines_from_alloc(alloc) -> list[dict[str, Any]]:
                     "kind": "scheduled_other_fee",
                     "rule_id": line.rule_id,
                     "fee_head": line.fee_head,
-                    "description": line.description,
+                    "description": (
+                        f"{line.description} · prior term"
+                        if is_prior
+                        else line.description
+                    ),
                     "amount": float(line.amount),
                     "paid_amount": float(line.paid_amount),
                     "balance": float(line.balance),
                     "currency": line.currency,
                     "status": line.status,
+                    "prior_term": is_prior,
                 }
             )
         elif line.kind == "ad_hoc":
+            if is_prior:
+                continue
             lines.append(
                 {
                     "kind": "ad_hoc",
@@ -410,6 +485,7 @@ def _billing_lines_from_alloc(alloc) -> list[dict[str, Any]]:
                     "balance": float(line.balance),
                     "currency": line.currency,
                     "status": line.extra.get("charge_status", line.status),
+                    "prior_term": False,
                 }
             )
     return lines
@@ -440,23 +516,27 @@ def registration_card_payment_history(
     """
     Compact completed-payment rows for the printed registration card (A4).
     Excludes pending/failed/waived and scholarship ledger credits.
+    Includes all semesters; each row is labeled by payment date → cohort semester.
     """
     rows: list[dict[str, Any]] = []
+    windows = _semester_windows_for_student(student)
 
     for row in (
         tuition_ledger_queryset_for_student(student)
         .filter(transaction_completion_status="Completed")
-        .order_by("-payment_date_time")[:40]
+        .order_by("-payment_date_time")[:80]
     ):
+        paid_at = row.payment_date_time
         rows.append(
             {
-                "paid_at": row.payment_date_time.isoformat() if row.payment_date_time else None,
+                "paid_at": paid_at.isoformat() if paid_at else None,
                 "amount": float(row.amount or 0),
                 "currency": "UGX",
                 "channel": (row.source_payment_channel or "SchoolPay").strip() or "SchoolPay",
                 "receipt": (row.schoolpay_receipt_number or "").strip(),
                 "description": (row.source_channel_trans_detail or "Tuition payment").strip()
                 or "Tuition payment",
+                "semester": _semester_label_for_paid_at(paid_at, student, windows),
             }
         )
 
@@ -467,7 +547,8 @@ def registration_card_payment_history(
             is_waived=False,
         )
         .exclude(source="scholarship")
-        .order_by("-paid_at", "-created_at")[:40]
+        .select_related("fee_plan_rule__fee_head", "fee_plan_rule__semester", "fee_head", "semester")
+        .order_by("-paid_at", "-created_at")[:80]
     ):
         paid_at = p.paid_at or p.created_at
         channel = (p.payment_method or "").replace("_", " ").strip() or "Portal"
@@ -485,6 +566,7 @@ def registration_card_payment_history(
                 "channel": channel.title() if channel else "Portal",
                 "receipt": (p.receipt_number or p.payment_reference or "").strip(),
                 "description": desc or "Payment",
+                "semester": _payment_history_semester_label(p, student, windows),
             }
         )
 
@@ -508,11 +590,12 @@ def payment_status_dict(student: AdmittedStudent, request=None) -> dict:
     other_fee_rows, _ = other_schedule_rows_and_due_by_currency(student)
     adhoc_charges = _adhoc_charges_for_student(student)
 
-    default_semester = _default_programme_semester_label(student)
+    windows = _semester_windows_for_student(student)
     history = []
     for row in tuition_ledger_queryset_for_student(student).filter(
         transaction_completion_status="Completed"
-    ).order_by("-payment_date_time")[:50]:
+    ).order_by("-payment_date_time")[:100]:
+        paid_at = row.payment_date_time
         history.append(
             {
                 "id": row.id,
@@ -522,8 +605,8 @@ def payment_status_dict(student: AdmittedStudent, request=None) -> dict:
                 "status": "completed",
                 "payment_method": row.source_payment_channel or "SchoolPay",
                 "fee_head": "Tuition payment",
-                "semester": default_semester,
-                "paid_at": row.payment_date_time.isoformat() if row.payment_date_time else None,
+                "semester": _semester_label_for_paid_at(paid_at, student, windows),
+                "paid_at": paid_at.isoformat() if paid_at else None,
                 "receipt_number": row.schoolpay_receipt_number or "",
                 "is_waived": False,
                 "label": row.source_channel_trans_detail or "",
@@ -553,7 +636,7 @@ def payment_status_dict(student: AdmittedStudent, request=None) -> dict:
                 "status":         p.status,
                 "payment_method": p.payment_method or "",
                 "fee_head":       lbl,
-                "semester":       _payment_history_semester_label(p, student),
+                "semester":       _payment_history_semester_label(p, student, windows),
                 "paid_at":        p.paid_at.isoformat() if p.paid_at else None,
                 "receipt_number": p.receipt_number or "",
                 "is_waived":      p.is_waived,

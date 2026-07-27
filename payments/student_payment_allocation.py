@@ -65,6 +65,7 @@ class FinanceAllocation:
     ad_hoc_total: Decimal
     required_by_currency: dict[str, Decimal]
     paid_by_currency: dict[str, Decimal]
+    lifetime_paid_by_currency: dict[str, float] = field(default_factory=dict)
 
 
 def _norm_ccy(currency: str | None) -> str:
@@ -256,6 +257,9 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
                 "semester_start_date": (
                     sem.start_date.isoformat() if sem and sem.start_date else None
                 ),
+                "semester_end_date": (
+                    sem.end_date.isoformat() if sem and sem.end_date else None
+                ),
                 "program_batch_id": rule.program_batch_id,
                 "program_batch_name": (
                     rule.program_batch.name if rule.program_batch_id else None
@@ -354,10 +358,11 @@ def _allocate_pools_to_lines(
 
     for line in lines:
         if line.extra.get("prior_period_settled"):
-            # Prior curriculum terms are outside open demand for continuing students.
-            line.paid_amount = Decimal("0")
-            line.balance = line.amount
-            line.status = "not_due"
+            # Prior curriculum terms stay visible as settled (not open due).
+            # Show as fully covered for history/breakdown; payment history carries the cash.
+            line.paid_amount = line.amount
+            line.balance = Decimal("0")
+            line.status = "settled"
             continue
         if not _line_is_billable(line):
             line.paid_amount = Decimal("0")
@@ -432,6 +437,7 @@ def build_finance_allocation(student: AdmittedStudent) -> FinanceAllocation:
     )
 
     paid_by = {k: float(v) for k, v in credits_open.items()}
+    lifetime_by = {k: float(v) for k, v in credits_all.items()}
 
     return FinanceAllocation(
         international=international,
@@ -456,6 +462,7 @@ def build_finance_allocation(student: AdmittedStudent) -> FinanceAllocation:
         ad_hoc_total=adhoc_total,
         required_by_currency=dict(required_by),
         paid_by_currency=paid_by,
+        lifetime_paid_by_currency=lifetime_by,
     )
 
 

@@ -167,7 +167,7 @@ def build_bonafide_portal_snapshot(student: AdmittedStudent, request=None) -> di
         {"has_portal_user": False, "is_active": False, "username": None, "history": []},
     )
 
-    # Full fee schedule breakdown (paid + outstanding) — not only unpaid lines.
+    # Full fee schedule breakdown (paid + outstanding + prior-term settled).
     fee_lines = [
         {
             "kind": ln.get("kind"),
@@ -178,9 +178,10 @@ def build_bonafide_portal_snapshot(student: AdmittedStudent, request=None) -> di
             "balance": ln.get("balance"),
             "currency": ln.get("currency"),
             "status": ln.get("status"),
+            "prior_term": bool(ln.get("prior_term")),
         }
         for ln in billing
-    ][:40]
+    ][:60]
 
     outstanding = [ln for ln in fee_lines if float(ln.get("balance") or 0) > 0.01]
 
@@ -196,6 +197,8 @@ def build_bonafide_portal_snapshot(student: AdmittedStudent, request=None) -> di
             "commitment_met": finance.get("commitment_met"),
             "commitment_paid_ugx": finance.get("commitment_paid_ugx"),
             "commitment_threshold": finance.get("commitment_threshold"),
+            "lifetime_paid": finance.get("lifetime_paid"),
+            "lifetime_paid_by_currency": finance.get("lifetime_paid_by_currency"),
             "payment_history": history,
             "fee_lines": fee_lines,
             # Keep for older clients; prefer fee_lines in UI.

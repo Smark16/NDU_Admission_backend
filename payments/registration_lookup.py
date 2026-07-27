@@ -95,7 +95,7 @@ def build_registration_lookup_payload(student: AdmittedStudent, request=None) ->
         "commitment_paid_ugx": finance["commitment_paid_ugx"],
         "commitment_threshold": finance["commitment_threshold"],
         "admission_fee_paid": student.admission_fee_paid,
-        "payment_history": registration_card_payment_history(student, limit=12),
+        "payment_history": registration_card_payment_history(student, limit=25),
         "system": get_university_display_name(),
     }
 
