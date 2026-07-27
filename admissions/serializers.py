@@ -800,6 +800,7 @@ class BonafideStudentSerializer(serializers.ModelSerializer):
     enrollment_status = serializers.SerializerMethodField()
     registration_stage = serializers.SerializerMethodField()
     registration_stage_label = serializers.SerializerMethodField()
+    requires_document_verification = serializers.SerializerMethodField()
 
     class Meta:
         model = AdmittedStudent
@@ -836,6 +837,7 @@ class BonafideStudentSerializer(serializers.ModelSerializer):
             "physical_documents_verified_at",
             "registration_stage",
             "registration_stage_label",
+            "requires_document_verification",
         ]
 
     def get_name(self, obj):
@@ -897,22 +899,20 @@ class BonafideStudentSerializer(serializers.ModelSerializer):
         enr = self._enrollment(obj)
         return getattr(enr, "status", None) if enr else None
 
+    def get_requires_document_verification(self, obj):
+        from admissions.registration_workflow import requires_physical_document_verification
+
+        return requires_physical_document_verification(obj)
+
     def get_registration_stage(self, obj):
-        if obj.physical_documents_verified:
-            return "docs_verified"
-        if obj.accounts_registration_cleared:
-            return "awaiting_docs"
-        if obj.admission_fee_paid:
-            return "awaiting_accounts"
-        return "unpaid"
+        from admissions.registration_workflow import registration_stage_for_student
+
+        return registration_stage_for_student(obj)
 
     def get_registration_stage_label(self, obj):
-        return {
-            "unpaid": "1. Payment pending",
-            "awaiting_accounts": "2. Awaiting Accounts clear",
-            "awaiting_docs": "3. Awaiting AR (documents)",
-            "docs_verified": "Cleared — Accounts + AR done",
-        }.get(self.get_registration_stage(obj), "—")
+        from admissions.registration_workflow import registration_stage_label
+
+        return registration_stage_label(self.get_registration_stage(obj))
 
 
 class BonafideStudentProfileSerializer(BonafideStudentSerializer):

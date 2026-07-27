@@ -123,6 +123,11 @@ def build_registration_eligibility_payload(student: AdmittedStudent) -> dict:
             "open only after Accounts confirms payment — for new and continuing students."
         )
 
+    from admissions.registration_workflow import requires_physical_document_verification
+
+    requires_docs = requires_physical_document_verification(student)
+    docs_verified = bool(getattr(student, "physical_documents_verified", False))
+
     if not tuition["tuition_eligible"]:
         block_messages.append(tuition["tuition_message"])
 
@@ -140,6 +145,8 @@ def build_registration_eligibility_payload(student: AdmittedStudent) -> dict:
         "tuition_check_skipped": tuition["tuition_check_skipped"],
         "tuition_eligible": tuition["tuition_eligible"],
         "accounts_registration_cleared": accounts_cleared,
+        "requires_document_verification": requires_docs,
+        "physical_documents_verified": docs_verified,
         "message": message,
         "block_messages": block_messages,
         **enroll_info,

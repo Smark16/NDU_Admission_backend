@@ -3334,17 +3334,29 @@ class ListBonafideStudents(generics.ListAPIView):
         registration_stage = (self.request.query_params.get("registration_stage") or "").strip().lower()
         if registration_stage and registration_stage not in ("all", ""):
             # Bonafide is commitment-paid only; "unpaid" kept for API compatibility but empty.
+            from django.db.models import Q
+
+            y1t1 = Q(
+                programme_enrollment__current_year_of_study=1,
+                programme_enrollment__current_term_number=1,
+            ) | Q(programme_enrollment__isnull=True)
+
             if registration_stage == "unpaid":
                 queryset = queryset.none()
             elif registration_stage == "awaiting_accounts":
                 queryset = queryset.filter(accounts_registration_cleared=False)
             elif registration_stage == "awaiting_docs":
+                # AR documents step is Year 1 Sem 1 only.
                 queryset = queryset.filter(
                     accounts_registration_cleared=True,
                     physical_documents_verified=False,
-                )
-            elif registration_stage == "docs_verified":
-                queryset = queryset.filter(physical_documents_verified=True)
+                ).filter(y1t1)
+            elif registration_stage in ("docs_verified", "ready"):
+                # Ready to register = Accounts cleared (docs are Y1S1 AR tracking only).
+                queryset = queryset.filter(accounts_registration_cleared=True)
+                if registration_stage == "docs_verified":
+                    # Legacy filter: Y1S1 with AR docs done.
+                    queryset = queryset.filter(physical_documents_verified=True).filter(y1t1)
 
         queryset = filter_admitted_students_for_user(queryset, self.request.user)
         # distinct only when joins can duplicate rows (search annotate / enrollment filter)
@@ -3553,6 +3565,18 @@ class MarkPhysicalDocumentsVerified(APIView):
             pk=pk,
         )
         assert_admitted_student_access(request.user, student)
+        from admissions.registration_workflow import requires_physical_document_verification
+
+        if not requires_physical_document_verification(student):
+            return Response(
+                {
+                    "detail": (
+                        "Physical document verification applies only to Year 1 Semester 1 students. "
+                        "Continuing students register after Accounts clearance."
+                    )
+                },
+                status=400,
+            )
         if not student.accounts_registration_cleared:
             return Response(
                 {
@@ -3719,7 +3743,12 @@ class ClearAccountsRegistrationClearance(APIView):
         assert_admitted_student_access(request.user, student)
         if not student.accounts_registration_cleared:
             return Response({"detail": "Student is not accounts-cleared."}, status=400)
-        if student.physical_documents_verified:
+        from admissions.registration_workflow import requires_physical_document_verification
+
+        if (
+            requires_physical_document_verification(student)
+            and student.physical_documents_verified
+        ):
             return Response(
                 {
                     "detail": (

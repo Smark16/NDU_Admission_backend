@@ -437,7 +437,7 @@ class AdmittedStudent(models.Model):
     is_registered = models.BooleanField(default=False)
     registration_date = models.DateTimeField(null=True, blank=True)
 
-    # Physical document verification (original hard-copy check — after accounts clearance)
+    # Physical document verification (Year 1 Sem 1 only — after accounts clearance)
     physical_documents_verified = models.BooleanField(default=False)
     physical_documents_verified_at = models.DateTimeField(null=True, blank=True)
     physical_documents_verified_by = models.ForeignKey(
