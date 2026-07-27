@@ -229,6 +229,10 @@ def _line_is_billable(line: DemandLine) -> bool:
 
 
 def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[DemandLine]:
+    from payments.billing_visibility import (
+        curriculum_period_label,
+        resolve_semester_for_year_term,
+    )
     from payments.fee_exemptions import active_fee_exemptions_for_student, is_fee_head_exempted
     from payments.student_portal_finance import (
         _adhoc_charges_for_student,
@@ -236,11 +240,14 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
         _milestone_reached,
         _rules_for_student,
         _student_curriculum_year_term,
+        _student_program_batch_id,
     )
 
     lines: list[DemandLine] = []
     cy, ct = _student_curriculum_year_term(student)
     exemptions = active_fee_exemptions_for_student(student)
+    program = getattr(student, "admitted_program", None)
+    student_pb_id = _student_program_batch_id(student)
 
     tuition_rules = sorted(_rules_for_student(student), key=_tuition_rule_sort_key)
     for rule in tuition_rules:
@@ -277,6 +284,9 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
                 "due_date_days": rule.due_date_days,
                 "billing_date": billing_date_iso(rule),
                 "fee_head_id": rule.fee_head_id,
+                "calendar_type": (
+                    getattr(program, "calendar_type", None) or "semester"
+                ),
             },
         )
         # Continuing / batch-imported cohorts: only current curriculum term is open.
@@ -303,11 +313,23 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
         amt, cur = effective_amount_currency(rule, international)
         if amt <= 0:
             continue
+        pb_id = rule.program_batch_id or student_pb_id
+        sem = resolve_semester_for_year_term(
+            program_batch_id=pb_id,
+            year_of_study=py,
+            term_number=pt,
+        )
+        period_label = curriculum_period_label(
+            py,
+            pt,
+            program=program,
+            semester_name=sem.name if sem else None,
+        )
         line = DemandLine(
             kind="scheduled_other",
             rule_id=rule.id,
             fee_head=rule.fee_head.name if rule.fee_head_id else "",
-            description=f"Year {py}, Term {pt}",
+            description=period_label,
             amount=amt,
             currency=cur,
             payable_year=py,
@@ -315,12 +337,31 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
             milestone_reached=reached,
             billing_reached=billable,
             extra={
-                "program_batch_id": rule.program_batch_id,
+                "program_batch_id": pb_id,
                 "program_batch_name": (
-                    rule.program_batch.name if rule.program_batch_id else None
+                    rule.program_batch.name
+                    if rule.program_batch_id
+                    else None
                 ),
                 "billing_date": billing_date_iso(rule),
                 "fee_head_id": rule.fee_head_id,
+                # Align with tuition_structure so Room & Board groups under the same semester.
+                "semester_id": sem.id if sem else None,
+                "semester_name": (sem.name if sem else "") or period_label,
+                "semester_year_of_study": (
+                    sem.year_of_study if sem else py
+                ),
+                "semester_term_number": sem.term_number if sem else pt,
+                "semester_order": sem.order if sem else None,
+                "semester_start_date": (
+                    sem.start_date.isoformat() if sem and sem.start_date else None
+                ),
+                "semester_end_date": (
+                    sem.end_date.isoformat() if sem and sem.end_date else None
+                ),
+                "calendar_type": (
+                    getattr(program, "calendar_type", None) or "semester"
+                ),
             },
         )
         if _line_is_prior_curriculum_term(line, cy, ct):

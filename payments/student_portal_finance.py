@@ -222,6 +222,12 @@ def other_schedule_rows_and_due_by_currency(
                 "currency": line.currency,
                 "payable_year_of_study": line.payable_year,
                 "payable_term_number": line.payable_term,
+                "period_label": _curriculum_label_for_student(
+                    student,
+                    line.payable_year,
+                    line.payable_term,
+                    semester_name=line.extra.get("semester_name"),
+                ),
                 "billing_date": line.extra.get("billing_date"),
                 "status": line.status,
                 "paid_amount": float(line.paid_amount),
@@ -231,20 +237,52 @@ def other_schedule_rows_and_due_by_currency(
     return rows, dict(due_by_ccy)
 
 
-def _installment_display(extra: dict[str, Any]) -> str:
-    """Human-readable instalment / term label for tuition structure rows."""
+def _student_calendar_type(student: AdmittedStudent) -> str | None:
+    program = getattr(student, "admitted_program", None)
+    if program is None:
+        return None
+    return getattr(program, "calendar_type", None)
+
+
+def _curriculum_label_for_student(
+    student: AdmittedStudent,
+    year_of_study: int | None,
+    term_number: int | None,
+    *,
+    semester_name: str | None = None,
+) -> str:
+    from payments.billing_visibility import curriculum_period_label
+
+    return curriculum_period_label(
+        year_of_study,
+        term_number,
+        program=getattr(student, "admitted_program", None),
+        calendar_type=_student_calendar_type(student),
+        semester_name=semester_name,
+    )
+
+
+def _installment_display(extra: dict[str, Any], student: AdmittedStudent | None = None) -> str:
+    """Human-readable instalment / period label for tuition structure rows."""
     inst = extra.get("installment_number")
     if inst:
         return f"Installment {inst}"
+    name = (extra.get("semester_name") or "").strip()
+    if name:
+        return name
     y = extra.get("semester_year_of_study")
     t = extra.get("semester_term_number")
     if y and t:
-        return f"Year {y}, Term {t}"
+        if student is not None:
+            return _curriculum_label_for_student(student, y, t)
+        from payments.billing_visibility import curriculum_period_label
+
+        return curriculum_period_label(y, t)
     order = extra.get("semester_order")
     if order:
         return f"Semester {order}"
-    name = (extra.get("semester_name") or "").strip()
-    return name or "—"
+    return "—"
+
 
 def _default_programme_semester_label(student: AdmittedStudent) -> str:
     for rule in _rules_for_student(student):
@@ -317,11 +355,18 @@ def _payment_history_semester_label(
     return _default_programme_semester_label(student)
 
 
-def _tuition_structure_item_from_line(line) -> dict[str, Any]:
+def _tuition_structure_item_from_line(line, student: AdmittedStudent | None = None) -> dict[str, Any]:
     ex = line.extra
     if line.kind == "scheduled_other":
-        sem_name = f"Year {line.payable_year}, Term {line.payable_term} (scheduled fee)"
-        inst_label = f"Year {line.payable_year}, Term {line.payable_term}"
+        period = _curriculum_label_for_student(
+            student,
+            line.payable_year,
+            line.payable_term,
+            semester_name=ex.get("semester_name"),
+        ) if student is not None else (
+            (ex.get("semester_name") or "").strip()
+            or f"Year {line.payable_year} Semester {line.payable_term}"
+        )
         return {
             "rule_id": line.rule_id,
             "fee_head": line.fee_head,
@@ -330,13 +375,13 @@ def _tuition_structure_item_from_line(line) -> dict[str, Any]:
             "balance": float(line.balance),
             "currency": line.currency,
             "semester": {
-                "semester_id": None,
-                "semester_name": sem_name,
+                "semester_id": ex.get("semester_id"),
+                "semester_name": period,
                 "program_batch_id": ex.get("program_batch_id"),
                 "program_batch_name": ex.get("program_batch_name"),
             },
             "installment_number": None,
-            "installment_display": inst_label,
+            "installment_display": period,
             "due_date_days": None,
             "billing_date": ex.get("billing_date"),
         }
@@ -354,7 +399,7 @@ def _tuition_structure_item_from_line(line) -> dict[str, Any]:
             "program_batch_name": ex.get("program_batch_name"),
         },
         "installment_number": ex.get("installment_number"),
-        "installment_display": _installment_display(ex),
+        "installment_display": _installment_display(ex, student),
         "due_date_days": ex.get("due_date_days"),
         "billing_date": ex.get("billing_date"),
     }
@@ -369,7 +414,7 @@ def tuition_structure_dict(student: AdmittedStudent) -> dict:
         is_prior = bool(line.extra.get("prior_period_settled"))
         if not is_prior and not _line_is_billable(line):
             continue
-        item = _tuition_structure_item_from_line(line)
+        item = _tuition_structure_item_from_line(line, student)
         item["status"] = line.status
         item["prior_term"] = is_prior
         items.append(item)
@@ -426,6 +471,7 @@ def _finance_totals_from_alloc(alloc) -> dict[str, Any]:
 
 
 def _billing_lines_from_alloc(alloc) -> list[dict[str, Any]]:
+    from payments.billing_visibility import curriculum_period_label, period_unit_for_calendar
     from payments.student_payment_allocation import _billing_line_sort_key
 
     paired: list[tuple] = []
@@ -441,20 +487,29 @@ def _billing_lines_from_alloc(alloc) -> list[dict[str, Any]]:
             ti = int(t) if t is not None else None
         except (TypeError, ValueError):
             yi, ti = None, None
+
+        cal = line.extra.get("calendar_type") or "semester"
+        period_unit = period_unit_for_calendar(cal)
+        prior_suffix = f"prior {period_unit.lower()}"
+        # Group by curriculum position (Year N Semester/Trimester M) so Room & Board
+        # sits under the same accordion as tuition for that period — not a separate "Term" group.
         if yi and ti:
-            semester_label = f"Year {yi}, Term {ti}"
-            if line.extra.get("semester_name"):
-                semester_label = str(line.extra.get("semester_name"))
+            semester_label = curriculum_period_label(yi, ti, calendar_type=cal)
         else:
-            semester_label = (line.extra.get("semester_name") or "").strip() or "Other fees"
+            semester_label = curriculum_period_label(
+                None,
+                None,
+                calendar_type=cal,
+                semester_name=line.extra.get("semester_name"),
+            )
 
         if line.kind == "tuition_structure":
             ex = line.extra
             batch_name = ex.get("program_batch_name") or ""
-            semester_name = ex.get("semester_name") or ""
+            semester_name = ex.get("semester_name") or semester_label
             context = " · ".join(part for part in (batch_name, semester_name) if part)
             if is_prior:
-                context = (context + " · prior term").strip(" ·")
+                context = (context + f" · {prior_suffix}").strip(" ·")
             row = {
                 "kind": "tuition_structure",
                 "rule_id": line.rule_id,
@@ -471,15 +526,12 @@ def _billing_lines_from_alloc(alloc) -> list[dict[str, Any]]:
                 "semester_label": semester_label,
             }
         elif line.kind == "scheduled_other":
+            desc = line.description or semester_label
             row = {
                 "kind": "scheduled_other_fee",
                 "rule_id": line.rule_id,
                 "fee_head": line.fee_head,
-                "description": (
-                    f"{line.description} · prior term"
-                    if is_prior
-                    else line.description
-                ),
+                "description": f"{desc} · {prior_suffix}" if is_prior else desc,
                 "amount": float(line.amount),
                 "paid_amount": float(line.paid_amount),
                 "balance": float(line.balance),

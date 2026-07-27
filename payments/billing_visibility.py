@@ -37,6 +37,67 @@ def months_per_term_for_program(program) -> int:
     return 4 if cal == "trimester" else 6
 
 
+def period_unit_for_calendar(calendar_type: str | None = None, program=None) -> str:
+    """Human label for one academic period: Semester or Trimester (never 'Term')."""
+    cal = calendar_type
+    if not cal and program is not None:
+        cal = getattr(program, "calendar_type", None)
+    cal = (cal or "semester").strip().lower()
+    return "Trimester" if cal == "trimester" else "Semester"
+
+
+def curriculum_period_label(
+    year_of_study: int | None,
+    term_number: int | None,
+    *,
+    program=None,
+    calendar_type: str | None = None,
+    semester_name: str | None = None,
+) -> str:
+    """
+    Display label for a curriculum position.
+
+    Prefers the cohort semester name when present so tuition and scheduled fees
+    (e.g. Room & Board) share one accordion group. Otherwise builds
+    ``Year N Semester M`` / ``Year N Trimester M``.
+    """
+    name = (semester_name or "").strip()
+    if name:
+        return name
+    try:
+        y = int(year_of_study) if year_of_study is not None else None
+        t = int(term_number) if term_number is not None else None
+    except (TypeError, ValueError):
+        y, t = None, None
+    if y and t:
+        unit = period_unit_for_calendar(calendar_type, program)
+        return f"Year {y} {unit} {t}"
+    return "Other fees"
+
+
+def resolve_semester_for_year_term(
+    *,
+    program_batch_id: int | None,
+    year_of_study: int,
+    term_number: int,
+):
+    """Match an active cohort semester to a payable year/term (Room & Board, etc.)."""
+    if not program_batch_id:
+        return None
+    from Programs.models import Semester
+
+    return (
+        Semester.objects.filter(
+            program_batch_id=program_batch_id,
+            year_of_study=year_of_study,
+            term_number=term_number,
+            is_active=True,
+        )
+        .order_by("order", "id")
+        .first()
+    )
+
+
 def term_index_from_position(
     *,
     year_of_study: int | None,
