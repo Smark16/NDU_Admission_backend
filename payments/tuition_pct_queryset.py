@@ -39,8 +39,8 @@ def student_meets_tuition_pct(student, min_pct: float | None = None) -> bool:
     """
     Same gate as course registration (student_tuition_eligible).
 
-    ``min_pct`` is accepted for API compatibility but ignored: the live
-    RegistrationSettings.min_tuition_payment_percentage is always used.
+    Always uses RegistrationSettings.min_tuition_payment_percentage
+    (50 / 60 / 100 / whatever is configured) — never a hardcoded 60.
     """
     try:
         _ = min_pct
@@ -54,36 +54,40 @@ def student_meets_tuition_pct(student, min_pct: float | None = None) -> bool:
 
 def filter_by_tuition_pct_met(qs, met: bool, *, min_pct: float | None = None):
     """
-    Keep students who meet (or do not meet) the registration tuition % gate.
+    Keep students who meet (or do not meet) the registration semester-fee % gate.
 
-    Uses indexed ``registration_tuition_pct_met`` (same eligibility rules as registration).
-    Request path stays fast for gunicorn (no multi-minute live scan that kills workers).
-
-    Warm-up:
-    - bulk-stamp students with no portal/ledger credit as unmet (cheap SQL)
-    - enqueue Celery / optionally sync a tiny credit-holder sample
-    - filter only rows that already have a computed cache timestamp
-
-    Run ``python manage.py refresh_tuition_pct_cache`` after deploy for full coverage.
+    Threshold = RegistrationSettings.min_tuition_payment_percentage (dynamic).
+    Uses indexed registration_tuition_pct_met for speed, but invalidates those
+    flags whenever the configured threshold (or gate formula) changes so a move
+    from 60% → 100% cannot keep stale "met" rows.
     """
     _ = min_pct
     settings = RegistrationSettings.get_settings()
+    threshold = float(settings.min_tuition_payment_percentage or 0)
     if settings.skip_tuition_check:
         logger.warning(
             "tuition_pct filter: skip_tuition_check=True — treating all as met"
         )
         return qs if met else qs.none()
 
-    from payments.tuition_pct_cache import ensure_tuition_pct_cache_for_queryset
+    from payments.tuition_pct_cache import (
+        ensure_tuition_pct_basis_is_current,
+        ensure_tuition_pct_cache_for_queryset,
+    )
 
-    # Keep request under gunicorn timeout: stamp + tiny sync + background backfill.
+    invalidated = ensure_tuition_pct_basis_is_current()
+    if invalidated:
+        logger.info(
+            "tuition_pct cache invalidated for new threshold=%s%% (semester total gate)",
+            threshold,
+        )
+
     ensure_tuition_pct_cache_for_queryset(
         qs,
         prefer_payment_activity=bool(met),
         max_sync=12,
     )
 
-    # Only return students whose gate was computed — never silently widen the filter.
     return qs.filter(
         registration_tuition_pct_at__isnull=False,
         registration_tuition_pct_met=bool(met),

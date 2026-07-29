@@ -4,10 +4,15 @@ from __future__ import annotations
 import logging
 from typing import Iterable
 
+from django.core.cache import cache
 from django.db.models import Exists, OuterRef, Q, QuerySet
 from django.utils import timezone
 
 logger = logging.getLogger(__name__)
+
+# Bump version string when gate formula changes (e.g. tuition-only → semester total).
+TUITION_PCT_BASIS_CACHE_KEY = "bonafide_tuition_pct_gate_basis_v2"
+TUITION_PCT_GATE_FORMULA = "semester_total_v1"
 
 
 def _has_tuition_credit_q() -> Q:
@@ -213,19 +218,62 @@ def backfill_bonafide_tuition_pct_cache(
         met += result["met"]
         unmet += result["unmet"]
 
+    mark_tuition_pct_basis_current()
     return {
         "stamped_no_activity": stamped,
         "scanned": scanned,
         "met": met,
         "unmet": unmet,
         "candidates": len(need_ids),
+        "basis": current_tuition_pct_gate_basis(),
     }
 
 
+def current_tuition_pct_gate_basis() -> str:
+    """
+    Identity of the rule used to compute registration_tuition_pct_met.
+    Changing settings (or gate formula) must invalidate stale True/False flags.
+    """
+    from payments.models import RegistrationSettings
+
+    settings = RegistrationSettings.get_settings()
+    pct = float(settings.min_tuition_payment_percentage or 0)
+    return (
+        f"{TUITION_PCT_GATE_FORMULA}:{pct:.4f}:skip={int(bool(settings.skip_tuition_check))}"
+    )
+
+
+def mark_tuition_pct_basis_current() -> None:
+    cache.set(TUITION_PCT_BASIS_CACHE_KEY, current_tuition_pct_gate_basis(), timeout=None)
+
+
 def invalidate_all_tuition_pct_cache() -> int:
-    """Clear timestamps so the next filter/backfill recomputes (e.g. settings change)."""
+    """
+    Clear cached gate results so the next filter/backfill recomputes
+    (e.g. after min_tuition_payment_percentage changes).
+    """
     from admissions.models import AdmittedStudent
 
+    cache.delete(TUITION_PCT_BASIS_CACHE_KEY)
     return AdmittedStudent.objects.filter(
-        registration_tuition_pct_at__isnull=False
-    ).update(registration_tuition_pct_at=None)
+        Q(registration_tuition_pct_at__isnull=False)
+        | Q(registration_tuition_pct_met=True)
+    ).update(
+        registration_tuition_pct_at=None,
+        registration_tuition_pct_met=False,
+    )
+
+
+def ensure_tuition_pct_basis_is_current() -> bool:
+    """
+    If the saved gate flags were computed for a different threshold/formula,
+    wipe them. Returns True when an invalidation happened.
+    """
+    basis = current_tuition_pct_gate_basis()
+    cached = cache.get(TUITION_PCT_BASIS_CACHE_KEY)
+    if cached == basis:
+        return False
+    invalidate_all_tuition_pct_cache()
+    mark_tuition_pct_basis_current()
+    return True
+

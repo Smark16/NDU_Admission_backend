@@ -313,6 +313,25 @@ class UpdateRegistrationSettings(APIView):
             s.updated_by = request.user
             s.save()
 
+            # Threshold changes must drop stale Bonafide "met" flags immediately
+            # (do not wait only on signals / Celery).
+            try:
+                from payments.tuition_pct_cache import (
+                    invalidate_all_tuition_pct_cache,
+                    mark_tuition_pct_basis_current,
+                )
+                from payments.tasks import celery_refresh_bonafide_tuition_pct_cache
+
+                invalidate_all_tuition_pct_cache()
+                mark_tuition_pct_basis_current()
+                celery_refresh_bonafide_tuition_pct_cache.delay()
+            except Exception:
+                import logging
+
+                logging.getLogger(__name__).exception(
+                    "failed to refresh tuition %% cache after registration settings update"
+                )
+
             backfill = None
             if s.auto_enroll_on_admission and not prev_auto_enroll:
                 from .programme_enrollment_activation import activate_all_pending_programme_enrollments
@@ -333,6 +352,7 @@ class UpdateRegistrationSettings(APIView):
                 ),
                 "skip_tuition_check": s.skip_tuition_check,
                 "is_active": s.is_active,
+                "tuition_pct_cache": "invalidated_recomputing",
             }
             if backfill:
                 response_body["pending_enrollments_activated"] = backfill
