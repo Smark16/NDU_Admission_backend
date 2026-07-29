@@ -62,6 +62,7 @@ jobs:
           # python manage.py migrate examinations 0013_examsession_invigilators --fake
           python manage.py migrate Programs 0019_course_material --fake
           python manage.py migrate admissions 0053_admittedstudent_registration_tuition_pct_cache --fake
+          python manage.py migrate Programs 0023_teaching_section --fake
         
           # Final migrate (this should now be safe)
           python manage.py migrate
