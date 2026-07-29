@@ -212,6 +212,10 @@ class ErpAccessPolicy(models.Model):
             ("manage_batches", "Manage admission intakes and batches"),
             ("assign_roles", "Assign Django groups to staff users"),
             ("manage_payment_reconciliation", "Manage payment reconciliation tools"),
+            (
+                "post_manual_bank_payment",
+                "Post manual bank / reconciliation payments onto student tuition ledgers",
+            ),
             ("manage_curriculum", "Manage programme curriculum (versions, mappings, inheritance)"),
             (
                 "manage_program_scheduling",

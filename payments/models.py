@@ -966,6 +966,67 @@ class BursarWeeklyReportRecipient(models.Model):
         return self.name.strip() or self.email
 
 
+class ManualBankPaymentChangeRequest(models.Model):
+    """Dual-control: post/edit/delete bank payments require Finance Manager approval."""
+
+    class RequestType(models.TextChoices):
+        POST = "post", "Post payment"
+        UPDATE = "update", "Edit payment"
+        DELETE = "delete", "Delete payment"
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        APPROVED = "approved", "Approved"
+        REJECTED = "rejected", "Rejected"
+        CANCELLED = "cancelled", "Cancelled"
+
+    request_type = models.CharField(max_length=16, choices=RequestType.choices)
+    status = models.CharField(
+        max_length=16, choices=Status.choices, default=Status.PENDING, db_index=True
+    )
+    student = models.ForeignKey(
+        "admissions.AdmittedStudent",
+        on_delete=models.CASCADE,
+        related_name="manual_bank_change_requests",
+    )
+    ledger = models.ForeignKey(
+        TuitionLedger,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="change_requests",
+    )
+    payload = models.JSONField(default=dict, blank=True)
+    reason = models.TextField(
+        blank=True,
+        help_text="Required for edit and delete requests.",
+    )
+    requested_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="manual_bank_requests_made",
+    )
+    requested_at = models.DateTimeField(auto_now_add=True)
+    reviewed_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="manual_bank_requests_reviewed",
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    review_notes = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["-requested_at"]
+        indexes = [
+            models.Index(fields=["status", "-requested_at"]),
+        ]
+
+    def __str__(self):
+        return f"{self.request_type} #{self.pk} ({self.status})"
 
 
 
