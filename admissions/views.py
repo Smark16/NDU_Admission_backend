@@ -2222,18 +2222,18 @@ class DeleteDocumentAPIView(APIView):
 # ========================================================Batch=================================================
 
 class IntakeEligibleProgramsView(generics.ListAPIView):
-    """Programmes that may be added to an admission intake (active cohort in offer)."""
+    """Programmes that may be added to an admission intake (active academic cohort)."""
 
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
     queryset = Batch.objects.all()
 
     def list(self, request, *args, **kwargs):
         from admissions.faculty_scope import filter_programs_for_user
-        from admissions.intake_program_eligibility import program_ids_with_active_cohort_offer
+        from admissions.intake_program_eligibility import program_ids_with_active_cohort
         from Programs.models import Program
         from Programs.serializers import ListProgramsSerializer
 
-        eligible_ids = program_ids_with_active_cohort_offer()
+        eligible_ids = program_ids_with_active_cohort()
         extra_raw = (request.query_params.get("include_program_ids") or "").strip()
         if extra_raw:
             for part in extra_raw.split(","):

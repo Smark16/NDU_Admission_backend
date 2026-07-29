@@ -100,35 +100,43 @@ def apply_legacy_fee_balances(
     if paid_ugx > 0:
         ref = (row.get("fees_paid_reference") or "").strip() or f"legacy-fees-{admitted.reg_no}"
         txn_id = f"LEGACY-PAID-{admitted.pk}-{ref}"[:100]
-        if StudentTuitionPayment.objects.filter(transaction_id=txn_id).exists():
-            raise ValueError(
-                f"A legacy payment with reference '{ref}' was already imported for this student."
+        existing_paid = StudentTuitionPayment.objects.filter(transaction_id=txn_id).first()
+        if existing_paid is not None:
+            # Idempotent re-import: same reference is a success, not a row failure.
+            result["fees_paid_recorded"] = True
+            result["fees_paid_ugx"] = float(existing_paid.amount)
+            result["fees_paid_note"] = "already_imported"
+        else:
+            StudentTuitionPayment.objects.create(
+                student=admitted,
+                source="scholarship",
+                label="Legacy system — fees paid (import credit)",
+                amount=paid_ugx,
+                currency="UGX",
+                payment_method="other",
+                status="completed",
+                transaction_id=txn_id,
+                payment_reference=ref[:100],
+                receipt_number=ref[:100],
+                paid_at=timezone.now(),
+                verified_by=admitted_by,
+                verified_at=timezone.now(),
+                notes=(
+                    "Fee balance import: legacy fees paid recorded as credit only "
+                    "(not an ad-hoc charge)."
+                ),
             )
-        StudentTuitionPayment.objects.create(
-            student=admitted,
-            source="scholarship",
-            label="Legacy system — fees paid (import credit)",
-            amount=paid_ugx,
-            currency="UGX",
-            payment_method="other",
-            status="completed",
-            transaction_id=txn_id,
-            payment_reference=ref[:100],
-            receipt_number=ref[:100],
-            paid_at=timezone.now(),
-            verified_by=admitted_by,
-            verified_at=timezone.now(),
-            notes=(
-                "Fee balance import: legacy fees paid recorded as credit only "
-                "(not an ad-hoc charge)."
-            ),
-        )
-        result["fees_paid_recorded"] = True
-        result["fees_paid_ugx"] = float(paid_ugx)
+            result["fees_paid_recorded"] = True
+            result["fees_paid_ugx"] = float(paid_ugx)
 
     if outstanding_ugx > 0:
         txn_id = f"LEGACY-DUE-{admitted.pk}"[:100]
-        if not StudentTuitionPayment.objects.filter(transaction_id=txn_id).exists():
+        existing_due = StudentTuitionPayment.objects.filter(transaction_id=txn_id).first()
+        if existing_due is not None:
+            result["fees_outstanding_recorded"] = True
+            result["fees_outstanding_ugx"] = float(existing_due.amount)
+            result["fees_outstanding_note"] = "already_imported"
+        else:
             StudentTuitionPayment.objects.create(
                 student=admitted,
                 source="ad_hoc",
@@ -142,8 +150,8 @@ def apply_legacy_fee_balances(
                 charged_by=admitted_by,
                 notes="Fee balance import: legacy outstanding balance.",
             )
-        result["fees_outstanding_recorded"] = True
-        result["fees_outstanding_ugx"] = float(outstanding_ugx)
+            result["fees_outstanding_recorded"] = True
+            result["fees_outstanding_ugx"] = float(outstanding_ugx)
 
     if paid_ugx > 0 or mark_admission_paid or admitted.admission_fee_paid:
         activation = activate_programme_enrollment_after_commitment_payment(

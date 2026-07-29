@@ -4,21 +4,24 @@ from __future__ import annotations
 from django.db.models import QuerySet
 
 from Programs.models import Program, ProgramBatch
-from Programs.program_batch_resolution import program_batch_in_active_offer_window_q
 
 
-def program_ids_with_active_cohort_offer(*, today=None) -> set[int]:
+def program_ids_with_active_cohort(*, today=None) -> set[int]:
     """
-    Programmes with at least one active ProgramBatch in an open offer window today.
-    Cohorts with null offer dates count as open (same rule as admit-time resolution).
+    Programmes with at least one active ProgramBatch (academic cohort).
+
+    Offer timing is controlled on the intake, not on the cohort.
     """
-    window_q = program_batch_in_active_offer_window_q(today=today, admission_batch=None)
+    del today  # reserved for future date-scoped cohort rules
     return set(
         ProgramBatch.objects.filter(is_active=True)
-        .filter(window_q)
         .values_list("program_id", flat=True)
         .distinct()
     )
+
+
+# Backwards-compatible alias used by older call sites / docs.
+program_ids_with_active_cohort_offer = program_ids_with_active_cohort
 
 
 def validate_intake_program_selection(
@@ -34,7 +37,7 @@ def validate_intake_program_selection(
         return ["Select at least one programme."]
 
     grandfather = set(grandfather_ids or [])
-    eligible = program_ids_with_active_cohort_offer()
+    eligible = program_ids_with_active_cohort()
     blocked = [pid for pid in program_ids if pid not in eligible and pid not in grandfather]
     if not blocked:
         return []
@@ -46,13 +49,13 @@ def validate_intake_program_selection(
     )
     if len(names) == 1:
         return [
-            f"{names[0]} has no active academic cohort in offer. "
+            f"{names[0]} has no active academic cohort. "
             "Create or activate a programme batch under Batches & timetables first."
         ]
     preview = ", ".join(names[:5])
     suffix = f" (+{len(names) - 5} more)" if len(names) > 5 else ""
     return [
-        f"The following programmes have no active cohort in offer: {preview}{suffix}. "
+        f"The following programmes have no active academic cohort: {preview}{suffix}. "
         "Configure programme batches before adding them to an intake."
     ]
 
@@ -66,12 +69,12 @@ def applicant_selectable_programs_qs(
 ) -> QuerySet:
     """
     Programmes on an intake that applicants may choose: on the intake, active,
-    with an active academic cohort in offer, optionally filtered by campus/level.
+    with an active academic cohort. Offer timing is enforced by the intake window.
     """
     if batch is None:
         return Program.objects.none()
 
-    eligible = program_ids_with_active_cohort_offer(today=today)
+    eligible = program_ids_with_active_cohort(today=today)
     qs = (
         batch.programs.filter(is_active=True, id__in=eligible)
         .select_related("faculty", "academic_level")

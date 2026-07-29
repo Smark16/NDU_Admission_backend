@@ -56,6 +56,7 @@ from .views import (
     PublishCourseMarksView,
     StaffExaminationCoursesView,
     StudentMyResultsView,
+    UnpublishCourseMarksView,
 )
 
 urlpatterns = [
@@ -126,6 +127,11 @@ urlpatterns = [
         "lecturer/courses/<int:course_unit_id>/publish/",
         PublishCourseMarksView.as_view(),
         name="publish-course-marks",
+    ),
+    path(
+        "lecturer/courses/<int:course_unit_id>/unpublish/",
+        UnpublishCourseMarksView.as_view(),
+        name="unpublish-course-marks",
     ),
     path(
         "courses/<int:course_unit_id>/import-marks/",
