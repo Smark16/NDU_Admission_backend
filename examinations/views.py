@@ -23,7 +23,7 @@ from .permissions import (
 from .services.mark_completeness import collect_incomplete_results
 from .services.marks_window import assert_marks_entry_allowed, marks_entry_status
 from .services.policy_resolver import resolve_assessment_policy
-from .services.publish import publish_result, verify_result
+from .services.publish import publish_result, unpublish_result, verify_result
 from .serializers import (
     AssessmentPolicySerializer,
     CourseUnitResultSerializer,
@@ -162,7 +162,8 @@ class LecturerCourseMarksView(APIView):
         enrollments = (
             StudentCourseUnitEnrollment.objects.filter(
                 course_unit=course_unit,
-                status="enrolled",
+                # Include completed/failed so published students stay visible on Marks.
+                status__in=["enrolled", "completed", "failed"],
             )
             .select_related("student", "student__application", "course_result")
             .order_by("student__reg_no")
@@ -451,6 +452,68 @@ class PublishCourseMarksView(APIView):
                 "draft_count": draft_n,
                 "verified_count": verified_n,
                 "already_published_count": already_published_n,
+                "enrollment_ids": enrollment_ids,
+                "message": message,
+            }
+        )
+
+
+class UnpublishCourseMarksView(APIView):
+    """Revert published results to submitted (verified) so students no longer see them."""
+
+    permission_classes = [IsAuthenticated, CanPublishResults]
+
+    def post(self, request, course_unit_id):
+        try:
+            course_unit = _get_course_unit_or_404(course_unit_id)
+        except CourseUnit.DoesNotExist:
+            return Response({"detail": "Course unit not found."}, status=404)
+
+        if not user_can_publish_course(request.user, course_unit):
+            return Response(
+                {"detail": "You do not have permission to unpublish marks for this course."},
+                status=403,
+            )
+
+        enrollment_ids = None
+        raw_ids = request.data.get("enrollment_ids") if hasattr(request.data, "get") else None
+        if raw_ids is not None:
+            if not isinstance(raw_ids, list) or not raw_ids:
+                return Response(
+                    {"detail": "enrollment_ids must be a non-empty list of enrollment ids."},
+                    status=400,
+                )
+            try:
+                enrollment_ids = [int(x) for x in raw_ids]
+            except (TypeError, ValueError):
+                return Response(
+                    {"detail": "enrollment_ids must contain integers."},
+                    status=400,
+                )
+
+        qs = CourseUnitResult.objects.filter(
+            enrollment__course_unit_id=course_unit_id,
+            status=CourseUnitResult.STATUS_PUBLISHED,
+        )
+        if enrollment_ids is not None:
+            qs = qs.filter(enrollment_id__in=enrollment_ids)
+
+        unpublished = 0
+        with transaction.atomic():
+            for result in qs.select_related("enrollment"):
+                unpublish_result(result, user=request.user)
+                unpublished += 1
+
+        scope = "selected student(s)" if enrollment_ids is not None else "course"
+        if unpublished:
+            message = f"Unpublished {unpublished} result(s) ({scope}). Students can no longer see them."
+        else:
+            message = f"Unpublished 0 result(s). No published marks found for this {scope}."
+
+        return Response(
+            {
+                "course_unit_id": course_unit_id,
+                "unpublished_count": unpublished,
                 "enrollment_ids": enrollment_ids,
                 "message": message,
             }
