@@ -64,7 +64,7 @@ def refresh_students_tuition_pct_cache(
         return {"scanned": 0, "met": 0, "unmet": 0}
 
     scanned = met = unmet = 0
-    qs = AdmittedStudent.objects.filter(id__in=ids).select_related(
+    select_related = (
         "application",
         "admitted_program",
         "admitted_batch",
@@ -72,23 +72,32 @@ def refresh_students_tuition_pct_cache(
         "programme_enrollment__program_batch",
     )
     now = timezone.now()
-    for student in qs.iterator(chunk_size=50):
-        scanned += 1
-        try:
-            meets = compute_registration_tuition_pct_met(student, min_pct=min_pct)
-        except Exception:
-            logger.exception(
-                "tuition %% cache refresh failed for student id=%s", student.pk
-            )
-            meets = False
-        AdmittedStudent.objects.filter(pk=student.pk).update(
-            registration_tuition_pct_met=meets,
-            registration_tuition_pct_at=now,
+    # Chunked loads — no QuerySet.iterator() (breaks behind PgBouncer).
+    chunk_size = 40
+    for i in range(0, len(ids), chunk_size):
+        chunk = ids[i : i + chunk_size]
+        students = (
+            AdmittedStudent.objects.filter(id__in=chunk)
+            .select_related(*select_related)
+            .order_by("id")
         )
-        if meets:
-            met += 1
-        else:
-            unmet += 1
+        for student in students:
+            scanned += 1
+            try:
+                meets = compute_registration_tuition_pct_met(student, min_pct=min_pct)
+            except Exception:
+                logger.exception(
+                    "tuition %% cache refresh failed for student id=%s", student.pk
+                )
+                meets = False
+            AdmittedStudent.objects.filter(pk=student.pk).update(
+                registration_tuition_pct_met=meets,
+                registration_tuition_pct_at=now,
+            )
+            if meets:
+                met += 1
+            else:
+                unmet += 1
     return {"scanned": scanned, "met": met, "unmet": unmet}
 
 
