@@ -366,12 +366,16 @@ class PublishCourseMarksView(APIView):
         if force:
             statuses.append(CourseUnitResult.STATUS_DRAFT)
 
+        base_qs = CourseUnitResult.objects.filter(enrollment__course_unit_id=course_unit_id)
+        draft_n = base_qs.filter(status=CourseUnitResult.STATUS_DRAFT).count()
+        verified_n = base_qs.filter(status=CourseUnitResult.STATUS_VERIFIED).count()
+        already_published_n = base_qs.filter(status=CourseUnitResult.STATUS_PUBLISHED).count()
+
         published = 0
         with transaction.atomic():
-            results = CourseUnitResult.objects.filter(
-                enrollment__course_unit_id=course_unit_id,
-                status__in=statuses,
-            ).select_related("enrollment", "enrollment__student", "policy")
+            results = base_qs.filter(status__in=statuses).select_related(
+                "enrollment", "enrollment__student", "policy"
+            )
 
             incomplete = collect_incomplete_results(results)
             if incomplete:
@@ -389,11 +393,37 @@ class PublishCourseMarksView(APIView):
                 publish_result(result, user=request.user)
                 published += 1
 
+        if published:
+            message = f"Published {published} result(s)."
+        elif force:
+            message = (
+                f"Published 0 result(s). No draft or submitted marks found for this course "
+                f"(already published: {already_published_n})."
+            )
+        elif draft_n > 0:
+            message = (
+                f"Published 0 result(s). {draft_n} mark(s) are still draft — lecturers have not "
+                f"submitted them yet. Use “Submit + publish all”, or “Mark drafts as submitted” "
+                f"first, then publish."
+            )
+        elif already_published_n > 0:
+            message = (
+                f"Published 0 result(s). All {already_published_n} result(s) for this course "
+                f"are already published."
+            )
+        else:
+            message = (
+                "Published 0 result(s). No marks found for this course — enter marks first."
+            )
+
         return Response(
             {
                 "course_unit_id": course_unit_id,
                 "published_count": published,
-                "message": f"Published {published} result(s).",
+                "draft_count": draft_n,
+                "verified_count": verified_n,
+                "already_published_count": already_published_n,
+                "message": message,
             }
         )
 
