@@ -573,6 +573,76 @@ class ProgramBatch(models.Model):
             raise ValidationError("Offer end date cannot be before offer start date.")
 
 
+class TeachingSection(models.Model):
+    """Teaching section within an academic cohort (ProgramBatch).
+
+    Every cohort gets a default section at creation. Staff can add more sections
+    and move students between them for timetabling without changing tuition cohort.
+    """
+
+    program_batch = models.ForeignKey(
+        ProgramBatch,
+        on_delete=models.CASCADE,
+        related_name="teaching_sections",
+    )
+    code = models.CharField(
+        max_length=20,
+        help_text="Short code unique within the cohort (e.g. MAIN, A, B).",
+    )
+    name = models.CharField(
+        max_length=100,
+        help_text="Display name (e.g. Main, Section A).",
+    )
+    is_default = models.BooleanField(
+        default=False,
+        help_text="Catch-all section for new enrollments. Exactly one per cohort.",
+    )
+    max_capacity = models.PositiveIntegerField(
+        default=120,
+        help_text="Teaching capacity warning/limit when moving students (0 = unlimited).",
+    )
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-is_default", "code", "name"]
+        verbose_name = "Teaching Section"
+        verbose_name_plural = "Teaching Sections"
+        unique_together = [("program_batch", "code")]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["program_batch"],
+                condition=models.Q(is_default=True),
+                name="programs_teachingsection_one_default_per_batch",
+            ),
+        ]
+
+    def __str__(self):
+        default = " (default)" if self.is_default else ""
+        return f"{self.program_batch} · {self.code}{default}"
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        code = (self.code or "").strip().upper()
+        if not code:
+            raise ValidationError({"code": "Section code is required."})
+        self.code = code
+        if self.is_default and self.program_batch_id:
+            other = (
+                TeachingSection.objects.filter(
+                    program_batch_id=self.program_batch_id, is_default=True
+                )
+                .exclude(pk=self.pk)
+                .exists()
+            )
+            if other:
+                raise ValidationError(
+                    {"is_default": "This cohort already has a default section."}
+                )
+
+
 class Semester(models.Model):
     """Academic semester/term within a program batch.
 
@@ -713,6 +783,72 @@ class CourseUnit(models.Model):
         return f"{self.code} - {self.name}"
 
 
+class CourseUnitSectionLecturer(models.Model):
+    """Lecturer assigned to a course unit for a teaching section (or whole cohort).
+
+    ``teaching_section`` null = all sections / shared teaching on this unit.
+    Same lecturer may be assigned to multiple sections on the same course unit.
+    """
+
+    course_unit = models.ForeignKey(
+        CourseUnit,
+        on_delete=models.CASCADE,
+        related_name="section_lecturers",
+    )
+    teaching_section = models.ForeignKey(
+        "TeachingSection",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="course_unit_lecturers",
+        help_text="Null = assigned to all sections (whole cohort) on this unit.",
+    )
+    lecturer = models.ForeignKey(
+        "accounts.User",
+        on_delete=models.CASCADE,
+        related_name="section_course_assignments",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Course unit section lecturer"
+        verbose_name_plural = "Course unit section lecturers"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["course_unit", "lecturer"],
+                condition=models.Q(teaching_section__isnull=True),
+                name="programs_cu_section_lecturer_all_unique",
+            ),
+            models.UniqueConstraint(
+                fields=["course_unit", "teaching_section", "lecturer"],
+                condition=models.Q(teaching_section__isnull=False),
+                name="programs_cu_section_lecturer_section_unique",
+            ),
+        ]
+
+    def __str__(self):
+        sec = self.teaching_section.code if self.teaching_section_id else "ALL"
+        return f"{self.course_unit.code} · {sec} · {self.lecturer_id}"
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        if self.teaching_section_id and self.course_unit_id:
+            batch_id = self.course_unit.program_batch_id
+            if batch_id is None and self.course_unit.semester_id:
+                sem = getattr(self.course_unit, "semester", None)
+                batch_id = getattr(sem, "program_batch_id", None) if sem else None
+            if batch_id and self.teaching_section.program_batch_id != batch_id:
+                raise ValidationError(
+                    {
+                        "teaching_section": (
+                            "Teaching section must belong to this course unit's cohort."
+                        )
+                    }
+                )
+
+
 class CourseMaterial(models.Model):
     """Teaching materials attached to a course unit (outline first; notes later)."""
 
@@ -765,6 +901,15 @@ class CourseMaterial(models.Model):
 
 class StudentCourseUnitEnrollment(models.Model):
     """Track which students are enrolled in which course units."""
+    KIND_NORMAL = "normal"
+    KIND_RETAKE = "retake"
+    KIND_MISSED = "missed"
+    REGISTRATION_KIND_CHOICES = [
+        (KIND_NORMAL, "Normal"),
+        (KIND_RETAKE, "Retake"),
+        (KIND_MISSED, "Missed paper"),
+    ]
+
     student = models.ForeignKey('admissions.AdmittedStudent', on_delete=models.CASCADE, related_name='course_unit_enrollments')
     course_unit = models.ForeignKey(CourseUnit, on_delete=models.CASCADE, related_name='student_enrollments')
     enrollment_date = models.DateTimeField(auto_now_add=True)
@@ -778,6 +923,13 @@ class StudentCourseUnitEnrollment(models.Model):
             ('failed', 'Failed'),
         ],
         default='enrolled',
+    )
+    registration_kind = models.CharField(
+        max_length=16,
+        choices=REGISTRATION_KIND_CHOICES,
+        default=KIND_NORMAL,
+        db_index=True,
+        help_text="normal = first attempt; retake/missed = next-academic-year sitting of a prior paper.",
     )
     grade = models.CharField(max_length=10, blank=True, null=True, help_text="Final grade if completed")
     source = models.CharField(
@@ -943,6 +1095,17 @@ class StudentProgrammeEnrollment(models.Model):
             "(e.g. Accounting, Management, Marketing)."
         ),
     )
+    teaching_section = models.ForeignKey(
+        "TeachingSection",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="student_enrollments",
+        help_text=(
+            "Teaching section within the academic cohort. New enrollments land "
+            "on the cohort default section; staff may move students later."
+        ),
+    )
     status = models.CharField(
         max_length=20,
         choices=STATUS_CHOICES,
@@ -1031,9 +1194,19 @@ class StudentProgrammeEnrollment(models.Model):
                         f"{self.program.calendar_type}-based programme (max {max_terms})."
                     )
                 })
+        if self.teaching_section_id and self.program_batch_id:
+            if self.teaching_section.program_batch_id != self.program_batch_id:
+                raise ValidationError(
+                    {
+                        "teaching_section": (
+                            "Teaching section must belong to the student's academic cohort."
+                        )
+                    }
+                )
 
     def save(self, *args, **kwargs):
         from django.utils import timezone
+
         # Auto-stamp enrolled_at on first transition to 'enrolled'
         if self.status == 'enrolled' and self.enrolled_at is None:
             self.enrolled_at = timezone.now()
@@ -1042,6 +1215,20 @@ class StudentProgrammeEnrollment(models.Model):
             self.entry_year_of_study = self.current_year_of_study
         if self.entry_term_number is None:
             self.entry_term_number = self.current_term_number
+        # Keep teaching section on the current cohort (default when missing/mismatched).
+        if self.program_batch_id:
+            from Programs.teaching_sections import ensure_enrollment_teaching_section
+
+            prior_section_id = self.teaching_section_id
+            ensure_enrollment_teaching_section(self, assign_only=True)
+            update_fields = kwargs.get("update_fields")
+            if (
+                update_fields is not None
+                and self.teaching_section_id != prior_section_id
+                and "teaching_section" not in update_fields
+                and "teaching_section_id" not in update_fields
+            ):
+                kwargs["update_fields"] = list(update_fields) + ["teaching_section"]
         super().save(*args, **kwargs)
 
 
@@ -1300,6 +1487,18 @@ class TimetableSession(models.Model):
         on_delete=models.CASCADE,
         related_name="timetable_sessions",
     )
+    teaching_section = models.ForeignKey(
+        "TeachingSection",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="timetable_sessions",
+        help_text=(
+            "Null = whole cohort (shared lecture). Set to a teaching section for "
+            "section-only tutorials/labs/parallel streams. Same lecturers may teach "
+            "multiple section sessions on the same course unit."
+        ),
+    )
     day_of_week = models.PositiveSmallIntegerField(choices=DAY_CHOICES)
     session_date = models.DateField(
         null=True,
@@ -1388,6 +1587,23 @@ class TimetableSession(models.Model):
                             )
                         }
                     )
+
+        if self.teaching_section_id and self.course_unit_id:
+            batch_id = None
+            cu = getattr(self, "course_unit", None)
+            if cu is not None:
+                batch_id = cu.program_batch_id
+                if batch_id is None and getattr(cu, "semester_id", None):
+                    sem = getattr(cu, "semester", None)
+                    batch_id = getattr(sem, "program_batch_id", None) if sem else None
+            if batch_id and self.teaching_section.program_batch_id != batch_id:
+                raise ValidationError(
+                    {
+                        "teaching_section": (
+                            "Teaching section must belong to this course unit's academic cohort."
+                        )
+                    }
+                )
 
 
 class LectureAttendanceSession(models.Model):

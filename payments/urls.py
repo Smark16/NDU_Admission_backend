@@ -20,11 +20,18 @@ from .fee_exemption_views import (
     StudentFeeExemptionRevokeView,
 )
 from .admin_ledger_views import (
+    AdminAccountsClearedRegistrationReportView,
+    AdminManualBankChangeRequestApproveView,
+    AdminManualBankChangeRequestListView,
+    AdminManualBankChangeRequestRejectView,
+    AdminManualBankPaymentDetailView,
+    AdminManualBankPaymentsReportView,
     AdminTuitionLedgerFiltersView,
     AdminTuitionLedgerStudentDetailView,
     AdminTuitionLedgerStudentsExportView,
     AdminTuitionLedgerStudentsView,
     AdminTuitionLedgerTransactionsView,
+    AdminPostManualBankPaymentView,
     SendCommitmentFeeReminderView,
 )
 
@@ -123,6 +130,41 @@ urlpatterns = [
         'admin/tuition_ledger/students/<int:student_id>',
         AdminTuitionLedgerStudentDetailView.as_view(),
         name='admin_tuition_ledger_student_detail',
+    ),
+    path(
+        'admin/tuition_ledger/students/<int:student_id>/manual_bank_payment',
+        AdminPostManualBankPaymentView.as_view(),
+        name='admin_post_manual_bank_payment',
+    ),
+    path(
+        'admin/tuition_ledger/manual_bank_payments/<int:ledger_id>',
+        AdminManualBankPaymentDetailView.as_view(),
+        name='admin_manual_bank_payment_detail',
+    ),
+    path(
+        'admin/tuition_ledger/manual_bank_change_requests',
+        AdminManualBankChangeRequestListView.as_view(),
+        name='admin_manual_bank_change_requests',
+    ),
+    path(
+        'admin/tuition_ledger/manual_bank_change_requests/<int:request_id>/approve',
+        AdminManualBankChangeRequestApproveView.as_view(),
+        name='admin_manual_bank_change_request_approve',
+    ),
+    path(
+        'admin/tuition_ledger/manual_bank_change_requests/<int:request_id>/reject',
+        AdminManualBankChangeRequestRejectView.as_view(),
+        name='admin_manual_bank_change_request_reject',
+    ),
+    path(
+        'admin/reports/manual_bank_payments',
+        AdminManualBankPaymentsReportView.as_view(),
+        name='admin_manual_bank_payments_report',
+    ),
+    path(
+        'admin/reports/accounts_cleared_registration',
+        AdminAccountsClearedRegistrationReportView.as_view(),
+        name='admin_accounts_cleared_registration_report',
     ),
     path('admin/tuition_ledger/transactions', AdminTuitionLedgerTransactionsView.as_view(), name='admin_tuition_ledger_transactions'),
     path(

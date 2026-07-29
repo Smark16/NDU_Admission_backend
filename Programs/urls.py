@@ -13,6 +13,14 @@ from .batch_views import (
     UpdateProgramBatchView,
 )
 from .semester_update_view import UpdateSemesterView
+from .section_views import (
+    CreateTeachingSectionView,
+    ListBatchUnsectionedStudentsView,
+    ListSectionStudentsView,
+    ListTeachingSectionsView,
+    MoveStudentsToSectionView,
+    UpdateTeachingSectionView,
+)
 from .views import *
 from .curriculum_views import (
     BulkUploadCurriculumView,
@@ -155,6 +163,38 @@ urlpatterns = [
         name='update_semester',
     ),
     path('batch/<int:batch_id>/subject/create', CreateSubjectView.as_view(), name='create_subject'),
+
+    # ----- teaching sections within a cohort -----
+    path(
+        'batch/<int:batch_id>/sections',
+        ListTeachingSectionsView.as_view(),
+        name='list_teaching_sections',
+    ),
+    path(
+        'batch/<int:batch_id>/section/create',
+        CreateTeachingSectionView.as_view(),
+        name='create_teaching_section',
+    ),
+    path(
+        'section/<int:section_id>/update',
+        UpdateTeachingSectionView.as_view(),
+        name='update_teaching_section',
+    ),
+    path(
+        'batch/<int:batch_id>/sections/<int:section_id>/students',
+        ListSectionStudentsView.as_view(),
+        name='list_section_students',
+    ),
+    path(
+        'batch/<int:batch_id>/sections/move',
+        MoveStudentsToSectionView.as_view(),
+        name='move_students_to_section',
+    ),
+    path(
+        'batch/<int:batch_id>/unsectioned',
+        ListBatchUnsectionedStudentsView.as_view(),
+        name='list_batch_unsectioned_students',
+    ),
 
     # ----- MODULE: programme curriculum mapping (ProgramCurriculumLine) -----
     path(

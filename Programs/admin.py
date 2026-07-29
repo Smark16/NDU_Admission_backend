@@ -10,6 +10,7 @@ from .models import (
     StudentCurriculumOverride,
     StudentCourseUnitEnrollment,
     RoomType,
+    TeachingSection,
     TimetableSession,
     Venue,
 )
@@ -43,12 +44,29 @@ class SemesterInline(admin.TabularInline):
     fields = ['name', 'order', 'year_of_study', 'term_number', 'start_date', 'end_date', 'is_active']
 
 
+class TeachingSectionInline(admin.TabularInline):
+    model = TeachingSection
+    extra = 0
+    fields = ['code', 'name', 'is_default', 'max_capacity', 'is_active']
+
+
 @admin.register(ProgramBatch)
 class ProgramBatchAdmin(admin.ModelAdmin):
     list_display = ['id', 'name', 'program', 'academic_year', 'start_date', 'offer_start_date', 'offer_end_date', 'is_active']
     list_filter = ['is_active', 'program']
     search_fields = ['name', 'academic_year']
-    inlines = [SemesterInline]
+    inlines = [SemesterInline, TeachingSectionInline]
+
+
+@admin.register(TeachingSection)
+class TeachingSectionAdmin(admin.ModelAdmin):
+    list_display = [
+        'id', 'code', 'name', 'program_batch', 'is_default',
+        'max_capacity', 'is_active', 'updated_at',
+    ]
+    list_filter = ['is_default', 'is_active', 'program_batch__program']
+    search_fields = ['code', 'name', 'program_batch__name', 'program_batch__program__name']
+    ordering = ['program_batch', '-is_default', 'code']
 
 
 class ProgramCurriculumLineInline(admin.TabularInline):
@@ -73,22 +91,25 @@ class ProgramCurriculumLineAdmin(admin.ModelAdmin):
 @admin.register(StudentProgrammeEnrollment)
 class StudentProgrammeEnrollmentAdmin(admin.ModelAdmin):
     list_display = [
-        'id', 'student', 'program', 'program_batch',
+        'id', 'student', 'program', 'program_batch', 'teaching_section',
         'entry_year_of_study', 'entry_term_number',
         'current_year_of_study', 'current_term_number',
         'status', 'enrolled_at', 'enrolled_by',
     ]
-    list_filter = ['status', 'program', 'program_batch', 'current_year_of_study']
+    list_filter = ['status', 'program', 'program_batch', 'teaching_section', 'current_year_of_study']
     search_fields = [
         'student__student_id', 'student__application__first_name',
         'student__application__last_name', 'program__name',
     ]
     ordering = ['-enrolled_at', '-created_at']
     readonly_fields = ['enrolled_at', 'created_at', 'updated_at']
-    raw_id_fields = ['student', 'enrolled_by']
+    raw_id_fields = ['student', 'enrolled_by', 'teaching_section']
     fieldsets = [
         ('Student & Programme', {
-            'fields': ('student', 'program', 'program_batch', 'status', 'enrolled_by', 'notes'),
+            'fields': (
+                'student', 'program', 'program_batch', 'teaching_section',
+                'status', 'enrolled_by', 'notes',
+            ),
         }),
         ('Entry Point (immutable)', {
             'fields': ('entry_year_of_study', 'entry_term_number'),
@@ -182,6 +203,7 @@ class TimetableSessionAdmin(admin.ModelAdmin):
     list_display = [
         "id",
         "course_unit",
+        "teaching_section",
         "session_date",
         "day_of_week",
         "start_time",

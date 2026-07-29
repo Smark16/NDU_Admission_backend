@@ -12,15 +12,21 @@ from django.db.models.functions import Coalesce
 from django.http import StreamingHttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils.dateparse import parse_date
-from accounts.erp_drf_permissions import FinanceModuleAdminPermission
+from accounts.erp_drf_permissions import (
+    AccountsClearedReportPermission,
+    FinanceModuleAdminPermission,
+    IsSuperAdminOnly,
+)
+from accounts.super_admin import user_is_super_admin
 from rest_framework import status
+from rest_framework.permissions import BasePermission
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from admissions.models import AdmittedStudent, Batch, Campus
 from Programs.models import Program, ProgramBatch
 
-from .models import StudentTuitionPayment
+from .models import StudentTuitionPayment, TuitionLedger
 from .student_portal_finance import (
     COMMITMENT_FEE_THRESHOLD,
     payment_status_dict,
@@ -647,6 +653,526 @@ class AdminTuitionLedgerStudentDetailView(APIView):
                 "student": _student_row(student),
                 "finance": finance,
                 "billing_lines": student_billing_lines(student),
+            }
+        )
+
+
+class CanApproveManualBankPayment(BasePermission):
+    message = "Only Finance Manager or Super Admin can approve bank payment changes."
+
+    def has_permission(self, request, view):
+        from payments.manual_bank_approval import user_can_approve_manual_bank
+
+        return bool(
+            request.user
+            and request.user.is_authenticated
+            and user_can_approve_manual_bank(request.user)
+        )
+
+
+class AdminPostManualBankPaymentView(APIView):
+    """
+    POST — submit a *pending* bank payment for Finance Manager approval.
+    Super Admin only for now (request side).
+    """
+
+    permission_classes = [IsSuperAdminOnly]
+
+    def post(self, request, student_id):
+        from audit.utils import log_audit_event
+        from payments.manual_bank_approval import create_change_request, serialize_change_request
+        from payments.models import ManualBankPaymentChangeRequest
+
+        student = get_object_or_404(
+            AdmittedStudent.objects.select_related("application"),
+            pk=student_id,
+            is_admitted=True,
+        )
+        payload = {
+            "amount": request.data.get("amount"),
+            "bank_reference": request.data.get("bank_reference")
+            or request.data.get("reference")
+            or "",
+            "payment_date": request.data.get("payment_date")
+            or request.data.get("paid_at"),
+            "notes": request.data.get("notes") or request.data.get("narration") or "",
+            "bank_name": request.data.get("bank_name") or "",
+        }
+        try:
+            change = create_change_request(
+                request_type=ManualBankPaymentChangeRequest.RequestType.POST,
+                student=student,
+                requested_by=request.user,
+                payload=payload,
+                reason=(request.data.get("reason") or "").strip(),
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        actor = request.user.get_full_name() or request.user.email or str(request.user.pk)
+        log_audit_event(
+            request.user,
+            "manual_bank_payment_request",
+            student,
+            (
+                f"Bank payment POST requested amount={payload.get('amount')} "
+                f"ref={payload.get('bank_reference')} by={actor} request_id={change.id}"
+            ),
+            request,
+        )
+        return Response(
+            {
+                "message": (
+                    "Bank payment submitted for Finance Manager approval. "
+                    "It will credit the student only after approval."
+                ),
+                "pending": True,
+                "request": serialize_change_request(change),
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class AdminManualBankPaymentDetailView(APIView):
+    """
+    PATCH / DELETE — submit edit/delete for Finance Manager approval (reason required).
+    """
+
+    permission_classes = [IsSuperAdminOnly]
+
+    def patch(self, request, ledger_id):
+        from audit.utils import log_audit_event
+        from payments.manual_bank_approval import create_change_request, serialize_change_request
+        from payments.manual_bank_payment import get_manual_bank_ledger
+        from payments.models import ManualBankPaymentChangeRequest
+
+        try:
+            ledger = get_manual_bank_ledger(ledger_id)
+        except TuitionLedger.DoesNotExist:
+            return Response({"detail": "Bank payment not found."}, status=status.HTTP_404_NOT_FOUND)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        student = ledger.student
+        if student is None:
+            return Response(
+                {"detail": "Bank payment is not linked to a student."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        data = request.data
+        payload = {}
+        if "amount" in data:
+            payload["amount"] = data.get("amount")
+        if "bank_reference" in data or "reference" in data:
+            payload["bank_reference"] = data.get("bank_reference") or data.get("reference") or ""
+        if "payment_date" in data or "paid_at" in data:
+            payload["payment_date"] = data.get("payment_date") or data.get("paid_at")
+        if "notes" in data or "narration" in data:
+            payload["notes"] = data.get("notes") if "notes" in data else data.get("narration")
+        if "bank_name" in data:
+            payload["bank_name"] = data.get("bank_name") or ""
+
+        reason = (data.get("reason") or "").strip()
+        try:
+            change = create_change_request(
+                request_type=ManualBankPaymentChangeRequest.RequestType.UPDATE,
+                student=student,
+                ledger=ledger,
+                requested_by=request.user,
+                payload=payload,
+                reason=reason,
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        actor = request.user.get_full_name() or request.user.email or str(request.user.pk)
+        log_audit_event(
+            request.user,
+            "manual_bank_payment_edit_request",
+            student,
+            (
+                f"Bank payment EDIT requested ledger={ledger.id} "
+                f"reason={reason!r} by={actor} request_id={change.id}"
+            ),
+            request,
+        )
+        return Response(
+            {
+                "message": "Edit submitted for Finance Manager approval.",
+                "pending": True,
+                "request": serialize_change_request(change),
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+    def delete(self, request, ledger_id):
+        from audit.utils import log_audit_event
+        from payments.manual_bank_approval import create_change_request, serialize_change_request
+        from payments.manual_bank_payment import get_manual_bank_ledger
+        from payments.models import ManualBankPaymentChangeRequest
+
+        try:
+            ledger = get_manual_bank_ledger(ledger_id)
+        except TuitionLedger.DoesNotExist:
+            return Response({"detail": "Bank payment not found."}, status=status.HTTP_404_NOT_FOUND)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        student = ledger.student
+        if student is None:
+            return Response(
+                {"detail": "Bank payment is not linked to a student."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        reason = (
+            request.data.get("reason")
+            if hasattr(request, "data") and request.data is not None
+            else None
+        )
+        if reason is None:
+            reason = request.query_params.get("reason") or ""
+        reason = str(reason).strip()
+
+        try:
+            change = create_change_request(
+                request_type=ManualBankPaymentChangeRequest.RequestType.DELETE,
+                student=student,
+                ledger=ledger,
+                requested_by=request.user,
+                payload={
+                    "amount": str(ledger.amount),
+                    "bank_reference": ledger.source_channel_transaction_id,
+                    "receipt": ledger.schoolpay_receipt_number,
+                },
+                reason=reason,
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        actor = request.user.get_full_name() or request.user.email or str(request.user.pk)
+        log_audit_event(
+            request.user,
+            "manual_bank_payment_delete_request",
+            student,
+            (
+                f"Bank payment DELETE requested ledger={ledger.id} "
+                f"receipt={ledger.schoolpay_receipt_number} reason={reason!r} "
+                f"by={actor} request_id={change.id}"
+            ),
+            request,
+        )
+        return Response(
+            {
+                "message": "Delete submitted for Finance Manager approval.",
+                "pending": True,
+                "request": serialize_change_request(change),
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class CanViewOrApproveManualBankRequests(BasePermission):
+    message = "Only Super Admin or Finance Manager can view bank payment approval requests."
+
+    def has_permission(self, request, view):
+        from payments.manual_bank_approval import user_can_approve_manual_bank
+
+        u = request.user
+        if not u or not u.is_authenticated:
+            return False
+        return user_is_super_admin(u) or user_can_approve_manual_bank(u)
+
+
+class AdminManualBankChangeRequestListView(APIView):
+    """List pending/recent bank payment change requests."""
+
+    permission_classes = [CanViewOrApproveManualBankRequests]
+
+    def get(self, request):
+        from payments.manual_bank_approval import (
+            serialize_change_request,
+            user_can_approve_manual_bank,
+        )
+        from payments.models import ManualBankPaymentChangeRequest
+
+        status_filter = (request.query_params.get("status") or "pending").strip().lower()
+        qs = ManualBankPaymentChangeRequest.objects.select_related(
+            "student",
+            "student__application",
+            "ledger",
+            "requested_by",
+            "reviewed_by",
+        )
+        if status_filter and status_filter != "all":
+            qs = qs.filter(status=status_filter)
+        qs = qs.order_by("-requested_at")[:100]
+        return Response(
+            {
+                "results": [serialize_change_request(r) for r in qs],
+                "can_approve": user_can_approve_manual_bank(request.user),
+            }
+        )
+
+
+class AdminManualBankChangeRequestApproveView(APIView):
+    permission_classes = [CanApproveManualBankPayment]
+
+    def post(self, request, request_id):
+        from audit.utils import log_audit_event
+        from payments.manual_bank_approval import apply_change_request, serialize_change_request
+        from payments.models import ManualBankPaymentChangeRequest
+        from payments.student_portal_finance import payment_status_dict
+
+        change = get_object_or_404(
+            ManualBankPaymentChangeRequest.objects.select_related(
+                "student", "student__application", "ledger", "requested_by"
+            ),
+            pk=request_id,
+        )
+        try:
+            change, result = apply_change_request(
+                change,
+                reviewed_by=request.user,
+                review_notes=request.data.get("review_notes") or "",
+            )
+        except PermissionError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_403_FORBIDDEN)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        actor = request.user.get_full_name() or request.user.email or str(request.user.pk)
+        log_audit_event(
+            request.user,
+            "manual_bank_payment_approved",
+            change.student,
+            (
+                f"Approved {change.request_type} request_id={change.id} "
+                f"reason={change.reason!r} by={actor}"
+            ),
+            request,
+        )
+        finance = (
+            payment_status_dict(change.student, request) if change.student_id else None
+        )
+        return Response(
+            {
+                "message": f"{change.get_request_type_display()} approved and applied.",
+                "request": serialize_change_request(change),
+                "finance": finance,
+            }
+        )
+
+
+class AdminManualBankChangeRequestRejectView(APIView):
+    permission_classes = [CanApproveManualBankPayment]
+
+    def post(self, request, request_id):
+        from audit.utils import log_audit_event
+        from payments.manual_bank_approval import reject_change_request, serialize_change_request
+        from payments.models import ManualBankPaymentChangeRequest
+
+        change = get_object_or_404(
+            ManualBankPaymentChangeRequest.objects.select_related(
+                "student", "student__application", "requested_by"
+            ),
+            pk=request_id,
+        )
+        try:
+            change = reject_change_request(
+                change,
+                reviewed_by=request.user,
+                review_notes=request.data.get("review_notes")
+                or request.data.get("reason")
+                or "",
+            )
+        except PermissionError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_403_FORBIDDEN)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        actor = request.user.get_full_name() or request.user.email or str(request.user.pk)
+        log_audit_event(
+            request.user,
+            "manual_bank_payment_rejected",
+            change.student,
+            (
+                f"Rejected {change.request_type} request_id={change.id} "
+                f"by={actor} notes={change.review_notes!r}"
+            ),
+            request,
+        )
+        return Response(
+            {
+                "message": f"{change.get_request_type_display()} rejected.",
+                "request": serialize_change_request(change),
+            }
+        )
+
+
+class AdminManualBankPaymentsReportView(APIView):
+    """GET list of staff-posted bank reconciliation payments."""
+
+    permission_classes = [CanViewOrApproveManualBankRequests]
+
+    def get(self, request):
+        page = _parse_page(request.query_params.get("page"))
+        page_size = _parse_page_size(request.query_params.get("page_size"), default=50)
+        search = (request.query_params.get("search") or "").strip()
+        from_date = parse_date(request.query_params.get("from_date") or "")
+        to_date = parse_date(request.query_params.get("to_date") or "")
+
+        qs = (
+            TuitionLedger.objects.filter(
+                Q(schoolpay_receipt_number__startswith="BANK-")
+                | Q(raw_response__source="manual_bank_reconciliation")
+            )
+            .select_related("student", "student__application", "user")
+            .order_by("-payment_date_time", "-id")
+        )
+        if search:
+            qs = qs.filter(
+                Q(student_name__icontains=search)
+                | Q(student_payment_code__icontains=search)
+                | Q(student_registration_number__icontains=search)
+                | Q(schoolpay_receipt_number__icontains=search)
+                | Q(source_channel_transaction_id__icontains=search)
+                | Q(user__email__icontains=search)
+                | Q(user__first_name__icontains=search)
+                | Q(user__last_name__icontains=search)
+            )
+        if from_date:
+            qs = qs.filter(payment_date_time__date__gte=from_date)
+        if to_date:
+            qs = qs.filter(payment_date_time__date__lte=to_date)
+
+        total = qs.count()
+        offset = (page - 1) * page_size
+        rows = []
+        for row in qs[offset : offset + page_size]:
+            poster = ""
+            if row.user_id:
+                poster = row.user.get_full_name() or row.user.email or str(row.user_id)
+            raw = row.raw_response if isinstance(row.raw_response, dict) else {}
+            rows.append(
+                {
+                    "id": row.id,
+                    "student_pk": row.student_id,
+                    "student_name": row.student_name,
+                    "student_id": row.student_payment_code,
+                    "reg_no": row.student_registration_number,
+                    "amount": str(row.amount),
+                    "receipt": row.schoolpay_receipt_number,
+                    "bank_reference": row.source_channel_transaction_id
+                    or raw.get("bank_reference")
+                    or "",
+                    "bank_name": row.settlement_bank_code or raw.get("bank_name") or "",
+                    "channel": row.source_payment_channel,
+                    "payment_date_time": row.payment_date_time.isoformat()
+                    if row.payment_date_time
+                    else None,
+                    "posted_by": poster,
+                    "posted_by_id": row.user_id,
+                    "notes": (raw.get("notes") or row.source_channel_trans_detail or "")[:500],
+                    "created_at": row.created_at.isoformat() if row.created_at else None,
+                }
+            )
+
+        return Response(
+            {
+                "count": total,
+                "page": page,
+                "page_size": page_size,
+                "results": rows,
+            }
+        )
+
+
+class AdminAccountsClearedRegistrationReportView(APIView):
+    """
+    GET students cleared by Accounts for registration.
+    Finance / Super Admin can view.
+    """
+
+    permission_classes = [AccountsClearedReportPermission]
+
+    def get(self, request):
+        page = _parse_page(request.query_params.get("page"))
+        page_size = _parse_page_size(request.query_params.get("page_size"), default=50)
+        search = (request.query_params.get("search") or "").strip()
+        from_date = parse_date(request.query_params.get("from_date") or "")
+        to_date = parse_date(request.query_params.get("to_date") or "")
+        cleared_by_id = request.query_params.get("cleared_by")
+
+        qs = (
+            AdmittedStudent.objects.filter(
+                is_admitted=True,
+                accounts_registration_cleared=True,
+            )
+            .select_related(
+                "application",
+                "admitted_program",
+                "admitted_campus",
+                "admitted_batch",
+                "accounts_registration_cleared_by",
+            )
+            .order_by("-accounts_registration_cleared_at", "-id")
+        )
+        if search:
+            qs = qs.filter(
+                Q(student_id__icontains=search)
+                | Q(reg_no__icontains=search)
+                | Q(application__first_name__icontains=search)
+                | Q(application__last_name__icontains=search)
+                | Q(admitted_program__name__icontains=search)
+            )
+        if from_date:
+            qs = qs.filter(accounts_registration_cleared_at__date__gte=from_date)
+        if to_date:
+            qs = qs.filter(accounts_registration_cleared_at__date__lte=to_date)
+        if cleared_by_id:
+            try:
+                qs = qs.filter(accounts_registration_cleared_by_id=int(cleared_by_id))
+            except (TypeError, ValueError):
+                pass
+
+        total = qs.count()
+        offset = (page - 1) * page_size
+        rows = []
+        for s in qs[offset : offset + page_size]:
+            app = s.application
+            name = ""
+            if app:
+                name = f"{app.first_name or ''} {app.last_name or ''}".strip()
+            clearer = s.accounts_registration_cleared_by
+            clearer_name = ""
+            if clearer:
+                clearer_name = clearer.get_full_name() or clearer.email or str(clearer.pk)
+            rows.append(
+                {
+                    "id": s.id,
+                    "student_id": s.student_id or "",
+                    "reg_no": s.reg_no or "",
+                    "student_name": name or "—",
+                    "programme": s.admitted_program.name if s.admitted_program_id else "",
+                    "campus": s.admitted_campus.name if s.admitted_campus_id else "",
+                    "intake": s.admitted_batch.name if s.admitted_batch_id else "",
+                    "cleared_at": s.accounts_registration_cleared_at.isoformat()
+                    if s.accounts_registration_cleared_at
+                    else None,
+                    "cleared_by": clearer_name,
+                    "cleared_by_id": s.accounts_registration_cleared_by_id,
+                    "notes": (s.accounts_registration_clearance_notes or "")[:500],
+                }
+            )
+
+        return Response(
+            {
+                "count": total,
+                "page": page,
+                "page_size": page_size,
+                "results": rows,
             }
         )
 

@@ -14,9 +14,10 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.models import Campus
-from Programs.models import CourseUnit, RoomType, Semester, TimetableSession, Venue
+from Programs.models import CourseUnit, RoomType, Semester, TeachingSection, TimetableSession, Venue
 from Programs.permissions import ProgramSchedulingAPIPermission
 from admissions.faculty_scope import assert_semester_access, assert_timetable_session_access
+from Programs.teaching_sections import list_sections_for_batch
 from Programs.venue_code_utils import (
     ensure_room_type,
     list_room_type_names,
@@ -39,6 +40,41 @@ from Programs.timetable_utils import (
     sessions_for_semester,
     validate_session_scheduling,
 )
+
+
+def _resolve_teaching_section_for_session(course_unit, raw_section_id):
+    """
+    Resolve teaching_section FK for a timetable slot.
+    Empty / null / 'all' → cohort-wide (None).
+    """
+    if raw_section_id in (None, "", "null", "none", "all", "ALL"):
+        return None
+    try:
+        section_id = int(raw_section_id)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "teaching_section_id must be an integer or empty for whole cohort."
+        ) from exc
+
+    batch_id = course_unit.program_batch_id
+    if batch_id is None and course_unit.semester_id:
+        semester = getattr(course_unit, "semester", None)
+        if semester is None:
+            from Programs.models import Semester
+
+            semester = Semester.objects.filter(pk=course_unit.semester_id).first()
+        batch_id = getattr(semester, "program_batch_id", None) if semester else None
+    if not batch_id:
+        raise ValueError("Course unit has no academic cohort for teaching sections.")
+
+    try:
+        return TeachingSection.objects.get(
+            pk=section_id, program_batch_id=batch_id, is_active=True
+        )
+    except TeachingSection.DoesNotExist as exc:
+        raise ValueError(
+            "Teaching section not found on this course unit's academic cohort."
+        ) from exc
 
 
 def _parse_time(value: str, label: str):
@@ -547,6 +583,7 @@ class SemesterTimetableView(APIView):
                 "course_units": course_units,
                 "sessions": [serialize_session(s) for s in sessions],
                 "venues": [_serialize_venue(v) for v in venues_qs],
+                "teaching_sections": list_sections_for_batch(batch.id),
                 "catalog_overview": build_catalog_overview(sessions),
                 "teaching_load": compute_teaching_load(
                     sessions
@@ -564,7 +601,7 @@ class SemesterTimetableView(APIView):
             return Response({"detail": "course_unit_id is required."}, status=400)
 
         course_unit = get_object_or_404(
-            CourseUnit,
+            CourseUnit.objects.select_related("semester", "program_batch"),
             pk=course_unit_id,
             semester_id=semester.id,
             is_active=True,
@@ -604,8 +641,16 @@ class SemesterTimetableView(APIView):
             return Response({"detail": str(exc)}, status=400)
 
         is_published = bool(request.data.get("is_published", True))
+        try:
+            teaching_section = _resolve_teaching_section_for_session(
+                course_unit, request.data.get("teaching_section_id")
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
+
         session = TimetableSession(
             course_unit=course_unit,
+            teaching_section=teaching_section,
             day_of_week=day,
             session_date=session_date,
             start_time=start_time,
@@ -871,6 +916,13 @@ class TimetableSessionDetailView(APIView):
             session.is_published = bool(request.data["is_published"])
         if "is_active" in request.data:
             session.is_active = bool(request.data["is_active"])
+        if "teaching_section_id" in request.data:
+            try:
+                session.teaching_section = _resolve_teaching_section_for_session(
+                    session.course_unit, request.data.get("teaching_section_id")
+                )
+            except ValueError as exc:
+                return Response({"detail": str(exc)}, status=400)
 
         validation = validate_session_scheduling(session, exclude_pk=session.pk, require_venue=True)
         if not validation.ok:
@@ -934,14 +986,32 @@ def _student_timetable_sessions(user, semester_id=None):
             "course_unit__semester",
             "venue",
             "venue__campus",
+            "teaching_section",
         )
         .prefetch_related("course_unit__lecturers")
         .order_by("day_of_week", "start_time")
     )
-    return student, list(sessions)
+
+    # Students only see cohort-wide sessions + sessions for their teaching section.
+    student_section_id = None
+    try:
+        spe = student.programme_enrollment
+        student_section_id = spe.teaching_section_id
+    except Exception:
+        student_section_id = None
+
+    filtered = []
+    for session in sessions:
+        if session.teaching_section_id is None:
+            filtered.append(session)
+        elif student_section_id and session.teaching_section_id == student_section_id:
+            filtered.append(session)
+    return student, filtered
 
 
 def _lecturer_timetable_sessions(user, semester_id=None):
+    from Programs.section_lecturers import user_teaches_timetable_session
+
     assigned_ids = list(
         user.course_units.filter(is_active=True).values_list("id", flat=True).distinct()
     )
@@ -958,15 +1028,17 @@ def _lecturer_timetable_sessions(user, semester_id=None):
         "venue",
         "venue__campus",
         "course_unit__semester",
+        "teaching_section",
     )
     if semester_id:
         qs = qs.filter(course_unit__semester_id=semester_id)
 
-    return list(
-        qs.prefetch_related("course_unit__lecturers")
+    sessions = list(
+        qs.prefetch_related("course_unit__lecturers", "course_unit__section_lecturers")
         .distinct()
         .order_by("day_of_week", "start_time")
     )
+    return [s for s in sessions if user_teaches_timetable_session(user, s)]
 
 
 class StudentMyTimetableView(APIView):

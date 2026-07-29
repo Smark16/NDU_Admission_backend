@@ -50,6 +50,36 @@ class FinanceModuleAdminPermission(BasePermission):
         )
 
 
+class AccountsClearedReportPermission(BasePermission):
+    """Who can view the accounts-cleared-for-registration report."""
+
+    message = "You do not have permission to view accounts clearance reports."
+
+    def has_permission(self, request, view):
+        u = request.user
+        if not u.is_authenticated:
+            return False
+        if user_is_super_admin(u):
+            return True
+        if user_has_any_erp_perm(
+            u,
+            "access_finance",
+            "manage_payment_reconciliation",
+            "access_reports",
+        ):
+            return True
+        return bool(u.has_perm("admissions.clear_accounts_registration"))
+
+
+class IsSuperAdminOnly(BasePermission):
+    """Temporary hard gate for sensitive finance ops (e.g. manual bank posting)."""
+
+    message = "Only Super Admin can perform this action for now."
+
+    def has_permission(self, request, view):
+        return bool(request.user and request.user.is_authenticated and user_is_super_admin(request.user))
+
+
 class CanViewAdmissionQueues(BasePermission):
     """
     Application list / queue endpoints (all applications, direct entry, rejected).

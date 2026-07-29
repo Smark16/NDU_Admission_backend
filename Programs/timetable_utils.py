@@ -144,6 +144,7 @@ def serialize_session(session: TimetableSession) -> dict:
             else []
         )
         date_label = session_date_label(day_label, session_dates)
+    section = getattr(session, "teaching_section", None)
     return {
         "id": session.id,
         "course_unit_id": session.course_unit_id,
@@ -152,6 +153,10 @@ def serialize_session(session: TimetableSession) -> dict:
         "catalog_unit_id": cat.id if cat else None,
         "catalog_code": cat.code if cat else "",
         "catalog_name": cat.title if cat else "",
+        "teaching_section_id": section.id if section else None,
+        "teaching_section_code": section.code if section else "",
+        "teaching_section_name": section.name if section else "",
+        "is_cohort_wide": section is None,
         "day_of_week": session.day_of_week,
         "day_label": day_label,
         "session_date": session_date.isoformat() if session_date else "",
@@ -201,7 +206,13 @@ class ScheduleValidation:
 def _active_sessions_qs(exclude_pk: int | None = None):
     qs = (
         TimetableSession.objects.filter(is_active=True)
-        .select_related("course_unit", "course_unit__catalog_unit", "venue", "venue__campus")
+        .select_related(
+            "course_unit",
+            "course_unit__catalog_unit",
+            "venue",
+            "venue__campus",
+            "teaching_section",
+        )
         .prefetch_related("course_unit__lecturers")
     )
     if exclude_pk:

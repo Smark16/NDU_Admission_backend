@@ -604,8 +604,13 @@ def registration_card_payment_history(
         .order_by("-payment_date_time")[:80]
     ):
         paid_at = row.payment_date_time
+        raw = row.raw_response if isinstance(row.raw_response, dict) else {}
+        is_manual = (row.schoolpay_receipt_number or "").startswith("BANK-") or (
+            raw.get("source") == "manual_bank_reconciliation"
+        )
         rows.append(
             {
+                "id": row.id,
                 "paid_at": paid_at.isoformat() if paid_at else None,
                 "amount": float(row.amount or 0),
                 "currency": "UGX",
@@ -614,6 +619,10 @@ def registration_card_payment_history(
                 "description": (row.source_channel_trans_detail or "Tuition payment").strip()
                 or "Tuition payment",
                 "semester": _semester_label_for_paid_at(paid_at, student, windows),
+                "is_manual_bank": is_manual,
+                "bank_reference": (row.source_channel_transaction_id or raw.get("bank_reference") or ""),
+                "bank_name": (row.settlement_bank_code or raw.get("bank_name") or ""),
+                "notes": (raw.get("notes") or ""),
             }
         )
 
@@ -687,6 +696,13 @@ def payment_status_dict(student: AdmittedStudent, request=None) -> dict:
                 "receipt_number": row.schoolpay_receipt_number or "",
                 "is_waived": False,
                 "label": row.source_channel_trans_detail or "",
+                "is_manual_bank": (
+                    (row.schoolpay_receipt_number or "").startswith("BANK-")
+                    or (
+                        isinstance(row.raw_response, dict)
+                        and row.raw_response.get("source") == "manual_bank_reconciliation"
+                    )
+                ),
             }
         )
     for p in StudentTuitionPayment.objects.filter(student=student).select_related(
