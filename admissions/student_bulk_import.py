@@ -167,6 +167,31 @@ def _upsert_programme_enrollment_from_import(
     }
 
 
+def _refresh_enrollment_status_result(admitted: AdmittedStudent, result: dict) -> None:
+    """Attach final SPE status / activation block after fees + year upsert."""
+    from payments.admin_enrollment_requirements import (
+        admin_programme_enrollment_activation_block,
+    )
+    from Programs.models import StudentProgrammeEnrollment
+
+    enrollment = (
+        StudentProgrammeEnrollment.objects.filter(student_id=admitted.pk).first()
+    )
+    if enrollment is None:
+        result.setdefault("enrollment_status", None)
+        result.setdefault("enrollment_blocked", None)
+        return
+
+    result["enrollment_status"] = enrollment.status
+    if enrollment.status == "enrolled":
+        result["enrollment_activated"] = True
+        result["enrollment_blocked"] = None
+    else:
+        result["enrollment_blocked"] = admin_programme_enrollment_activation_block(
+            admitted, target_status="enrolled"
+        )
+
+
 def _apply_import_extensions(
     admitted: AdmittedStudent,
     *,
@@ -175,19 +200,27 @@ def _apply_import_extensions(
     row: dict,
     admitted_by,
     specialization: str | None = None,
+    require_academic_position: bool = False,
 ) -> dict:
     """
-    Optional continuing-student fields: academic position and legacy fee balances.
+    Continuing-student fields: academic position then legacy fee balances, then activate.
+
+    Order matters: set year/term before fee-driven activation so SPE is not created at Y1/S1.
     """
     from admissions.student_fee_balance_import import (
         apply_legacy_fee_balances,
         row_has_legacy_fee_data,
+    )
+    from payments.programme_enrollment_activation import (
+        activate_programme_enrollment_after_commitment_payment,
     )
 
     result = {
         "enrollment_set": False,
         "current_year_of_study": None,
         "current_term_number": None,
+        "enrollment_status": None,
+        "enrollment_blocked": None,
         "fees_paid_recorded": False,
         "fees_outstanding_recorded": False,
         "admission_fee_paid_set": False,
@@ -196,12 +229,11 @@ def _apply_import_extensions(
     }
 
     position = _parse_optional_position(row, program)
-    if row_has_legacy_fee_data(row):
-        fee_result = apply_legacy_fee_balances(
-            admitted, row, admitted_by=admitted_by
+    if require_academic_position and position is None:
+        raise ValueError(
+            "current_year_of_study and current_term_number are required "
+            "for continuing-student import."
         )
-        result.update(fee_result)
-        result["extensions_applied"] = True
 
     if position is not None:
         year, term = position
@@ -217,7 +249,42 @@ def _apply_import_extensions(
         result.update(enrollment_info)
         result["extensions_applied"] = True
 
+    if row_has_legacy_fee_data(row):
+        fee_result = apply_legacy_fee_balances(
+            admitted, row, admitted_by=admitted_by
+        )
+        result.update(fee_result)
+        result["extensions_applied"] = True
+
+    # Re-run activation after year/term + fees so position is preserved and status is final.
+    if result["extensions_applied"]:
+        activation = activate_programme_enrollment_after_commitment_payment(
+            admitted, activated_by=admitted_by
+        )
+        if activation.get("activated") or activation.get("reason") == "already_enrolled":
+            result["enrollment_activated"] = True
+        _refresh_enrollment_status_result(admitted, result)
+
     return result
+
+
+def _preflight_continuing_import(program: Program, program_batch: ProgramBatch) -> None:
+    """Fail early when curriculum or semester fees are missing for the academic batch."""
+    from payments.models import FeePlanRule
+
+    curriculum_version = _resolve_curriculum_version(program, program_batch)
+    if curriculum_version is None:
+        raise ValueError(
+            f"No curriculum version is configured for programme '{program.name}' "
+            f"(batch '{program_batch.name}'). Assign a curriculum on the programme or batch "
+            "before importing continuing students."
+        )
+
+    if not FeePlanRule.objects.filter(program_batch_id=program_batch.id).exists():
+        raise ValueError(
+            f"No semester fees are configured for academic batch '{program_batch.name}'. "
+            "Set up Batch Semester Fees (tuition/functional) before importing continuing students."
+        )
 
 
 def _normalize_header(name: str) -> str:
@@ -505,6 +572,7 @@ def _import_one_row(
     academic_level: AcademicLevel,
     admitted_by,
     register_schoolpay: bool,
+    require_academic_position: bool = False,
 ) -> AdmittedStudent:
     first_name = row.get("first_name", "").strip()
     last_name = row.get("last_name", "").strip()
@@ -631,6 +699,7 @@ def _import_one_row(
         row=row,
         admitted_by=admitted_by,
         specialization=specialization,
+        require_academic_position=require_academic_position,
     )
 
     try:
@@ -648,6 +717,25 @@ def _import_one_row(
     return admitted
 
 
+def _tally_extension_counters(ext: dict, counters: dict) -> None:
+    if ext.get("enrollment_set"):
+        counters["enrollment_set_rows"] += 1
+        if ext.get("enrollment_status") == "pending" or (
+            not ext.get("enrollment_activated") and ext.get("enrollment_blocked")
+        ):
+            counters["enrollment_pending_rows"] += 1
+            block = ext.get("enrollment_blocked")
+            if block and len(counters["warnings"]) < 20:
+                reg = ext.get("reg_no") or ""
+                counters["warnings"].append(
+                    f"{reg + ': ' if reg else ''}Year/semester set but enrollment pending — {block}"
+                )
+    if ext.get("fees_paid_recorded") or ext.get("fees_outstanding_recorded"):
+        counters["fees_imported_rows"] += 1
+    if ext.get("enrollment_activated"):
+        counters["enrollment_activated_rows"] += 1
+
+
 def process_student_batch_import(
     *,
     uploaded_file,
@@ -657,6 +745,7 @@ def process_student_batch_import(
     admission_batch_id: int | None = None,
     register_schoolpay: bool = True,
     skip_existing_reg_no: bool = False,
+    require_academic_position: bool = False,
 ) -> dict:
     try:
         program_batch = ProgramBatch.objects.select_related("program").get(pk=program_batch_id)
@@ -681,10 +770,21 @@ def process_student_batch_import(
     if academic_level is None:
         raise ValueError("Programme has no academic level configured.")
 
+    # Continuing migration needs curriculum + semester fees before any rows are created.
+    if require_academic_position:
+        _preflight_continuing_import(program, program_batch)
+
     headers, rows = _parse_upload_file(uploaded_file)
     missing = _require_columns(headers)
     if missing:
         raise ValueError(f"Missing required columns: {', '.join(missing)}")
+    if require_academic_position:
+        for col in ("current_year_of_study", "current_term_number"):
+            if col not in headers:
+                raise ValueError(
+                    f"Missing required continuing-student column: {col}. "
+                    "Re-download the template and fill year and semester for every row."
+                )
     if not rows:
         raise ValueError("No data rows found in file.")
 
@@ -696,9 +796,13 @@ def process_student_batch_import(
     created_students: list[dict] = []
     updated_students: list[dict] = []
     skipped_students: list[dict] = []
-    enrollment_set_rows = 0
-    fees_imported_rows = 0
-    enrollment_activated_rows = 0
+    counters = {
+        "enrollment_set_rows": 0,
+        "fees_imported_rows": 0,
+        "enrollment_activated_rows": 0,
+        "enrollment_pending_rows": 0,
+        "warnings": [],
+    }
 
     for row in rows:
         row_num = row.get("__row__", "?")
@@ -738,6 +842,7 @@ def process_student_batch_import(
                             row=row,
                             admitted_by=admitted_by,
                             specialization=specialization,
+                            require_academic_position=require_academic_position,
                         )
 
                     student_row = {
@@ -749,14 +854,8 @@ def process_student_batch_import(
                     }
                     if ext.get("extensions_applied"):
                         updated += 1
-                        if ext.get("enrollment_set"):
-                            enrollment_set_rows += 1
-                        if ext.get("fees_paid_recorded") or ext.get(
-                            "fees_outstanding_recorded"
-                        ):
-                            fees_imported_rows += 1
-                        if ext.get("enrollment_activated"):
-                            enrollment_activated_rows += 1
+                        ext_for_tally = {**ext, "reg_no": existing.reg_no}
+                        _tally_extension_counters(ext_for_tally, counters)
                         if batch_changed:
                             student_row["note"] = (
                                 "Already in system — batch and import columns updated."
@@ -782,16 +881,12 @@ def process_student_batch_import(
                     academic_level=academic_level,
                     admitted_by=admitted_by,
                     register_schoolpay=register_schoolpay,
+                    require_academic_position=require_academic_position,
                 )
             created += 1
             paycode = getattr(admitted, "_import_paycode", None) or admitted.student_id
             ext = getattr(admitted, "_import_extensions", {}) or {}
-            if ext.get("enrollment_set"):
-                enrollment_set_rows += 1
-            if ext.get("fees_paid_recorded") or ext.get("fees_outstanding_recorded"):
-                fees_imported_rows += 1
-            if ext.get("enrollment_activated"):
-                enrollment_activated_rows += 1
+            _tally_extension_counters({**ext, "reg_no": admitted.reg_no}, counters)
             created_students.append(
                 {
                     "id": admitted.id,
@@ -827,9 +922,12 @@ def process_student_batch_import(
         "updated": updated,
         "skipped": skipped,
         "failed": failed,
-        "enrollment_set_rows": enrollment_set_rows,
-        "fees_imported_rows": fees_imported_rows,
-        "enrollment_activated_rows": enrollment_activated_rows,
+        "enrollment_set_rows": counters["enrollment_set_rows"],
+        "fees_imported_rows": counters["fees_imported_rows"],
+        "enrollment_activated_rows": counters["enrollment_activated_rows"],
+        "enrollment_pending_rows": counters["enrollment_pending_rows"],
+        "warnings": counters["warnings"][:20],
+        "require_academic_position": require_academic_position,
         "errors": errors[:100],
         "created_students": created_students[:50],
         "updated_students": updated_students[:50],

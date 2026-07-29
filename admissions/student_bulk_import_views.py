@@ -39,7 +39,12 @@ class StudentBulkImportView(APIView):
 
     Optional CSV columns for continuing students (same file as student details):
     current_year_of_study, current_term_number, fees_paid_ugx, fees_paid_reference,
-    fees_outstanding_ugx, admission_fee_paid. Legacy-only fee import remains available at
+    fees_outstanding_ugx, admission_fee_paid.
+
+    Pass require_academic_position=true to require year/term on every row and run
+    curriculum + semester-fee preflight (used by Horizon continuing import).
+
+    Legacy-only fee import remains available at
     POST /api/admissions/students/fee_balance_import.
     """
 
@@ -85,6 +90,11 @@ class StudentBulkImportView(APIView):
         raw_skip = str(request.data.get("skip_existing_reg_no", "false")).lower()
         skip_existing_reg_no = raw_skip in ("1", "true", "yes", "on")
 
+        raw_position = str(
+            request.data.get("require_academic_position", "false")
+        ).lower()
+        require_academic_position = raw_position in ("1", "true", "yes", "on")
+
         try:
             result = process_student_batch_import(
                 uploaded_file=uploaded,
@@ -94,6 +104,7 @@ class StudentBulkImportView(APIView):
                 admitted_by=request.user,
                 register_schoolpay=register_schoolpay,
                 skip_existing_reg_no=skip_existing_reg_no,
+                require_academic_position=require_academic_position,
             )
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
