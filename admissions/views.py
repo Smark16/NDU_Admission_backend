@@ -3208,16 +3208,10 @@ class ListAdmittedStudents(generics.ListAPIView):
 class ListBonafideStudents(generics.ListAPIView):
     """Commitment-paid admitted students (bonafide ops): bio, identity, and placement."""
 
+    # Keep base QS light for COUNT / filter scans; select_related applied after pagination.
     queryset = AdmittedStudent.objects.filter(
         is_admitted=True,
         admission_fee_paid=True,
-    ).select_related(
-        "admitted_program__faculty",
-        "admitted_batch",
-        "admitted_campus",
-        "intended_program_batch",
-        "programme_enrollment__program_batch",
-        "application",
     )
     serializer_class = BonafideStudentSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
@@ -3226,6 +3220,34 @@ class ListBonafideStudents(generics.ListAPIView):
     ordering = ["-created_at"]
     # Ordering only — search is applied once below (avoid SearchFilter double-hit).
     filter_backends = [OrderingFilter]
+
+    _BONAFIDE_SELECT_RELATED = (
+        "admitted_program__faculty",
+        "admitted_batch",
+        "admitted_campus",
+        "intended_program_batch",
+        "programme_enrollment__program_batch",
+        "application",
+    )
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            page_ids = [obj.pk for obj in page]
+            enriched = {
+                obj.pk: obj
+                for obj in AdmittedStudent.objects.filter(pk__in=page_ids).select_related(
+                    *self._BONAFIDE_SELECT_RELATED
+                )
+            }
+            page = [enriched[pk] for pk in page_ids if pk in enriched]
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+        queryset = queryset.select_related(*self._BONAFIDE_SELECT_RELATED)
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -3319,32 +3341,24 @@ class ListBonafideStudents(generics.ListAPIView):
             elif raw in ("0", "false", "no"):
                 queryset = queryset.filter(accounts_registration_cleared=False)
 
-        # Live semester tuition % gate from RegistrationSettings.min_tuition_payment_percentage
-        # (same value as GET /api/payments/registration_settings). No cross-request cache.
+        # Live semester tuition % gate from RegistrationSettings (same as registration_settings API).
+        # Never silently drop this filter — that previously returned all awaiting-Accounts students.
         tuition_pct_met = self.request.query_params.get("tuition_pct_met")
         if tuition_pct_met is not None and str(tuition_pct_met).lower() not in ("all", ""):
-            try:
-                from payments.tuition_pct_queryset import filter_by_tuition_pct_met
+            from payments.tuition_pct_queryset import filter_by_tuition_pct_met
 
-                raw = str(tuition_pct_met).lower()
-                min_raw = self.request.query_params.get("tuition_pct_min")
-                min_pct = None
-                if min_raw not in (None, ""):
-                    try:
-                        min_pct = float(min_raw)
-                    except (TypeError, ValueError):
-                        min_pct = None
-                if raw in ("1", "true", "yes"):
-                    queryset = filter_by_tuition_pct_met(queryset, True, min_pct=min_pct)
-                elif raw in ("0", "false", "no"):
-                    queryset = filter_by_tuition_pct_met(queryset, False, min_pct=min_pct)
-            except Exception:
-                # Never 500 the Bonafide list if finance evaluation fails.
-                import logging
-
-                logging.getLogger(__name__).exception(
-                    "tuition_pct_met filter failed; returning unfiltered tuition set"
-                )
+            raw = str(tuition_pct_met).lower()
+            min_raw = self.request.query_params.get("tuition_pct_min")
+            min_pct = None
+            if min_raw not in (None, ""):
+                try:
+                    min_pct = float(min_raw)
+                except (TypeError, ValueError):
+                    min_pct = None
+            if raw in ("1", "true", "yes"):
+                queryset = filter_by_tuition_pct_met(queryset, True, min_pct=min_pct)
+            elif raw in ("0", "false", "no"):
+                queryset = filter_by_tuition_pct_met(queryset, False, min_pct=min_pct)
 
         registration_stage = (self.request.query_params.get("registration_stage") or "").strip().lower()
         if registration_stage and registration_stage not in ("all", ""):

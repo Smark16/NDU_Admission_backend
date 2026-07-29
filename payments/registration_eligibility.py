@@ -38,13 +38,17 @@ def _compute_tuition_eligibility(student: AdmittedStudent, settings: Registratio
     min_pct = Decimal(str(min_required_pct)) / Decimal("100")
     totals = tuition_registration_totals(student, current_term_only=True)
 
-    if min_required_pct > 0 and not totals["has_tuition_rules"]:
+    # No current-term tuition schedule (or zero required) ⇒ cannot meet a positive %.
+    # Avoids vacuous "eligible" when there are no billable tuition lines.
+    if min_required_pct > 0 and (
+        not totals["has_tuition_rules"] or totals["total_required"] <= 0
+    ):
         return {
             "tuition_eligible": False,
             "percentage_paid": 0.0,
             "minimum_required": min_required_pct,
-            "total_required": 0.0,
-            "total_paid": 0.0,
+            "total_required": float(totals["total_required"] or 0),
+            "total_paid": float(totals["total_paid_on_tuition"] or 0),
             "balance": 0.0,
             "display_currency": totals["primary_currency"],
             "tuition_check_skipped": False,
@@ -72,6 +76,13 @@ def _compute_tuition_eligibility(student: AdmittedStudent, settings: Registratio
         if paid < need:
             payment_ok = False
             short_parts.append(f"{ccy} {float(need - paid):,.2f}")
+
+    # No positive required buckets ⇒ not eligible when a minimum % is configured.
+    if min_required_pct > 0 and not any(
+        bucket["required"] > 0 for bucket in by_ccy.values()
+    ):
+        payment_ok = False
+        short_parts.append("no billable tuition for current term")
 
     if not payment_ok:
         pay_msg = (

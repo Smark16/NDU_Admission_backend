@@ -37,90 +37,78 @@ def _has_tuition_credit_q() -> Q:
 
 def student_meets_tuition_pct(student, min_pct: float | None = None) -> bool:
     """
-    True when the student meets the registration tuition % gate
-    (same rules as course registration eligibility tuition check).
+    Same gate as course registration (student_tuition_eligible).
 
-    When ``min_pct`` is None, uses RegistrationSettings.min_tuition_payment_percentage.
+    ``min_pct`` is accepted for API compatibility but ignored: the live
+    RegistrationSettings.min_tuition_payment_percentage is always used so
+    Bonafide filters cannot drift from /api/payments/registration_settings.
     """
     try:
-        if min_pct is not None:
-            from decimal import Decimal
-
-            from payments.student_payment_allocation import tuition_registration_totals
-
-            settings = RegistrationSettings.get_settings()
-            if settings.skip_tuition_check:
-                return True
-            totals = tuition_registration_totals(student, current_term_only=True)
-            if float(min_pct) > 0 and not totals["has_tuition_rules"]:
-                return False
-            req = totals["total_required"]
-            if req <= 0:
-                return float(min_pct) <= 0
-            need = Decimal(str(req)) * (Decimal(str(min_pct)) / Decimal("100"))
-            return totals["total_paid_on_tuition"] >= need
-
-        return student_tuition_eligible(student)
+        # Keep signature; threshold always comes from RegistrationSettings inside
+        # student_tuition_eligible → _compute_tuition_eligibility.
+        _ = min_pct
+        return bool(student_tuition_eligible(student))
     except Exception:
-        logger.exception("tuition %% check failed for student id=%s", getattr(student, "pk", None))
+        logger.exception(
+            "tuition %% check failed for student id=%s", getattr(student, "pk", None)
+        )
         return False
 
 
 def filter_by_tuition_pct_met(qs, met: bool, *, min_pct: float | None = None):
     """
-    Keep students who meet (or do not meet) the tuition % gate.
+    Keep students who meet (or do not meet) the registration tuition % gate.
 
-    Always evaluates live against RegistrationSettings (or explicit ``min_pct``)
-    so Bonafide admin filters stay accurate when the threshold changes.
-    No cross-request DB cache — admins only, accuracy over stale speed.
+    Live evaluation only (no DB/browser cache). Uses the same rules as student
+    registration eligibility, including:
+    - no fee schedule / required UGX 0 ⇒ does NOT meet a positive threshold
+    - commitment-only payment is not enough
 
-    Optimizations (without sacrificing accuracy):
-    - skip_tuition_check short-circuits
-    - students with no portal/ledger credit cannot meet → bulk include/exclude
-    - only credit-holders run the finance allocation check
+    Optimizations:
+    - skip_tuition_check short-circuit
+    - no portal/ledger credit ⇒ cannot meet (bulk)
+    - finance allocation only for credit-holders
     """
+    _ = min_pct  # always use settings via student_tuition_eligible
     settings = RegistrationSettings.get_settings()
     if settings.skip_tuition_check:
+        logger.warning(
+            "tuition_pct filter: skip_tuition_check=True — treating all as met"
+        )
         return qs if met else qs.none()
 
-    # Resolve threshold once (matches GET /api/payments/registration_settings).
-    threshold = (
-        float(min_pct)
-        if min_pct is not None
-        else float(settings.min_tuition_payment_percentage or 0)
-    )
-
+    threshold = float(settings.min_tuition_payment_percentage or 0)
     credit_q = _has_tuition_credit_q()
     with_credit = qs.filter(credit_q)
     without_credit = qs.exclude(credit_q)
 
     if met:
-        # No tuition credit ⇒ cannot meet a positive threshold.
         if threshold <= 0:
             candidates = qs
         else:
+            # Commitment-only students with a completed payment row are in with_credit;
+            # live eligibility still rejects them when there is no tuition schedule.
             candidates = with_credit
-        return _live_filter_ids(candidates, want_met=True, min_pct=threshold)
+        return _live_filter_ids(candidates, want_met=True)
 
-    # unpaid / below threshold: everyone without credit + credit-holders who fail the gate
+    # Below threshold: no credit + credit-holders who fail eligibility
     no_credit_ids = list(without_credit.values_list("id", flat=True))
-    below_ids = _live_eval_ids(with_credit, want_met=False, min_pct=threshold)
+    below_ids = _live_eval_ids(with_credit, want_met=False)
     combined = list({*no_credit_ids, *below_ids})
     if not combined:
         return qs.none()
     return qs.filter(id__in=combined)
 
 
-def _live_filter_ids(candidates, *, want_met: bool, min_pct: float):
-    ids = _live_eval_ids(candidates, want_met=want_met, min_pct=min_pct)
+def _live_filter_ids(candidates, *, want_met: bool):
+    ids = _live_eval_ids(candidates, want_met=want_met)
     if not ids:
         return candidates.none()
     return candidates.filter(id__in=ids)
 
 
-def _live_eval_ids(candidates, *, want_met: bool, min_pct: float) -> list[int]:
-    """Run live finance checks; return matching primary keys."""
-    # Prefetch relations commonly touched by allocation / eligibility.
+def _live_eval_ids(candidates, *, want_met: bool) -> list[int]:
+    """Run live eligibility checks; return matching primary keys."""
     qs = candidates.select_related(
         "application",
         "admitted_program",
@@ -131,17 +119,17 @@ def _live_eval_ids(candidates, *, want_met: bool, min_pct: float) -> list[int]:
 
     matched: list[int] = []
     scanned = 0
-    for student in qs.iterator(chunk_size=50):
+    for student in qs.iterator(chunk_size=40):
         scanned += 1
-        meets = student_meets_tuition_pct(student, min_pct)
+        meets = student_meets_tuition_pct(student)
         if meets == bool(want_met):
             matched.append(student.id)
 
     logger.info(
-        "tuition_pct live filter scanned=%s matched=%s want_met=%s min_pct=%s",
+        "tuition_pct live filter scanned=%s matched=%s want_met=%s threshold=%s",
         scanned,
         len(matched),
         want_met,
-        min_pct,
+        registration_min_tuition_pct(),
     )
     return matched
