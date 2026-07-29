@@ -108,22 +108,39 @@ def _live_filter_ids(candidates, *, want_met: bool):
 
 
 def _live_eval_ids(candidates, *, want_met: bool) -> list[int]:
-    """Run live eligibility checks; return matching primary keys."""
-    qs = candidates.select_related(
+    """
+    Run live eligibility checks; return matching primary keys.
+
+    Avoid QuerySet.iterator() — it uses PostgreSQL server-side cursors, which
+    break behind PgBouncer (transaction pooling) with InvalidCursorName.
+    """
+    from admissions.models import AdmittedStudent
+
+    select_related = (
         "application",
         "admitted_program",
         "admitted_batch",
         "intended_program_batch",
         "programme_enrollment__program_batch",
-    ).order_by("id")
-
+    )
+    # Materialize ids on a normal query (no server-side cursor), then hydrate in chunks.
+    candidate_ids = list(candidates.order_by("id").values_list("id", flat=True))
     matched: list[int] = []
     scanned = 0
-    for student in qs.iterator(chunk_size=40):
-        scanned += 1
-        meets = student_meets_tuition_pct(student)
-        if meets == bool(want_met):
-            matched.append(student.id)
+    chunk_size = 40
+
+    for i in range(0, len(candidate_ids), chunk_size):
+        chunk = candidate_ids[i : i + chunk_size]
+        students = (
+            AdmittedStudent.objects.filter(id__in=chunk)
+            .select_related(*select_related)
+            .order_by("id")
+        )
+        for student in students:
+            scanned += 1
+            meets = student_meets_tuition_pct(student)
+            if meets == bool(want_met):
+                matched.append(student.id)
 
     logger.info(
         "tuition_pct live filter scanned=%s matched=%s want_met=%s threshold=%s",

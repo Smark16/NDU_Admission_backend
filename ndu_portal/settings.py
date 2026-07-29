@@ -146,7 +146,10 @@ else:
         "PASSWORD": env("DB_PASSWORD"),
         "HOST": env("DB_HOST"),
         "PORT": 6432,
-        "CONN_MAX_AGE": 0, 
+        "CONN_MAX_AGE": 0,
+        # PgBouncer (6432) transaction pooling cannot keep server-side cursors.
+        # Without this, QuerySet.iterator() raises InvalidCursorName.
+        "DISABLE_SERVER_SIDE_CURSORS": True,
     }
 }
 
