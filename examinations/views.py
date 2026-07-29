@@ -342,7 +342,10 @@ class LecturerCourseMarksView(APIView):
 
 
 class PublishCourseMarksView(APIView):
-    """Publish verified marks (use ?force=true to include draft)."""
+    """Publish verified marks (use ?force=true to include draft).
+
+    Optional body: enrollment_ids=[...] to publish only those students.
+    """
 
     permission_classes = [IsAuthenticated, CanPublishResults]
 
@@ -366,7 +369,26 @@ class PublishCourseMarksView(APIView):
         if force:
             statuses.append(CourseUnitResult.STATUS_DRAFT)
 
+        enrollment_ids = None
+        raw_ids = request.data.get("enrollment_ids") if hasattr(request.data, "get") else None
+        if raw_ids is not None:
+            if not isinstance(raw_ids, list) or not raw_ids:
+                return Response(
+                    {"detail": "enrollment_ids must be a non-empty list of enrollment ids."},
+                    status=400,
+                )
+            try:
+                enrollment_ids = [int(x) for x in raw_ids]
+            except (TypeError, ValueError):
+                return Response(
+                    {"detail": "enrollment_ids must contain integers."},
+                    status=400,
+                )
+
         base_qs = CourseUnitResult.objects.filter(enrollment__course_unit_id=course_unit_id)
+        if enrollment_ids is not None:
+            base_qs = base_qs.filter(enrollment_id__in=enrollment_ids)
+
         draft_n = base_qs.filter(status=CourseUnitResult.STATUS_DRAFT).count()
         verified_n = base_qs.filter(status=CourseUnitResult.STATUS_VERIFIED).count()
         already_published_n = base_qs.filter(status=CourseUnitResult.STATUS_PUBLISHED).count()
@@ -393,11 +415,12 @@ class PublishCourseMarksView(APIView):
                 publish_result(result, user=request.user)
                 published += 1
 
+        scope = "selected student(s)" if enrollment_ids is not None else "course"
         if published:
-            message = f"Published {published} result(s)."
+            message = f"Published {published} result(s) ({scope})."
         elif force:
             message = (
-                f"Published 0 result(s). No draft or submitted marks found for this course "
+                f"Published 0 result(s). No draft or submitted marks found for this {scope} "
                 f"(already published: {already_published_n})."
             )
         elif draft_n > 0:
@@ -408,12 +431,17 @@ class PublishCourseMarksView(APIView):
             )
         elif already_published_n > 0:
             message = (
-                f"Published 0 result(s). All {already_published_n} result(s) for this course "
-                f"are already published."
+                f"Published 0 result(s). Selected result(s) are already published "
+                f"({already_published_n})."
+                if enrollment_ids is not None
+                else (
+                    f"Published 0 result(s). All {already_published_n} result(s) for this course "
+                    f"are already published."
+                )
             )
         else:
             message = (
-                "Published 0 result(s). No marks found for this course — enter marks first."
+                "Published 0 result(s). No marks found — enter marks first."
             )
 
         return Response(
@@ -423,6 +451,7 @@ class PublishCourseMarksView(APIView):
                 "draft_count": draft_n,
                 "verified_count": verified_n,
                 "already_published_count": already_published_n,
+                "enrollment_ids": enrollment_ids,
                 "message": message,
             }
         )

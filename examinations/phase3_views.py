@@ -65,6 +65,22 @@ class VerifyCourseMarksView(APIView):
             status=CourseUnitResult.STATUS_DRAFT,
         ).select_related("enrollment__student", "policy")
 
+        raw_ids = request.data.get("enrollment_ids") if hasattr(request.data, "get") else None
+        if raw_ids is not None:
+            if not isinstance(raw_ids, list) or not raw_ids:
+                return Response(
+                    {"detail": "enrollment_ids must be a non-empty list of enrollment ids."},
+                    status=400,
+                )
+            try:
+                enrollment_ids = [int(x) for x in raw_ids]
+            except (TypeError, ValueError):
+                return Response(
+                    {"detail": "enrollment_ids must contain integers."},
+                    status=400,
+                )
+            drafts = drafts.filter(enrollment_id__in=enrollment_ids)
+
         incomplete = collect_incomplete_results(drafts)
         if incomplete:
             return Response(
