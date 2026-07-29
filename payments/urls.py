@@ -15,10 +15,6 @@ from .legacy_fee_import_views import (
     LegacyFeeImportIndexView,
     StudentLegacyFeeImportListDeleteView,
 )
-from .registration_tuition_snapshot_views import (
-    RegistrationTuitionSnapshotStatusView,
-    RegistrationTuitionSnapshotSyncView,
-)
 from .fee_exemption_views import (
     StudentFeeExemptionListCreateView,
     StudentFeeExemptionRevokeView,
@@ -234,26 +230,6 @@ urlpatterns = [
         'admin/legacy_fee_imports',
         LegacyFeeImportIndexView.as_view(),
         name='legacy_fee_imports_index_noslash',
-    ),
-    path(
-        'admin/registration-tuition-snapshots/status/',
-        RegistrationTuitionSnapshotStatusView.as_view(),
-        name='registration_tuition_snapshot_status',
-    ),
-    path(
-        'admin/registration-tuition-snapshots/status',
-        RegistrationTuitionSnapshotStatusView.as_view(),
-        name='registration_tuition_snapshot_status_noslash',
-    ),
-    path(
-        'admin/registration-tuition-snapshots/sync/',
-        RegistrationTuitionSnapshotSyncView.as_view(),
-        name='registration_tuition_snapshot_sync',
-    ),
-    path(
-        'admin/registration-tuition-snapshots/sync',
-        RegistrationTuitionSnapshotSyncView.as_view(),
-        name='registration_tuition_snapshot_sync_noslash',
     ),
     path(
         'admin/student/<int:student_id>/legacy_fee_imports/',
