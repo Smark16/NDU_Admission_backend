@@ -422,7 +422,10 @@ class RegistrationSettings(models.Model):
         max_digits=5,
         decimal_places=2,
         default=50.00,
-        help_text="Minimum % of semester tuition that must be paid before course registration",
+        help_text=(
+            "Minimum % of current-semester billed fees (tuition + functional / other "
+            "scheduled charges) that must be paid before course registration"
+        ),
     )
     registration_start_date = models.DateTimeField(null=True, blank=True)
     registration_end_date = models.DateTimeField(null=True, blank=True)

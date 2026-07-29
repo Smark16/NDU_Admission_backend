@@ -53,9 +53,9 @@ def _compute_tuition_eligibility(student: AdmittedStudent, settings: Registratio
             "display_currency": totals["primary_currency"],
             "tuition_check_skipped": False,
             "tuition_message": (
-                "Semester tuition is not configured for your current term "
+                "Semester fees are not configured for your current term "
                 f"(Year {totals['current_year_of_study']}, Term {totals['current_term_number']}). "
-                "You cannot register until tuition fees are set up for your programme batch."
+                "You cannot register until fees are set up for your programme batch."
             ),
         }
 
@@ -82,15 +82,16 @@ def _compute_tuition_eligibility(student: AdmittedStudent, settings: Registratio
         bucket["required"] > 0 for bucket in by_ccy.values()
     ):
         payment_ok = False
-        short_parts.append("no billable tuition for current term")
+        short_parts.append("no billable semester fees for current term")
 
     if not payment_ok:
         pay_msg = (
-            f"Pay at least {min_required_pct:.0f}% of your current semester tuition. "
+            f"Pay at least {min_required_pct:.0f}% of your current semester fees "
+            f"(tuition and other billed charges). "
             f"Shortfall: {', '.join(short_parts)}."
         )
     else:
-        pay_msg = "You meet the minimum tuition payment for registration."
+        pay_msg = "You meet the minimum semester fee payment for registration."
 
     balance = max(tr - tp, Decimal("0"))
 

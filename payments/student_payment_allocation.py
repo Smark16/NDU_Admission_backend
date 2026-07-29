@@ -581,31 +581,48 @@ def tuition_registration_totals(
     current_term_only: bool = True,
 ) -> dict[str, Any]:
     """
-    Tuition amounts for the registration % gate.
+    Fee amounts for the registration % gate.
 
-    Uses allocated paid_amount on tuition_structure lines (not the raw credit pool),
-    optionally scoped to the student's current year/term.
+    Uses allocated paid_amount on all billable current-term fee lines
+    (tuition + functional / practical / room & board / other scheduled fees,
+    and billable ad-hoc charges) — i.e. the semester total shown on the
+    student finance profile — not tuition-only.
     """
     from payments.student_portal_finance import _student_curriculum_year_term
 
     alloc = build_finance_allocation(student)
     cy, ct = _student_curriculum_year_term(student)
 
-    lines = [
-        ln
-        for ln in alloc.demand_lines
-        if ln.kind == "tuition_structure" and _line_is_billable(ln)
-    ]
-    if current_term_only:
-        scoped: list[DemandLine] = []
-        for ln in lines:
-            y = ln.extra.get("semester_year_of_study")
-            t = ln.extra.get("semester_term_number")
-            if y is None or t is None:
-                scoped.append(ln)
-            elif int(y) == cy and int(t) == ct:
-                scoped.append(ln)
-        lines = scoped
+    def _line_year_term(ln: DemandLine) -> tuple[int | None, int | None]:
+        y = ln.extra.get("semester_year_of_study")
+        t = ln.extra.get("semester_term_number")
+        if y is None or t is None:
+            y = ln.payable_year
+            t = ln.payable_term
+        try:
+            yi = int(y) if y is not None else None
+            ti = int(t) if t is not None else None
+        except (TypeError, ValueError):
+            return None, None
+        return yi, ti
+
+    lines: list[DemandLine] = []
+    for ln in alloc.demand_lines:
+        if not _line_is_billable(ln):
+            continue
+        if ln.kind == "ad_hoc" and ln.extra.get("charge_status") not in (
+            "pending",
+            "completed",
+        ):
+            continue
+        if ln.kind not in ("tuition_structure", "scheduled_other", "ad_hoc"):
+            continue
+        if current_term_only:
+            y, t = _line_year_term(ln)
+            # Ad-hoc / unscoped lines count toward the open (current) semester total.
+            if y is not None and t is not None and (int(y) != cy or int(t) != ct):
+                continue
+        lines.append(ln)
 
     by_currency: dict[str, dict[str, Decimal]] = {}
     for ln in lines:
