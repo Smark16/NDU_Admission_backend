@@ -36,20 +36,58 @@ class ListCourseUnitEnrollments(generics.ListAPIView):
         ).select_related('student', 'student__application', 'course_unit')
     
     def list(self, request, *args, **kwargs):
-        queryset = self.get_queryset()
+        queryset = self.get_queryset().select_related(
+            "student__programme_enrollment__teaching_section"
+        )
         data = []
+        groups: dict[str, dict] = {}
         for enrollment in queryset:
             student = enrollment.student
-            data.append({
-                'id': enrollment.id,
-                'student_id': student.student_id,
-                'reg_no': student.reg_no,
-                'name': student.full_name,
-                'enrollment_date': enrollment.enrollment_date,
-                'status': enrollment.status,
-                'grade': enrollment.grade,
-            })
-        return Response(data, status=status.HTTP_200_OK)
+            section = None
+            try:
+                spe = student.programme_enrollment
+                section = spe.teaching_section
+            except Exception:
+                section = None
+            row = {
+                "id": enrollment.id,
+                "student_id": student.student_id,
+                "admitted_student_pk": student.id,
+                "reg_no": student.reg_no,
+                "name": student.full_name,
+                "enrollment_date": enrollment.enrollment_date,
+                "status": enrollment.status,
+                "grade": enrollment.grade,
+                "teaching_section_id": section.id if section else None,
+                "teaching_section_code": section.code if section else "UNASSIGNED",
+                "teaching_section_name": section.name if section else "Unassigned",
+            }
+            data.append(row)
+            key = str(section.id) if section else "unassigned"
+            if key not in groups:
+                groups[key] = {
+                    "teaching_section_id": section.id if section else None,
+                    "code": section.code if section else "UNASSIGNED",
+                    "name": section.name if section else "Unassigned",
+                    "is_default": bool(section and section.is_default),
+                    "count": 0,
+                    "students": [],
+                }
+            groups[key]["count"] += 1
+            groups[key]["students"].append(row)
+
+        group_list = sorted(
+            groups.values(),
+            key=lambda g: (0 if g.get("is_default") else 1, g.get("code") or ""),
+        )
+        return Response(
+            {
+                "results": data,
+                "groups": group_list,
+                "total": len(data),
+            },
+            status=status.HTTP_200_OK,
+        )
 
 def _admitted_students_for_program_batch(program, program_batch):
     from .enrollment_cohort import admitted_students_for_program_batch
@@ -104,24 +142,54 @@ class GetAvailableStudentsForCourseUnit(APIView):
             course_unit=course_unit
         ).values_list('student_id', flat=True)
 
-        available_students = cohort_students.exclude(id__in=enrolled_student_ids)
+        available_students = cohort_students.exclude(id__in=enrolled_student_ids).select_related(
+            "programme_enrollment__teaching_section"
+        )
 
         data = []
+        groups: dict[str, dict] = {}
         blocked_count = 0
         for student in available_students:
             block = batch_course_enrollment_block(student)
             if block:
                 blocked_count += 1
                 continue
-            data.append({
-                'id': student.id,
-                'student_id': student.student_id,
-                'reg_no': student.reg_no,
-                'name': student.full_name,
-            })
+            section = None
+            try:
+                section = student.programme_enrollment.teaching_section
+            except Exception:
+                section = None
+            row = {
+                "id": student.id,
+                "student_id": student.student_id,
+                "reg_no": student.reg_no,
+                "name": student.full_name,
+                "teaching_section_id": section.id if section else None,
+                "teaching_section_code": section.code if section else "UNASSIGNED",
+                "teaching_section_name": section.name if section else "Unassigned",
+            }
+            data.append(row)
+            key = str(section.id) if section else "unassigned"
+            if key not in groups:
+                groups[key] = {
+                    "teaching_section_id": section.id if section else None,
+                    "code": section.code if section else "UNASSIGNED",
+                    "name": section.name if section else "Unassigned",
+                    "is_default": bool(section and section.is_default),
+                    "count": 0,
+                    "students": [],
+                }
+            groups[key]["count"] += 1
+            groups[key]["students"].append(row)
+
+        group_list = sorted(
+            groups.values(),
+            key=lambda g: (0 if g.get("is_default") else 1, g.get("code") or ""),
+        )
 
         return Response({
             'results': data,
+            'groups': group_list,
             'eligible_count': len(data),
             'cohort_count': cohort_students.count(),
             'blocked_count': blocked_count,
@@ -211,108 +279,219 @@ class EnrollStudentsInCourseUnit(APIView):
         }, status=status.HTTP_201_CREATED)
 
 class AssignLecturersToCourseUnit(APIView):
-    """Assign lecturers (staff) to a course unit"""
+    """Assign lecturers to a course unit for a teaching section (or ALL sections)."""
     permission_classes = [AcademicEnrollmentAdminPermission]
-    
+
     def post(self, request, course_unit_id):
         from .models import CourseUnit
-        from accounts.models import User
-        
-        lecturer_ids = request.data.get('lecturer_ids', [])
-        
-        if not lecturer_ids:
-            return Response({'detail': 'No lecturers selected'}, status=status.HTTP_400_BAD_REQUEST)
-        
+        from .section_lecturers import (
+            assign_lecturers_to_section,
+            resolve_section_for_course_unit,
+        )
+
+        lecturer_ids = request.data.get("lecturer_ids", [])
+        if lecturer_ids is None:
+            lecturer_ids = []
+        if not isinstance(lecturer_ids, list):
+            return Response(
+                {"detail": "lecturer_ids must be a list"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         try:
-            course_unit = CourseUnit.objects.get(id=course_unit_id)
+            course_unit = CourseUnit.objects.select_related(
+                "semester", "program_batch"
+            ).get(id=course_unit_id)
         except CourseUnit.DoesNotExist:
-            return Response({'detail': 'Course unit not found'}, status=status.HTTP_404_NOT_FOUND)
-        
-        # Validate that all IDs are staff members
-        lecturers = User.objects.filter(id__in=lecturer_ids, is_staff=True, is_active=True)
-        if lecturers.count() != len(lecturer_ids):
-            return Response({'detail': 'Some selected users are not active staff members'}, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Assign lecturers
-        # Get previously assigned lecturers before the update
-        previous_lecturers = set(course_unit.lecturers.values_list('id', flat=True))
-        course_unit.lecturers.set(lecturers)
+            return Response(
+                {"detail": "Course unit not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
 
-        # Mark newly assigned users as lecturers
-        lecturers.update(is_lecturer=True)
+        assert_course_unit_access(request.user, course_unit)
 
-        # Remove is_lecturer flag from users who were unassigned and have no other courses
-        removed_ids = previous_lecturers - set(lecturer_ids)
-        if removed_ids:
-            from .models import CourseUnit as CU
-            for uid in removed_ids:
-                still_has_courses = CU.objects.filter(lecturers__id=uid).exists()
-                if not still_has_courses:
-                    User.objects.filter(id=uid).update(is_lecturer=False)
+        try:
+            teaching_section = resolve_section_for_course_unit(
+                course_unit, request.data.get("teaching_section_id")
+            )
+            result = assign_lecturers_to_section(
+                course_unit,
+                [int(x) for x in lecturer_ids],
+                teaching_section=teaching_section,
+                mode=str(request.data.get("mode") or "replace"),
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-        return Response({
-            'message': f'Successfully assigned {lecturers.count()} lecturer(s) to {course_unit.name}',
-            'lecturers': [{'id': l.id, 'name': l.get_full_name(), 'email': l.email} for l in lecturers]
-        }, status=status.HTTP_200_OK)
+        scope = result["teaching_section_code"]
+        return Response(
+            {
+                "message": (
+                    f"Successfully assigned {result['count']} lecturer(s) to "
+                    f"{course_unit.name} [{scope}]"
+                ),
+                **result,
+            },
+            status=status.HTTP_200_OK,
+        )
+
 
 class RemoveLecturerFromCourseUnit(APIView):
-    """Remove a lecturer from a course unit"""
+    """Remove a lecturer from a course unit section scope (or ALL)."""
     permission_classes = [AcademicEnrollmentAdminPermission]
-    
+
     def post(self, request, course_unit_id):
-        from .models import CourseUnit
         from accounts.models import User
-        
-        lecturer_id = request.data.get('lecturer_id')
-        
+        from .models import CourseUnit
+        from .section_lecturers import (
+            remove_lecturer_from_section,
+            resolve_section_for_course_unit,
+        )
+
+        lecturer_id = request.data.get("lecturer_id")
         if not lecturer_id:
-            return Response({'detail': 'Lecturer ID is required'}, status=status.HTTP_400_BAD_REQUEST)
-        
+            return Response(
+                {"detail": "Lecturer ID is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         try:
-            course_unit = CourseUnit.objects.get(id=course_unit_id)
+            course_unit = CourseUnit.objects.select_related(
+                "semester", "program_batch"
+            ).get(id=course_unit_id)
             lecturer = User.objects.get(id=lecturer_id, is_staff=True)
         except CourseUnit.DoesNotExist:
-            return Response({'detail': 'Course unit not found'}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {"detail": "Course unit not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
         except User.DoesNotExist:
-            return Response({'detail': 'Lecturer not found'}, status=status.HTTP_404_NOT_FOUND)
-        
-        # Remove lecturer
-        course_unit.lecturers.remove(lecturer)
+            return Response(
+                {"detail": "Lecturer not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
 
-        # Clear is_lecturer if no other courses remain
-        from .models import CourseUnit as CU
-        if not CU.objects.filter(lecturers=lecturer).exists():
-            lecturer.is_lecturer = False
-            lecturer.save(update_fields=['is_lecturer'])
+        assert_course_unit_access(request.user, course_unit)
 
-        return Response({
-            'message': f'Successfully removed {lecturer.get_full_name()} from {course_unit.name}'
-        }, status=status.HTTP_200_OK)
+        try:
+            teaching_section = resolve_section_for_course_unit(
+                course_unit, request.data.get("teaching_section_id")
+            )
+            remove_lecturer_from_section(
+                course_unit, lecturer, teaching_section=teaching_section
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        scope = teaching_section.code if teaching_section else "ALL"
+        return Response(
+            {
+                "message": (
+                    f"Successfully removed {lecturer.get_full_name()} from "
+                    f"{course_unit.name} [{scope}]"
+                )
+            },
+            status=status.HTTP_200_OK,
+        )
+
 
 class GetCourseUnitLecturers(APIView):
-    """Get all lecturers assigned to a course unit"""
+    """Get lecturers assigned to a course unit, grouped by teaching section."""
     permission_classes = [IsAuthenticated]
-    
+
     def get(self, request, course_unit_id):
-        from .models import CourseUnit
-        
+        from .models import CourseUnit, CourseUnitSectionLecturer
+        from .section_lecturers import list_lecturers_by_section
+        from .teaching_sections import (
+            list_sections_for_batch,
+            resolve_program_batch_for_course_unit,
+        )
+
         try:
-            course_unit = CourseUnit.objects.prefetch_related('lecturers').get(id=course_unit_id)
+            course_unit = CourseUnit.objects.select_related(
+                "semester__program_batch", "program_batch"
+            ).prefetch_related("lecturers").get(id=course_unit_id)
         except CourseUnit.DoesNotExist:
-            return Response({'detail': 'Course unit not found'}, status=status.HTTP_404_NOT_FOUND)
-        
-        lecturers = [
-            {
-                'id': lecturer.id,
-                'name': lecturer.get_full_name(),
-                'email': lecturer.email,
-                'phone': lecturer.phone,
-                'role': lecturer.role
+            return Response(
+                {"detail": "Course unit not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        batch = resolve_program_batch_for_course_unit(course_unit)
+        teaching_sections = []
+        if batch is not None:
+            try:
+                teaching_sections = list_sections_for_batch(batch.pk)
+            except Exception:
+                teaching_sections = []
+
+        # One-time bridge from legacy M2M → ALL-scope rows for this unit
+        try:
+            if (
+                course_unit.lecturers.exists()
+                and not CourseUnitSectionLecturer.objects.filter(
+                    course_unit=course_unit
+                ).exists()
+            ):
+                for lec in course_unit.lecturers.all():
+                    CourseUnitSectionLecturer.objects.get_or_create(
+                        course_unit=course_unit,
+                        teaching_section=None,
+                        lecturer=lec,
+                    )
+        except Exception:
+            # Section-lecturer table may not be migrated yet; still return sections.
+            pass
+
+        try:
+            payload = list_lecturers_by_section(course_unit)
+        except Exception:
+            payload = {
+                "lecturers": [
+                    {
+                        "id": lecturer.id,
+                        "name": lecturer.get_full_name(),
+                        "email": lecturer.email,
+                    }
+                    for lecturer in course_unit.lecturers.all()
+                ],
+                "by_section": [],
             }
-            for lecturer in course_unit.lecturers.all()
-        ]
-        
-        return Response({'lecturers': lecturers}, status=status.HTTP_200_OK)
+
+        section_id = request.query_params.get("teaching_section_id")
+        lecturers = payload["lecturers"]
+        if section_id is not None and payload.get("by_section"):
+            if str(section_id).lower() in ("", "all", "null", "none"):
+                key_null = True
+                sid = None
+            else:
+                key_null = False
+                try:
+                    sid = int(section_id)
+                except (TypeError, ValueError):
+                    return Response(
+                        {"detail": "teaching_section_id must be an integer or all."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+            scoped = []
+            for group in payload["by_section"]:
+                if key_null and group["teaching_section_id"] is None:
+                    scoped = group["lecturers"]
+                    break
+                if not key_null and group["teaching_section_id"] == sid:
+                    scoped = group["lecturers"]
+                    break
+            lecturers = scoped
+
+        return Response(
+            {
+                "lecturers": lecturers,
+                "by_section": payload.get("by_section") or [],
+                "teaching_sections": teaching_sections,
+                "program_batch_id": batch.pk if batch else None,
+            },
+            status=status.HTTP_200_OK,
+        )
 
 class GetAvailableCoursesForRegistration(APIView):
     """Get available courses that a student can register for.
@@ -549,6 +728,17 @@ class GetAvailableCoursesForRegistration(APIView):
         # ── Remove already-registered ─────────────────────────────────────────
         available_course_unit_ids -= registered_course_ids
 
+        # ── Next-AY retake / missed paper offerings (same Year+Term, later start) ──
+        from examinations.services.outstanding_papers import next_ay_offerings_for_student
+
+        retake_offerings = next_ay_offerings_for_student(student)
+        retake_by_cu: dict[int, dict] = {}
+        for row in retake_offerings:
+            cid = row.get("course_unit_id")
+            if row.get("available") and cid:
+                available_course_unit_ids.add(int(cid))
+                retake_by_cu[int(cid)] = row
+
         # ── Fetch final queryset ──────────────────────────────────────────────
         available_courses = CourseUnit.objects.filter(
             id__in=available_course_unit_ids,
@@ -556,27 +746,34 @@ class GetAvailableCoursesForRegistration(APIView):
             'semester', 'program_batch', 'program_batch__program',
         ).prefetch_related('lecturers')
 
-        courses_data = [
-            {
-                'id': course.id,
-                'code': course.code,
-                'name': course.name,
-                'credit_units': float(course.credit_units) if course.credit_units else None,
-                'semester': {
-                    'id': course.semester.id if course.semester else None,
-                    'name': course.semester.name if course.semester else None,
-                },
-                'program_batch': {
-                    'id': course.program_batch.id if course.program_batch else None,
-                    'name': course.program_batch.name if course.program_batch else None,
-                },
-                'lecturers': [
-                    {'id': lec.id, 'name': lec.get_full_name()}
-                    for lec in course.lecturers.all()
-                ],
-            }
-            for course in available_courses
-        ]
+        courses_data = []
+        for course in available_courses:
+            meta = retake_by_cu.get(course.id) or {}
+            courses_data.append(
+                {
+                    'id': course.id,
+                    'code': course.code,
+                    'name': course.name,
+                    'credit_units': float(course.credit_units) if course.credit_units else None,
+                    'semester': {
+                        'id': course.semester.id if course.semester else None,
+                        'name': course.semester.name if course.semester else None,
+                    },
+                    'program_batch': {
+                        'id': course.program_batch.id if course.program_batch else None,
+                        'name': course.program_batch.name if course.program_batch else None,
+                    },
+                    'lecturers': [
+                        {'id': lec.id, 'name': lec.get_full_name()}
+                        for lec in course.lecturers.all()
+                    ],
+                    'registration_kind': meta.get('registration_kind') or 'normal',
+                    'paper_outcome': meta.get('paper_outcome'),
+                    'original_semester_label': meta.get('original_semester_label'),
+                    'retake_message': meta.get('message'),
+                    'fee_preview': meta.get('fee_preview'),
+                }
+            )
 
         debug_info = {}
         if settings.DEBUG:
@@ -592,10 +789,12 @@ class GetAvailableCoursesForRegistration(APIView):
                 'override_count': len(overrides),
                 'already_registered': len(registered_course_ids),
                 'total_available': len(courses_data),
+                'retake_offerings': len(retake_by_cu),
             }
 
         return Response({
             'available_courses': courses_data,
+            'retake_missed_offerings': retake_offerings,
             'total_available': len(courses_data),
             'debug': debug_info,
         }, status=status.HTTP_200_OK)
@@ -723,6 +922,7 @@ class GetStudentEnrolledCourses(APIView):
                 'registration_date': enrollment.registration_date.isoformat() if enrollment.registration_date else None,
                 'is_registered': enrollment.registration_date is not None,
                 'status': enrollment.status,
+                'registration_kind': enrollment.registration_kind or 'normal',
                 'grade': enrollment.grade,
                 'published_outline': published_outline_for_course(course_unit.id, request),
             })
