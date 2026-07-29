@@ -307,3 +307,19 @@ def celery_maybe_send_bursar_weekly_report():
             return {"skipped": "already_sent_this_week"}
 
     return send_bursar_weekly_report()
+
+
+@shared_task(bind=True, max_retries=2, default_retry_delay=30)
+def celery_refresh_tuition_pct_cache(self, student_ids=None):
+    """Refresh registration_tuition_pct_met for explicit student ids."""
+    from payments.tuition_pct_cache import refresh_students_tuition_pct_cache
+
+    return refresh_students_tuition_pct_cache(student_ids or [])
+
+
+@shared_task(bind=True, max_retries=1, default_retry_delay=60)
+def celery_refresh_bonafide_tuition_pct_cache(self, max_students=None):
+    """Backfill / recompute tuition-% cache for bonafide students."""
+    from payments.tuition_pct_cache import backfill_bonafide_tuition_pct_cache
+
+    return backfill_bonafide_tuition_pct_cache(max_students=max_students)

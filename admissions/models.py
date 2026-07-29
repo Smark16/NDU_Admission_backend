@@ -472,6 +472,24 @@ class AdmittedStudent(models.Model):
     )
     accounts_registration_clearance_notes = models.TextField(blank=True)
 
+    # Cached registration tuition-% gate (Bonafide / Accounts filters). Refreshed on
+    # payment/ledger changes; list endpoints filter this boolean instead of running
+    # per-student finance allocation.
+    registration_tuition_pct_met = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text=(
+            "True when current-term tuition payment meets RegistrationSettings "
+            "minimum %. Used for fast Bonafide/Accounts list filters."
+        ),
+    )
+    registration_tuition_pct_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="When registration_tuition_pct_met was last computed.",
+    )
+
     # Notes
     admission_notes = models.TextField(blank=True, help_text="Notes about the admission")
     admitted_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='admitted_students')
@@ -508,6 +526,15 @@ class AdmittedStudent(models.Model):
             models.Index(
                 fields=['is_admitted', 'admission_fee_paid', '-created_at'],
                 name='admitted_bonafide_list_idx',
+            ),
+            models.Index(
+                fields=[
+                    'is_admitted',
+                    'admission_fee_paid',
+                    'registration_tuition_pct_met',
+                    '-created_at',
+                ],
+                name='admitted_bonafide_tuition_idx',
             ),
         ]
     

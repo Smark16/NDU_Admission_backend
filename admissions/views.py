@@ -3224,18 +3224,8 @@ class ListBonafideStudents(generics.ListAPIView):
     pagination_class = StandardPagination
     ordering_fields = ["created_at", "admission_date", "id", "reg_no", "student_id"]
     ordering = ["-created_at"]
-    filter_backends = [SearchFilter, OrderingFilter]
-    search_fields = [
-        "student_id",
-        "reg_no",
-        "schoolpay_code",
-        "application__first_name",
-        "application__last_name",
-        "application__phone",
-        "application__email",
-        "admitted_program__name",
-        "admitted_program__faculty__name",
-    ]
+    # Ordering only — search is applied once below (avoid SearchFilter double-hit).
+    filter_backends = [OrderingFilter]
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -3247,24 +3237,36 @@ class ListBonafideStudents(generics.ListAPIView):
         enrollment_status = self.request.query_params.get("enrollment_status")
 
         if search:
-            queryset = queryset.annotate(
-                applicant_full_name=Concat(
-                    "application__first_name",
-                    Value(" "),
-                    "application__last_name",
+            # Prefer exact/prefix matches on indexed identity fields before OR-icontains.
+            identity = (
+                Q(student_id__iexact=search)
+                | Q(reg_no__iexact=search)
+                | Q(schoolpay_code__iexact=search)
+            )
+            if len(search) >= 2:
+                identity |= (
+                    Q(student_id__istartswith=search)
+                    | Q(reg_no__istartswith=search)
+                    | Q(schoolpay_code__istartswith=search)
                 )
-            ).filter(
-                Q(student_id__icontains=search)
-                | Q(reg_no__icontains=search)
-                | Q(schoolpay_code__icontains=search)
-                | Q(application__first_name__icontains=search)
-                | Q(applicant_full_name__icontains=search)
+            name_q = (
+                Q(application__first_name__icontains=search)
                 | Q(application__last_name__icontains=search)
                 | Q(application__phone__icontains=search)
                 | Q(application__email__icontains=search)
                 | Q(admitted_program__name__icontains=search)
                 | Q(admitted_program__faculty__name__icontains=search)
             )
+            if " " in search:
+                queryset = queryset.annotate(
+                    applicant_full_name=Concat(
+                        "application__first_name",
+                        Value(" "),
+                        "application__last_name",
+                    )
+                )
+                name_q |= Q(applicant_full_name__icontains=search)
+            queryset = queryset.filter(identity | name_q).distinct()
 
         if campus and campus != "all":
             queryset = queryset.filter(admitted_campus__name=campus)
@@ -3274,7 +3276,19 @@ class ListBonafideStudents(generics.ListAPIView):
             queryset = queryset.filter(admitted_program__faculty__name=faculty)
         if academic_batch_id and academic_batch_id != "all":
             try:
-                queryset = queryset.filter(intended_program_batch_id=int(academic_batch_id))
+                batch_id = int(academic_batch_id)
+                # Match serializer "effective" batch: enrollment program_batch first,
+                # else intended_program_batch (when enrollment missing or batch unset).
+                queryset = queryset.filter(
+                    Q(programme_enrollment__program_batch_id=batch_id)
+                    | (
+                        (
+                            Q(programme_enrollment__isnull=True)
+                            | Q(programme_enrollment__program_batch_id__isnull=True)
+                        )
+                        & Q(intended_program_batch_id=batch_id)
+                    )
+                )
             except (TypeError, ValueError):
                 pass
         if enrollment_status and enrollment_status != "all":
@@ -3305,7 +3319,8 @@ class ListBonafideStudents(generics.ListAPIView):
             elif raw in ("0", "false", "no"):
                 queryset = queryset.filter(accounts_registration_cleared=False)
 
-        # True semester tuition % gate (registration minimum), NOT the 150k commitment fee.
+        # Live semester tuition % gate from RegistrationSettings.min_tuition_payment_percentage
+        # (same value as GET /api/payments/registration_settings). No cross-request cache.
         tuition_pct_met = self.request.query_params.get("tuition_pct_met")
         if tuition_pct_met is not None and str(tuition_pct_met).lower() not in ("all", ""):
             try:
@@ -3351,16 +3366,29 @@ class ListBonafideStudents(generics.ListAPIView):
                     accounts_registration_cleared=True,
                     physical_documents_verified=False,
                 ).filter(y1t1)
-            elif registration_stage in ("docs_verified", "ready"):
-                # Ready to register = Accounts cleared (docs are Y1S1 AR tracking only).
-                queryset = queryset.filter(accounts_registration_cleared=True)
-                if registration_stage == "docs_verified":
-                    # Legacy filter: Y1S1 with AR docs done.
-                    queryset = queryset.filter(physical_documents_verified=True).filter(y1t1)
+            elif registration_stage == "ready":
+                # Match registration_stage_for_student: accounts cleared and not awaiting AR docs.
+                awaiting_docs = Q(
+                    accounts_registration_cleared=True,
+                    physical_documents_verified=False,
+                ) & y1t1
+                queryset = queryset.filter(accounts_registration_cleared=True).exclude(
+                    awaiting_docs
+                )
+            elif registration_stage == "docs_verified":
+                # Legacy filter: Y1S1 with AR docs done.
+                queryset = queryset.filter(
+                    accounts_registration_cleared=True,
+                    physical_documents_verified=True,
+                ).filter(y1t1)
 
         queryset = filter_admitted_students_for_user(queryset, self.request.user)
-        # distinct only when joins can duplicate rows (search annotate / enrollment filter)
-        if search or (enrollment_status and enrollment_status != "all"):
+        # distinct when joins can duplicate rows (search / enrollment / academic batch)
+        if (
+            search
+            or (enrollment_status and enrollment_status != "all")
+            or (academic_batch_id and academic_batch_id != "all")
+        ):
             return queryset.distinct()
         return queryset
 
