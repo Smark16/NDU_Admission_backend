@@ -19,6 +19,7 @@ from .graduation_status import (
     graduation_show_scores_default,
 )
 from .award_classification import resolve_award_class
+from .program_display import program_award_display_name
 from .transcript import build_student_transcript
 
 PROVISIONAL_DISCLAIMER = (
@@ -444,7 +445,9 @@ def build_provisional_results_context(
         "layout_mode": layout_mode,
         "show_scores": show_scores,
         "logo_b64": _load_logo_b64(),
-        "award": (student.admitted_program.name if student.admitted_program else "").upper(),
+        "award": program_award_display_name(
+            student.admitted_program.name if student.admitted_program else ""
+        ).upper(),
         "class_of_award": class_of_award,
         "printed_by": printed_by or "NDU Portal",
         "printed_from": _client_ip(request),

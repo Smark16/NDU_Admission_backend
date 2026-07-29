@@ -3,6 +3,7 @@ from admissions.models import AdmittedStudent
 
 from ..models import CourseUnitResult
 from .graduation_status import get_transcript_document_meta
+from .program_display import program_award_display_name
 
 
 def build_student_transcript(student: AdmittedStudent) -> dict:
@@ -64,7 +65,10 @@ def build_student_transcript(student: AdmittedStudent) -> dict:
             "reg_no": student.reg_no,
             "student_id": student.student_id,
             "name": student.full_name,
-            "program": student.admitted_program.name if student.admitted_program_id else None,
+            "program": program_award_display_name(
+                student.admitted_program.name if student.admitted_program_id else None
+            )
+            or None,
         },
         "semesters": list(semesters.values()),
         "summary": {
