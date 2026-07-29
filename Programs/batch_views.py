@@ -136,13 +136,7 @@ class CreateBatchView(_BatchUnavailableMixin, APIView):
                         {'detail': f'Invalid offer date format: {str(e)}. Use YYYY-MM-DD format.'},
                         status=status.HTTP_400_BAD_REQUEST,
                     )
-
-            offer_start, offer_end = resolve_program_batch_offer_dates(
-                start_date=start,
-                end_date=end,
-                offer_start_date=offer_start,
-                offer_end_date=offer_end,
-            )
+            # Do not infer from academic dates — intake owns offer timing.
 
             if ProgramBatch.objects.filter(program=program, name=name).exists():
                 return Response(
@@ -962,9 +956,9 @@ def _batch_template_instructions(*, program_count: int, cohort_count: int, blank
     return (
         f"{scope_prefix}{program_count} programme(s): {cohort_count} existing cohort row(s), "
         f"{blank_count} blank row(s) for programmes without a cohort. "
-        "Columns offer_start_date and offer_end_date control the admit dropdown (admission offer window). "
-        "Leave both offer columns blank to copy from cohort start_date/end_date. "
-        "Update mode: rows with batch_id — edit any dates including offer_start_date and offer_end_date."
+        "Admission offer windows are set on Intakes (not on programme cohorts). "
+        "Leave offer_start_date / offer_end_date blank. "
+        "Update mode: rows with batch_id — edit cohort dates / academic year / is_active."
     )
 
 
@@ -989,15 +983,11 @@ def _finalize_batch_offer_dates(
     has_explicit_offer: bool,
     update_existing: bool,
     existing: ProgramBatch | None,
-) -> tuple[date, date]:
-    if (
-        update_existing
-        and existing is not None
-        and not has_explicit_offer
-        and existing.offer_start_date is not None
-        and existing.offer_end_date is not None
-    ):
-        return existing.offer_start_date, existing.offer_end_date
+) -> tuple[date | None, date | None]:
+    # Prefer leaving offer dates null so intake controls timing.
+    if update_existing and existing is not None and not has_explicit_offer:
+        # Clear legacy cohort offer windows on update when not re-supplied.
+        return None, None
     return resolve_program_batch_offer_dates(
         start_date=start_date,
         end_date=end_date,
