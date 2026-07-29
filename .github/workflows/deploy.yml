@@ -64,6 +64,7 @@ jobs:
           python manage.py migrate admissions 0053_admittedstudent_registration_tuition_pct_cache --fake
           python manage.py migrate Programs 0023_teaching_section --fake
           python manage.py migrate Programs 0024_timetablesession_teaching_section --fake
+          python manage.py migrate Programs 0025_courseunitsectionlecturer --fake
         
           # Final migrate (this should now be safe)
           python manage.py migrate
