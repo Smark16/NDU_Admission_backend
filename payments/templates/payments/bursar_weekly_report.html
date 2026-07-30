@@ -41,26 +41,52 @@
 
   <table class="kpi-row">
     <tr>
-      <td width="33%"><div class="kpi"><div class="label">Admitted</div><div class="value">{{ m.admitted_total }}</div></div></td>
-      <td width="33%"><div class="kpi"><div class="label">Paid</div><div class="value good">{{ m.paid_total }} ({{ m.collection_rate }}%)</div></div></td>
-      <td width="33%"><div class="kpi"><div class="label">Not Paid</div><div class="value bad">{{ m.not_paid_total }}</div></div></td>
+      <td width="25%"><div class="kpi"><div class="label">Admitted</div><div class="value">{{ m.admitted_total }}</div></div></td>
+      <td width="25%"><div class="kpi"><div class="label">Commitment paid</div><div class="value good">{{ m.paid_total }} ({{ m.collection_rate }}%)</div></div></td>
+      <td width="25%"><div class="kpi"><div class="label">Commitment not paid</div><div class="value bad">{{ m.not_paid_total }}</div></div></td>
+      <td width="25%"><div class="kpi"><div class="label">Ready for registration (≥ {{ m.min_registration_tuition_pct }}%)</div><div class="value good">{{ m.registration_ready_total }} ({{ m.registration_ready_rate }}%)</div></div></td>
     </tr>
   </table>
   <table class="kpi-row">
     <tr>
       <td width="33%"><div class="kpi"><div class="label">Total Collected</div><div class="value">{{ m.total_collected_display }}</div></div></td>
-      <td width="33%"><div class="kpi"><div class="label">Unique Paid</div><div class="value good">{{ m.paid_total }}</div></div></td>
+      <td width="33%"><div class="kpi"><div class="label">Not yet registration-ready</div><div class="value bad">{{ m.registration_not_ready_total }}</div></div></td>
       <td width="33%"><div class="kpi"><div class="label">Revenue at Risk</div><div class="value bad">{{ m.revenue_at_risk_display }}</div></div></td>
     </tr>
   </table>
 
   <h2>2. Admissions Overview</h2>
   <p>
+    Scope: <strong>{{ m.batch_scope_label }}</strong>.
     Applications this week: <strong>{{ m.applications_received_week }}</strong>.
     Pipeline pending (submitted / under review): <strong>{{ m.applications_pending }}</strong>.
     Programme enrolled: <strong>{{ m.enrolled_count }}</strong>; enrolment pending: <strong>{{ m.enrolment_pending }}</strong>.
     Local: {{ m.local_count }} · International: {{ m.international_count }}.
   </p>
+
+  {% if m.by_batch %}
+  <p><strong>By admission batch</strong></p>
+  <table>
+    <thead>
+      <tr>
+        <th>Batch</th><th>Admitted</th><th>Commitment paid</th><th>Not paid</th><th>Rate</th><th>Ready for reg.</th><th>Amount</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in m.by_batch %}
+      <tr>
+        <td>{{ r.name }}</td>
+        <td>{{ r.admitted }}</td>
+        <td>{{ r.paid }}</td>
+        <td>{{ r.not_paid }}</td>
+        <td>{{ r.collection_rate }}%</td>
+        <td>{{ r.registration_ready }} ({{ r.registration_ready_rate }}%)</td>
+        <td>{{ r.amount_display }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
 
   <p><strong>Admitted by faculty</strong></p>
   <table>

@@ -15,13 +15,12 @@ from payments.bursar_weekly_metrics import build_bursar_weekly_metrics
 from payments.bursar_weekly_pdf import render_bursar_weekly_pdf
 from payments.bursar_weekly_send import send_bursar_report_to_email, send_bursar_weekly_report
 from payments.models import BursarWeeklyReportRecipient, BursarWeeklyReportSettings
-from payments.tasks import celery_send_bursar_weekly_report
 
 logger = logging.getLogger(__name__)
 
 MIGRATE_HINT = (
     "Bursar weekly report tables are missing. On the server run: "
-    "python manage.py migrate payments 0010_bursar_weekly_report "
+    "python manage.py migrate payments "
     "&& sudo systemctl restart gunicorn"
 )
 
@@ -37,8 +36,57 @@ def _db_error_response(exc: Exception) -> Response:
     )
 
 
+def _batch_scope_from_request(request) -> tuple[int | None, bool]:
+    """
+    Returns (batch_id, use_settings_batch).
+
+    If the client sends batch_id, that wins (empty/"all"/"0" = all cohorts).
+    Otherwise metrics may fall back to settings.report_batch.
+    """
+    params = getattr(request, "query_params", {}) or {}
+    data = getattr(request, "data", {}) or {}
+    if "batch_id" in params or "batch_id" in data:
+        raw = params.get("batch_id")
+        if raw is None or raw == "":
+            raw = data.get("batch_id")
+        if raw in (None, "", "all", "0", 0):
+            return None, False
+        try:
+            return int(raw), False
+        except (TypeError, ValueError) as exc:
+            raise ValueError("batch_id must be an integer, 'all', or empty.") from exc
+    return None, True
+
+
+def _admission_batches_payload() -> list[dict]:
+    from admissions.models import Batch
+
+    rows = (
+        Batch.objects.all()
+        .order_by("-is_active", "-id")
+        .values("id", "name", "code", "academic_year", "is_active")[:200]
+    )
+    return [
+        {
+            "id": r["id"],
+            "name": r["name"],
+            "code": r["code"],
+            "academic_year": r["academic_year"] or "",
+            "is_active": bool(r["is_active"]),
+            "label": (
+                f"{r['name']} ({r['academic_year']})"
+                if r.get("academic_year")
+                else r["name"]
+            ),
+        }
+        for r in rows
+    ]
+
+
 class BursarWeeklySettingsSerializer(serializers.ModelSerializer):
     schedule_day_label = serializers.CharField(source="get_schedule_day_display", read_only=True)
+    report_batch_id = serializers.IntegerField(allow_null=True, required=False)
+    report_batch_label = serializers.SerializerMethodField()
 
     class Meta:
         model = BursarWeeklyReportSettings
@@ -49,9 +97,25 @@ class BursarWeeklySettingsSerializer(serializers.ModelSerializer):
             "schedule_hour",
             "schedule_minute",
             "intake_label",
+            "report_batch_id",
+            "report_batch_label",
             "last_sent_at",
             "last_sent_summary",
         ]
+
+    def get_report_batch_label(self, obj):
+        batch = getattr(obj, "report_batch", None)
+        if not batch:
+            return ""
+        if batch.academic_year:
+            return f"{batch.name} ({batch.academic_year})"
+        return batch.name
+
+    def update(self, instance, validated_data):
+        if "report_batch_id" in validated_data:
+            batch_id = validated_data.pop("report_batch_id")
+            instance.report_batch_id = batch_id
+        return super().update(instance, validated_data)
 
 
 class BursarWeeklyRecipientSerializer(serializers.ModelSerializer):
@@ -71,6 +135,7 @@ class BursarWeeklySettingsView(APIView):
             data["active_recipients_count"] = BursarWeeklyReportRecipient.objects.filter(
                 is_active=True
             ).count()
+            data["batches"] = _admission_batches_payload()
             return Response(data)
         except DatabaseError as exc:
             return _db_error_response(exc)
@@ -81,7 +146,9 @@ class BursarWeeklySettingsView(APIView):
             ser = BursarWeeklySettingsSerializer(row, data=request.data, partial=True)
             ser.is_valid(raise_exception=True)
             updated = ser.save(updated_by=request.user)
-            return Response(BursarWeeklySettingsSerializer(updated).data)
+            data = BursarWeeklySettingsSerializer(updated).data
+            data["batches"] = _admission_batches_payload()
+            return Response(data)
         except DatabaseError as exc:
             return _db_error_response(exc)
 
@@ -142,7 +209,13 @@ class BursarWeeklyPreviewMetricsView(APIView):
 
     def get(self, request):
         try:
-            metrics = build_bursar_weekly_metrics()
+            batch_id, use_settings = _batch_scope_from_request(request)
+            metrics = build_bursar_weekly_metrics(
+                batch_id=batch_id,
+                use_settings_batch=use_settings,
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
         except DatabaseError as exc:
             return _db_error_response(exc)
         except Exception as exc:
@@ -168,8 +241,14 @@ class BursarWeeklyDownloadPdfView(APIView):
 
     def get(self, request):
         try:
-            metrics = build_bursar_weekly_metrics()
+            batch_id, use_settings = _batch_scope_from_request(request)
+            metrics = build_bursar_weekly_metrics(
+                batch_id=batch_id,
+                use_settings_batch=use_settings,
+            )
             pdf_bytes, filename = render_bursar_weekly_pdf(metrics)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
         except DatabaseError as exc:
             return _db_error_response(exc)
         except Exception as exc:
@@ -184,8 +263,14 @@ class BursarWeeklyDownloadExcelView(APIView):
 
     def get(self, request):
         try:
-            metrics = build_bursar_weekly_metrics()
+            batch_id, use_settings = _batch_scope_from_request(request)
+            metrics = build_bursar_weekly_metrics(
+                batch_id=batch_id,
+                use_settings_batch=use_settings,
+            )
             xlsx_bytes, filename = render_bursar_weekly_excel(metrics)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
         except DatabaseError as exc:
             return _db_error_response(exc)
         except Exception as exc:
@@ -206,7 +291,14 @@ class BursarWeeklyTestSendView(APIView):
         if not test_email:
             return Response({"detail": "email is required."}, status=400)
         try:
-            ok, subject = send_bursar_report_to_email(test_email)
+            batch_id, use_settings = _batch_scope_from_request(request)
+            ok, subject = send_bursar_report_to_email(
+                test_email,
+                batch_id=batch_id,
+                use_settings_batch=use_settings,
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
         except DatabaseError as exc:
             return _db_error_response(exc)
         except Exception as exc:
@@ -219,6 +311,7 @@ class BursarWeeklyTestSendView(APIView):
         return Response(
             {
                 "detail": f"Test bursar report sent to {test_email}.",
+                "confirmation": f"Email confirmed: test bursar report sent to {test_email}.",
                 "subject": subject,
                 "sent_to": test_email,
             }
@@ -236,7 +329,12 @@ class BursarWeeklyRecipientTestSendView(APIView):
         if not recipient:
             return Response({"detail": "Recipient not found."}, status=404)
         try:
-            ok, subject = send_bursar_report_to_email(recipient.email)
+            batch_id, use_settings = _batch_scope_from_request(request)
+            ok, subject = send_bursar_report_to_email(
+                recipient.email,
+                batch_id=batch_id,
+                use_settings_batch=use_settings,
+            )
         except Exception as exc:
             return Response({"detail": str(exc)}, status=500)
         if not ok:
@@ -247,6 +345,7 @@ class BursarWeeklyRecipientTestSendView(APIView):
         return Response(
             {
                 "detail": f"Test bursar report sent to {recipient.email}.",
+                "confirmation": f"Email confirmed sent to {recipient.email}.",
                 "subject": subject,
                 "sent_to": recipient.email,
             }
@@ -258,12 +357,12 @@ class BursarWeeklySendNowView(APIView):
 
     def post(self, request):
         """
-        Send bursar weekly report without blocking nginx/gunicorn.
+        Send bursar weekly report and prefer a confirmed send result.
 
-        Prefer Celery when workers are alive. If Celery is down/unreachable,
-        run in a background thread so the UI still gets a fast response and
-        mail is actually delivered (avoids "queued" forever with no worker).
-        Pass {"sync": true} to run inline (debug only — can 502 on large data).
+        Runs in a worker thread and waits briefly so the UI can show
+        "email confirmed sent to …". If still running after the wait,
+        returns queued=true while the thread keeps sending.
+        Pass {"sync": true} to run fully inline (debug only — can 502).
         """
         import logging
         import threading
@@ -271,75 +370,81 @@ class BursarWeeklySendNowView(APIView):
         logger = logging.getLogger(__name__)
         user_id = request.user.id
         force_sync = str(request.data.get("sync") or "").lower() in ("1", "true", "yes")
+        try:
+            batch_id, use_settings = _batch_scope_from_request(request)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
+
+        def _do_send() -> dict:
+            return send_bursar_weekly_report(
+                triggered_by_user_id=user_id,
+                batch_id=batch_id,
+                use_settings_batch=use_settings,
+            )
 
         if force_sync:
             try:
-                result = send_bursar_weekly_report(triggered_by_user_id=user_id)
+                result = _do_send()
             except DatabaseError as exc:
                 return _db_error_response(exc)
             except Exception as exc:
                 logger.exception("Bursar weekly sync send_now failed")
                 return Response(
-                    {"ok": False, "detail": str(exc) or "Failed to send bursar weekly report."},
+                    {
+                        "ok": False,
+                        "queued": False,
+                        "detail": str(exc) or "Failed to send bursar weekly report.",
+                        "confirmation": None,
+                    },
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 )
             code = status.HTTP_200_OK if result.get("ok") else status.HTTP_400_BAD_REQUEST
             return Response(result, status=code)
 
-        def _celery_workers_alive() -> bool:
+        box: dict = {}
+
+        def _target():
             try:
-                from ndu_portal.celery import app as celery_app
+                box["result"] = _do_send()
+                logger.info("Bursar weekly send_now finished: %s", box["result"])
+            except Exception as exc:
+                logger.exception("Bursar weekly send_now worker failed")
+                box["error"] = str(exc) or "Failed to send bursar weekly report."
 
-                insp = celery_app.control.inspect(timeout=1.5)
-                if insp is None:
-                    return False
-                ping = insp.ping() or {}
-                return bool(ping)
-            except Exception:
-                return False
+        worker = threading.Thread(
+            target=_target,
+            name="bursar-weekly-send",
+            daemon=True,
+        )
+        worker.start()
+        # Stay under common nginx/gunicorn timeouts while still confirming send.
+        worker.join(timeout=50)
 
-        def _run_in_thread():
-            def _target():
-                try:
-                    result = send_bursar_weekly_report(triggered_by_user_id=user_id)
-                    logger.info("Bursar weekly thread send finished: %s", result)
-                except Exception:
-                    logger.exception("Bursar weekly thread send failed")
+        if "result" in box:
+            result = box["result"]
+            code = status.HTTP_200_OK if result.get("ok") else status.HTTP_400_BAD_REQUEST
+            return Response(result, status=code)
+        if "error" in box:
+            return Response(
+                {
+                    "ok": False,
+                    "queued": False,
+                    "detail": box["error"],
+                    "confirmation": None,
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
-            threading.Thread(
-                target=_target,
-                name="bursar-weekly-send",
-                daemon=True,
-            ).start()
-
-        # Prefer live Celery workers; otherwise background thread (same process).
-        if _celery_workers_alive():
-            try:
-                celery_send_bursar_weekly_report.delay(triggered_by_user_id=user_id)
-                return Response(
-                    {
-                        "ok": True,
-                        "queued": True,
-                        "via": "celery",
-                        "detail": (
-                            "Bursar weekly report queued on Celery. "
-                            "Active recipients should receive PDF and Excel shortly."
-                        ),
-                    }
-                )
-            except Exception:
-                logger.exception("Celery delay failed; using background thread")
-
-        _run_in_thread()
         return Response(
             {
                 "ok": True,
                 "queued": True,
                 "via": "thread",
                 "detail": (
-                    "Bursar weekly report started in the background "
-                    "(Celery workers were not reachable). "
-                    "Check recipients' inboxes in a few minutes, and restart Celery on the server."
+                    "Report is still generating in the background. "
+                    "Check Last sent below in about a minute for confirmation, "
+                    "and check recipients' inboxes."
                 ),
+                "confirmation": None,
             }
         )

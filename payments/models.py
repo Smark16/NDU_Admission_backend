@@ -919,6 +919,14 @@ class BursarWeeklyReportSettings(models.Model):
         default="",
         help_text="Optional label shown on the PDF (e.g. AUG 2026 intake).",
     )
+    report_batch = models.ForeignKey(
+        "admissions.Batch",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+        help_text="Default admission batch/intake for scheduled and default report scope.",
+    )
     last_sent_at = models.DateTimeField(null=True, blank=True)
     last_sent_summary = models.CharField(max_length=255, blank=True, default="")
     updated_by = models.ForeignKey(

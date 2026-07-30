@@ -55,14 +55,21 @@ def render_bursar_weekly_excel(metrics: dict[str, Any]) -> tuple[bytes, str]:
         ("University", metrics.get("university_name")),
         ("Prepared for", metrics.get("prepared_for")),
         ("Intake / cohort", metrics.get("intake_label")),
+        ("Batch scope", metrics.get("batch_scope_label")),
         ("Report date", metrics.get("report_date")),
         ("Data as of", metrics.get("data_as_of")),
         ("Week", f"{metrics.get('week_start')} – {metrics.get('week_end')}"),
         ("", ""),
         ("Admitted", metrics.get("admitted_total")),
-        ("Paid (ledger/portal ≥ threshold)", metrics.get("paid_total")),
-        ("Not paid", metrics.get("not_paid_total")),
+        ("Paid commitment (ledger/portal ≥ threshold)", metrics.get("paid_total")),
+        ("Not paid commitment", metrics.get("not_paid_total")),
         ("Collection rate %", metrics.get("collection_rate")),
+        (
+            f"Ready for registration (≥ {metrics.get('min_registration_tuition_pct', 60)}% tuition)",
+            metrics.get("registration_ready_total"),
+        ),
+        ("Not yet registration-ready", metrics.get("registration_not_ready_total")),
+        ("Registration-ready rate %", metrics.get("registration_ready_rate")),
         ("Total collected", metrics.get("total_collected_display")),
         ("Revenue at risk", metrics.get("revenue_at_risk_display")),
         ("Commitment threshold", metrics.get("threshold_display")),
@@ -80,9 +87,14 @@ def render_bursar_weekly_excel(metrics: dict[str, Any]) -> tuple[bytes, str]:
     for label, value in rows:
         ws.cell(row=r, column=1, value=label)
         cell = ws.cell(row=r, column=2, value=value)
-        if label.startswith("Paid (ledger"):
+        if "Paid commitment" in str(label) or str(label).startswith("Ready for registration"):
             cell.font = good_font
-        if label in ("Not paid", "Revenue at risk", "Flagged but no ledger proof"):
+        if label in (
+            "Not paid commitment",
+            "Not yet registration-ready",
+            "Revenue at risk",
+            "Flagged but no ledger proof",
+        ):
             cell.font = bad_font
         r += 1
     r += 1
@@ -132,6 +144,35 @@ def render_bursar_weekly_excel(metrics: dict[str, Any]) -> tuple[bytes, str]:
             ]
         )
     autosize(ws_c)
+
+    # --- By Batch ---
+    ws_b = wb.create_sheet("By Batch")
+    headers = [
+        "Batch",
+        "Admitted",
+        "Paid commitment",
+        "Not paid",
+        "Commitment rate %",
+        "Ready for registration",
+        "Reg-ready rate %",
+        "Amount",
+    ]
+    ws_b.append(headers)
+    style_header(ws_b, 1, len(headers))
+    for row in metrics.get("by_batch") or []:
+        ws_b.append(
+            [
+                row.get("name"),
+                row.get("admitted"),
+                row.get("paid"),
+                row.get("not_paid"),
+                row.get("collection_rate"),
+                row.get("registration_ready"),
+                row.get("registration_ready_rate"),
+                row.get("amount_display") or row.get("amount"),
+            ]
+        )
+    autosize(ws_b)
 
     # --- Demographics ---
     ws_d = wb.create_sheet("Demographics")

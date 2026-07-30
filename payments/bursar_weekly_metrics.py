@@ -45,29 +45,68 @@ def _safe_name(raw) -> str:
     return name or "Unassigned"
 
 
-def _admitted_base():
-    return AdmittedStudent.objects.filter(is_admitted=True)
+def _admitted_base(*, batch_id: int | None = None):
+    qs = AdmittedStudent.objects.filter(is_admitted=True)
+    if batch_id:
+        qs = qs.filter(admitted_batch_id=batch_id)
+    return qs
 
 
-def build_bursar_weekly_metrics(*, reference: date | None = None) -> dict[str, Any]:
+def _batch_label(batch) -> str:
+    if batch is None:
+        return "All admitted cohorts"
+    if getattr(batch, "academic_year", None):
+        return f"{batch.name} ({batch.academic_year})"
+    return batch.name or f"Batch {batch.pk}"
+
+
+def build_bursar_weekly_metrics(
+    *,
+    reference: date | None = None,
+    batch_id: int | None = None,
+    use_settings_batch: bool = True,
+) -> dict[str, Any]:
     """
     Build report metrics from the live portal DB.
 
     Paid / not-paid headcounts use the same strict commitment check as
     Tuition Ledger → Download paid/unpaid CSV (portal + SchoolPay ledger math,
     not only the admission_fee_paid flag).
+
+    Registration-ready = semester tuition % met (RegistrationSettings threshold,
+    typically 60%).
+
+    Pass batch_id to scope to one admission intake. If batch_id is None and
+    use_settings_batch is True, fall back to settings.report_batch.
+    Pass use_settings_batch=False with batch_id=None for all admitted cohorts.
     """
+    from admissions.models import Batch
+    from payments.tuition_pct_queryset import (
+        filter_by_tuition_pct_met,
+        registration_min_tuition_pct,
+    )
+
     week_start, week_end = week_bounds_for(reference)
     settings_row = BursarWeeklyReportSettings.get_solo()
     threshold = COMMITMENT_FEE_THRESHOLD
     uni = get_university_display_name()
+    min_reg_pct = registration_min_tuition_pct()
+
+    batch = None
+    if batch_id:
+        batch = Batch.objects.filter(pk=batch_id).first()
+        if batch is None:
+            raise ValueError(f"Admission batch id={batch_id} was not found.")
+    elif use_settings_batch and getattr(settings_row, "report_batch_id", None):
+        batch = settings_row.report_batch
+        batch_id = settings_row.report_batch_id
 
     apps = Application.objects.exclude(status="draft")
     apps_week = apps.filter(created_at__date__gte=week_start, created_at__date__lte=week_end)
     applications_received = apps_week.count()
     pending = apps.filter(status__in=["submitted", "under_review"]).count()
 
-    admitted_qs = _admitted_base()
+    admitted_qs = _admitted_base(batch_id=batch_id)
     admitted_total = admitted_qs.count()
     # Same definition as AdminTuitionLedgerStudentsExportView (strict=True):
     # portal + SchoolPay ledger credits >= threshold (not the admission_fee_paid flag alone).
@@ -86,6 +125,22 @@ def build_bursar_weekly_metrics(*, reference: date | None = None) -> dict[str, A
     collection_rate = _pct(paid_total, admitted_total)
     revenue_at_risk = Decimal(not_paid_total) * threshold
 
+    # Ready for registration: configured semester tuition % (e.g. 60%+)
+    try:
+        ready_qs = filter_by_tuition_pct_met(admitted_qs, True)
+        ready_id_set = set(ready_qs.values_list("id", flat=True))
+    except Exception:
+        ready_id_set = set(
+            admitted_qs.filter(
+                registration_tuition_pct_met=True,
+                registration_tuition_pct_at__isnull=False,
+            ).values_list("id", flat=True)
+        )
+    registration_ready_total = len(ready_id_set)
+    registration_not_ready_total = max(admitted_total - registration_ready_total, 0)
+    registration_ready_rate = _pct(registration_ready_total, admitted_total)
+    batch_scope_label = _batch_label(batch)
+
     annotated = annotate_commitment_ugx_paid(admitted_qs)
     paid_filter = Q(pk__in=paid_id_set) if paid_id_set else Q(pk__in=[])
     total_collected = (
@@ -97,35 +152,59 @@ def build_bursar_weekly_metrics(*, reference: date | None = None) -> dict[str, A
         pk__in=paid_id_set
     ).count() if paid_id_set else admitted_qs.filter(admission_fee_paid=True).count()
     ledger_without_flag = (
-        AdmittedStudent.objects.filter(pk__in=paid_id_set, admission_fee_paid=False).count()
+        admitted_qs.filter(pk__in=paid_id_set, admission_fee_paid=False).count()
         if paid_id_set
         else 0
     )
 
-    # Faculty / campus paid headcounts from the same paid_id_set (avoids SQL Count quirks).
+    # Faculty / campus / batch paid headcounts from the same paid_id_set (avoids SQL Count quirks).
     faculty_totals: dict[str, dict[str, Any]] = defaultdict(
         lambda: {"admitted": 0, "paid": 0, "amount": Decimal("0")}
     )
     campus_totals: dict[str, dict[str, Any]] = defaultdict(
         lambda: {"admitted": 0, "paid": 0, "amount": Decimal("0")}
     )
+    batch_totals: dict[str, dict[str, Any]] = defaultdict(
+        lambda: {
+            "admitted": 0,
+            "paid": 0,
+            "registration_ready": 0,
+            "amount": Decimal("0"),
+            "batch_id": None,
+        }
+    )
     for row in annotated.values(
         "id",
         "admitted_program__faculty__name",
         "admitted_campus__name",
+        "admitted_batch_id",
+        "admitted_batch__name",
+        "admitted_batch__academic_year",
         "commitment_paid_ugx",
     ):
         fac = _safe_name(row["admitted_program__faculty__name"])
         camp = _safe_name(row["admitted_campus__name"])
+        bname = row["admitted_batch__name"]
+        byear = row["admitted_batch__academic_year"]
+        if bname:
+            batch_key = f"{bname} ({byear})" if byear else bname
+        else:
+            batch_key = "Unassigned batch"
         sid = row["id"]
         amt = Decimal(row["commitment_paid_ugx"] or 0)
         faculty_totals[fac]["admitted"] += 1
         campus_totals[camp]["admitted"] += 1
+        batch_totals[batch_key]["admitted"] += 1
+        batch_totals[batch_key]["batch_id"] = row["admitted_batch_id"]
         if sid in paid_id_set:
             faculty_totals[fac]["paid"] += 1
             campus_totals[camp]["paid"] += 1
+            batch_totals[batch_key]["paid"] += 1
             faculty_totals[fac]["amount"] += amt
             campus_totals[camp]["amount"] += amt
+            batch_totals[batch_key]["amount"] += amt
+        if sid in ready_id_set:
+            batch_totals[batch_key]["registration_ready"] += 1
 
     by_faculty = []
     for name, totals in sorted(faculty_totals.items(), key=lambda x: -x[1]["admitted"]):
@@ -160,6 +239,28 @@ def build_bursar_weekly_metrics(*, reference: date | None = None) -> dict[str, A
                 "paid": paid,
                 "not_paid": not_paid,
                 "collection_rate": _pct(paid, admitted),
+                "amount": amount,
+                "amount_display": _money(amount),
+            }
+        )
+
+    by_batch = []
+    for name, totals in sorted(batch_totals.items(), key=lambda x: -x[1]["admitted"]):
+        admitted = int(totals["admitted"])
+        paid = int(totals["paid"])
+        not_paid = max(admitted - paid, 0)
+        reg_ready = int(totals["registration_ready"])
+        amount = Decimal(totals["amount"] or 0)
+        by_batch.append(
+            {
+                "name": name,
+                "batch_id": totals["batch_id"],
+                "admitted": admitted,
+                "paid": paid,
+                "not_paid": not_paid,
+                "collection_rate": _pct(paid, admitted),
+                "registration_ready": reg_ready,
+                "registration_ready_rate": _pct(reg_ready, admitted),
                 "amount": amount,
                 "amount_display": _money(amount),
             }
@@ -231,11 +332,13 @@ def build_bursar_weekly_metrics(*, reference: date | None = None) -> dict[str, A
     ]
 
     # Monthly SchoolPay / ledger collections (Completed)
+    ledger_base = TuitionLedger.objects.filter(
+        transaction_completion_status__iexact="Completed",
+    )
+    if batch_id:
+        ledger_base = ledger_base.filter(student_id__in=admitted_qs.values("id"))
     ledger_months = list(
-        TuitionLedger.objects.filter(
-            transaction_completion_status__iexact="Completed",
-            payment_date_time__date__gte=six_months_ago,
-        )
+        ledger_base.filter(payment_date_time__date__gte=six_months_ago)
         .annotate(month=TruncMonth("payment_date_time"))
         .values("month")
         .annotate(count=Count("id"), amount=Sum("amount"))
@@ -256,8 +359,7 @@ def build_bursar_weekly_metrics(*, reference: date | None = None) -> dict[str, A
         )
 
     # Payment size distribution vs exact commitment threshold (ledger sample)
-    ledger_week = TuitionLedger.objects.filter(
-        transaction_completion_status__iexact="Completed",
+    ledger_week = ledger_base.filter(
         payment_date_time__date__gte=week_start,
         payment_date_time__date__lte=week_end,
     )
@@ -289,9 +391,14 @@ def build_bursar_weekly_metrics(*, reference: date | None = None) -> dict[str, A
 
     observations = []
     observations.append(
-        f"{admitted_total:,} admitted students are in scope; "
-        f"{paid_total:,} ({collection_rate}%) have met the commitment fee and "
-        f"{not_paid_total:,} have not."
+        f"{admitted_total:,} admitted students in {batch_scope_label}; "
+        f"{paid_total:,} ({collection_rate}%) have paid commitment fees and "
+        f"{not_paid_total:,} have not yet paid."
+    )
+    observations.append(
+        f"{registration_ready_total:,} ({registration_ready_rate}%) are ready for registration "
+        f"(≥ {min_reg_pct:g}% semester tuition paid); "
+        f"{registration_not_ready_total:,} are not yet at that threshold."
     )
     observations.append(
         f"Total commitment-related collections recorded: {_money(total_collected)}. "
@@ -356,16 +463,19 @@ def build_bursar_weekly_metrics(*, reference: date | None = None) -> dict[str, A
         f"({_money(total_collected)})."
     )
 
-    intake_label = (settings_row.intake_label or "").strip() or "Current admitted cohort"
+    custom_intake = (settings_row.intake_label or "").strip()
+    intake_label = custom_intake or batch_scope_label
 
     exec_paragraphs = [
         (
             f"As of {timezone.localtime().strftime('%d %b %Y %H:%M')}, {uni} has "
-            f"{admitted_total:,} admitted students in the bursar commitment cohort "
-            f"({intake_label}). {paid_total:,} ({collection_rate}%) have paid the commitment fee; "
-            f"{not_paid_total:,} ({_pct(not_paid_total, admitted_total)}%) have not."
+            f"{admitted_total:,} admitted students in scope ({intake_label}). "
+            f"{paid_total:,} ({collection_rate}%) have paid commitment fees; "
+            f"{not_paid_total:,} ({_pct(not_paid_total, admitted_total)}%) have not yet paid."
         ),
         (
+            f"{registration_ready_total:,} ({registration_ready_rate}%) are ready for registration "
+            f"(≥ {min_reg_pct:g}% semester tuition). "
             f"Commitment-related collections total {_money(total_collected)}. "
             f"{top_faculty_admissions} leads admissions volume; "
             f"{top_faculty_collections} leads amounts collected."
@@ -378,18 +488,24 @@ def build_bursar_weekly_metrics(*, reference: date | None = None) -> dict[str, A
         "report_title": "Weekly Admissions & Commitment Fee Status Report",
         "prepared_for": "The Bursar",
         "intake_label": intake_label,
+        "batch_id": batch_id,
+        "batch_scope_label": batch_scope_label,
         "report_date": timezone.localdate().strftime("%d %b %Y"),
         "data_as_of": timezone.localtime().strftime("%d %b %Y %H:%M %Z"),
         "week_start": week_start.strftime("%d %b %Y"),
         "week_end": week_end.strftime("%d %b %Y"),
         "threshold": threshold,
         "threshold_display": _money(threshold),
+        "min_registration_tuition_pct": min_reg_pct,
         "applications_received_week": applications_received,
         "applications_pending": pending,
         "admitted_total": admitted_total,
         "paid_total": paid_total,
         "not_paid_total": not_paid_total,
         "collection_rate": collection_rate,
+        "registration_ready_total": registration_ready_total,
+        "registration_not_ready_total": registration_not_ready_total,
+        "registration_ready_rate": registration_ready_rate,
         "total_collected": total_collected,
         "total_collected_display": _money(total_collected),
         "revenue_at_risk": revenue_at_risk,
@@ -399,6 +515,7 @@ def build_bursar_weekly_metrics(*, reference: date | None = None) -> dict[str, A
         "exec_paragraphs": exec_paragraphs,
         "by_faculty": by_faculty,
         "by_campus": by_campus,
+        "by_batch": by_batch,
         "by_gender": by_gender,
         "by_level": by_level,
         "local_count": local,
@@ -408,14 +525,15 @@ def build_bursar_weekly_metrics(*, reference: date | None = None) -> dict[str, A
         "monthly_applications": monthly_applications,
         "monthly_collections": monthly_collections,
         "payment_size": payment_size,
-        "observations": observations[:6],
+        "observations": observations[:7],
         "recommendations": recommendations,
         "top_faculty_admissions": top_faculty_admissions,
         "top_faculty_collections": top_faculty_collections,
         "source_note": (
-            "Generated from live NDU portal data. Paid counts match Tuition Ledger "
-            "commitment export (portal + SchoolPay ledger ≥ threshold; not the flag alone). "
-            "Application pipeline and TuitionLedger monthly trends included."
+            "Generated from live NDU portal data. Scoped by admission batch when selected. "
+            "Commitment paid = portal + SchoolPay ledger ≥ commitment threshold. "
+            "Registration-ready = semester tuition % ≥ RegistrationSettings minimum "
+            f"({min_reg_pct:g}%)."
         ),
         "flag_paid_total": flag_paid_total,
         "flag_without_ledger": flag_without_ledger,
