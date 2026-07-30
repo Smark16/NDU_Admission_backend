@@ -389,6 +389,11 @@ class AdmittedStudentSerializer(serializers.ModelSerializer):
         if update_fields:
             update_fields.append("updated_at")
             spe.save(update_fields=update_fields)
+        else:
+            # Still ensure teaching section if SPE exists with null/mismatched section.
+            from Programs.teaching_sections import ensure_enrollment_teaching_section
+
+            ensure_enrollment_teaching_section(spe, assign_only=False)
 
     def create(self, validated_data):
         from Programs.program_batch_resolution import resolve_default_program_batch_for_program
@@ -786,7 +791,9 @@ class BonafideStudentSerializer(serializers.ModelSerializer):
     gender = serializers.CharField(source="application.gender", default="", read_only=True)
     phone = serializers.CharField(source="application.phone", default="", read_only=True)
     email = serializers.EmailField(source="application.email", default="", read_only=True)
-    date_of_birth = serializers.DateField(source="application.date_of_birth", read_only=True)
+    date_of_birth = serializers.DateField(
+        source="application.date_of_birth", read_only=True, allow_null=True
+    )
     nationality = serializers.CharField(source="application.nationality", default="", read_only=True)
     program = serializers.CharField(source="admitted_program.name", default="", read_only=True)
     program_id = serializers.IntegerField(source="admitted_program_id", read_only=True)
@@ -855,37 +862,35 @@ class BonafideStudentSerializer(serializers.ModelSerializer):
             return ""
         return obj.admitted_program.faculty.name
 
+    def _enrollment(self, obj):
+        try:
+            return obj.programme_enrollment
+        except Exception:
+            # Missing OneToOne, or schema drift (e.g. teaching_section column).
+            return None
+
     def get_academic_batch(self, obj):
         from Programs.program_batch_resolution import format_program_batch_display
 
-        try:
-            enrollment = obj.programme_enrollment
-        except Exception:
-            enrollment = None
+        enrollment = self._enrollment(obj)
         if enrollment is not None and enrollment.program_batch_id:
-            return format_program_batch_display(enrollment.program_batch)
+            try:
+                return format_program_batch_display(enrollment.program_batch)
+            except Exception:
+                pass
         intended = getattr(obj, "intended_program_batch", None)
         if intended is not None and getattr(intended, "pk", None):
             return format_program_batch_display(intended)
         return "—"
 
     def get_academic_batch_id(self, obj):
-        try:
-            enrollment = obj.programme_enrollment
-        except Exception:
-            enrollment = None
+        enrollment = self._enrollment(obj)
         if enrollment is not None and enrollment.program_batch_id:
             return enrollment.program_batch_id
         intended = getattr(obj, "intended_program_batch", None)
         if intended is not None and getattr(intended, "pk", None):
             return intended.pk
         return None
-
-    def _enrollment(self, obj):
-        try:
-            return obj.programme_enrollment
-        except Exception:
-            return None
 
     def get_current_year_of_study(self, obj):
         enr = self._enrollment(obj)

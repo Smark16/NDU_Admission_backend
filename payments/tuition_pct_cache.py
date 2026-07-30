@@ -69,12 +69,13 @@ def refresh_students_tuition_pct_cache(
         return {"scanned": 0, "met": 0, "unmet": 0}
 
     scanned = met = unmet = 0
+    from Programs.spe_queryset import prefetch_programme_enrollment_for_lists
+
     select_related = (
         "application",
         "admitted_program",
         "admitted_batch",
         "intended_program_batch",
-        "programme_enrollment__program_batch",
     )
     now = timezone.now()
     # Chunked loads — no QuerySet.iterator() (breaks behind PgBouncer).
@@ -84,6 +85,7 @@ def refresh_students_tuition_pct_cache(
         students = (
             AdmittedStudent.objects.filter(id__in=chunk)
             .select_related(*select_related)
+            .prefetch_related(prefetch_programme_enrollment_for_lists())
             .order_by("id")
         )
         for student in students:

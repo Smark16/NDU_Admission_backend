@@ -3231,17 +3231,13 @@ class ListBonafideStudents(generics.ListAPIView):
 
     def _enrich_page(self, page_ids: list[int]) -> list:
         """Load page rows without selecting SPE.teaching_section (may be missing if 0023 was faked)."""
-        from django.db.models import Prefetch
-        from Programs.models import StudentProgrammeEnrollment
+        from Programs.spe_queryset import prefetch_programme_enrollment_for_lists
 
-        spe_qs = StudentProgrammeEnrollment.objects.select_related("program_batch").defer(
-            "teaching_section"
-        )
         enriched = {
             obj.pk: obj
             for obj in AdmittedStudent.objects.filter(pk__in=page_ids)
             .select_related(*self._BONAFIDE_SELECT_RELATED)
-            .prefetch_related(Prefetch("programme_enrollment", queryset=spe_qs))
+            .prefetch_related(prefetch_programme_enrollment_for_lists())
         }
         return [enriched[pk] for pk in page_ids if pk in enriched]
 
@@ -3295,6 +3291,7 @@ class ListBonafideStudents(generics.ListAPIView):
         program = self.request.query_params.get("program")
         academic_batch_id = self.request.query_params.get("academic_batch_id")
         enrollment_status = self.request.query_params.get("enrollment_status")
+        admission_intake = (self.request.query_params.get("admission_intake") or "").strip()
 
         if search:
             # Prefer exact/prefix matches on indexed identity fields before OR-icontains.
@@ -3334,6 +3331,9 @@ class ListBonafideStudents(generics.ListAPIView):
             queryset = queryset.filter(admitted_program__name=program)
         if faculty and faculty != "all":
             queryset = queryset.filter(admitted_program__faculty__name=faculty)
+        # Continuing / Legacy imports use intake name "Continuing / Legacy Students".
+        if admission_intake and admission_intake != "all":
+            queryset = queryset.filter(admitted_batch__name=admission_intake)
         if academic_batch_id and academic_batch_id != "all":
             try:
                 batch_id = int(academic_batch_id)
@@ -3461,15 +3461,11 @@ class BonafideStudentDetail(generics.RetrieveAPIView):
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
     def get_queryset(self):
-        from django.db.models import Prefetch
-        from Programs.models import StudentProgrammeEnrollment
+        from Programs.spe_queryset import prefetch_programme_enrollment_for_lists
 
-        spe_qs = StudentProgrammeEnrollment.objects.select_related("program_batch").defer(
-            "teaching_section"
-        )
         return filter_admitted_students_for_user(
             super().get_queryset().prefetch_related(
-                Prefetch("programme_enrollment", queryset=spe_qs)
+                prefetch_programme_enrollment_for_lists()
             ),
             self.request.user,
         )
