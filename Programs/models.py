@@ -1217,18 +1217,25 @@ class StudentProgrammeEnrollment(models.Model):
             self.entry_term_number = self.current_term_number
         # Keep teaching section on the current cohort (default when missing/mismatched).
         if self.program_batch_id:
-            from Programs.teaching_sections import ensure_enrollment_teaching_section
+            try:
+                from django.db.utils import ProgrammingError
+                from Programs.teaching_sections import ensure_enrollment_teaching_section
 
-            prior_section_id = self.teaching_section_id
-            ensure_enrollment_teaching_section(self, assign_only=True)
-            update_fields = kwargs.get("update_fields")
-            if (
-                update_fields is not None
-                and self.teaching_section_id != prior_section_id
-                and "teaching_section" not in update_fields
-                and "teaching_section_id" not in update_fields
-            ):
-                kwargs["update_fields"] = list(update_fields) + ["teaching_section"]
+                prior_section_id = self.teaching_section_id
+                ensure_enrollment_teaching_section(self, assign_only=True)
+                update_fields = kwargs.get("update_fields")
+                if (
+                    update_fields is not None
+                    and self.teaching_section_id != prior_section_id
+                    and "teaching_section" not in update_fields
+                    and "teaching_section_id" not in update_fields
+                ):
+                    kwargs["update_fields"] = list(update_fields) + ["teaching_section"]
+            except ProgrammingError:
+                # Column/table may be missing when Programs.0023 was faked without DDL.
+                pass
+            except Exception:
+                pass
         super().save(*args, **kwargs)
 
 

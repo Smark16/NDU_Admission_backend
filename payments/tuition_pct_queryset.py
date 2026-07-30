@@ -61,6 +61,8 @@ def filter_by_tuition_pct_met(qs, met: bool, *, min_pct: float | None = None):
     flags whenever the configured threshold (or gate formula) changes so a move
     from 60% → 100% cannot keep stale "met" rows.
     """
+    from django.db.utils import ProgrammingError
+
     _ = min_pct
     settings = RegistrationSettings.get_settings()
     threshold = float(settings.min_tuition_payment_percentage or 0)
@@ -75,20 +77,27 @@ def filter_by_tuition_pct_met(qs, met: bool, *, min_pct: float | None = None):
         ensure_tuition_pct_cache_for_queryset,
     )
 
-    invalidated = ensure_tuition_pct_basis_is_current()
-    if invalidated:
-        logger.info(
-            "tuition_pct cache invalidated for new threshold=%s%% (semester total gate)",
-            threshold,
+    try:
+        invalidated = ensure_tuition_pct_basis_is_current()
+        if invalidated:
+            logger.info(
+                "tuition_pct cache invalidated for new threshold=%s%% (semester total gate)",
+                threshold,
+            )
+
+        ensure_tuition_pct_cache_for_queryset(
+            qs,
+            prefer_payment_activity=bool(met),
+            max_sync=12,
         )
 
-    ensure_tuition_pct_cache_for_queryset(
-        qs,
-        prefer_payment_activity=bool(met),
-        max_sync=12,
-    )
-
-    return qs.filter(
-        registration_tuition_pct_at__isnull=False,
-        registration_tuition_pct_met=bool(met),
-    )
+        return qs.filter(
+            registration_tuition_pct_at__isnull=False,
+            registration_tuition_pct_met=bool(met),
+        )
+    except ProgrammingError:
+        logger.exception(
+            "tuition_pct filter failed — registration_tuition_pct_* columns may be missing"
+        )
+        # Fail open for list screens: do not 500 the whole Bonafide page.
+        return qs if met else qs.none()

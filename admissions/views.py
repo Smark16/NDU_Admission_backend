@@ -3226,28 +3226,66 @@ class ListBonafideStudents(generics.ListAPIView):
         "admitted_batch",
         "admitted_campus",
         "intended_program_batch",
-        "programme_enrollment__program_batch",
         "application",
     )
 
-    def list(self, request, *args, **kwargs):
-        queryset = self.filter_queryset(self.get_queryset())
-        page = self.paginate_queryset(queryset)
-        if page is not None:
-            page_ids = [obj.pk for obj in page]
-            enriched = {
-                obj.pk: obj
-                for obj in AdmittedStudent.objects.filter(pk__in=page_ids).select_related(
-                    *self._BONAFIDE_SELECT_RELATED
-                )
-            }
-            page = [enriched[pk] for pk in page_ids if pk in enriched]
-            serializer = self.get_serializer(page, many=True)
-            return self.get_paginated_response(serializer.data)
+    def _enrich_page(self, page_ids: list[int]) -> list:
+        """Load page rows without selecting SPE.teaching_section (may be missing if 0023 was faked)."""
+        from django.db.models import Prefetch
+        from Programs.models import StudentProgrammeEnrollment
 
-        queryset = queryset.select_related(*self._BONAFIDE_SELECT_RELATED)
-        serializer = self.get_serializer(queryset, many=True)
-        return Response(serializer.data)
+        spe_qs = StudentProgrammeEnrollment.objects.select_related("program_batch").defer(
+            "teaching_section"
+        )
+        enriched = {
+            obj.pk: obj
+            for obj in AdmittedStudent.objects.filter(pk__in=page_ids)
+            .select_related(*self._BONAFIDE_SELECT_RELATED)
+            .prefetch_related(Prefetch("programme_enrollment", queryset=spe_qs))
+        }
+        return [enriched[pk] for pk in page_ids if pk in enriched]
+
+    def list(self, request, *args, **kwargs):
+        from django.db.utils import ProgrammingError
+
+        try:
+            queryset = self.filter_queryset(self.get_queryset())
+            page = self.paginate_queryset(queryset)
+            if page is not None:
+                page_ids = [obj.pk for obj in page]
+                page = self._enrich_page(page_ids)
+                serializer = self.get_serializer(page, many=True)
+                return self.get_paginated_response(serializer.data)
+
+            page_ids = list(queryset.values_list("pk", flat=True)[:500])
+            rows = self._enrich_page(page_ids)
+            serializer = self.get_serializer(rows, many=True)
+            return Response(serializer.data)
+        except ProgrammingError as exc:
+            logger.exception("Bonafide list ProgrammingError")
+            detail = str(exc)
+            hint = (
+                "Database schema is behind application code (often Programs.teaching_section "
+                "or admissions registration clearance columns). On the server run the SQL "
+                "fixes for missing columns, then: sudo systemctl restart gunicorn"
+            )
+            if "teaching_section" in detail.lower():
+                hint = (
+                    "Missing Programs_studentprogrammeenrollment.teaching_section_id. "
+                    "As postgres: ALTER TABLE \"Programs_studentprogrammeenrollment\" "
+                    "ADD COLUMN IF NOT EXISTS teaching_section_id bigint NULL "
+                    "REFERENCES \"Programs_teachingsection\"(id) ON DELETE RESTRICT;"
+                )
+            return Response(
+                {"detail": hint, "error": detail},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        except Exception as exc:
+            logger.exception("Bonafide list failed")
+            return Response(
+                {"detail": str(exc) or "Could not load bonafide students."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -3415,7 +3453,6 @@ class BonafideStudentDetail(generics.RetrieveAPIView):
         "admitted_batch",
         "admitted_campus",
         "intended_program_batch",
-        "programme_enrollment__program_batch",
         "application",
         "accounts_registration_cleared_by",
         "physical_documents_verified_by",
@@ -3424,7 +3461,18 @@ class BonafideStudentDetail(generics.RetrieveAPIView):
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
 
     def get_queryset(self):
-        return filter_admitted_students_for_user(super().get_queryset(), self.request.user)
+        from django.db.models import Prefetch
+        from Programs.models import StudentProgrammeEnrollment
+
+        spe_qs = StudentProgrammeEnrollment.objects.select_related("program_batch").defer(
+            "teaching_section"
+        )
+        return filter_admitted_students_for_user(
+            super().get_queryset().prefetch_related(
+                Prefetch("programme_enrollment", queryset=spe_qs)
+            ),
+            self.request.user,
+        )
 
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()
