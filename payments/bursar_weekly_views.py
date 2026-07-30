@@ -258,42 +258,88 @@ class BursarWeeklySendNowView(APIView):
 
     def post(self, request):
         """
-        Queue the bursar weekly report by default (avoids nginx/gunicorn 502 on slow PDF+mail).
-        Pass {"sync": true} only for small tests / debugging.
+        Send bursar weekly report without blocking nginx/gunicorn.
+
+        Prefer Celery when workers are alive. If Celery is down/unreachable,
+        run in a background thread so the UI still gets a fast response and
+        mail is actually delivered (avoids "queued" forever with no worker).
+        Pass {"sync": true} to run inline (debug only — can 502 on large data).
         """
         import logging
+        import threading
 
         logger = logging.getLogger(__name__)
+        user_id = request.user.id
         force_sync = str(request.data.get("sync") or "").lower() in ("1", "true", "yes")
-        # Legacy clients may still send async=true; treat as queue request.
-        want_async = not force_sync
 
-        if want_async:
+        if force_sync:
             try:
-                celery_send_bursar_weekly_report.delay(triggered_by_user_id=request.user.id)
+                result = send_bursar_weekly_report(triggered_by_user_id=user_id)
+            except DatabaseError as exc:
+                return _db_error_response(exc)
+            except Exception as exc:
+                logger.exception("Bursar weekly sync send_now failed")
+                return Response(
+                    {"ok": False, "detail": str(exc) or "Failed to send bursar weekly report."},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
+            code = status.HTTP_200_OK if result.get("ok") else status.HTTP_400_BAD_REQUEST
+            return Response(result, status=code)
+
+        def _celery_workers_alive() -> bool:
+            try:
+                from ndu_portal.celery import app as celery_app
+
+                insp = celery_app.control.inspect(timeout=1.5)
+                if insp is None:
+                    return False
+                ping = insp.ping() or {}
+                return bool(ping)
+            except Exception:
+                return False
+
+        def _run_in_thread():
+            def _target():
+                try:
+                    result = send_bursar_weekly_report(triggered_by_user_id=user_id)
+                    logger.info("Bursar weekly thread send finished: %s", result)
+                except Exception:
+                    logger.exception("Bursar weekly thread send failed")
+
+            threading.Thread(
+                target=_target,
+                name="bursar-weekly-send",
+                daemon=True,
+            ).start()
+
+        # Prefer live Celery workers; otherwise background thread (same process).
+        if _celery_workers_alive():
+            try:
+                celery_send_bursar_weekly_report.delay(triggered_by_user_id=user_id)
                 return Response(
                     {
                         "ok": True,
                         "queued": True,
+                        "via": "celery",
                         "detail": (
-                            "Bursar weekly report queued. Active recipients will receive "
-                            "PDF and Excel shortly."
+                            "Bursar weekly report queued on Celery. "
+                            "Active recipients should receive PDF and Excel shortly."
                         ),
                     }
                 )
-            except Exception as exc:
-                logger.exception("Celery queue failed for bursar weekly; falling back to sync")
-                # Fall through to sync if broker is down.
+            except Exception:
+                logger.exception("Celery delay failed; using background thread")
 
-        try:
-            result = send_bursar_weekly_report(triggered_by_user_id=request.user.id)
-        except DatabaseError as exc:
-            return _db_error_response(exc)
-        except Exception as exc:
-            logger.exception("Bursar weekly send_now failed")
-            return Response(
-                {"ok": False, "detail": str(exc) or "Failed to send bursar weekly report."},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
-        code = status.HTTP_200_OK if result.get("ok") else status.HTTP_400_BAD_REQUEST
-        return Response(result, status=code)
+        _run_in_thread()
+        return Response(
+            {
+                "ok": True,
+                "queued": True,
+                "via": "thread",
+                "detail": (
+                    "Bursar weekly report started in the background "
+                    "(Celery workers were not reachable). "
+                    "Check recipients' inboxes in a few minutes, and restart Celery on the server."
+                ),
+            }
+        )

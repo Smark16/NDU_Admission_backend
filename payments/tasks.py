@@ -274,11 +274,19 @@ def celery_bulk_send_commitment_reminders(self, cohort=None):
     return run_bulk_commitment_reminders(cohort)
 
 
-@shared_task
-def celery_send_bursar_weekly_report(triggered_by_user_id=None):
+@shared_task(bind=True, max_retries=2, default_retry_delay=60)
+def celery_send_bursar_weekly_report(self, triggered_by_user_id=None):
     from payments.bursar_weekly_send import send_bursar_weekly_report
+    import logging
 
-    return send_bursar_weekly_report(triggered_by_user_id=triggered_by_user_id)
+    log = logging.getLogger(__name__)
+    try:
+        result = send_bursar_weekly_report(triggered_by_user_id=triggered_by_user_id)
+        log.info("celery_send_bursar_weekly_report done: %s", result)
+        return result
+    except Exception as exc:
+        log.exception("celery_send_bursar_weekly_report failed")
+        raise self.retry(exc=exc)
 
 
 @shared_task
