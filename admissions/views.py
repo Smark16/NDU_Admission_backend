@@ -3611,25 +3611,36 @@ class AdmittedStudentFilterOptionsView(APIView):
         from Programs.program_batch_resolution import format_program_batch_display
         from admissions.faculty_scope import user_faculty_ids
 
-        # Academic batches only for the selected programme (not faculty-wide / all cohorts).
+        # Academic batches (cohorts) — the real placement signal, independent of the
+        # admission intake. Scope to programme when picked, else to campus/faculty
+        # (and to cohorts that actually have admitted students matching other filters).
+        pb_qs = ProgramBatch.objects.filter(
+            id__in=scoped.exclude(intended_program_batch_id=None).values_list(
+                "intended_program_batch_id", flat=True
+            )
+        ) | ProgramBatch.objects.filter(
+            id__in=scoped.filter(
+                programme_enrollment__isnull=False
+            ).values_list("programme_enrollment__program_batch_id", flat=True)
+        )
         if program and program != "all":
-            pb_qs = ProgramBatch.objects.filter(program__name=program)
-            faculty_ids = user_faculty_ids(request.user, context="admissions")
-            if faculty_ids is not None:
-                pb_qs = (
-                    pb_qs.filter(program__faculty_id__in=faculty_ids)
-                    if faculty_ids
-                    else pb_qs.none()
-                )
-            academic_batches = [
-                {
-                    "id": pb.id,
-                    "label": format_program_batch_display(pb),
-                }
-                for pb in pb_qs.select_related("program").order_by("-start_date", "name")
-            ]
-        else:
-            academic_batches = []
+            pb_qs = pb_qs.filter(program__name=program)
+        faculty_ids = user_faculty_ids(request.user, context="admissions")
+        if faculty_ids is not None:
+            pb_qs = pb_qs.filter(program__faculty_id__in=faculty_ids) if faculty_ids else pb_qs.none()
+
+        multi_program = not (program and program != "all")
+        academic_batches = [
+            {
+                "id": pb.id,
+                "label": (
+                    f"{pb.program.name} — {format_program_batch_display(pb)}"
+                    if multi_program
+                    else format_program_batch_display(pb)
+                ),
+            }
+            for pb in pb_qs.distinct().select_related("program").order_by("-start_date", "name")
+        ]
 
         return Response(
             {
