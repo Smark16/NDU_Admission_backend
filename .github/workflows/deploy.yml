@@ -26,57 +26,36 @@ jobs:
           set -e
           cd /home/admissions/NDU_Admission_backend
           git reset --hard
-          
+          # Drop server-generated merge migration files so they don't conflict with git.
+          git clean -fd Programs/migrations/ || true
+
           git pull origin main
           source venv/bin/activate
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-          # === Clean and safe migration strategy ===
-          
-          python manage.py makemigrations --merge --noinput
-          
-          # Fake known problematic migrations
-          # python manage.py migrate Programs 0006 --fake
-          # python manage.py migrate admissions 0027_application_program_choice_confirmation --fake
-          # python manage.py migrate admissions 0030 --fake
-          # python manage.py migrate admissions 0032 --fake
-          # python manage.py migrate accounts 0028_user_primary_campus --fake
-          # python manage.py migrate examinations --fake
-          # python manage.py migrate accounts 0032_systemsettings_portal_branding --fake
-          # python manage.py migrate accounts 0033_user_assigned_faculties --fake
-          # python manage.py migrate accounts 0035_user_portal_mode --fake
-          # python manage.py migrate admissions 0042_admittedstudent_admitted_specialization --fake
-          # python manage.py migrate admissions 0043_weekly_report_digest --fake
-          # python manage.py migrate admissions 0046_application_refugee_fields --fake
-          # python manage.py migrate admissions 0047_application_applicant_category --fake
-          # python manage.py migrate Programs 0015_lecture_attendance --fake
-          # python manage.py migrate Programs 0016_attendance_check_in_window --fake
-          # python manage.py migrate staff 0001_initial --fake
-          # python manage.py migrate appraisal 0002_initial --fake
-          # python manage.py migrate hiring 0002_initial --fake
-          # python manage.py migrate leave 0002_initial --fake
-          # python manage.py migrate staff 0002_payscale --fake
-          # python manage.py migrate Programs 0017_attendance_check_in_qr_token --fake
-          # python manage.py migrate Programs 0018_lecture_attendance_multi_slot --fake
-          # python manage.py migrate examinations 0013_examsession_invigilators --fake
+          # Fake known duplicate-column migrations (already present in DB).
           python manage.py migrate Programs 0019_course_material --fake
           python manage.py migrate admissions 0053_admittedstudent_registration_tuition_pct_cache --fake
           python manage.py migrate Programs 0023_teaching_section --fake
           python manage.py migrate Programs 0024_timetablesession_teaching_section --fake
           python manage.py migrate Programs 0025_courseunitsectionlecturer --fake
-        
-          # Final migrate (this should now be safe)
+
+          # Real migrate: adds registration_kind (fixes registration_lookup 500s).
+          python manage.py migrate Programs 0020_alter_lectureattendancerecord_marked_via || true
+          python manage.py migrate Programs 0021_retake_missed_paper_registration
+          python manage.py migrate Programs 0026_merge_retake_and_teaching_sections || true
           python manage.py migrate
 
-          # Ensure confirmation columns exist if 0027 was only faked
-          python manage.py ensure_program_choice_confirmation_columns
-          python manage.py ensure_portal_branding_columns
-          python manage.py refresh_tuition_pct_cache
-          
+          python manage.py ensure_program_choice_confirmation_columns || true
+          python manage.py ensure_portal_branding_columns || true
+          python manage.py refresh_tuition_pct_cache || true
+
           python manage.py collectstatic --noinput
-        
+
           sudo systemctl restart gunicorn
           sudo systemctl restart celery || true
           sudo systemctl restart celery-beat || true
           sudo systemctl restart nginx
+          git log -1 --oneline
+          sudo systemctl is-active gunicorn
