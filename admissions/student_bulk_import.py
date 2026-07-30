@@ -649,7 +649,15 @@ def _import_one_row(
         email=email,
         address=row.get("address", "").strip(),
     )
-    sync_application_program_choices(application, [program.id])
+    # Continuing / Legacy intake is not a live offer window — attach the academic
+    # programme and skip applicant "open for admission" / active-cohort gates.
+    admission_batch.programs.add(program)
+    sync_application_program_choices(
+        application,
+        [program.id],
+        staff=True,
+        grandfather_ids={program.id},
+    )
 
     payload = {
         "application": application.pk,
