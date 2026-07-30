@@ -27,11 +27,34 @@ def _plain_summary(metrics: dict[str, Any]) -> str:
     )
 
 
-def send_bursar_report_to_email(to_email: str, metrics: dict[str, Any] | None = None) -> tuple[bool, str]:
-    if metrics is None:
-        metrics = build_bursar_weekly_metrics()
+def _build_attachments(metrics: dict[str, Any]) -> tuple[list[dict[str, Any]], str, str]:
     pdf_bytes, pdf_filename = render_bursar_weekly_pdf(metrics)
     xlsx_bytes, xlsx_filename = render_bursar_weekly_excel(metrics)
+    attachments = [
+        {
+            "content": pdf_bytes,
+            "filename": pdf_filename,
+            "mime_type": "application/pdf",
+        },
+        {
+            "content": xlsx_bytes,
+            "filename": xlsx_filename,
+            "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        },
+    ]
+    return attachments, pdf_filename, xlsx_filename
+
+
+def send_bursar_report_to_email(
+    to_email: str,
+    metrics: dict[str, Any] | None = None,
+    *,
+    attachments: list[dict[str, Any]] | None = None,
+) -> tuple[bool, str]:
+    if metrics is None:
+        metrics = build_bursar_weekly_metrics()
+    if attachments is None:
+        attachments, _, _ = _build_attachments(metrics)
     subject = f"Weekly Admissions & Commitment Fee Report — {metrics['report_date']}"
     body = _plain_summary(metrics)
     ok = send_configurable_email(
@@ -39,18 +62,7 @@ def send_bursar_report_to_email(to_email: str, metrics: dict[str, Any] | None = 
         subject=subject,
         body=body,
         is_html=False,
-        attachments=[
-            {
-                "content": pdf_bytes,
-                "filename": pdf_filename,
-                "mime_type": "application/pdf",
-            },
-            {
-                "content": xlsx_bytes,
-                "filename": xlsx_filename,
-                "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            },
-        ],
+        attachments=attachments,
     )
     return ok, subject
 
@@ -71,10 +83,13 @@ def send_bursar_weekly_report(*, triggered_by_user_id: int | None = None) -> dic
             "failed": 0,
         }
 
+    # Render PDF/Excel once — re-rendering per recipient was causing gunicorn timeouts (502).
+    attachments, _, _ = _build_attachments(metrics)
+
     sent = 0
     failed = 0
     for email in recipients:
-        ok, _ = send_bursar_report_to_email(email, metrics)
+        ok, _ = send_bursar_report_to_email(email, metrics, attachments=attachments)
         if ok:
             sent += 1
         else:

@@ -257,13 +257,43 @@ class BursarWeeklySendNowView(APIView):
     permission_classes = [FinanceModuleAdminPermission]
 
     def post(self, request):
-        async_mode = str(request.data.get("async") or "").lower() in ("1", "true", "yes")
-        if async_mode:
-            celery_send_bursar_weekly_report.delay(triggered_by_user_id=request.user.id)
-            return Response({"detail": "Bursar weekly report queued."})
+        """
+        Queue the bursar weekly report by default (avoids nginx/gunicorn 502 on slow PDF+mail).
+        Pass {"sync": true} only for small tests / debugging.
+        """
+        import logging
+
+        logger = logging.getLogger(__name__)
+        force_sync = str(request.data.get("sync") or "").lower() in ("1", "true", "yes")
+        # Legacy clients may still send async=true; treat as queue request.
+        want_async = not force_sync
+
+        if want_async:
+            try:
+                celery_send_bursar_weekly_report.delay(triggered_by_user_id=request.user.id)
+                return Response(
+                    {
+                        "ok": True,
+                        "queued": True,
+                        "detail": (
+                            "Bursar weekly report queued. Active recipients will receive "
+                            "PDF and Excel shortly."
+                        ),
+                    }
+                )
+            except Exception as exc:
+                logger.exception("Celery queue failed for bursar weekly; falling back to sync")
+                # Fall through to sync if broker is down.
+
         try:
             result = send_bursar_weekly_report(triggered_by_user_id=request.user.id)
         except DatabaseError as exc:
             return _db_error_response(exc)
+        except Exception as exc:
+            logger.exception("Bursar weekly send_now failed")
+            return Response(
+                {"ok": False, "detail": str(exc) or "Failed to send bursar weekly report."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
         code = status.HTTP_200_OK if result.get("ok") else status.HTTP_400_BAD_REQUEST
         return Response(result, status=code)
