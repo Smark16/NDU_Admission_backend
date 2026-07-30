@@ -3401,8 +3401,9 @@ class ListBonafideStudents(generics.ListAPIView):
         registration_stage = (self.request.query_params.get("registration_stage") or "").strip().lower()
         if registration_stage and registration_stage not in ("all", ""):
             # Bonafide is commitment-paid only; "unpaid" kept for API compatibility but empty.
-            from django.db.models import Q
-
+            # NOTE: Q is already imported at module level — do not shadow with a local
+            # import here, or every earlier Q(...) usage in this function raises
+            # UnboundLocalError (Python treats Q as local for the whole function body).
             y1t1 = Q(
                 programme_enrollment__current_year_of_study=1,
                 programme_enrollment__current_term_number=1,
