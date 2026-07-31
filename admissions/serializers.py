@@ -1112,7 +1112,31 @@ class ExemptionRequestLineSerializer(serializers.ModelSerializer):
             "course_name",
             "year_of_study",
             "term_number",
+            "score_obtained",
         ]
+
+
+class ExemptionSupportingDocumentSerializer(serializers.ModelSerializer):
+    document_type_display = serializers.CharField(source="get_document_type_display", read_only=True)
+    file_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ExemptionSupportingDocument
+        fields = [
+            "id",
+            "document_type",
+            "document_type_display",
+            "original_filename",
+            "file_url",
+            "uploaded_at",
+        ]
+
+    def get_file_url(self, obj):
+        request = self.context.get("request")
+        if not obj.file:
+            return None
+        url = obj.file.url
+        return request.build_absolute_uri(url) if request else url
 
 
 class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
@@ -1128,6 +1152,7 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
     new_campus_name = serializers.CharField(source='new_campus.name', read_only=True, default=None)
     reviewed_by_name = serializers.SerializerMethodField()
     exemption_lines = ExemptionRequestLineSerializer(many=True, read_only=True)
+    supporting_documents = serializers.SerializerMethodField()
     form_fee_paid = serializers.SerializerMethodField()
 
     class Meta:
@@ -1139,8 +1164,14 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
             'new_program_name', 'new_campus_name', 'new_study_mode',
             'requested_year', 'requested_semester',
             'reason', 'review_notes', 'reviewed_by_name', 'reviewed_at', 'created_at',
-            'exemption_lines', 'form_fee_charge_id', 'form_fee_paid_at', 'form_fee_paid',
+            'exemption_lines', 'supporting_documents',
+            'form_fee_charge_id', 'form_fee_paid_at', 'form_fee_paid',
         ]
+
+    def get_supporting_documents(self, obj):
+        return ExemptionSupportingDocumentSerializer(
+            obj.supporting_documents.all(), many=True, context=self.context
+        ).data
 
     def get_student_name(self, obj):
         try:

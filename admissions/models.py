@@ -840,6 +840,13 @@ class ExemptionRequestLine(models.Model):
     course_name = models.CharField(max_length=255, blank=True, default='')
     year_of_study = models.PositiveSmallIntegerField(null=True, blank=True)
     term_number = models.PositiveSmallIntegerField(null=True, blank=True)
+    score_obtained = models.CharField(
+        max_length=20,
+        blank=True,
+        default='',
+        help_text="Score/grade the student obtained in this course at the previous institution "
+                  "(e.g. 65, B+, 3.5 GPA).",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -849,6 +856,37 @@ class ExemptionRequestLine(models.Model):
 
     def __str__(self):
         return f"{self.course_code or self.curriculum_line_id} ({self.change_request_id})"
+
+
+class ExemptionSupportingDocument(models.Model):
+    """Transcript / certificate uploaded to support a course exemption request."""
+
+    DOC_TRANSCRIPT = "transcript"
+    DOC_CERTIFICATE = "certificate"
+    DOC_OTHER = "other"
+    DOC_TYPE_CHOICES = [
+        (DOC_TRANSCRIPT, "Academic transcript"),
+        (DOC_CERTIFICATE, "Certificate"),
+        (DOC_OTHER, "Other supporting document"),
+    ]
+
+    change_request = models.ForeignKey(
+        AdmissionChangeRequest,
+        on_delete=models.CASCADE,
+        related_name='supporting_documents',
+    )
+    document_type = models.CharField(max_length=20, choices=DOC_TYPE_CHOICES, default=DOC_OTHER)
+    file = models.FileField(upload_to='exemption_documents/')
+    original_filename = models.CharField(max_length=255, blank=True, default='')
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['uploaded_at']
+        verbose_name = "Exemption Supporting Document"
+        verbose_name_plural = "Exemption Supporting Documents"
+
+    def __str__(self):
+        return f"{self.get_document_type_display()} for request #{self.change_request_id}"
 
 
 class PortalNotification(models.Model):

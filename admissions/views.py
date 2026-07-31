@@ -4198,10 +4198,12 @@ class StudentChangeRequestListCreate(APIView):
         qs = AdmissionChangeRequest.objects.filter(
             admitted_student=admission
         ).select_related('new_program', 'new_campus', 'reviewed_by').prefetch_related(
-            'exemption_lines'
+            'exemption_lines', 'supporting_documents'
         )
 
-        return Response(AdmissionChangeRequestSerializer(qs, many=True).data)
+        return Response(
+            AdmissionChangeRequestSerializer(qs, many=True, context={'request': request}).data
+        )
     def post(self, request):
         admission = self._get_admission(request.user)
         if not admission:
@@ -4252,6 +4254,36 @@ class StudentChangeRequestListCreate(APIView):
                     status=400,
                 )
 
+            scores_map = {}
+            scores_raw = request.data.get("scores")
+            if scores_raw:
+                try:
+                    parsed_scores = (
+                        json.loads(scores_raw) if isinstance(scores_raw, str) else scores_raw
+                    )
+                except (TypeError, ValueError):
+                    return Response({"detail": "Invalid 'scores' payload."}, status=400)
+                if isinstance(parsed_scores, dict):
+                    scores_map = {
+                        str(k): str(v).strip()
+                        for k, v in parsed_scores.items()
+                        if str(v).strip()
+                    }
+
+            valid_doc_types = {c[0] for c in ExemptionSupportingDocument.DOC_TYPE_CHOICES}
+            uploaded_files = request.FILES.getlist("documents")
+            doc_types_raw = request.data.get("document_types")
+            doc_types = []
+            if doc_types_raw:
+                try:
+                    parsed_types = (
+                        json.loads(doc_types_raw) if isinstance(doc_types_raw, str) else doc_types_raw
+                    )
+                except (TypeError, ValueError):
+                    parsed_types = []
+                if isinstance(parsed_types, list):
+                    doc_types = [str(t) for t in parsed_types]
+
             with transaction.atomic():
                 obj = AdmissionChangeRequest.objects.create(
                     admitted_student=admission,
@@ -4276,15 +4308,29 @@ class StudentChangeRequestListCreate(APIView):
                         course_name=course.name if course else "",
                         year_of_study=line.year_of_study,
                         term_number=line.term_number,
+                        score_obtained=scores_map.get(str(line.pk), ""),
+                    )
+                for idx, upload in enumerate(uploaded_files):
+                    dtype = doc_types[idx] if idx < len(doc_types) else ExemptionSupportingDocument.DOC_OTHER
+                    if dtype not in valid_doc_types:
+                        dtype = ExemptionSupportingDocument.DOC_OTHER
+                    ExemptionSupportingDocument.objects.create(
+                        change_request=obj,
+                        document_type=dtype,
+                        file=upload,
+                        original_filename=getattr(upload, "name", "") or "",
                     )
             obj = (
                 AdmissionChangeRequest.objects.select_related(
                     "new_program", "new_campus", "reviewed_by"
                 )
-                .prefetch_related("exemption_lines")
+                .prefetch_related("exemption_lines", "supporting_documents")
                 .get(pk=obj.pk)
             )
-            return Response(AdmissionChangeRequestSerializer(obj).data, status=201)
+            return Response(
+                AdmissionChangeRequestSerializer(obj, context={"request": request}).data,
+                status=201,
+            )
 
         obj = AdmissionChangeRequest.objects.create(
             admitted_student=admission,
@@ -4427,7 +4473,7 @@ class AdminChangeRequestList(APIView):
             'current_program', 'current_campus',
             'new_program', 'new_campus',
             'reviewed_by',
-        ).prefetch_related('exemption_lines').order_by('-created_at')
+        ).prefetch_related('exemption_lines', 'supporting_documents').order_by('-created_at')
 
         status_filter = request.query_params.get('status')
         if status_filter:
@@ -4438,7 +4484,9 @@ class AdminChangeRequestList(APIView):
             qs = qs.filter(change_type=change_type)
 
         qs = filter_admission_change_requests_for_user(qs, request.user)
-        return Response(AdmissionChangeRequestSerializer(qs, many=True).data)
+        return Response(
+            AdmissionChangeRequestSerializer(qs, many=True, context={'request': request}).data
+        )
 
 
 class AdminChangeRequestReview(APIView):
@@ -4447,7 +4495,7 @@ class AdminChangeRequestReview(APIView):
 
     def post(self, request, pk):
         req_obj = get_object_or_404(
-            AdmissionChangeRequest.objects.prefetch_related("exemption_lines"),
+            AdmissionChangeRequest.objects.prefetch_related("exemption_lines", "supporting_documents"),
             pk=pk,
         )
 
@@ -4515,10 +4563,10 @@ class AdminChangeRequestReview(APIView):
 
         req_obj = (
             AdmissionChangeRequest.objects.select_related("reviewed_by")
-            .prefetch_related("exemption_lines")
+            .prefetch_related("exemption_lines", "supporting_documents")
             .get(pk=req_obj.pk)
         )
-        return Response(AdmissionChangeRequestSerializer(req_obj).data)
+        return Response(AdmissionChangeRequestSerializer(req_obj, context={"request": request}).data)
 
 # Generate reg no
 @api_view(['POST'])
