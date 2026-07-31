@@ -8,6 +8,7 @@ from rest_framework.views import APIView
 
 import logging
 
+from admissions.faculty_scope import filter_course_units_for_user
 from admissions.models import AdmittedStudent
 from Programs.models import CourseUnit, StudentCourseUnitEnrollment
 
@@ -72,6 +73,7 @@ class StaffExaminationCoursesView(APIView):
                 )
                 .select_related("semester", "program_batch", "program_batch__program")
             )
+            qs = filter_course_units_for_user(qs, request.user)
 
             if program_id:
                 qs = qs.filter(program_batch__program_id=program_id)

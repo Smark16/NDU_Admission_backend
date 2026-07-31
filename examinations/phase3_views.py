@@ -9,6 +9,10 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from admissions.faculty_scope import (
+    filter_course_unit_results_for_user,
+    filter_course_units_for_user,
+)
 from admissions.models import AdmittedStudent
 from Programs.models import CourseUnit, Semester, StudentCourseUnitEnrollment
 
@@ -124,6 +128,7 @@ class BulkPublishView(APIView):
             )
 
         qs = CourseUnitResult.objects.select_related("enrollment", "enrollment__course_unit")
+        qs = filter_course_unit_results_for_user(qs, request.user)
         if semester_id:
             qs = qs.filter(enrollment__course_unit__semester_id=semester_id)
         if program_batch_id:
@@ -297,6 +302,7 @@ class ResultsReportView(APIView):
             "enrollment__course_unit",
             "enrollment__student",
         )
+        qs = filter_course_unit_results_for_user(qs, request.user)
         if course_unit_id:
             qs = qs.filter(enrollment__course_unit_id=course_unit_id)
         if semester_id:
@@ -327,7 +333,7 @@ class ResultsReportView(APIView):
 
         courses = []
         if semester_id or program_batch_id or course_unit_id:
-            cu_qs = CourseUnit.objects.filter(is_active=True)
+            cu_qs = filter_course_units_for_user(CourseUnit.objects.filter(is_active=True), request.user)
             if course_unit_id:
                 cu_qs = cu_qs.filter(id=course_unit_id)
             if semester_id:

@@ -51,7 +51,8 @@ def user_can_access_examinations_office(user) -> bool:
 def user_can_manage_course_marks(user, course_unit: CourseUnit) -> bool:
     """
     Lecturers: assigned course only.
-    Examinations office: any course when they hold office permissions.
+    Examinations office: any course when they hold office permissions
+    (faculty-scoped staff, e.g. HOD, are further limited to their own faculty).
     """
     if not user or not user.is_authenticated:
         return False
@@ -61,19 +62,26 @@ def user_can_manage_course_marks(user, course_unit: CourseUnit) -> bool:
         if user_has_any_examination_perm(
             user, "enter_marks", "publish_results", "view_all_results"
         ):
-            return True
+            from admissions.faculty_scope import user_can_access_course_unit
+
+            return user_can_access_course_unit(user, course_unit)
     return course_unit.lecturers.filter(pk=user.pk).exists()
 
 
 def user_can_publish_course(user, course_unit: CourseUnit) -> bool:
-    """Office users with publish_results may publish any course."""
+    """Office users with publish_results may publish courses in their scope
+    (faculty-scoped staff, e.g. HOD, are limited to their own faculty)."""
     if not user or not user.is_authenticated:
         return False
     if user_is_super_admin(user):
         return True
     if not _has(user, EXAM_PUBLISH_RESULTS):
         return False
-    return user_can_access_examinations_office(user)
+    if not user_can_access_examinations_office(user):
+        return False
+    from admissions.faculty_scope import user_can_access_course_unit
+
+    return user_can_access_course_unit(user, course_unit)
 
 
 # Backward-compatible alias used in views.

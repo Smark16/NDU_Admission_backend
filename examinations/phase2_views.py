@@ -11,7 +11,9 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from Programs.models import CourseUnit, StudentCourseUnitEnrollment, Venue
+from Programs.models import CourseUnit, ProgramBatch, StudentCourseUnitEnrollment, Venue
+
+from admissions.faculty_scope import assert_course_unit_access, assert_program_batch_access
 
 from .models import CourseUnitResult, ExamRetakeRegistration, ExamSession
 from .permissions import CanManageExamSchedule, CanManageRetakes, CanViewAllResults
@@ -141,6 +143,7 @@ class CourseExamSessionsView(APIView):
             course_unit = _get_course_unit_or_404(course_unit_id)
         except CourseUnit.DoesNotExist:
             return Response({"detail": "Course unit not found."}, status=404)
+        assert_course_unit_access(request.user, course_unit)
 
         sessions = (
             ExamSession.objects.filter(course_unit=course_unit)
@@ -161,6 +164,7 @@ class CourseExamSessionsView(APIView):
             course_unit = _get_course_unit_or_404(course_unit_id)
         except CourseUnit.DoesNotExist:
             return Response({"detail": "Course unit not found."}, status=404)
+        assert_course_unit_access(request.user, course_unit)
 
         data = {**request.data, "course_unit": course_unit.id}
         serializer = ExamSessionSerializer(data=data)
@@ -189,6 +193,8 @@ class ExamSessionBulkGenerateView(APIView):
         program_batch_id = request.data.get("program_batch_id")
         if not program_batch_id:
             return Response({"detail": "program_batch_id is required."}, status=400)
+        program_batch = get_object_or_404(ProgramBatch, pk=program_batch_id)
+        assert_program_batch_access(request.user, program_batch)
 
         exam_date = request.data.get("exam_date")
         if not exam_date:
@@ -341,6 +347,8 @@ class ExamSessionListView(APIView):
         program_batch_id = request.query_params.get("program_batch_id")
         if not program_batch_id:
             return Response({"detail": "program_batch_id is required."}, status=400)
+        program_batch = get_object_or_404(ProgramBatch, pk=program_batch_id)
+        assert_program_batch_access(request.user, program_batch)
 
         qs = (
             ExamSession.objects.filter(course_unit__program_batch_id=program_batch_id)
@@ -373,6 +381,7 @@ class ExamSessionDetailView(APIView):
             ),
             pk=session_id,
         )
+        assert_course_unit_access(request.user, session.course_unit)
         was_published = session.is_published
         serializer = ExamSessionSerializer(session, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
@@ -424,7 +433,8 @@ class ExamSessionDetailView(APIView):
         return Response(payload)
 
     def delete(self, request, session_id):
-        session = get_object_or_404(ExamSession, pk=session_id)
+        session = get_object_or_404(ExamSession.objects.select_related("course_unit"), pk=session_id)
+        assert_course_unit_access(request.user, session.course_unit)
         session.delete()
         return Response(status=204)
 
@@ -439,6 +449,7 @@ class CourseSittingListView(APIView):
             course_unit = _get_course_unit_or_404(course_unit_id)
         except CourseUnit.DoesNotExist:
             return Response({"detail": "Course unit not found."}, status=404)
+        assert_course_unit_access(request.user, course_unit)
 
         policy = resolve_assessment_policy(course_unit=course_unit)
         session_type = request.query_params.get("session_type", ExamSession.TYPE_REGULAR)
@@ -498,6 +509,7 @@ class ExamSessionSittingListView(APIView):
             ExamSession.objects.select_related("course_unit", "venue"),
             pk=session_id,
         )
+        assert_course_unit_access(request.user, session.course_unit)
         policy = resolve_assessment_policy(course_unit=session.course_unit)
         rows = []
 
@@ -575,6 +587,7 @@ class CourseRetakeRegistrationsView(APIView):
 
     def get(self, request, course_unit_id):
         course_unit = get_object_or_404(CourseUnit, pk=course_unit_id, is_active=True)
+        assert_course_unit_access(request.user, course_unit)
         qs = (
             ExamRetakeRegistration.objects.filter(enrollment__course_unit=course_unit)
             .select_related(
@@ -593,6 +606,7 @@ class CourseRetakeRegistrationsView(APIView):
 
     def post(self, request, course_unit_id):
         course_unit = get_object_or_404(CourseUnit, pk=course_unit_id, is_active=True)
+        assert_course_unit_access(request.user, course_unit)
         enrollment_id = request.data.get("enrollment_id")
         if not enrollment_id:
             return Response({"detail": "enrollment_id is required."}, status=400)
@@ -652,9 +666,12 @@ class ExamRetakeDetailView(APIView):
 
     def patch(self, request, registration_id):
         reg = get_object_or_404(
-            ExamRetakeRegistration.objects.select_related("enrollment", "exam_session"),
+            ExamRetakeRegistration.objects.select_related(
+                "enrollment", "enrollment__course_unit", "exam_session"
+            ),
             pk=registration_id,
         )
+        assert_course_unit_access(request.user, reg.enrollment.course_unit)
         new_status = request.data.get("status")
         exam_session_id = request.data.get("exam_session")
 

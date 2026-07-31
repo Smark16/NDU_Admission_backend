@@ -4,7 +4,7 @@ from __future__ import annotations
 from django.contrib.auth.models import Group
 from rest_framework import serializers
 
-FACULTY_ASSIGNED_ROLE_NAMES = frozenset({"Faculty Dean", "Faculty Admin"})
+FACULTY_ASSIGNED_ROLE_NAMES = frozenset({"Faculty Dean", "Faculty Admin", "HOD"})
 LECTURER_ROLE_NAME = "Lecturer"
 PORTAL_MODE_ADMIN = "admin"
 PORTAL_MODE_LECTURER = "lecturer"
@@ -29,6 +29,7 @@ ADMISSIONS_STAFF_ROLE_NAMES = frozenset(
         "AR Data Clerk",
         "Faculty Dean",
         "Faculty Admin",
+        "HOD",
     }
 )
 

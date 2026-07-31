@@ -10,9 +10,9 @@ from django.db.models import Q, QuerySet
 
 from accounts.super_admin import user_is_super_admin
 
-FACULTY_SCOPED_ROLE_NAMES = frozenset({"Faculty Dean", "Faculty Admin"})
-ADMISSIONS_VIEW_ONLY_ROLE_NAMES = frozenset({"Faculty Dean", "Faculty Admin"})
-FACULTY_ASSIGNED_ROLE_NAMES = frozenset({"Faculty Dean", "Faculty Admin"})
+FACULTY_SCOPED_ROLE_NAMES = frozenset({"Faculty Dean", "Faculty Admin", "HOD"})
+ADMISSIONS_VIEW_ONLY_ROLE_NAMES = frozenset({"Faculty Dean", "Faculty Admin", "HOD"})
+FACULTY_ASSIGNED_ROLE_NAMES = frozenset({"Faculty Dean", "Faculty Admin", "HOD"})
 
 INSTITUTION_WIDE_ADMISSIONS_PERMS = (
     "admissions.change_application",
@@ -36,9 +36,9 @@ def user_has_institution_wide_admissions_access(user) -> bool:
 def user_is_faculty_scoped_staff(user) -> bool:
     if not user.is_authenticated or user_is_super_admin(user):
         return False
-    # Case-insensitive so Faculty Admin / Faculty Dean always stay faculty-scoped.
+    # Case-insensitive so Faculty Admin / Faculty Dean / HOD always stay faculty-scoped.
     return user.groups.filter(
-        Q(name__iexact="Faculty Dean") | Q(name__iexact="Faculty Admin")
+        Q(name__iexact="Faculty Dean") | Q(name__iexact="Faculty Admin") | Q(name__iexact="HOD")
     ).exists()
 
 
@@ -285,6 +285,12 @@ def user_is_faculty_admin(user) -> bool:
     return user_has_group(user, "Faculty Admin")
 
 
+def user_is_hod(user) -> bool:
+    if not user.is_authenticated or user_is_super_admin(user):
+        return False
+    return user_has_group(user, "HOD")
+
+
 def assert_program_structure_modify_access(user) -> None:
     """Faculty Dean cannot modify programme structure; Faculty Admin may within assigned faculty."""
     from rest_framework.exceptions import PermissionDenied
@@ -312,3 +318,78 @@ def filter_program_batches_for_user(queryset: QuerySet, user) -> QuerySet:
     if not faculty_ids:
         return queryset.none()
     return queryset.filter(program__faculty_id__in=faculty_ids)
+
+
+def user_can_access_program_batch(user, program_batch) -> bool:
+    """Non-raising counterpart to ``assert_program_batch_access``."""
+    faculty_ids = user_faculty_ids(user, context="programs")
+    if faculty_ids is None:
+        return True
+    if not faculty_ids:
+        return False
+    return getattr(program_batch, "program_id", None) is not None and program_batch.program.faculty_id in faculty_ids
+
+
+def user_can_access_course_unit(user, course_unit) -> bool:
+    """Non-raising counterpart to ``assert_course_unit_access``."""
+    faculty_ids = user_faculty_ids(user, context="programs")
+    if faculty_ids is None:
+        return True
+    if not faculty_ids:
+        return False
+    program_batch = getattr(course_unit, "program_batch", None)
+    if program_batch is None:
+        semester = getattr(course_unit, "semester", None)
+        program_batch = getattr(semester, "program_batch", None) if semester is not None else None
+    if program_batch is None:
+        return False
+    return user_can_access_program_batch(user, program_batch)
+
+
+# ── Examinations faculty scoping (exam sessions, results, retakes) ─────────
+# Exam data hangs off Programs.CourseUnit, so it follows the same dual
+# program_batch / semester->program_batch path as filter_course_units_for_user.
+
+def filter_exam_sessions_for_user(queryset: QuerySet, user) -> QuerySet:
+    faculty_ids = user_faculty_ids(user, context="programs")
+    if faculty_ids is None:
+        return queryset
+    if not faculty_ids:
+        return queryset.none()
+    return queryset.filter(
+        Q(course_unit__program_batch__program__faculty_id__in=faculty_ids)
+        | Q(course_unit__semester__program_batch__program__faculty_id__in=faculty_ids)
+    ).distinct()
+
+
+def filter_course_unit_results_for_user(queryset: QuerySet, user) -> QuerySet:
+    faculty_ids = user_faculty_ids(user, context="programs")
+    if faculty_ids is None:
+        return queryset
+    if not faculty_ids:
+        return queryset.none()
+    return queryset.filter(
+        Q(enrollment__course_unit__program_batch__program__faculty_id__in=faculty_ids)
+        | Q(enrollment__course_unit__semester__program_batch__program__faculty_id__in=faculty_ids)
+    ).distinct()
+
+
+def filter_retake_registrations_for_user(queryset: QuerySet, user) -> QuerySet:
+    faculty_ids = user_faculty_ids(user, context="programs")
+    if faculty_ids is None:
+        return queryset
+    if not faculty_ids:
+        return queryset.none()
+    return queryset.filter(
+        Q(enrollment__course_unit__program_batch__program__faculty_id__in=faculty_ids)
+        | Q(enrollment__course_unit__semester__program_batch__program__faculty_id__in=faculty_ids)
+    ).distinct()
+
+
+def filter_marks_entry_windows_for_user(queryset: QuerySet, user) -> QuerySet:
+    faculty_ids = user_faculty_ids(user, context="programs")
+    if faculty_ids is None:
+        return queryset
+    if not faculty_ids:
+        return queryset.none()
+    return queryset.filter(program_batch__program__faculty_id__in=faculty_ids)

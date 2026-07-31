@@ -8,6 +8,11 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from admissions.faculty_scope import (
+    assert_program_batch_access,
+    filter_marks_entry_windows_for_user,
+)
+
 from .models import MarksEntryWindow
 from .permissions import CanManageMarksWindows
 from .serializers import MarksEntryWindowSerializer
@@ -25,6 +30,7 @@ class MarksEntryWindowListCreateView(APIView):
                 "semester",
                 "course_unit",
             ).order_by("-is_active", "-updated_at", "id")
+            qs = filter_marks_entry_windows_for_user(qs, request.user)
 
             program_batch_id = request.query_params.get("program_batch_id")
             semester_id = request.query_params.get("semester_id")
@@ -63,6 +69,9 @@ class MarksEntryWindowListCreateView(APIView):
     def post(self, request):
         serializer = MarksEntryWindowSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        program_batch = serializer.validated_data.get("program_batch")
+        if program_batch is not None:
+            assert_program_batch_access(request.user, program_batch)
         try:
             window = serializer.save(created_by=request.user)
         except (DatabaseError, IntegrityError) as exc:
@@ -84,14 +93,16 @@ class MarksEntryWindowDetailView(APIView):
     permission_classes = [IsAuthenticated, CanManageMarksWindows]
 
     def patch(self, request, window_id):
-        window = get_object_or_404(MarksEntryWindow, pk=window_id)
+        window = get_object_or_404(MarksEntryWindow.objects.select_related("program_batch"), pk=window_id)
+        assert_program_batch_access(request.user, window.program_batch)
         serializer = MarksEntryWindowSerializer(window, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         updated = serializer.save()
         return Response(MarksEntryWindowSerializer(updated).data)
 
     def delete(self, request, window_id):
-        window = get_object_or_404(MarksEntryWindow, pk=window_id)
+        window = get_object_or_404(MarksEntryWindow.objects.select_related("program_batch"), pk=window_id)
+        assert_program_batch_access(request.user, window.program_batch)
         window.is_active = False
         window.closed_by = request.user
         window.closed_at = timezone.now()
@@ -103,7 +114,8 @@ class MarksEntryWindowOpenView(APIView):
     permission_classes = [IsAuthenticated, CanManageMarksWindows]
 
     def post(self, request, window_id):
-        window = get_object_or_404(MarksEntryWindow, pk=window_id)
+        window = get_object_or_404(MarksEntryWindow.objects.select_related("program_batch"), pk=window_id)
+        assert_program_batch_access(request.user, window.program_batch)
         now = timezone.now()
         window.is_active = True
         if window.opens_at is None or window.opens_at > now:
@@ -129,7 +141,8 @@ class MarksEntryWindowCloseView(APIView):
     permission_classes = [IsAuthenticated, CanManageMarksWindows]
 
     def post(self, request, window_id):
-        window = get_object_or_404(MarksEntryWindow, pk=window_id)
+        window = get_object_or_404(MarksEntryWindow.objects.select_related("program_batch"), pk=window_id)
+        assert_program_batch_access(request.user, window.program_batch)
         now = timezone.now()
         window.is_active = True
         window.closes_at = now
