@@ -116,7 +116,11 @@ def academically_eligible_courses(student: AdmittedStudent) -> list[dict]:
     courses = []
     for enr in enrollments:
         elig = evaluate_exam_eligibility(enr)
-        is_retake = enr.id in retake_enrollment_ids
+        is_retake = enr.id in retake_enrollment_ids or enr.registration_kind in (
+            StudentCourseUnitEnrollment.KIND_RETAKE,
+            StudentCourseUnitEnrollment.KIND_MISSED,
+        )
+        is_missed = enr.registration_kind == StudentCourseUnitEnrollment.KIND_MISSED
         if not elig["eligible"] and not is_retake:
             continue
         cu = enr.course_unit
@@ -128,6 +132,8 @@ def academically_eligible_courses(student: AdmittedStudent) -> list[dict]:
                 "semester_name": cu.semester.name if cu.semester_id else "",
                 "ca_mark": elig.get("ca_mark"),
                 "is_retake": is_retake,
+                "is_missed": is_missed,
+                "registration_kind": enr.registration_kind or "normal",
             }
         )
     return courses

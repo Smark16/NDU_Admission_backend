@@ -32,7 +32,18 @@ def evaluate_exam_eligibility(
     failed_published = (
         result is not None
         and result.status == CourseUnitResult.STATUS_PUBLISHED
-        and result.is_pass is False
+        and (
+            result.is_pass is False
+            or (result.paper_outcome or "") in (
+                CourseUnitResult.OUTCOME_FAIL,
+                CourseUnitResult.OUTCOME_MISSED,
+            )
+            or (
+                result.is_pass is not True
+                and result.exam_mark is None
+                and result.status == CourseUnitResult.STATUS_PUBLISHED
+            )
+        )
     )
 
     if enrollment.status != "enrolled" and not (
@@ -121,6 +132,12 @@ def sitting_row_for_enrollment(
         "grade_letter": result.grade_letter if result else "",
         "result_status": result.status if result else None,
         "is_pass": result.is_pass if result else None,
+        "paper_outcome": (
+            (result.paper_outcome or "")
+            if result
+            else ""
+        ),
+        "registration_kind": enrollment.registration_kind or "normal",
         "eligible_to_sit": eligibility["eligible"],
         "eligibility": eligibility,
         "session_type": session_type,

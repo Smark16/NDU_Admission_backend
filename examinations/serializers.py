@@ -395,6 +395,7 @@ class CourseUnitResultSerializer(serializers.ModelSerializer):
             "final_mark",
             "exam_sitting_allowed",
             "is_pass",
+            "paper_outcome",
             "grade_letter",
             "grade_point",
             "remark",

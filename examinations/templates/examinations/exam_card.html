@@ -67,7 +67,7 @@
       {% for c in courses %}
       <tr>
         <td>{{ c.course_code }}</td>
-        <td>{{ c.course_name }}{% if c.is_retake %} (Retake){% endif %}</td>
+        <td>{{ c.course_name }}{% if c.is_missed %} (Missed){% elif c.is_retake %} (Retake){% endif %}</td>
         <td>{{ c.semester_name }}</td>
       </tr>
       {% empty %}

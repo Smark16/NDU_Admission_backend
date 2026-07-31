@@ -100,12 +100,25 @@ def _enrollments_for_course(course_unit):
 
 
 def _retake_candidate_enrollments_for_course(course_unit):
+    """Failed or missed published results on this course unit offering."""
+    from django.db.models import Q
+
     return (
         StudentCourseUnitEnrollment.objects.filter(
             course_unit=course_unit,
             course_result__status=CourseUnitResult.STATUS_PUBLISHED,
-            course_result__is_pass=False,
             registration_date__isnull=False,
+        )
+        .filter(
+            Q(course_result__paper_outcome__in=(
+                CourseUnitResult.OUTCOME_FAIL,
+                CourseUnitResult.OUTCOME_MISSED,
+            ))
+            | Q(course_result__is_pass=False)
+            | Q(
+                course_result__is_pass__isnull=True,
+                course_result__exam_mark__isnull=True,
+            )
         )
         .select_related(
             "student",
@@ -590,13 +603,26 @@ class CourseRetakeRegistrationsView(APIView):
             course_unit=course_unit,
         )
         result = getattr(enrollment, "course_result", None)
-        if not (
-            result
-            and result.status == CourseUnitResult.STATUS_PUBLISHED
-            and result.is_pass is False
+        outcome = ""
+        if result and result.status == CourseUnitResult.STATUS_PUBLISHED:
+            outcome = (result.paper_outcome or result.derive_paper_outcome() or "").strip()
+            if not outcome and result.is_pass is False:
+                outcome = (
+                    CourseUnitResult.OUTCOME_MISSED
+                    if result.exam_mark is None
+                    else CourseUnitResult.OUTCOME_FAIL
+                )
+        if outcome not in (
+            CourseUnitResult.OUTCOME_FAIL,
+            CourseUnitResult.OUTCOME_MISSED,
         ):
             return Response(
-                {"detail": "Only students with failed published results can be registered for retake."},
+                {
+                    "detail": (
+                        "Only students with failed or missed published results "
+                        "can be registered for retake."
+                    )
+                },
                 status=400,
             )
 
@@ -615,7 +641,7 @@ class CourseRetakeRegistrationsView(APIView):
 
         reg = ExamRetakeRegistration.objects.create(
             enrollment=enrollment,
-            reason=(request.data.get("reason") or "").strip(),
+            reason=(request.data.get("reason") or outcome or "").strip(),
             status=ExamRetakeRegistration.STATUS_PENDING,
         )
         return Response(ExamRetakeRegistrationSerializer(reg).data, status=201)
@@ -732,7 +758,7 @@ class StudentMyExamScheduleView(APIView):
 
 
 class StudentRetakeRequestView(APIView):
-    """Student self-service retake request for a failed published result."""
+    """Student self-service retake / missed-paper request for a published result."""
 
     permission_classes = [IsAuthenticated]
 
@@ -751,13 +777,58 @@ class StudentRetakeRequestView(APIView):
             student=student,
         )
         result = getattr(enrollment, "course_result", None)
-        if (
-            not result
-            or result.status != CourseUnitResult.STATUS_PUBLISHED
-            or result.is_pass is not False
+        outcome = ""
+        if result and result.status == CourseUnitResult.STATUS_PUBLISHED:
+            outcome = (result.paper_outcome or result.derive_paper_outcome() or "").strip()
+            if not outcome and result.is_pass is False:
+                outcome = (
+                    CourseUnitResult.OUTCOME_MISSED
+                    if result.exam_mark is None
+                    else CourseUnitResult.OUTCOME_FAIL
+                )
+        if outcome not in (
+            CourseUnitResult.OUTCOME_FAIL,
+            CourseUnitResult.OUTCOME_MISSED,
         ):
             return Response(
-                {"detail": "Retake requests are only allowed for published failed results."},
+                {
+                    "detail": (
+                        "Retake requests are only allowed for published failed or missed papers."
+                    )
+                },
+                status=400,
+            )
+
+        from examinations.services.outstanding_papers import next_ay_offerings_for_student
+
+        open_offer = next(
+            (
+                row
+                for row in next_ay_offerings_for_student(student)
+                if row.get("original_enrollment_id") == enrollment.id and row.get("available")
+            ),
+            None,
+        )
+        if open_offer is None:
+            papers = [
+                row
+                for row in next_ay_offerings_for_student(student)
+                if row.get("original_enrollment_id") == enrollment.id
+            ]
+            msg = (
+                papers[0].get("message")
+                if papers
+                else (
+                    "This paper opens for registration in the same semester "
+                    "of the coming academic year."
+                )
+            )
+            return Response(
+                {
+                    "detail": msg,
+                    "registration_window_open": False,
+                    "register_via_courses": False,
+                },
                 status=400,
             )
 
@@ -776,7 +847,20 @@ class StudentRetakeRequestView(APIView):
 
         reg = ExamRetakeRegistration.objects.create(
             enrollment=enrollment,
-            reason=(request.data.get("reason") or "").strip(),
+            reason=(request.data.get("reason") or outcome or "").strip(),
             status=ExamRetakeRegistration.STATUS_PENDING,
         )
-        return Response(ExamRetakeRegistrationSerializer(reg).data, status=201)
+        return Response(
+            {
+                **ExamRetakeRegistrationSerializer(reg).data,
+                "registration_window_open": True,
+                "register_via_courses": True,
+                "next_course_unit_id": open_offer.get("course_unit_id"),
+                "message": (
+                    "Request submitted. Register the paper under Course Registration "
+                    f"({open_offer.get('message')}). A retake fee will apply."
+                ),
+                "fee_preview": open_offer.get("fee_preview"),
+            },
+            status=201,
+        )

@@ -228,6 +228,15 @@ class CourseUnitResult(models.Model):
         (STATUS_PUBLISHED, "Published"),
     ]
 
+    OUTCOME_PASS = "pass"
+    OUTCOME_FAIL = "fail"
+    OUTCOME_MISSED = "missed"
+    OUTCOME_CHOICES = [
+        (OUTCOME_PASS, "Pass"),
+        (OUTCOME_FAIL, "Fail"),
+        (OUTCOME_MISSED, "Missed paper"),
+    ]
+
     enrollment = models.OneToOneField(
         "Programs.StudentCourseUnitEnrollment",
         on_delete=models.CASCADE,
@@ -243,6 +252,14 @@ class CourseUnitResult(models.Model):
     final_mark = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
     exam_sitting_allowed = models.BooleanField(default=False)
     is_pass = models.BooleanField(null=True, blank=True)
+    paper_outcome = models.CharField(
+        max_length=16,
+        choices=OUTCOME_CHOICES,
+        blank=True,
+        default="",
+        db_index=True,
+        help_text="pass / fail / missed once published. Missed = no exam mark (did not sit).",
+    )
     grade_letter = models.CharField(max_length=5, blank=True, default="")
     grade_point = models.DecimalField(max_digits=4, decimal_places=1, null=True, blank=True)
     remark = models.CharField(max_length=255, blank=True, default="")
@@ -288,6 +305,17 @@ class CourseUnitResult(models.Model):
     def __str__(self):
         return f"Result #{self.pk} ({self.enrollment_id})"
 
+    def derive_paper_outcome(self) -> str:
+        """Classify published (or ready) outcome: pass, fail, or missed paper."""
+        if self.is_pass is True:
+            return self.OUTCOME_PASS
+        if self.exam_mark is None and self.is_pass is not True:
+            # Did not sit (or exam not recorded) — treat as missed once published.
+            return self.OUTCOME_MISSED
+        if self.is_pass is False:
+            return self.OUTCOME_FAIL
+        return ""
+
     def recompute(self, *, grade_scale: GradeScale | None = None):
         computed = compute_course_result(
             ca_mark=self.ca_mark,
@@ -299,6 +327,7 @@ class CourseUnitResult(models.Model):
         self.final_mark = computed.final_mark
         self.exam_sitting_allowed = computed.exam_sitting_allowed
         self.is_pass = computed.is_pass
+        self.paper_outcome = self.derive_paper_outcome()
 
         if grade_scale is None:
             from .services.grade_scale_resolver import resolve_grade_scale
