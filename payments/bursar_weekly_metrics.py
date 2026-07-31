@@ -78,7 +78,12 @@ def build_bursar_weekly_metrics(
 
     Pass batch_id to scope to one admission intake. If batch_id is None and
     use_settings_batch is True, fall back to settings.report_batch.
-    Pass use_settings_batch=False with batch_id=None for all admitted cohorts.
+
+    This report is always scoped to one specific intake — never a blended
+    "all cohorts" total. Resolution order: explicit batch_id → saved
+    settings.report_batch → the currently active admission intake. Only
+    when the system has no Batch rows at all does the report fall back to
+    every admitted student (empty-system edge case).
     """
     from admissions.models import Batch
     from payments.tuition_pct_queryset import (
@@ -101,9 +106,17 @@ def build_bursar_weekly_metrics(
         batch = settings_row.report_batch
         batch_id = settings_row.report_batch_id
 
-    apps = Application.objects.exclude(status="draft")
+    if batch is None:
+        # Never blend cohorts — default to the currently active intake.
+        batch = Batch.objects.filter(is_active=True).order_by("-id").first()
+        if batch is not None:
+            batch_id = batch.id
+
+    apps_all = Application.objects.exclude(status="draft")
+    apps = apps_all.filter(batch_id=batch_id) if batch_id else apps_all
     apps_week = apps.filter(created_at__date__gte=week_start, created_at__date__lte=week_end)
     applications_received = apps_week.count()
+    applications_total = apps.count()
     pending = apps.filter(status__in=["submitted", "under_review"]).count()
 
     admitted_qs = _admitted_base(batch_id=batch_id)
@@ -391,9 +404,9 @@ def build_bursar_weekly_metrics(
 
     observations = []
     observations.append(
-        f"{admitted_total:,} admitted students in {batch_scope_label}; "
-        f"{paid_total:,} ({collection_rate}%) have paid commitment fees and "
-        f"{not_paid_total:,} have not yet paid."
+        f"{applications_total:,} total applicants for {batch_scope_label}; "
+        f"{admitted_total:,} admitted, {paid_total:,} ({collection_rate}%) have paid "
+        f"commitment fees and {not_paid_total:,} have not yet paid."
     )
     observations.append(
         f"{registration_ready_total:,} ({registration_ready_rate}%) are ready for registration "
@@ -468,8 +481,9 @@ def build_bursar_weekly_metrics(
 
     exec_paragraphs = [
         (
-            f"As of {timezone.localtime().strftime('%d %b %Y %H:%M')}, {uni} has "
-            f"{admitted_total:,} admitted students in scope ({intake_label}). "
+            f"As of {timezone.localtime().strftime('%d %b %Y %H:%M')}, {uni} received "
+            f"{applications_total:,} applications for {intake_label}, with "
+            f"{admitted_total:,} admitted. "
             f"{paid_total:,} ({collection_rate}%) have paid commitment fees; "
             f"{not_paid_total:,} ({_pct(not_paid_total, admitted_total)}%) have not yet paid."
         ),
@@ -498,6 +512,7 @@ def build_bursar_weekly_metrics(
         "threshold_display": _money(threshold),
         "min_registration_tuition_pct": min_reg_pct,
         "applications_received_week": applications_received,
+        "applications_total": applications_total,
         "applications_pending": pending,
         "admitted_total": admitted_total,
         "paid_total": paid_total,
@@ -530,10 +545,11 @@ def build_bursar_weekly_metrics(
         "top_faculty_admissions": top_faculty_admissions,
         "top_faculty_collections": top_faculty_collections,
         "source_note": (
-            "Generated from live NDU portal data. Scoped by admission batch when selected. "
+            "Generated from live NDU portal data, scoped to one specific admission intake "
+            "(never a blended total across intakes). "
             "Commitment paid = portal + SchoolPay ledger ≥ commitment threshold. "
             "Registration-ready = semester tuition % ≥ RegistrationSettings minimum "
-            f"({min_reg_pct:g}%)."
+            f"({min_reg_pct:g}%, configured in Registration Settings)."
         ),
         "flag_paid_total": flag_paid_total,
         "flag_without_ledger": flag_without_ledger,

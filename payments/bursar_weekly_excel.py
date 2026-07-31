@@ -76,6 +76,7 @@ def render_bursar_weekly_excel(metrics: dict[str, Any]) -> tuple[bytes, str]:
         ("Flag-only (admission_fee_paid) — do not use as paid KPI", metrics.get("flag_paid_total")),
         ("Flagged but no ledger proof", metrics.get("flag_without_ledger")),
         ("Ledger paid but flag still false", metrics.get("ledger_without_flag")),
+        ("Total applicants (this intake)", metrics.get("applications_total")),
         ("Applications this week", metrics.get("applications_received_week")),
         ("Pipeline pending", metrics.get("applications_pending")),
         ("Programme enrolled", metrics.get("enrolled_count")),
