@@ -3290,6 +3290,7 @@ class ListBonafideStudents(generics.ListAPIView):
         faculty = self.request.query_params.get("faculty")
         program = self.request.query_params.get("program")
         academic_batch_id = self.request.query_params.get("academic_batch_id")
+        academic_batch_name = (self.request.query_params.get("academic_batch") or "").strip()
         enrollment_status = self.request.query_params.get("enrollment_status")
         admission_intake = (self.request.query_params.get("admission_intake") or "").strip()
 
@@ -3351,6 +3352,19 @@ class ListBonafideStudents(generics.ListAPIView):
                 )
             except (TypeError, ValueError):
                 pass
+        elif academic_batch_name and academic_batch_name != "all":
+            # Name-based lookup used by drill-down links from Headcount (which only
+            # knows batch *names*, not ids). Mirrors the id-based match above.
+            queryset = queryset.filter(
+                Q(programme_enrollment__program_batch__name=academic_batch_name)
+                | (
+                    (
+                        Q(programme_enrollment__isnull=True)
+                        | Q(programme_enrollment__program_batch__isnull=True)
+                    )
+                    & Q(intended_program_batch__name=academic_batch_name)
+                )
+            )
         if enrollment_status and enrollment_status != "all":
             queryset = queryset.filter(programme_enrollment__status=enrollment_status)
 
@@ -3441,6 +3455,7 @@ class ListBonafideStudents(generics.ListAPIView):
             search
             or (enrollment_status and enrollment_status != "all")
             or (academic_batch_id and academic_batch_id != "all")
+            or (academic_batch_name and academic_batch_name != "all")
         ):
             return queryset.distinct()
         return queryset

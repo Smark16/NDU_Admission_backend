@@ -15,21 +15,28 @@ from payments.student_payment_allocation import COMMITMENT_FEE_THRESHOLD
 
 
 def _nest_cohorts_by_batch(by_cohort: list[dict]) -> list[dict]:
-    """Group flat batch×programme rows into batches with nested programmes."""
-    grouped: dict[str, dict[str, int]] = defaultdict(dict)
+    """Group flat batch×programme rows into batches with nested programmes (+ faculty)."""
+    grouped: dict[str, dict[str, dict]] = defaultdict(dict)
     batch_totals: dict[str, int] = defaultdict(int)
     for row in by_cohort:
         batch = row["intended_program_batch__name"] or "—"
         program = row["admitted_program__name"] or "—"
+        faculty = row.get("admitted_program__faculty__name") or "—"
         count = int(row["count"] or 0)
-        grouped[batch][program] = count
+        entry = grouped[batch].get(program)
+        if not entry:
+            entry = {"faculty": faculty, "count": 0}
+            grouped[batch][program] = entry
+        entry["count"] += count
         batch_totals[batch] += count
 
     by_batch = []
     for batch, total in sorted(batch_totals.items(), key=lambda x: (-x[1], x[0])):
         programs = [
-            {"program": program, "count": count}
-            for program, count in sorted(grouped[batch].items(), key=lambda x: (-x[1], x[0]))
+            {"program": program, "faculty": data["faculty"], "count": data["count"]}
+            for program, data in sorted(
+                grouped[batch].items(), key=lambda item: (-item[1]["count"], item[0])
+            )
         ]
         by_batch.append({"batch": batch, "count": total, "programs": programs})
     return by_batch
@@ -75,7 +82,11 @@ class UniversityHeadcountView(APIView):
             .order_by("-count")
         )
         by_cohort = list(
-            base.values("intended_program_batch__name", "admitted_program__name")
+            base.values(
+                "intended_program_batch__name",
+                "admitted_program__name",
+                "admitted_program__faculty__name",
+            )
             .annotate(count=Count("id"))
             .order_by("-count")
         )
@@ -114,6 +125,7 @@ class UniversityHeadcountView(APIView):
                     {
                         "batch": r["intended_program_batch__name"] or "—",
                         "program": r["admitted_program__name"] or "—",
+                        "faculty": r["admitted_program__faculty__name"] or "—",
                         "count": r["count"],
                     }
                     for r in by_cohort
