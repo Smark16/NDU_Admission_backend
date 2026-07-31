@@ -109,6 +109,13 @@ def _sync_commitment_and_enrollment(student_id: int) -> None:
 
     try_activate_programme_enrollment_after_payment(student)
 
+    try:
+        from payments.tasks import celery_refresh_tuition_pct_cache
+
+        celery_refresh_tuition_pct_cache.delay(student_ids=[int(student_id)])
+    except Exception:
+        pass
+
 
 def reconcile_pending_tuition_payment(
     payment: StudentTuitionPayment, client=None

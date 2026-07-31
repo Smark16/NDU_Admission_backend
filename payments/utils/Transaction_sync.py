@@ -80,6 +80,7 @@ def reconcile_transactions(data):
     )
 
     created_count = 0
+    touched_student_ids: set[int] = set()
 
     for tx in transactions:
 
@@ -181,6 +182,7 @@ def reconcile_transactions(data):
                     ledger.save(update_fields=["student", "user"])
                 sync_admission_fee_paid_from_ledger(student)
                 try_activate_programme_enrollment_after_payment(student)
+                touched_student_ids.add(int(student.pk))
             continue
 
         # RECONCILIATION + academic enrollment when commitment is met
@@ -198,7 +200,19 @@ def reconcile_transactions(data):
                 ledger.save(update_fields=["reconciled"])
 
             try_activate_programme_enrollment_after_payment(student)
+            touched_student_ids.add(int(student.pk))
 
         created_count += 1
+
+    if touched_student_ids:
+        try:
+            from payments.tasks import celery_refresh_tuition_pct_cache
+
+            celery_refresh_tuition_pct_cache.delay(
+                student_ids=sorted(touched_student_ids)
+            )
+        except Exception:
+            # Never fail SchoolPay ingest if the cache-refresh queue is down.
+            pass
 
     return created_count
