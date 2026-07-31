@@ -3989,8 +3989,14 @@ class AdminDashboardStats(APIView):
             )),
         )
 
-        # Admitted students
-        admitted_students = admitted_base.count()
+        # Admitted students — split by current (active) intake vs continuing/legacy
+        # batches (e.g. bulk-imported continuing students), so the headline
+        # "Admitted" figure isn't blended across unrelated cohorts.
+        admitted_intake_stats = admitted_base.aggregate(
+            admitted_total=Count('id'),
+            admitted_current_intake=Count('id', filter=Q(admitted_batch__is_active=True)),
+            admitted_continuing=Count('id', filter=Q(admitted_batch__is_active=False)),
+        )
 
         # Batches stats
         batches_stats = Batch.objects.aggregate(
@@ -4006,7 +4012,12 @@ class AdminDashboardStats(APIView):
             "onlineApplications": apps_stats['online_applications'],
             "directApplications": apps_stats['direct_applications'],
             "pendingApplications": apps_stats['pending_applications'],
-            "admittedStudents": admitted_students,
+            # Kept for backward compatibility — grand total across all batches.
+            "admittedStudents": admitted_intake_stats['admitted_total'],
+            # New: admitted in the current active intake(s) only.
+            "admittedCurrentIntake": admitted_intake_stats['admitted_current_intake'],
+            # New: admitted under inactive/continuing/legacy batches.
+            "admittedContinuing": admitted_intake_stats['admitted_continuing'],
             "rejectedStudents": apps_stats['rejected_students'],
             "total_batches": batches_stats['total_batches'],
             "activeBatches": batches_stats['active_batches'],
