@@ -48,7 +48,7 @@ LOCAL_APPS = [
     'admissions',
     'audit',
     'payments',
-    'Programs',
+    'Programs.apps.ProgramsConfig',
     'examinations',
     'graduation',
     'Drafts',
