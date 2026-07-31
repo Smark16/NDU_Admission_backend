@@ -1,3 +1,5 @@
+import logging
+
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 from .models import *
@@ -5,6 +7,8 @@ from accounts.serializers import UserSerializer, CampusSerializer
 from Programs.serializers import ProgramSerializer
 from .utils.application_programs_display import ordered_programs_for_application
 from .utils.academic_year import get_registered_academic_year_label
+
+logger = logging.getLogger(__name__)
 
 # serializers
 
@@ -808,6 +812,10 @@ class BonafideStudentSerializer(serializers.ModelSerializer):
     registration_stage = serializers.SerializerMethodField()
     registration_stage_label = serializers.SerializerMethodField()
     requires_document_verification = serializers.SerializerMethodField()
+    balance = serializers.SerializerMethodField()
+    total_required = serializers.SerializerMethodField()
+    total_paid = serializers.SerializerMethodField()
+    balance_currency = serializers.SerializerMethodField()
 
     class Meta:
         model = AdmittedStudent
@@ -845,6 +853,10 @@ class BonafideStudentSerializer(serializers.ModelSerializer):
             "registration_stage",
             "registration_stage_label",
             "requires_document_verification",
+            "balance",
+            "total_required",
+            "total_paid",
+            "balance_currency",
         ]
 
     def get_name(self, obj):
@@ -918,6 +930,42 @@ class BonafideStudentSerializer(serializers.ModelSerializer):
         from admissions.registration_workflow import registration_stage_label
 
         return registration_stage_label(self.get_registration_stage(obj))
+
+    def _finance_totals(self, obj):
+        """Balance carried forward across all terms (not just the current one).
+
+        Cached per-instance so the four balance-related fields below share one
+        finance allocation computation instead of recomputing it four times.
+        """
+        cached = getattr(obj, "_bonafide_finance_totals_cache", None)
+        if cached is not None:
+            return cached
+        from payments.student_portal_finance import student_finance_totals
+
+        try:
+            totals = student_finance_totals(obj)
+        except Exception:
+            logger.exception("Finance totals failed for bonafide student id=%s", obj.pk)
+            totals = {
+                "balance": None,
+                "total_required": None,
+                "total_paid": None,
+                "display_currency": "UGX",
+            }
+        obj._bonafide_finance_totals_cache = totals
+        return totals
+
+    def get_balance(self, obj):
+        return self._finance_totals(obj).get("balance")
+
+    def get_total_required(self, obj):
+        return self._finance_totals(obj).get("total_required")
+
+    def get_total_paid(self, obj):
+        return self._finance_totals(obj).get("total_paid")
+
+    def get_balance_currency(self, obj):
+        return self._finance_totals(obj).get("display_currency", "UGX")
 
 
 class BonafideStudentProfileSerializer(BonafideStudentSerializer):

@@ -500,9 +500,16 @@ def build_finance_allocation(student: AdmittedStudent) -> FinanceAllocation:
         credits_open = credits_all
         _allocate_pools_to_lines(lines, credits_open, target="all")
 
+    # Required/paid/balance carry forward: include prior-term lines (unpaid history)
+    # alongside current billable demand, matching the same predicate already used by
+    # student_billing_lines() / full_outstanding_balance_status() (exam card gate), so
+    # a shortfall from an earlier term doesn't silently vanish once the student moves
+    # on to the next term.
     required_by: defaultdict[str, Decimal] = defaultdict(Decimal)
+    paid_by_all: defaultdict[str, Decimal] = defaultdict(Decimal)
     for line in lines:
-        if not _line_is_billable(line):
+        is_prior = bool(line.extra.get("prior_period_settled"))
+        if not is_prior and not _line_is_billable(line):
             continue
         if line.kind == "ad_hoc" and line.extra.get("charge_status") not in (
             "pending",
@@ -510,6 +517,7 @@ def build_finance_allocation(student: AdmittedStudent) -> FinanceAllocation:
         ):
             continue
         required_by[line.currency] += line.amount
+        paid_by_all[line.currency] += line.paid_amount
 
     if required_by:
         primary = max(required_by.keys(), key=lambda k: float(required_by[k]))
@@ -517,8 +525,9 @@ def build_finance_allocation(student: AdmittedStudent) -> FinanceAllocation:
         primary = "USD" if international else "UGX"
 
     total_required = required_by.get(primary, Decimal("0"))
-    # Paid toward open demand only (scoped credits), not the full historical pool.
-    total_paid = credits_open.get(primary, Decimal("0"))
+    # Paid toward all included (prior + current) demand lines — ties out exactly
+    # against total_required since each line's paid_amount + balance == amount.
+    total_paid = paid_by_all.get(primary, Decimal("0"))
     balance = max(total_required - total_paid, Decimal("0"))
     pct = float((total_paid / total_required * Decimal("100"))) if total_required > 0 else 0.0
 
@@ -532,8 +541,8 @@ def build_finance_allocation(student: AdmittedStudent) -> FinanceAllocation:
         line.balance
         for line in lines
         if line.kind == "scheduled_other"
-        and _line_is_billable(line)
-        and line.status == "due"
+        and (line.extra.get("prior_period_settled") or _line_is_billable(line))
+        and line.status in ("due", "prior")
         and line.currency == primary
     )
 
