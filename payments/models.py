@@ -306,6 +306,18 @@ class TuitionLedger(models.Model):
         indexes = [
             models.Index(fields=['student_payment_code']),
             models.Index(fields=['schoolpay_receipt_number']),
+            # Match the commitment/tuition-pct correlated-subquery filters
+            # (status + student_id / student_payment_code) — without these,
+            # per-student EXISTS checks fall back to scanning the whole
+            # ledger table for every admitted student (very slow at scale).
+            models.Index(
+                fields=['transaction_completion_status', 'student_id'],
+                name='tl_status_student_idx',
+            ),
+            models.Index(
+                fields=['transaction_completion_status', 'student_payment_code'],
+                name='tl_status_paycode_idx',
+            ),
         ]
 
     def __str__(self):
