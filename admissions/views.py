@@ -4325,6 +4325,29 @@ class ExemptionFormFeeAccessView(APIView):
         return self.get(request)
 
 
+class ExemptionFormFeeReportView(APIView):
+    """Admin/Accounts: every exemption-form-fee charge raised, for payment follow-up."""
+
+    permission_classes = [IsAuthenticated, CanViewAdmissionChangeRequests]
+
+    def get(self, request):
+        from admissions.exemption_services import exemption_form_fee_report
+
+        status_filter = request.query_params.get("status")
+        if status_filter not in ("pending", "completed", None, ""):
+            return Response(
+                {"detail": "status must be 'pending' or 'completed'."}, status=400
+            )
+        rows = exemption_form_fee_report(status_filter or None)
+        return Response(
+            {
+                "results": rows,
+                "total": len(rows),
+                "pending_count": sum(1 for r in rows if r["status"] == "pending" and not r["is_waived"]),
+            }
+        )
+
+
 class ExemptionEligibleCoursesView(APIView):
     """Student: curriculum lines available for exemption."""
 

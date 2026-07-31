@@ -155,6 +155,69 @@ def student_is_exemption_form_unlocked(student: AdmittedStudent) -> bool:
     return form_fee_paid_for_charge(student, charge)
 
 
+def exemption_form_fee_report(status_filter: str | None = None) -> list[dict]:
+    """
+    Accounts follow-up report: every exemption-form-fee charge ever raised, newest first.
+
+    status_filter: 'pending' (unpaid), 'completed' (paid), or None for all.
+    """
+    form_head, _ = ensure_exemption_fee_heads()
+    qs = (
+        StudentTuitionPayment.objects.filter(
+            source="ad_hoc",
+            fee_head=form_head,
+        )
+        .select_related("student", "student__admitted_program")
+        .order_by("-created_at")
+    )
+    if status_filter == "pending":
+        qs = qs.filter(status="pending", is_waived=False)
+    elif status_filter == "completed":
+        qs = qs.filter(status="completed")
+
+    charge_ids = [c.id for c in qs]
+    requests_by_charge = {
+        r.form_fee_charge_id: r
+        for r in AdmissionChangeRequest.objects.filter(
+            change_type="exemption",
+            form_fee_charge_id__in=charge_ids,
+        ).only("id", "form_fee_charge_id", "status", "created_at")
+    }
+
+    now = timezone.now()
+    rows = []
+    for charge in qs:
+        student = charge.student
+        req = requests_by_charge.get(charge.id)
+        rows.append(
+            {
+                "charge_id": charge.id,
+                "student_pk": student.pk if student else None,
+                "student_id": student.student_id if student else "",
+                "reg_no": student.reg_no if student else "",
+                "student_name": student.full_name if student else "",
+                "programme": (
+                    student.admitted_program.name
+                    if student and student.admitted_program_id
+                    else None
+                ),
+                "amount": float(charge.amount),
+                "currency": charge.currency,
+                "status": charge.status,
+                "is_waived": charge.is_waived,
+                "charged_at": charge.created_at.isoformat() if charge.created_at else None,
+                "days_pending": (
+                    (now - charge.created_at).days
+                    if charge.status == "pending" and not charge.is_waived and charge.created_at
+                    else None
+                ),
+                "change_request_id": req.id if req else None,
+                "change_request_status": req.status if req else None,
+            }
+        )
+    return rows
+
+
 def list_eligible_exemption_courses(student: AdmittedStudent) -> list[dict]:
     """Curriculum lines for the student's pinned/default version, excluding existing exemptions."""
     from Programs.models import (

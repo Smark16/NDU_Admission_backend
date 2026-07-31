@@ -233,6 +233,11 @@ urlpatterns = [
     ),
     path('change_requests/all', views.AdminChangeRequestList.as_view(), name='admin_change_requests'),
     path('change_requests/<int:pk>/review', views.AdminChangeRequestReview.as_view(), name='review_change_request'),
+    path(
+        'change_requests/exemption/fee_report',
+        views.ExemptionFormFeeReportView.as_view(),
+        name='exemption_form_fee_report',
+    ),
 
     # Direct entry (admin / manual / legacy migration)
     path('direct_application_entry', views.DirectApplicationEntryView.as_view(), name='direct_application_entry'),
