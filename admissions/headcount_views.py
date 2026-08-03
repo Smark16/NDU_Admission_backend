@@ -4,14 +4,20 @@ from __future__ import annotations
 from collections import defaultdict
 
 from django.db.models import Count, Q
+from django.db.models.functions import Coalesce
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from admissions.faculty_scope import filter_admitted_students_for_user
-from admissions.models import AdmittedStudent, Application
+from admissions.models import AdmittedStudent, Application, Batch
 from payments.commitment_queryset import filter_by_commitment_met
 from payments.student_payment_allocation import COMMITMENT_FEE_THRESHOLD
+
+# Same QA-batch exclusion convention used by GetActiveAdmissionBatch, so
+# smoke-test intakes never pollute the real headcount or trigger a false
+# "multiple active intakes" warning.
+_QA_BATCH_EXCLUDE = Q(code__istartswith="QA-") | Q(name__icontains="[QA-INTAKE-BATCH]")
 
 
 def _nest_cohorts_by_batch(by_cohort: list[dict]) -> list[dict]:
@@ -19,7 +25,7 @@ def _nest_cohorts_by_batch(by_cohort: list[dict]) -> list[dict]:
     grouped: dict[str, dict[str, dict]] = defaultdict(dict)
     batch_totals: dict[str, int] = defaultdict(int)
     for row in by_cohort:
-        batch = row["intended_program_batch__name"] or "—"
+        batch = row["effective_batch"] or "Unplaced (no batch on record)"
         program = row["admitted_program__name"] or "—"
         faculty = row.get("admitted_program__faculty__name") or "—"
         count = int(row["count"] or 0)
@@ -108,9 +114,19 @@ class UniversityHeadcountView(APIView):
             .annotate(count=Count("id"))
             .order_by("-count")
         )
+        # Fall back to the student's actual academic enrollment batch when
+        # intended_program_batch was never stamped on the admission record
+        # (a data-entry gap, not a real "no cohort" student) so they show up
+        # under their real class instead of silently vanishing into "—".
         by_cohort = list(
-            base.values(
-                "intended_program_batch__name",
+            base.annotate(
+                effective_batch=Coalesce(
+                    "intended_program_batch__name",
+                    "programme_enrollment__program_batch__name",
+                )
+            )
+            .values(
+                "effective_batch",
                 "admitted_program__name",
                 "admitted_program__faculty__name",
             )
@@ -118,6 +134,15 @@ class UniversityHeadcountView(APIView):
             .order_by("-count")
         )
         by_batch = _nest_cohorts_by_batch(by_cohort)
+
+        # Warn (never silently auto-fix) if more than one real admission
+        # intake is active at once - that would double-count "current
+        # intake" figures. QA/smoke-test batches are excluded since they
+        # are deliberately allowed to coexist with the real active intake.
+        active_intakes = list(
+            Batch.objects.filter(is_active=True).exclude(_QA_BATCH_EXCLUDE).values("id", "name")
+        )
+        multiple_active_intakes = len(active_intakes) > 1
 
         unpaid_by_campus = list(
             unpaid_qs.values("admitted_campus__name")
@@ -165,7 +190,7 @@ class UniversityHeadcountView(APIView):
                 ],
                 "by_cohort": [
                     {
-                        "batch": r["intended_program_batch__name"] or "—",
+                        "batch": r["effective_batch"] or "Unplaced (no batch on record)",
                         "program": r["admitted_program__name"] or "—",
                         "faculty": r["admitted_program__faculty__name"] or "—",
                         "count": r["count"],
@@ -173,6 +198,10 @@ class UniversityHeadcountView(APIView):
                     for r in by_cohort
                 ],
                 "by_batch": by_batch,
+                "multiple_active_intakes": multiple_active_intakes,
+                "active_intakes": [
+                    {"id": r["id"], "name": r["name"]} for r in active_intakes
+                ],
                 "unpaid_by_campus": [
                     {
                         "name": r["admitted_campus__name"] or "—",
