@@ -3,21 +3,17 @@ from Programs.models import Program
 
 # Create your models here.
 
+# Official University Halls of Residence ONLY. Private/partner hostels
+# (Noah's Ark, West Buganda, Wekisa, Victoria Mwaka, Luweero, annexes, ...)
+# live in the Hostel module and must never appear on admission letters.
 HALL_CHOICES = [
     ("AKIIBUA", "Akiibua"),
     ("NJUKI", "Njuki"),
     ("MUTEESA", "Muteesa"),
     ("KAKUNGULU", "Kakungulu"),
-    ("KAKUNGULU_ANNEX", "Kakungulu Annex"),
     ("YOKANA", "Yokana"),
-    ("NOAHS_ARK", "Noah's Ark"),
-    ("WEST_BUGANDA", "West Buganda"),
-    ("WEST_BUGANDA_ANNEX", "West Buganda Annex"),
-    ("WEKISA", "Wekisa"),
-    ("VICTORIA_MWAKA", "Victoria Mwaka"),
-    ("LUWEERO", "Luweero"),
     # Kept for backwards compatibility with existing templates; the generator
-    # treats it as "To Be Assigned" — real halls come from the Hostel module.
+    # treats it as "To Be Assigned".
     ("RANDOM", "Assign Randomly"),
 ]
 

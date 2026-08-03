@@ -119,12 +119,14 @@ def build_offer_letter_context(applicant: Application, admission: AdmittedStuden
         start_date_formatted = "To Be Announced"
 
     # Halls are genuinely assigned by the Dean of Students in the Hostel module
-    # after admission — the letter must not auto-mark a random hall. Only a hall
-    # explicitly chosen on the template is printed (as its display name).
-    if template.hall_of_residence and template.hall_of_residence != "RANDOM":
-        hall = dict(HALL_CHOICES).get(
-            template.hall_of_residence, template.hall_of_residence
-        )
+    # after admission — the letter must not auto-mark a random hall. Only an
+    # official University Hall explicitly chosen on the template is printed;
+    # anything else (RANDOM, hostel names from old templates) falls back to
+    # "To Be Assigned".
+    official_halls = dict(HALL_CHOICES)
+    hall_code = template.hall_of_residence or ""
+    if hall_code and hall_code != "RANDOM" and hall_code in official_halls:
+        hall = official_halls[hall_code]
     else:
         hall = "To Be Assigned"
 
