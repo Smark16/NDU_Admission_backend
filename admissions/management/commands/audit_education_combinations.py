@@ -14,8 +14,16 @@ Usage:
 """
 from __future__ import annotations
 
+from datetime import date
+
 from django.core.management.base import BaseCommand
 from django.db.models import Q
+
+# Date the "admitted_specialization" field + admission-time validation went live
+# (commit 762b474, refined 2026-07-06 in a0829f3 to only require it at the
+# programme's year-one entry point). Admissions before this date could not
+# possibly have had a combination picker — that's expected backlog, not a bug.
+COMBINATION_FEATURE_LIVE_DATE = date(2026, 6, 21)
 
 
 class Command(BaseCommand):
@@ -80,10 +88,18 @@ class Command(BaseCommand):
 
         combos = list(ProgramSpecialization.objects.filter(program=program).order_by("name"))
         if combos:
-            self.stdout.write(f"    Combinations ({len(combos)}):")
+            combo_dates = [c.created_at for c in combos if c.created_at]
+            if combo_dates:
+                self.stdout.write(
+                    f"    Combinations ({len(combos)})  configured_at range: "
+                    f"{min(combo_dates).date()} .. {max(combo_dates).date()}:"
+                )
+            else:
+                self.stdout.write(f"    Combinations ({len(combos)}):")
             for c in combos:
                 mark = "" if c.is_active else "  [INACTIVE]"
-                self.stdout.write(f"      - [{c.id}] {c.name}{mark}")
+                created = c.created_at.date() if c.created_at else "?"
+                self.stdout.write(f"      - [{c.id}] {c.name}{mark}  (added {created})")
         else:
             self.stdout.write(self.style.WARNING("    No ProgramSpecialization rows configured for this programme."))
 
@@ -120,11 +136,36 @@ class Command(BaseCommand):
             elif spe_spec.lower() != combo_name.lower():
                 combo_mismatch.append((a, combo_name, spe_spec))
 
+        pre_deploy = [
+            a for a in no_combo_at_admission
+            if a.admission_date and a.admission_date.date() < COMBINATION_FEATURE_LIVE_DATE
+        ]
+        post_deploy = [
+            a for a in no_combo_at_admission
+            if not a.admission_date or a.admission_date.date() >= COMBINATION_FEATURE_LIVE_DATE
+        ]
+
         self.stdout.write(
-            f"    Admitted WITHOUT a combination selected: {len(no_combo_at_admission)}"
+            f"    Admitted WITHOUT a combination selected: {len(no_combo_at_admission)}  "
+            f"(pre-feature backlog: {len(pre_deploy)}, AFTER combo feature went live "
+            f"{COMBINATION_FEATURE_LIVE_DATE}: {len(post_deploy)})"
         )
         self._print_date_range("      admission_date range (no combo)", no_combo_at_admission)
-        for a in no_combo_at_admission[:10]:
+
+        if post_deploy:
+            self.stdout.write(
+                self.style.ERROR(
+                    f"    ⚠ Admitted AFTER the combination feature went live but still "
+                    f"missing a combination — real leak, not backlog ({len(post_deploy)}):"
+                )
+            )
+            for a in post_deploy:
+                self.stdout.write(
+                    f"      - {a.reg_no or a.id}  admitted {a.admission_date.date() if a.admission_date else '?'}  "
+                    f"{a.application.first_name if a.application_id else ''} {a.application.last_name if a.application_id else ''}"
+                )
+
+        for a in pre_deploy[:10]:
             self.stdout.write(
                 f"      - {a.reg_no or a.id}  admitted {a.admission_date.date() if a.admission_date else '?'}  "
                 f"{a.application.first_name if a.application_id else ''} {a.application.last_name if a.application_id else ''}"
