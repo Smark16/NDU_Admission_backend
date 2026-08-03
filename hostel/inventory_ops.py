@@ -183,3 +183,47 @@ def update_bed(bed: Bed, *, status: str | None = None, label: str | None = None)
 
     bed.save()
     return bed
+
+
+@transaction.atomic
+def delete_room(room: Room) -> dict:
+    """
+    Hard-delete a room when it has no allocation history.
+    If past (ended) allocations exist, beds are PROTECT'd — deactivate the room instead.
+    Active allocations always block delete.
+    """
+    code = room.code
+    active = HostelAllocation.objects.filter(
+        bed__room=room,
+        status=HostelAllocation.STATUS_ACTIVE,
+    ).count()
+    if active:
+        raise ValidationError(
+            {
+                "detail": (
+                    f'Cannot delete room "{code}": {active} active allocation(s). '
+                    "End those allocations first."
+                )
+            }
+        )
+
+    if HostelAllocation.objects.filter(bed__room=room).exists():
+        room.is_active = False
+        room.save(update_fields=["is_active", "updated_at"])
+        return {
+            "deleted": False,
+            "deactivated": True,
+            "code": code,
+            "detail": (
+                f'Room "{code}" has past allocations so it was deactivated '
+                "instead of permanently deleted."
+            ),
+        }
+
+    room.delete()
+    return {
+        "deleted": True,
+        "deactivated": False,
+        "code": code,
+        "detail": f'Room "{code}" deleted.',
+    }

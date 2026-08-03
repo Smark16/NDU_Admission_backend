@@ -240,6 +240,17 @@ class RoomDetailView(APIView):
             return Response(exc.detail, status=status.HTTP_400_BAD_REQUEST)
         return Response(RoomSerializer(_room_qs().get(pk=room.pk)).data)
 
+    def delete(self, request, room_id):
+        from .inventory_ops import delete_room
+        from rest_framework.exceptions import ValidationError as DRFValidationError
+
+        room = get_object_or_404(Room, pk=room_id)
+        try:
+            result = delete_room(room)
+        except DRFValidationError as exc:
+            return Response(exc.detail, status=status.HTTP_400_BAD_REQUEST)
+        return Response(result, status=status.HTTP_200_OK)
+
 
 class BedDetailView(APIView):
     permission_classes = [IsAuthenticated, CanManageInventory]
