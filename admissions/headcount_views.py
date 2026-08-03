@@ -20,6 +20,29 @@ from payments.student_payment_allocation import COMMITMENT_FEE_THRESHOLD
 _QA_BATCH_EXCLUDE = Q(code__istartswith="QA-") | Q(name__icontains="[QA-INTAKE-BATCH]")
 
 
+def _nest_cohorts_by_faculty(by_cohort: list[dict]) -> list[dict]:
+    """Group flat batch×programme rows into faculties with nested batches."""
+    grouped: dict[str, dict[str, int]] = defaultdict(dict)
+    faculty_totals: dict[str, int] = defaultdict(int)
+    for row in by_cohort:
+        faculty = row.get("admitted_program__faculty__name") or "—"
+        batch = row["effective_batch"] or "Unplaced (no batch on record)"
+        count = int(row["count"] or 0)
+        grouped[faculty][batch] = grouped[faculty].get(batch, 0) + count
+        faculty_totals[faculty] += count
+
+    by_faculty_batch = []
+    for faculty, total in sorted(faculty_totals.items(), key=lambda x: (-x[1], x[0])):
+        batches = [
+            {"batch": batch, "count": count}
+            for batch, count in sorted(
+                grouped[faculty].items(), key=lambda item: (-item[1], item[0])
+            )
+        ]
+        by_faculty_batch.append({"faculty": faculty, "count": total, "batches": batches})
+    return by_faculty_batch
+
+
 def _nest_cohorts_by_batch(by_cohort: list[dict]) -> list[dict]:
     """Group flat batch×programme rows into batches with nested programmes (+ faculty)."""
     grouped: dict[str, dict[str, dict]] = defaultdict(dict)
@@ -134,6 +157,7 @@ class UniversityHeadcountView(APIView):
             .order_by("-count")
         )
         by_batch = _nest_cohorts_by_batch(by_cohort)
+        by_faculty_batch = _nest_cohorts_by_faculty(by_cohort)
 
         # Warn (never silently auto-fix) if more than one real admission
         # intake is active at once - that would double-count "current
@@ -198,6 +222,7 @@ class UniversityHeadcountView(APIView):
                     for r in by_cohort
                 ],
                 "by_batch": by_batch,
+                "by_faculty_batch": by_faculty_batch,
                 "multiple_active_intakes": multiple_active_intakes,
                 "active_intakes": [
                     {"id": r["id"], "name": r["name"]} for r in active_intakes
