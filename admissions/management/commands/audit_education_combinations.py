@@ -123,8 +123,15 @@ class Command(BaseCommand):
         self.stdout.write(
             f"    Admitted WITHOUT a combination selected: {len(no_combo_at_admission)}"
         )
+        self._print_date_range("      admission_date range (no combo)", no_combo_at_admission)
         for a in no_combo_at_admission[:10]:
-            self.stdout.write(f"      - {a.reg_no or a.id}  {a.application.first_name if a.application_id else ''} {a.application.last_name if a.application_id else ''}")
+            self.stdout.write(
+                f"      - {a.reg_no or a.id}  admitted {a.admission_date.date() if a.admission_date else '?'}  "
+                f"{a.application.first_name if a.application_id else ''} {a.application.last_name if a.application_id else ''}"
+            )
+
+        with_combo = [a for a in admitted if a.admitted_specialization_id]
+        self._print_date_range("      admission_date range (WITH combo)", with_combo)
 
         self.stdout.write(
             self.style.WARNING(
@@ -156,3 +163,10 @@ class Command(BaseCommand):
 
         if not (no_combo_at_admission or combo_not_on_enrollment or combo_mismatch):
             self.stdout.write(self.style.SUCCESS("    Clean — admission and enrollment combinations agree for all students."))
+
+    def _print_date_range(self, label, students):
+        dates = [a.admission_date for a in students if a.admission_date]
+        if not dates:
+            self.stdout.write(f"{label}: n/a")
+            return
+        self.stdout.write(f"{label}: {min(dates).date()} .. {max(dates).date()}  (n={len(dates)})")
