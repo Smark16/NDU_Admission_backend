@@ -21,25 +21,41 @@ _QA_BATCH_EXCLUDE = Q(code__istartswith="QA-") | Q(name__icontains="[QA-INTAKE-B
 
 
 def _nest_cohorts_by_faculty(by_cohort: list[dict]) -> list[dict]:
-    """Group flat batch×programme rows into faculties with nested batches."""
-    grouped: dict[str, dict[str, int]] = defaultdict(dict)
+    """Group flat batch×programme rows into faculty -> programme -> batches."""
+    # grouped[faculty][program][batch] = count
+    grouped: dict[str, dict[str, dict[str, int]]] = defaultdict(lambda: defaultdict(dict))
     faculty_totals: dict[str, int] = defaultdict(int)
+    program_totals: dict[tuple[str, str], int] = defaultdict(int)
     for row in by_cohort:
         faculty = row.get("admitted_program__faculty__name") or "—"
+        program = row["admitted_program__name"] or "—"
         batch = row["effective_batch"] or "Unplaced (no batch on record)"
         count = int(row["count"] or 0)
-        grouped[faculty][batch] = grouped[faculty].get(batch, 0) + count
+        grouped[faculty][program][batch] = grouped[faculty][program].get(batch, 0) + count
         faculty_totals[faculty] += count
+        program_totals[(faculty, program)] += count
 
     by_faculty_batch = []
     for faculty, total in sorted(faculty_totals.items(), key=lambda x: (-x[1], x[0])):
-        batches = [
-            {"batch": batch, "count": count}
-            for batch, count in sorted(
-                grouped[faculty].items(), key=lambda item: (-item[1], item[0])
+        programs = []
+        for program, batches_map in sorted(
+            grouped[faculty].items(),
+            key=lambda item: (-program_totals[(faculty, item[0])], item[0]),
+        ):
+            batches = [
+                {"batch": batch, "count": count}
+                for batch, count in sorted(
+                    batches_map.items(), key=lambda item: (-item[1], item[0])
+                )
+            ]
+            programs.append(
+                {
+                    "program": program,
+                    "count": program_totals[(faculty, program)],
+                    "batches": batches,
+                }
             )
-        ]
-        by_faculty_batch.append({"faculty": faculty, "count": total, "batches": batches})
+        by_faculty_batch.append({"faculty": faculty, "count": total, "programs": programs})
     return by_faculty_batch
 
 
