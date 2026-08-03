@@ -3151,16 +3151,19 @@ class ListAdmittedStudents(generics.ListAPIView):
             queryset = queryset.filter(admitted_batch__name=batch)
 
         # Origin split: separate genuine intake admits from bulk-imported rows.
+        # "continuing" includes imports (they are continuing students by nature).
         student_origin = (self.request.query_params.get("student_origin") or "").strip()
         if student_origin and student_origin != "all":
             legacy_src_q = Q(application__source=Application.SOURCE_LEGACY)
             if student_origin in ("legacy", "legacy_imported", "imported"):
                 queryset = queryset.filter(legacy_src_q)
             elif student_origin in ("new", "new_admits"):
-                queryset = queryset.exclude(legacy_src_q)
-            elif student_origin == "continuing":
-                queryset = queryset.filter(admitted_batch__is_active=False).exclude(
+                queryset = queryset.filter(admitted_batch__is_active=True).exclude(
                     legacy_src_q
+                )
+            elif student_origin == "continuing":
+                queryset = queryset.filter(
+                    Q(admitted_batch__is_active=False) | legacy_src_q
                 )
 
         if academic_batch_id and academic_batch_id != "all":
@@ -3350,16 +3353,19 @@ class ListBonafideStudents(generics.ListAPIView):
             queryset = queryset.filter(admitted_batch__name=admission_intake)
         # Origin split: legacy-imported rows are identified by application source
         # so they stay separable from genuine intake admits even if mistagged.
+        # "continuing" includes imports (they are continuing students by nature).
         student_origin = (self.request.query_params.get("student_origin") or "").strip()
         if student_origin and student_origin != "all":
             legacy_src_q = Q(application__source=Application.SOURCE_LEGACY)
             if student_origin in ("legacy", "legacy_imported", "imported"):
                 queryset = queryset.filter(legacy_src_q)
             elif student_origin in ("new", "new_admits"):
-                queryset = queryset.exclude(legacy_src_q)
-            elif student_origin == "continuing":
-                queryset = queryset.filter(admitted_batch__is_active=False).exclude(
+                queryset = queryset.filter(admitted_batch__is_active=True).exclude(
                     legacy_src_q
+                )
+            elif student_origin == "continuing":
+                queryset = queryset.filter(
+                    Q(admitted_batch__is_active=False) | legacy_src_q
                 )
         if academic_batch_id and academic_batch_id != "all":
             try:
@@ -4030,12 +4036,13 @@ class AdminDashboardStats(APIView):
             )),
         )
 
-        # Admitted students — three distinct buckets so bulk-imported (legacy)
-        # rows can never inflate the live-intake figure, even when a row was
-        # mistakenly tagged onto an active admission intake:
-        #   - current intake: active batch, NOT a legacy import
-        #   - continuing: inactive batch, NOT a legacy import (prior real intakes)
-        #   - legacy imported: application.source == legacy_import (any batch)
+        # Admitted students split so bulk-imported (legacy) rows can never
+        # inflate the live-intake figure, even when mistagged onto an active
+        # admission intake:
+        #   - current intake: active batch, NOT a legacy import (genuine new admits)
+        #   - continuing: everyone else — prior intakes AND bulk-imported
+        #     continuing students (imports are continuing students by nature)
+        #   - legacy imported: the "of which imported" subset of continuing
         legacy_q = Q(application__source=Application.SOURCE_LEGACY)
         admitted_intake_stats = admitted_base.aggregate(
             admitted_total=Count('id'),
@@ -4043,7 +4050,7 @@ class AdminDashboardStats(APIView):
                 'id', filter=Q(admitted_batch__is_active=True) & ~legacy_q
             ),
             admitted_continuing=Count(
-                'id', filter=Q(admitted_batch__is_active=False) & ~legacy_q
+                'id', filter=Q(admitted_batch__is_active=False) | legacy_q
             ),
             admitted_legacy_imported=Count('id', filter=legacy_q),
         )
@@ -4066,9 +4073,9 @@ class AdminDashboardStats(APIView):
             "admittedStudents": admitted_intake_stats['admitted_total'],
             # Admitted in the current active intake(s), excluding legacy imports.
             "admittedCurrentIntake": admitted_intake_stats['admitted_current_intake'],
-            # Continuing students from prior real intakes (not imported).
+            # All continuing students: prior intakes + bulk-imported.
             "admittedContinuing": admitted_intake_stats['admitted_continuing'],
-            # Bulk-imported (legacy migration) students, whatever batch they carry.
+            # Of which bulk-imported from the old system (subset of continuing).
             "admittedLegacyImported": admitted_intake_stats['admitted_legacy_imported'],
             "rejectedStudents": apps_stats['rejected_students'],
             "total_batches": batches_stats['total_batches'],

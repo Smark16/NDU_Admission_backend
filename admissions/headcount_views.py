@@ -71,16 +71,19 @@ class UniversityHeadcountView(APIView):
         commitment_met = met_qs.count()
         commitment_unpaid = unpaid_qs.count()
 
-        # Three-way intake split. Legacy imports are identified by application
-        # source, not by which admission batch they carry, so a legacy row
-        # mistakenly tagged onto a live intake can never inflate that intake.
+        # Intake split. Legacy imports are identified by application source,
+        # not by which admission batch they carry, so a legacy row mistakenly
+        # tagged onto a live intake can never inflate that intake.
+        # "Continuing" = everyone not admitted through the current intake —
+        # prior real intakes AND bulk-imported continuing students; the
+        # legacy_imported figure is the "of which imported" subset.
         legacy_q = Q(application__source=Application.SOURCE_LEGACY)
         intake_split = base.aggregate(
             current_intake_new=Count(
                 "id", filter=Q(admitted_batch__is_active=True) & ~legacy_q
             ),
-            continuing_prior=Count(
-                "id", filter=Q(admitted_batch__is_active=False) & ~legacy_q
+            continuing_total=Count(
+                "id", filter=Q(admitted_batch__is_active=False) | legacy_q
             ),
             legacy_imported=Count("id", filter=legacy_q),
         )
@@ -127,7 +130,7 @@ class UniversityHeadcountView(APIView):
                 "total_admitted": total,
                 "intake_split": {
                     "current_intake_new": intake_split["current_intake_new"],
-                    "continuing_prior": intake_split["continuing_prior"],
+                    "continuing_total": intake_split["continuing_total"],
                     "legacy_imported": intake_split["legacy_imported"],
                 },
                 "by_intake": [
