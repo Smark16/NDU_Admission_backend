@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import base64
 import logging
-import random as _random
 import secrets
 from typing import Any
 
@@ -18,7 +17,7 @@ from admissions.admission_specialization import (
     offer_letter_combination_context,
     validate_offer_letter_admission,
 )
-from OfferLetter.AdmissionLetter.models import OfferLetterTemplate
+from OfferLetter.AdmissionLetter.models import HALL_CHOICES, OfferLetterTemplate
 from OfferLetter.AdmissionLetter.utils.letters import (
     fill_pdf_template_file,
     render_docx_from_template_file,
@@ -26,8 +25,6 @@ from OfferLetter.AdmissionLetter.utils.letters import (
 from OfferLetter.AdmissionLetter.utils.offer_security import stamp_offer_letter_pdf
 
 logger = logging.getLogger(__name__)
-
-HALLS = ["AKIIBUA", "NJUKI", "MUTEESA", "KAKUNGULU", "YOKANA"]
 
 
 def _queue_offer_letter_email(application_id: int) -> None:
@@ -121,10 +118,13 @@ def build_offer_letter_context(applicant: Application, admission: AdmittedStuden
     else:
         start_date_formatted = "To Be Announced"
 
-    if template.hall_of_residence == "RANDOM":
-        hall = _random.choice(HALLS)
-    elif template.hall_of_residence:
-        hall = template.hall_of_residence
+    # Halls are genuinely assigned by the Dean of Students in the Hostel module
+    # after admission — the letter must not auto-mark a random hall. Only a hall
+    # explicitly chosen on the template is printed (as its display name).
+    if template.hall_of_residence and template.hall_of_residence != "RANDOM":
+        hall = dict(HALL_CHOICES).get(
+            template.hall_of_residence, template.hall_of_residence
+        )
     else:
         hall = "To Be Assigned"
 

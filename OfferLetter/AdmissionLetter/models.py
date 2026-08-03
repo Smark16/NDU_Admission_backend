@@ -16,6 +16,8 @@ HALL_CHOICES = [
     ("WEKISA", "Wekisa"),
     ("VICTORIA_MWAKA", "Victoria Mwaka"),
     ("LUWEERO", "Luweero"),
+    # Kept for backwards compatibility with existing templates; the generator
+    # treats it as "To Be Assigned" — real halls come from the Hostel module.
     ("RANDOM", "Assign Randomly"),
 ]
 
