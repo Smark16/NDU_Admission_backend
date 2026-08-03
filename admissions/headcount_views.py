@@ -3,13 +3,13 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from django.db.models import Count
+from django.db.models import Count, Q
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from admissions.faculty_scope import filter_admitted_students_for_user
-from admissions.models import AdmittedStudent
+from admissions.models import AdmittedStudent, Application
 from payments.commitment_queryset import filter_by_commitment_met
 from payments.student_payment_allocation import COMMITMENT_FEE_THRESHOLD
 
@@ -71,6 +71,30 @@ class UniversityHeadcountView(APIView):
         commitment_met = met_qs.count()
         commitment_unpaid = unpaid_qs.count()
 
+        # Three-way intake split. Legacy imports are identified by application
+        # source, not by which admission batch they carry, so a legacy row
+        # mistakenly tagged onto a live intake can never inflate that intake.
+        legacy_q = Q(application__source=Application.SOURCE_LEGACY)
+        intake_split = base.aggregate(
+            current_intake_new=Count(
+                "id", filter=Q(admitted_batch__is_active=True) & ~legacy_q
+            ),
+            continuing_prior=Count(
+                "id", filter=Q(admitted_batch__is_active=False) & ~legacy_q
+            ),
+            legacy_imported=Count("id", filter=legacy_q),
+        )
+
+        by_intake = list(
+            base.values("admitted_batch__name", "admitted_batch__is_active")
+            .annotate(
+                count=Count("id"),
+                new_admits=Count("id", filter=~legacy_q),
+                legacy_imported=Count("id", filter=legacy_q),
+            )
+            .order_by("-admitted_batch__is_active", "-count")
+        )
+
         by_campus = list(
             base.values("admitted_campus__name")
             .annotate(count=Count("id"))
@@ -101,6 +125,21 @@ class UniversityHeadcountView(APIView):
         return Response(
             {
                 "total_admitted": total,
+                "intake_split": {
+                    "current_intake_new": intake_split["current_intake_new"],
+                    "continuing_prior": intake_split["continuing_prior"],
+                    "legacy_imported": intake_split["legacy_imported"],
+                },
+                "by_intake": [
+                    {
+                        "intake": r["admitted_batch__name"] or "—",
+                        "is_active": bool(r["admitted_batch__is_active"]),
+                        "count": r["count"],
+                        "new_admits": r["new_admits"],
+                        "legacy_imported": r["legacy_imported"],
+                    }
+                    for r in by_intake
+                ],
                 "commitment_met": commitment_met,
                 "commitment_unpaid": commitment_unpaid,
                 "commitment_threshold_ugx": float(COMMITMENT_FEE_THRESHOLD),
