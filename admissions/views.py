@@ -2286,6 +2286,38 @@ class DeleteBatch(generics.RetrieveDestroyAPIView):
     def delete(self, request, *args, **kwargs):
         assert_admissions_modify_access(request.user)
         instance = self.get_object()
+
+        # Batch -> Application -> AdmittedStudent all cascade-delete. Deleting an
+        # intake that already has admitted students or applicants would silently
+        # wipe out their admission/academic/payment records - block it outright
+        # and point admins to deactivation instead, which is safe and reversible.
+        admitted_count = instance.admitted_students.count()
+        if admitted_count:
+            return Response(
+                {
+                    "detail": (
+                        f"Cannot delete '{instance.name}': it has {admitted_count} admitted "
+                        "student(s) on record. Deleting this intake would permanently erase "
+                        "their admission, academic, and payment records. Set it as inactive "
+                        "instead if you want to stop new admissions through it."
+                    )
+                },
+                status=400,
+            )
+
+        application_count = instance.applications.count()
+        if application_count:
+            return Response(
+                {
+                    "detail": (
+                        f"Cannot delete '{instance.name}': it still has {application_count} "
+                        "applicant record(s) (not yet admitted). Deleting this intake would "
+                        "permanently erase their applications. Set it as inactive instead."
+                    )
+                },
+                status=400,
+            )
+
         instance.delete()
 
         return Response({"detail":"batch deleted successfully"})
