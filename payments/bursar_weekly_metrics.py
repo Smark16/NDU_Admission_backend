@@ -45,10 +45,14 @@ def _safe_name(raw) -> str:
     return name or "Unassigned"
 
 
-def _admitted_base(*, batch_id: int | None = None):
+def _admitted_base(*, batch_id: int | None = None, exclude_legacy_imports: bool = False):
     qs = AdmittedStudent.objects.filter(is_admitted=True)
     if batch_id:
         qs = qs.filter(admitted_batch_id=batch_id)
+    if exclude_legacy_imports:
+        # Bulk-imported continuing students mistakenly tagged onto a live intake
+        # must not inflate that intake's bursar figures.
+        qs = qs.exclude(application__source="legacy_import")
     return qs
 
 
@@ -112,14 +116,24 @@ def build_bursar_weekly_metrics(
         if batch is not None:
             batch_id = batch.id
 
+    # When scoped to a LIVE intake, legacy-imported (bulk migration) rows are
+    # excluded — they belong to the Continuing / Legacy intake, and counting
+    # them here inflates the live intake's numbers. When the report is scoped
+    # to an inactive intake (e.g. Continuing / Legacy itself), they count.
+    scoped_to_live_intake = bool(batch is not None and batch.is_active)
+
     apps_all = Application.objects.exclude(status="draft")
     apps = apps_all.filter(batch_id=batch_id) if batch_id else apps_all
+    if scoped_to_live_intake:
+        apps = apps.exclude(source="legacy_import")
     apps_week = apps.filter(created_at__date__gte=week_start, created_at__date__lte=week_end)
     applications_received = apps_week.count()
     applications_total = apps.count()
     pending = apps.filter(status__in=["submitted", "under_review"]).count()
 
-    admitted_qs = _admitted_base(batch_id=batch_id)
+    admitted_qs = _admitted_base(
+        batch_id=batch_id, exclude_legacy_imports=scoped_to_live_intake
+    )
     admitted_total = admitted_qs.count()
     # Same definition as AdminTuitionLedgerStudentsExportView (strict=True):
     # portal + SchoolPay ledger credits >= threshold (not the admission_fee_paid flag alone).
@@ -547,7 +561,13 @@ def build_bursar_weekly_metrics(
         "source_note": (
             "Generated from live NDU portal data, scoped to one specific admission intake "
             "(never a blended total across intakes). "
-            "Commitment paid = portal + SchoolPay ledger ≥ commitment threshold. "
+            + (
+                "Legacy-imported (bulk migration) students are excluded from this live "
+                "intake's figures — they are reported under Continuing / Legacy Students. "
+                if scoped_to_live_intake
+                else ""
+            )
+            + "Commitment paid = portal + SchoolPay ledger ≥ commitment threshold. "
             "Registration-ready = semester tuition % ≥ RegistrationSettings minimum "
             f"({min_reg_pct:g}%, configured in Registration Settings)."
         ),
