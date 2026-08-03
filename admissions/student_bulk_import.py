@@ -458,14 +458,24 @@ def _resolve_admission_intake_batch(
     """
     Resolve admissions intake for bulk import.
 
-    - Explicit ``admission_batch_id`` → that intake
+    - Explicit ``admission_batch_id`` → that intake, but never a live (active)
+      intake: imported continuing students on a live intake inflate the
+      current-intake headcount and confuse reports.
     - Otherwise → Continuing / Legacy intake (never the live offer intake)
     """
     if admission_batch_id is not None:
         try:
-            return Batch.objects.get(pk=admission_batch_id)
+            batch = Batch.objects.get(pk=admission_batch_id)
         except Batch.DoesNotExist as exc:
             raise ValueError("Admission intake batch not found.") from exc
+        if batch.is_active:
+            raise ValueError(
+                f'Admission intake "{batch.name}" is the live offer intake. '
+                "Bulk-imported continuing students must not be tagged onto a live "
+                "intake — leave admission_batch_id empty to use the "
+                f'"{CONTINUING_INTAKE_NAME}" intake, or pick an inactive intake.'
+            )
+        return batch
 
     if created_by is None:
         raise ValueError(
