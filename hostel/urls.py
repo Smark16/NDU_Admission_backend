@@ -1,0 +1,89 @@
+from django.urls import path
+
+from .views import (
+    AllocationReportView,
+    AssignBedView,
+    BedDetailView,
+    BuildingDetailView,
+    BuildingListView,
+    EndAllocationView,
+    FloorListView,
+    HostelFeeExemptionReportView,
+    HostelListView,
+    HostelReportsDashboardView,
+    InventorySummaryView,
+    OccupancyListView,
+    OccupancySummaryReportView,
+    ReadyQueueView,
+    RoomDetailView,
+    RoomListView,
+    StudentAllocationLookupView,
+    StudentEligibilityView,
+    StudentMyRoomView,
+    TransferAllocationView,
+    VacancyReportView,
+)
+
+urlpatterns = [
+    path("hostels/", HostelListView.as_view(), name="hostel-list"),
+    path("buildings/", BuildingListView.as_view(), name="hostel-buildings"),
+    path(
+        "buildings/<int:building_id>/",
+        BuildingDetailView.as_view(),
+        name="hostel-building-detail",
+    ),
+    path("floors/", FloorListView.as_view(), name="hostel-floors"),
+    path("rooms/", RoomListView.as_view(), name="hostel-rooms"),
+    path("rooms/<int:room_id>/", RoomDetailView.as_view(), name="hostel-room-detail"),
+    path("beds/<int:bed_id>/", BedDetailView.as_view(), name="hostel-bed-detail"),
+    path("inventory/summary/", InventorySummaryView.as_view(), name="hostel-inventory-summary"),
+    path("occupancy/", OccupancyListView.as_view(), name="hostel-occupancy"),
+    path("ready-queue/", ReadyQueueView.as_view(), name="hostel-ready-queue"),
+    path("assign/", AssignBedView.as_view(), name="hostel-assign"),
+    path(
+        "allocations/<int:allocation_id>/end/",
+        EndAllocationView.as_view(),
+        name="hostel-allocation-end",
+    ),
+    path(
+        "allocations/<int:allocation_id>/transfer/",
+        TransferAllocationView.as_view(),
+        name="hostel-allocation-transfer",
+    ),
+    path(
+        "students/<int:student_id>/eligibility/",
+        StudentEligibilityView.as_view(),
+        name="hostel-student-eligibility",
+    ),
+    path(
+        "students/<int:student_id>/allocation/",
+        StudentAllocationLookupView.as_view(),
+        name="hostel-student-allocation",
+    ),
+    path("student/my-room/", StudentMyRoomView.as_view(), name="hostel-student-my-room"),
+    path(
+        "reports/fee-exemptions/",
+        HostelFeeExemptionReportView.as_view(),
+        name="hostel-fee-exemption-report",
+    ),
+    path(
+        "reports/dashboard/",
+        HostelReportsDashboardView.as_view(),
+        name="hostel-reports-dashboard",
+    ),
+    path(
+        "reports/occupancy-summary/",
+        OccupancySummaryReportView.as_view(),
+        name="hostel-occupancy-summary-report",
+    ),
+    path(
+        "reports/vacancies/",
+        VacancyReportView.as_view(),
+        name="hostel-vacancy-report",
+    ),
+    path(
+        "reports/allocations/",
+        AllocationReportView.as_view(),
+        name="hostel-allocation-report",
+    ),
+]

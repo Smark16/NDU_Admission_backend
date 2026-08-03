@@ -51,6 +51,7 @@ LOCAL_APPS = [
     'Programs.apps.ProgramsConfig',
     'examinations',
     'graduation',
+    'hostel',
     'Drafts',
     'OfferLetter.AdmissionLetter',
     'OfferLetter.AdmissionReports',

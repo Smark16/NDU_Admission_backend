@@ -243,6 +243,10 @@ class ErpAccessPolicy(models.Model):
                 "access_graduation",
                 "Access Graduation module (qualified lists, ceremonies)",
             ),
+            (
+                "access_hostel",
+                "Access Hostel / Halls of Residence module",
+            ),
         ]
 
     def __str__(self):

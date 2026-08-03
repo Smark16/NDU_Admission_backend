@@ -54,6 +54,12 @@ def get_staff_role_names() -> set[str]:
         names |= set(GRADUATION_ROLE_MATRIX.keys())
     except ImportError:
         pass
+    try:
+        from hostel.role_setup import HOSTEL_ROLE_MATRIX
+
+        names |= set(HOSTEL_ROLE_MATRIX.keys())
+    except ImportError:
+        pass
     names.add(LECTURER_ROLE_NAME)
     names.add("Super Admin")
     return names

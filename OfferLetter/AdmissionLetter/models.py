@@ -8,7 +8,14 @@ HALL_CHOICES = [
     ("NJUKI", "Njuki"),
     ("MUTEESA", "Muteesa"),
     ("KAKUNGULU", "Kakungulu"),
+    ("KAKUNGULU_ANNEX", "Kakungulu Annex"),
     ("YOKANA", "Yokana"),
+    ("NOAHS_ARK", "Noah's Ark"),
+    ("WEST_BUGANDA", "West Buganda"),
+    ("WEST_BUGANDA_ANNEX", "West Buganda Annex"),
+    ("WEKISA", "Wekisa"),
+    ("VICTORIA_MWAKA", "Victoria Mwaka"),
+    ("LUWEERO", "Luweero"),
     ("RANDOM", "Assign Randomly"),
 ]
 

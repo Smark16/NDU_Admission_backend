@@ -19,7 +19,7 @@ class Command(BaseCommand):
         parser.add_argument(
             "--all-modules",
             action="store_true",
-            help="Also re-seed Examinations and Graduation roles.",
+            help="Also re-seed Examinations, Graduation, and Hostel roles.",
         )
 
     def handle(self, *args, **options):
@@ -37,12 +37,14 @@ class Command(BaseCommand):
 
         if options["all_modules"]:
             self.stdout.write("")
-            self.stdout.write("Re-seeding Examinations and Graduation roles...")
+            self.stdout.write("Re-seeding Examinations, Graduation, and Hostel roles...")
             from examinations.role_setup import seed_all_examination_roles
             from graduation.role_setup import seed_all_graduation_roles
+            from hostel.role_setup import seed_all_hostel_roles
 
             seed_all_examination_roles(Group, Permission, stdout=self.stdout)
             seed_all_graduation_roles(Group, Permission, stdout=self.stdout)
+            seed_all_hostel_roles(Group, Permission, stdout=self.stdout)
 
         self.stdout.write("")
         self.stdout.write(self.style.SUCCESS("Team roles seeded:"))
