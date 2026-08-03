@@ -3,6 +3,7 @@ from datetime import date
 from django.db.models import Count, Q
 from django.shortcuts import get_object_or_404
 from rest_framework import status
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -347,6 +348,43 @@ class InventorySummaryView(APIView):
                 ],
             }
         )
+
+
+class InventoryImportView(APIView):
+    """Upload Halls of Residence .xlsx or .csv from the ERP (no server scp needed)."""
+
+    permission_classes = [IsAuthenticated, CanManageInventory]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request):
+        from rest_framework.exceptions import ValidationError as DRFValidationError
+
+        from .import_rooms import import_hostel_file
+
+        upload = request.FILES.get("file")
+        if not upload:
+            return Response(
+                {"detail": "Attach a file field named 'file' (.xlsx or .csv)."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        name = (upload.name or "").lower()
+        if not (name.endswith(".xlsx") or name.endswith(".xlsm") or name.endswith(".csv")):
+            return Response(
+                {"detail": "Only .xlsx or .csv files are accepted."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        dry_run = str(request.data.get("dry_run", "")).lower() in ("1", "true", "yes")
+        try:
+            stats = import_hostel_file(upload, filename=upload.name, dry_run=dry_run)
+        except DRFValidationError as exc:
+            return Response(exc.detail, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as exc:
+            return Response(
+                {"detail": f"Import failed: {exc}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response({"ok": True, "dry_run": dry_run, "stats": stats})
+
 
 
 class StudentEligibilityView(APIView):
