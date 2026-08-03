@@ -3,9 +3,10 @@ from Programs.models import Program
 
 # Create your models here.
 
-# Official University Halls of Residence ONLY. Private/partner hostels
-# (Noah's Ark, West Buganda, Wekisa, Victoria Mwaka, Luweero, annexes, ...)
-# live in the Hostel module and must never appear on admission letters.
+# Official University academic halls of attachment ONLY (academic identity,
+# not accommodation). Residential hostels (Noah's Ark, West Buganda, Wekisa,
+# Victoria Mwaka, Luweero, annexes, ...) live in the Hostel module and must
+# never appear on admission letters.
 HALL_CHOICES = [
     ("AKIIBUA", "Akiibua"),
     ("NJUKI", "Njuki"),

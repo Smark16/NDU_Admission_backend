@@ -118,11 +118,11 @@ def build_offer_letter_context(applicant: Application, admission: AdmittedStuden
     else:
         start_date_formatted = "To Be Announced"
 
-    # Hall printed on the letter comes ONLY from the official University Halls
-    # of Residence list (never hostel-module buildings). If the template picks
-    # a specific hall, use it; otherwise (blank / RANDOM / stale hostel value)
-    # auto-assign one, deterministically per applicant so regenerating the
-    # letter always yields the same hall.
+    # Hall printed on the letter is an ACADEMIC hall of attachment (not
+    # accommodation) and comes ONLY from HALL_CHOICES — never hostel-module
+    # buildings. If the template picks a specific hall, use it; otherwise
+    # (blank / RANDOM / stale hostel value) auto-assign one, deterministically
+    # per applicant so regenerating the letter always yields the same hall.
     official_halls = dict(HALL_CHOICES)
     official_halls.pop("RANDOM", None)
     hall_code = template.hall_of_residence or ""
