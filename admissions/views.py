@@ -3254,13 +3254,19 @@ class ListAdmittedStudents(generics.ListAPIView):
 
 
 class ListBonafideStudents(generics.ListAPIView):
-    """Commitment-paid admitted students (bonafide ops): bio, identity, and placement."""
+    """
+    Students list (admitted students): bio, identity, placement, and billing status.
+
+    Defaults to commitment-paid ("bonafide") students only, to preserve existing
+    dashboards / drill-down links that assume this list == the commitment-paid
+    register. Pass ``bonafide=all`` (or ``commitment_met=all``) to see every
+    admitted student regardless of commitment fee status — needed by Finance to
+    bill students who haven't yet cleared the commitment fee (e.g. new bank
+    deposits not yet reconciled).
+    """
 
     # Keep base QS light for COUNT / filter scans; select_related applied after pagination.
-    queryset = AdmittedStudent.objects.filter(
-        is_admitted=True,
-        admission_fee_paid=True,
-    )
+    queryset = AdmittedStudent.objects.filter(is_admitted=True)
     serializer_class = BonafideStudentSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
     pagination_class = StandardPagination
@@ -3271,6 +3277,7 @@ class ListBonafideStudents(generics.ListAPIView):
 
     _BONAFIDE_SELECT_RELATED = (
         "admitted_program__faculty",
+        "admitted_program__academic_level",
         "admitted_batch",
         "admitted_campus",
         "intended_program_batch",
@@ -3374,12 +3381,16 @@ class ListBonafideStudents(generics.ListAPIView):
                 name_q |= Q(applicant_full_name__icontains=search)
             queryset = queryset.filter(identity | name_q).distinct()
 
+        level = (self.request.query_params.get("level") or "").strip()
+
         if campus and campus != "all":
             queryset = queryset.filter(admitted_campus__name=campus)
         if program and program != "all":
             queryset = queryset.filter(admitted_program__name=program)
         if faculty and faculty != "all":
             queryset = queryset.filter(admitted_program__faculty__name=faculty)
+        if level and level != "all":
+            queryset = queryset.filter(admitted_program__academic_level__name=level)
         # Continuing / Legacy imports use intake name "Continuing / Legacy Students".
         if admission_intake and admission_intake != "all":
             queryset = queryset.filter(admitted_batch__name=admission_intake)
@@ -3432,20 +3443,28 @@ class ListBonafideStudents(generics.ListAPIView):
         if enrollment_status and enrollment_status != "all":
             queryset = queryset.filter(programme_enrollment__status=enrollment_status)
 
-        commitment_met = self.request.query_params.get("commitment_met")
-        if commitment_met is not None and str(commitment_met).lower() not in ("all", ""):
+        # "bonafide" is the new, clearer name for this filter; "commitment_met" is
+        # kept working for existing links/bookmarks. bonafide takes priority when both
+        # are present. Unset == default to bonafide-only (preserves every existing
+        # dashboard/drill-down link that was built assuming this list == paid-only).
+        bonafide_param = self.request.query_params.get("bonafide")
+        commitment_met = (
+            bonafide_param if bonafide_param is not None else self.request.query_params.get("commitment_met")
+        )
+        raw = str(commitment_met).strip().lower() if commitment_met is not None else ""
+        if raw not in ("all",):
             from payments.commitment_queryset import filter_by_commitment_met
 
-            raw = str(commitment_met).lower()
             # Default fast path: admission_fee_paid index only (no ledger subqueries).
             strict = str(self.request.query_params.get("commitment_strict", "")).lower() in (
                 "1",
                 "true",
                 "yes",
             )
-            if raw in ("1", "true", "yes"):
+            if raw in ("1", "true", "yes", "bonafide", ""):
+                # "" (param absent entirely) == default == bonafide-only.
                 queryset = filter_by_commitment_met(queryset, True, strict=strict)
-            elif raw in ("0", "false", "no"):
+            elif raw in ("0", "false", "no", "not_bonafide"):
                 queryset = filter_by_commitment_met(queryset, False, strict=strict)
 
         # Narrow Accounts clearance before expensive tuition-% evaluation when both are set.
@@ -3721,6 +3740,18 @@ class AdmittedStudentFilterOptionsView(APIView):
             for pb in pb_qs.distinct().select_related("program").order_by("-start_date", "name")
         ]
 
+        # Academic levels (Certificate/Diploma/Bachelors/Masters...): respect
+        # campus/faculty/programme selection like the other cascading dropdowns.
+        levels = sorted(
+            {
+                name
+                for name in scoped.values_list(
+                    "admitted_program__academic_level__name", flat=True
+                )
+                if name
+            }
+        )
+
         return Response(
             {
                 "campuses": campuses,
@@ -3728,6 +3759,7 @@ class AdmittedStudentFilterOptionsView(APIView):
                 "programs": programs,
                 "batches": batches,
                 "academic_batches": academic_batches,
+                "levels": levels,
             }
         )
 

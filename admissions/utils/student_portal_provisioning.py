@@ -34,6 +34,8 @@ def auto_enroll_admitted_student(admission, acting_user_id: int | None) -> None:
         User = get_user_model()
         acting_user = User.objects.filter(pk=acting_user_id).first() if acting_user_id else None
 
+        from admissions.admission_specialization import admitted_subject_combination_label
+
         activation_block = admin_programme_enrollment_activation_block(
             admission, target_status="enrolled"
         )
@@ -46,6 +48,7 @@ def auto_enroll_admitted_student(admission, acting_user_id: int | None) -> None:
                 "program_batch": program_batch,
                 "current_year_of_study": 1,
                 "current_term_number": 1,
+                "specialization": admitted_subject_combination_label(admission) or "",
                 "status": enroll_status,
                 "enrolled_by": acting_user if enroll_status == "enrolled" else None,
                 "enrolled_at": timezone.now() if enroll_status == "enrolled" else None,

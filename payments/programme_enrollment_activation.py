@@ -147,6 +147,17 @@ def activate_programme_enrollment_after_commitment_payment(
         # PostgreSQL rejects row locks on the nullable side of outer joins.
         locked_student = AdmittedStudent.objects.select_for_update().get(pk=student.pk)
 
+        # Keep the denormalized bonafide flag in sync with the real commitment math,
+        # regardless of payment channel (portal, SchoolPay ledger, or manual bank
+        # reconciliation all route through here via the payment post_save signals).
+        # Without this, bank-paid students silently never appear under Bonafide.
+        if not locked_student.admission_fee_paid:
+            locked_student.admission_fee_paid = True
+            locked_student.admission_fee_paid_at = timezone.now()
+            locked_student.save(
+                update_fields=["admission_fee_paid", "admission_fee_paid_at", "updated_at"]
+            )
+
         try:
             enrollment = locked_student.programme_enrollment
         except StudentProgrammeEnrollment.DoesNotExist:
@@ -165,6 +176,8 @@ def activate_programme_enrollment_after_commitment_payment(
                     locked_student.admitted_program
                 )
 
+            from admissions.admission_specialization import admitted_subject_combination_label
+
             enrollment = StudentProgrammeEnrollment.objects.create(
                 student=locked_student,
                 program=locked_student.admitted_program,
@@ -172,6 +185,7 @@ def activate_programme_enrollment_after_commitment_payment(
                 curriculum_version=curriculum_version,
                 current_year_of_study=1,
                 current_term_number=1,
+                specialization=admitted_subject_combination_label(locked_student) or "",
                 status="enrolled",
                 enrolled_by=activated_by,
                 enrolled_at=timezone.now(),

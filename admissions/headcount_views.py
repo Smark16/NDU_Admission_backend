@@ -157,8 +157,12 @@ class UniversityHeadcountView(APIView):
         # intended_program_batch was never stamped on the admission record
         # (a data-entry gap, not a real "no cohort" student) so they show up
         # under their real class instead of silently vanishing into "—".
+        #
+        # This breakdown only counts students who have MET the commitment fee
+        # (met_qs, not the full register) - the faculty/programme/batch drill-down
+        # is meant to show who has actually secured their place, not just applied.
         by_cohort = list(
-            base.annotate(
+            met_qs.annotate(
                 effective_batch=Coalesce(
                     "intended_program_batch__name",
                     "programme_enrollment__program_batch__name",

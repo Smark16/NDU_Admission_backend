@@ -801,6 +801,9 @@ class BonafideStudentSerializer(serializers.ModelSerializer):
     nationality = serializers.CharField(source="application.nationality", default="", read_only=True)
     program = serializers.CharField(source="admitted_program.name", default="", read_only=True)
     program_id = serializers.IntegerField(source="admitted_program_id", read_only=True)
+    level = serializers.CharField(
+        source="admitted_program.academic_level.name", default="", read_only=True
+    )
     academic_batch_id = serializers.SerializerMethodField()
     faculty = serializers.SerializerMethodField()
     campus = serializers.CharField(source="admitted_campus.name", default="", read_only=True)
@@ -837,6 +840,7 @@ class BonafideStudentSerializer(serializers.ModelSerializer):
             "campus",
             "program",
             "program_id",
+            "level",
             "academic_batch_id",
             "faculty",
             "academic_batch",
