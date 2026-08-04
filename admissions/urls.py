@@ -166,6 +166,11 @@ urlpatterns = [
         name='bonafide_portal_account',
     ),
     path(
+        'list_bonafide_students/<int:pk>/portal-account/reset-password/',
+        bonafide_admin_views.BonafidePortalPasswordResetView.as_view(),
+        name='bonafide_portal_password_reset',
+    ),
+    path(
         'list_bonafide_students/<int:pk>/documents/transcript/',
         bonafide_admin_views.BonafideTranscriptPdfView.as_view(),
         name='bonafide_transcript_pdf',

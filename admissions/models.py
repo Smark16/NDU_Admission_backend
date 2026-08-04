@@ -586,9 +586,11 @@ class StudentPortalAccountAction(models.Model):
 
     ACTION_DEACTIVATE = "deactivate"
     ACTION_ACTIVATE = "activate"
+    ACTION_RESET_PASSWORD = "reset_password"
     ACTION_CHOICES = [
         (ACTION_DEACTIVATE, "Deactivate"),
         (ACTION_ACTIVATE, "Activate"),
+        (ACTION_RESET_PASSWORD, "Reset password"),
     ]
 
     student = models.ForeignKey(

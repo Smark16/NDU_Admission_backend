@@ -118,6 +118,95 @@ class BonafidePortalAccountToggleView(APIView):
         )
 
 
+class BonafidePortalPasswordResetView(APIView):
+    """
+    POST: reset a student's portal password back to the standard default
+    (with required reason), optionally re-sending the credentials email.
+
+    Exists so front-desk / registrar staff never need raw Django admin to
+    unblock a student who forgot/never received their login details — the
+    single most common source of ERP 401s for admitted students.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        if not request.user.has_perm("admissions.change_admittedstudent"):
+            return Response({"detail": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
+
+        student = _get_bonafide_student(request, pk)
+        if not student:
+            return Response({"detail": "Student not found."}, status=status.HTTP_404_NOT_FOUND)
+        assert_admitted_student_access(request.user, student)
+
+        data = request.data or {}
+        reason = (data.get("reason") or "").strip()
+        if len(reason) < 5:
+            return Response(
+                {"detail": "A reason of at least 5 characters is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        send_email = bool(data.get("send_email", True))
+
+        from admissions.student_accounts import DEFAULT_STUDENT_PASSWORD, ensure_student_portal_account
+        from admissions.utils.email import send_student_login_credentials
+        from admissions.utils.student_portal_provisioning import (
+            StudentPortalProvisioningError,
+            provision_student_portal_on_admission,
+        )
+
+        try:
+            if student.student_user_id:
+                portal_user, _created = ensure_student_portal_account(student, reset_password=True)
+            else:
+                provision_student_portal_on_admission(student.id, send_credentials_email=False)
+                student.refresh_from_db(fields=["student_user"])
+                portal_user = student.student_user
+        except StudentPortalProvisioningError as exc:
+            return Response({"detail": f"Could not reset password: {exc}"}, status=status.HTTP_400_BAD_REQUEST)
+
+        if portal_user is None:
+            return Response(
+                {"detail": "Could not create or locate a portal account for this student."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        email_sent = False
+        if send_email:
+            email_sent = send_student_login_credentials(
+                portal_user, DEFAULT_STUDENT_PASSWORD, admission=student
+            )
+
+        StudentPortalAccountAction.objects.create(
+            student=student,
+            portal_user=portal_user,
+            action=StudentPortalAccountAction.ACTION_RESET_PASSWORD,
+            reason=reason,
+            performed_by=request.user,
+        )
+
+        log_audit_event(
+            request.user,
+            "portal_reset_password",
+            obj=student,
+            description=f"Portal password reset for {student.reg_no}: {reason[:400]}",
+            request=request,
+        )
+
+        from admissions.bonafide_portal import build_bonafide_portal_snapshot
+
+        snap = build_bonafide_portal_snapshot(student, request)
+        return Response(
+            {
+                "detail": "Password reset.",
+                "username": portal_user.username,
+                "new_password": DEFAULT_STUDENT_PASSWORD,
+                "email_sent": email_sent,
+                "portal_account": snap.get("portal_account"),
+            }
+        )
+
+
 class BonafideTranscriptPdfView(APIView):
     """Admin: download provisional results / transcript PDF for a bonafide student."""
 
