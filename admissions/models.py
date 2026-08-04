@@ -793,6 +793,30 @@ class AdmissionChangeRequest(models.Model):
     )
     form_fee_paid_at = models.DateTimeField(null=True, blank=True)
 
+    # Exemption pricing basis — mirrors the printed "Application Form for Exemption":
+    # institution/years the credit was earned at, and whether the student is an
+    # alumnus of this university (drives the discounted per-paper rate). Set once
+    # per request; applies to every ExemptionRequestLine on it.
+    exemption_attained_at = models.CharField(
+        max_length=255,
+        blank=True,
+        default='',
+        help_text="Institution where the exempted credit was earned (e.g. 'Uganda Management Institute').",
+    )
+    exemption_academic_years = models.CharField(
+        max_length=50,
+        blank=True,
+        default='',
+        help_text="Academic year(s) the credit was earned in (e.g. '2019/2020').",
+    )
+    exemption_is_alumnus = models.BooleanField(
+        default=False,
+        help_text=(
+            "Did the student complete their undergraduate studies at this university? "
+            "Drives the discounted per-paper exemption fee rate."
+        ),
+    )
+
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     reviewed_by = models.ForeignKey(
         User, on_delete=models.SET_NULL, null=True, blank=True, related_name='reviewed_change_requests'
@@ -826,6 +850,15 @@ class AdmissionChangeRequest(models.Model):
 class ExemptionRequestLine(models.Model):
     """Course unit selected on an exemption change request."""
 
+    DECISION_PENDING = "pending"
+    DECISION_APPROVED = "approved"
+    DECISION_REJECTED = "rejected"
+    DECISION_CHOICES = [
+        (DECISION_PENDING, "Pending"),
+        (DECISION_APPROVED, "Approved"),
+        (DECISION_REJECTED, "Rejected"),
+    ]
+
     change_request = models.ForeignKey(
         AdmissionChangeRequest,
         on_delete=models.CASCADE,
@@ -848,6 +881,19 @@ class ExemptionRequestLine(models.Model):
         default='',
         help_text="Score/grade the student obtained in this course at the previous institution "
                   "(e.g. 65, B+, 3.5 GPA).",
+    )
+    # HOD/Dean may approve some papers and reject others on the same request.
+    decision = models.CharField(
+        max_length=20,
+        choices=DECISION_CHOICES,
+        default=DECISION_PENDING,
+        db_index=True,
+    )
+    decision_note = models.CharField(
+        max_length=255,
+        blank=True,
+        default='',
+        help_text="Optional note when a paper is rejected (shown to reviewers).",
     )
     created_at = models.DateTimeField(auto_now_add=True)
 

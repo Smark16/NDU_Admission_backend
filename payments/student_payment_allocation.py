@@ -263,6 +263,34 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
             continue
         sem = rule.semester
         billable = billing_date_reached(rule)
+        # Only the programme TUITION_FEE head is prorated. FUNCTIONAL_FEE stays
+        # full. EXEMPTION_COURSE is also category=tuition but lives on ad-hoc
+        # charges, not FeePlanRule — still match by code so we never touch it.
+        fee_code = (rule.fee_head.code or "").upper() if rule.fee_head_id else ""
+        is_tuition_head = fee_code == "TUITION_FEE"
+        # Course exemptions replace full semester TUITION with Accounts' paper
+        # math: (tuition / papers) × papers still taken. FUNCTIONAL_FEE is left
+        # alone and stays charged in full. Exempted papers are billed separately
+        # as per-paper EXEMPTION_COURSE ad-hoc charges.
+        proration_meta: dict[str, Any] | None = None
+        if (
+            is_tuition_head
+            and sem is not None
+            and sem.year_of_study
+            and sem.term_number
+        ):
+            from admissions.exemption_services import prorate_tuition_for_course_exemptions
+
+            amt, proration_meta = prorate_tuition_for_course_exemptions(
+                student,
+                amt,
+                year_of_study=int(sem.year_of_study),
+                term_number=int(sem.term_number),
+            )
+            if amt <= 0:
+                # Fully exempted semester — omit the tuition demand line entirely.
+                # Functional fee for the same semester (next rule) is unchanged.
+                continue
         line = DemandLine(
             kind="tuition_structure",
             rule_id=rule.id,
@@ -293,6 +321,18 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
                 "fee_head_id": rule.fee_head_id,
                 "calendar_type": (
                     getattr(program, "calendar_type", None) or "semester"
+                ),
+                **(
+                    {
+                        "tuition_prorated_for_exemptions": True,
+                        "exemption_total_papers": proration_meta["total_papers"],
+                        "exemption_exempted_papers": proration_meta["exempted_papers"],
+                        "exemption_non_exempted_papers": proration_meta[
+                            "non_exempted_papers"
+                        ],
+                    }
+                    if proration_meta and proration_meta.get("exempted_papers", 0) > 0
+                    else {}
                 ),
             },
         )

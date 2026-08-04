@@ -53,6 +53,11 @@ urlpatterns = [
         name="hostel-allocation-transfer",
     ),
     path(
+        "students/eligibility/",
+        StudentEligibilityView.as_view(),
+        name="hostel-student-eligibility-lookup",
+    ),
+    path(
         "students/<int:student_id>/eligibility/",
         StudentEligibilityView.as_view(),
         name="hostel-student-eligibility",

@@ -124,7 +124,11 @@ class HostelAllocationSerializer(serializers.ModelSerializer):
     building_code = serializers.CharField(
         source="bed.room.floor.building.code", read_only=True
     )
+    block_id = serializers.CharField(
+        source="bed.room.floor.building.external_block_id", read_only=True
+    )
     floor_name = serializers.CharField(source="bed.room.floor.name", read_only=True)
+    floor_code = serializers.CharField(source="bed.room.floor.code", read_only=True)
     hostel_name = serializers.CharField(
         source="bed.room.floor.building.hostel.name", read_only=True
     )
@@ -148,7 +152,9 @@ class HostelAllocationSerializer(serializers.ModelSerializer):
             "room_code",
             "building_name",
             "building_code",
+            "block_id",
             "floor_name",
+            "floor_code",
             "hostel_name",
             "academic_year",
             "term_number",

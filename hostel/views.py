@@ -31,6 +31,77 @@ from .serializers import (
 from .services import assign_bed, end_allocation, transfer_bed
 
 
+def _student_base_qs():
+    return AdmittedStudent.objects.select_related(
+        "application", "admitted_campus", "admitted_program"
+    )
+
+
+def _student_display_name(student: AdmittedStudent) -> str:
+    app = getattr(student, "application", None)
+    if app:
+        parts = [
+            getattr(app, "first_name", "") or "",
+            getattr(app, "middle_name", "") or "",
+            getattr(app, "last_name", "") or "",
+        ]
+        name = " ".join(p for p in parts if p).strip()
+        if name:
+            return name
+    return student.reg_no or student.student_id or str(student.pk)
+
+
+def search_admitted_students(identifier, *, limit: int = 20):
+    """
+    Find admitted students by pk, student_id, reg_no, or name.
+    Exact id/reg matches first; name matches are partial (icontains).
+    """
+    raw = str(identifier or "").strip()
+    if not raw:
+        return []
+    qs = _student_base_qs().filter(is_admitted=True)
+    if raw.isdigit():
+        found = qs.filter(pk=int(raw)).first()
+        if found:
+            return [found]
+    exact = list(
+        qs.filter(Q(student_id__iexact=raw) | Q(reg_no__iexact=raw))[:limit]
+    )
+    if exact:
+        return exact
+    compact = " ".join(raw.split())
+    exact = list(
+        qs.filter(Q(student_id__iexact=compact) | Q(reg_no__iexact=compact))[:limit]
+    )
+    if exact:
+        return exact
+
+    # Name search — supports full or partial names (e.g. "Alyao", "Jacqueline Alyao").
+    tokens = [t for t in compact.split() if t]
+    name_q = Q()
+    for token in tokens:
+        name_q &= (
+            Q(application__first_name__icontains=token)
+            | Q(application__middle_name__icontains=token)
+            | Q(application__last_name__icontains=token)
+        )
+    # Also allow matching against student_id / reg_no substrings.
+    loose = (
+        Q(student_id__icontains=compact)
+        | Q(reg_no__icontains=compact)
+        | name_q
+    )
+    return list(qs.filter(loose).distinct()[:limit])
+
+
+def resolve_admitted_student(identifier):
+    """Return a single match, or None if zero/ambiguous."""
+    matches = search_admitted_students(identifier, limit=5)
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
 def _allocation_qs():
     return HostelAllocation.objects.select_related(
         "student",
@@ -399,13 +470,71 @@ class InventoryImportView(APIView):
 
 
 class StudentEligibilityView(APIView):
+    """
+    GET /api/hostel/students/<pk>/eligibility/
+    GET /api/hostel/students/eligibility/?q=<pk|student_id|reg_no>
+    """
+
     permission_classes = [IsAuthenticated, CanAssignHostel]
 
-    def get(self, request, student_id):
-        student = get_object_or_404(
-            AdmittedStudent.objects.select_related("application", "admitted_campus"),
-            pk=student_id,
+    def get(self, request, student_id=None):
+        lookup = student_id if student_id is not None else (
+            request.query_params.get("q")
+            or request.query_params.get("student")
+            or request.query_params.get("student_id")
         )
+        if not lookup:
+            return Response(
+                {
+                    "detail": (
+                        "Provide student name, pk, student number, or reg. no. (?q=...)."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Path pk is always unique; query search may return multiple name matches.
+        if student_id is not None:
+            matches = search_admitted_students(student_id, limit=1)
+        else:
+            matches = search_admitted_students(lookup, limit=20)
+
+        if not matches:
+            return Response(
+                {
+                    "detail": (
+                        f"No admitted student found for '{lookup}'. "
+                        "Try name, numeric id, student number, or reg. no."
+                    )
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        if len(matches) > 1:
+            return Response(
+                {
+                    "ambiguous": True,
+                    "detail": (
+                        f"Multiple students match '{lookup}'. Pick one from the list."
+                    ),
+                    "matches": [
+                        {
+                            "student_id": s.pk,
+                            "student_number": s.student_id,
+                            "reg_no": s.reg_no,
+                            "name": _student_display_name(s),
+                            "program": (
+                                s.admitted_program.name if s.admitted_program_id else None
+                            ),
+                            "campus": (
+                                s.admitted_campus.name if s.admitted_campus_id else None
+                            ),
+                        }
+                        for s in matches
+                    ],
+                }
+            )
+
+        student = matches[0]
         elig = student_hostel_eligibility(student)
         active = (
             _allocation_qs()
@@ -416,7 +545,9 @@ class StudentEligibilityView(APIView):
             {
                 **elig,
                 "student_id": student.pk,
+                "student_number": student.student_id,
                 "reg_no": student.reg_no,
+                "name": _student_display_name(student),
                 "active_allocation": HostelAllocationSerializer(active).data if active else None,
             }
         )
@@ -426,7 +557,7 @@ class AssignBedView(APIView):
     permission_classes = [IsAuthenticated, CanAssignHostel]
 
     def post(self, request):
-        student_id = request.data.get("student_id")
+        student_id = request.data.get("student_id") or request.data.get("student")
         bed_id = request.data.get("bed_id")
         academic_year = request.data.get("academic_year")
         term_number = request.data.get("term_number")
@@ -439,10 +570,17 @@ class AssignBedView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        student = get_object_or_404(
-            AdmittedStudent.objects.select_related("application", "admitted_campus"),
-            pk=student_id,
-        )
+        student = resolve_admitted_student(student_id)
+        if student is None:
+            return Response(
+                {
+                    "detail": (
+                        f"No admitted student found for '{student_id}'. "
+                        "Use pk, student number, or reg. no."
+                    )
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
         bed = get_object_or_404(
             Bed.objects.select_related(
                 "room",
@@ -685,7 +823,11 @@ class StudentMyRoomView(APIView):
 
     def get(self, request):
         student = (
-            AdmittedStudent.objects.filter(student_user=request.user)
+            AdmittedStudent.objects.filter(
+                Q(student_user=request.user)
+                | Q(reg_no__iexact=request.user.username)
+                | Q(student_id__iexact=request.user.username)
+            )
             .select_related(
                 "application",
                 "admitted_program",

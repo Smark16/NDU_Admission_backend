@@ -251,6 +251,48 @@ class Command(BaseCommand):
         for k, v in summary.items():
             w(f"  {k}: {v}")
 
+        w("\n--- Tuition proration from course exemptions (Accounts rule) ---")
+        w("  Rule: semester TUITION only ÷ papers in semester × papers still taken.")
+        w("  Functional fees are never prorated. Exempted papers billed separately at")
+        w("  UGX 150,000 (non-Ndejje) / UGX 100,000 (Ndejje alumni) each.")
+        from admissions.exemption_services import (
+            EXEMPTION_COURSE_FEE_ALUMNI_UGX,
+            EXEMPTION_COURSE_FEE_STANDARD_UGX,
+            prorate_tuition_for_course_exemptions,
+            semester_paper_counts_for_exemptions,
+        )
+        from decimal import Decimal
+
+        w(f"  Configured rates: standard={EXEMPTION_COURSE_FEE_STANDARD_UGX} "
+          f"alumni={EXEMPTION_COURSE_FEE_ALUMNI_UGX}")
+        seen_terms: set[tuple[int, int]] = set()
+        for rule in _rules_for_student(student):
+            code = (rule.fee_head.code or "").upper() if rule.fee_head_id else ""
+            if code != "TUITION_FEE" or not rule.semester_id:
+                continue
+            y, t = rule.semester.year_of_study, rule.semester.term_number
+            if (y, t) in seen_terms:
+                continue
+            seen_terms.add((y, t))
+            counts = semester_paper_counts_for_exemptions(
+                student, year_of_study=y, term_number=t
+            )
+            if counts is None:
+                w(f"  Y{y}T{t}: no curriculum papers / no enrollment — tuition left as scheduled")
+                continue
+            original = Decimal(str(rule.amount or 0))
+            prorated, _ = prorate_tuition_for_course_exemptions(
+                student, original, year_of_study=y, term_number=t
+            )
+            if counts["exempted_papers"] <= 0:
+                w(f"  Y{y}T{t}: {counts['total_papers']} papers, 0 exempted — "
+                  f"full tuition {original} (no proration)")
+            else:
+                w(f"  Y{y}T{t}: {counts['total_papers']} papers, "
+                  f"{counts['exempted_papers']} exempted, "
+                  f"{counts['non_exempted_papers']} remaining — "
+                  f"tuition {original} -> {prorated}")
+
         w("\n--- Full finance allocation (what the portal/bursar actually show) ---")
         from payments.student_portal_finance import student_finance_totals
 

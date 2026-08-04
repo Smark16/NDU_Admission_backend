@@ -4342,10 +4342,37 @@ class StudentChangeRequestListCreate(APIView):
                 status=400
             )
 
-        serializer = AdmissionChangeRequestCreateSerializer(data=request.data)
+        # Multipart forms send JSON blobs as strings — parse before serializer
+        # validation so ListField/DictField fields are not required on the wire.
+        # Note: QueryDict.pop() returns a *list* of values, not a single string.
+        raw_data = request.data.copy() if hasattr(request.data, "copy") else dict(request.data)
+        if hasattr(raw_data, "pop"):
+            try:
+                raw_papers = raw_data.pop("exemption_papers")
+            except KeyError:
+                raw_papers = None
+        else:
+            raw_papers = raw_data.pop("exemption_papers", None) if isinstance(raw_data, dict) else None
+
+        if isinstance(raw_papers, (list, tuple)):
+            raw_papers = raw_papers[0] if raw_papers else None
+
+        exemption_papers: list[dict] = []
+        if raw_papers not in (None, ""):
+            try:
+                parsed = json.loads(raw_papers) if isinstance(raw_papers, str) else raw_papers
+            except (TypeError, ValueError):
+                return Response({"detail": "Invalid 'exemption_papers' payload."}, status=400)
+            if isinstance(parsed, list):
+                exemption_papers = [
+                    p for p in parsed
+                    if isinstance(p, dict) and str(p.get("course_code") or "").strip()
+                ]
+
+        serializer = AdmissionChangeRequestCreateSerializer(data=raw_data)
         serializer.is_valid(raise_exception=True)
         data = dict(serializer.validated_data)
-        curriculum_line_ids = data.pop('curriculum_line_ids', None)
+        curriculum_line_ids = data.pop('curriculum_line_ids', None) or []
 
         if change_type == 'exemption':
             from admissions.exemption_services import (
@@ -4354,23 +4381,16 @@ class StudentChangeRequestListCreate(APIView):
             )
             from Programs.models import ProgramCurriculumLine
 
+            # Form fee is raised on submit (not when the student opens the form).
+            # Payment may land later via SchoolPay — do not block submission.
             access = ensure_exemption_form_fee_access(admission, charged_by=None)
-            if not access["paid"]:
-                return Response(
-                    {
-                        "detail": (
-                            f"Pay the exemption form fee of UGX {int(access['amount']):,} "
-                            "via SchoolPay before submitting."
-                        ),
-                        "form_fee": access,
-                    },
-                    status=402,
-                )
 
+            # Optional curriculum-line IDs (legacy checkbox UI). Free-text papers
+            # from the typed form are preferred and do not require curriculum match.
             eligible = {
                 c["id"]: c for c in list_eligible_exemption_courses(admission)
             }
-            invalid = [i for i in (curriculum_line_ids or []) if i not in eligible]
+            invalid = [i for i in curriculum_line_ids if i not in eligible]
             if invalid:
                 return Response(
                     {"detail": f"Invalid or ineligible curriculum line(s): {invalid}"},
@@ -4393,6 +4413,12 @@ class StudentChangeRequestListCreate(APIView):
                         if str(v).strip()
                     }
 
+            if not curriculum_line_ids and not exemption_papers:
+                return Response(
+                    {"detail": "Enter at least one course/paper to exempt."},
+                    status=400,
+                )
+
             valid_doc_types = {c[0] for c in ExemptionSupportingDocument.DOC_TYPE_CHOICES}
             uploaded_files = request.FILES.getlist("documents")
             doc_types_raw = request.data.get("document_types")
@@ -4407,6 +4433,14 @@ class StudentChangeRequestListCreate(APIView):
                 if isinstance(parsed_types, list):
                     doc_types = [str(t) for t in parsed_types]
 
+            def _int_or_none(value):
+                try:
+                    if value in (None, ""):
+                        return None
+                    return int(value)
+                except (TypeError, ValueError):
+                    return None
+
             with transaction.atomic():
                 obj = AdmissionChangeRequest.objects.create(
                     admitted_student=admission,
@@ -4417,21 +4451,34 @@ class StudentChangeRequestListCreate(APIView):
                     change_type="exemption",
                     reason=data.get("reason", ""),
                     form_fee_charge_id=access["charge_id"],
-                    form_fee_paid_at=timezone.now(),
+                    form_fee_paid_at=timezone.now() if access.get("paid") else None,
+                    exemption_attained_at=data.get("exemption_attained_at", ""),
+                    exemption_academic_years=data.get("exemption_academic_years", ""),
                 )
-                lines = ProgramCurriculumLine.objects.filter(
-                    pk__in=curriculum_line_ids
-                ).select_related("catalog_course")
-                for line in lines:
-                    course = line.catalog_course
+                if curriculum_line_ids:
+                    lines = ProgramCurriculumLine.objects.filter(
+                        pk__in=curriculum_line_ids
+                    ).select_related("catalog_course")
+                    for line in lines:
+                        course = line.catalog_course
+                        ExemptionRequestLine.objects.create(
+                            change_request=obj,
+                            curriculum_line=line,
+                            course_code=course.code if course else "",
+                            course_name=(course.title if course else "") or "",
+                            year_of_study=line.year_of_study,
+                            term_number=line.term_number,
+                            score_obtained=scores_map.get(str(line.pk), ""),
+                        )
+                for paper in exemption_papers:
                     ExemptionRequestLine.objects.create(
                         change_request=obj,
-                        curriculum_line=line,
-                        course_code=course.code if course else "",
-                        course_name=course.name if course else "",
-                        year_of_study=line.year_of_study,
-                        term_number=line.term_number,
-                        score_obtained=scores_map.get(str(line.pk), ""),
+                        curriculum_line=None,
+                        course_code=str(paper.get("course_code") or "").strip()[:40],
+                        course_name=str(paper.get("course_name") or "").strip()[:255],
+                        year_of_study=_int_or_none(paper.get("year_of_study")),
+                        term_number=_int_or_none(paper.get("term_number")),
+                        score_obtained=str(paper.get("score_obtained") or "").strip()[:20],
                     )
                 for idx, upload in enumerate(uploaded_files):
                     dtype = doc_types[idx] if idx < len(doc_types) else ExemptionSupportingDocument.DOC_OTHER
@@ -4450,10 +4497,11 @@ class StudentChangeRequestListCreate(APIView):
                 .prefetch_related("exemption_lines", "supporting_documents")
                 .get(pk=obj.pk)
             )
-            return Response(
-                AdmissionChangeRequestSerializer(obj, context={"request": request}).data,
-                status=201,
-            )
+            payload = AdmissionChangeRequestSerializer(
+                obj, context={"request": request}
+            ).data
+            payload["form_fee"] = access
+            return Response(payload, status=201)
 
         obj = AdmissionChangeRequest.objects.create(
             admitted_student=admission,
@@ -4483,12 +4531,13 @@ class ExemptionFormFeeAccessView(APIView):
             return None
 
     def get(self, request):
-        from admissions.exemption_services import ensure_exemption_form_fee_access
+        from admissions.exemption_services import exemption_form_fee_status
 
         admission = self._get_admission(request.user)
         if not admission:
             return Response({"detail": "No active admission found."}, status=404)
-        return Response(ensure_exemption_form_fee_access(admission))
+        # Status only — the UGX 50k bill is created when the student submits.
+        return Response(exemption_form_fee_status(admission))
 
     def post(self, request):
         return self.get(request)
@@ -4535,15 +4584,20 @@ class ExemptionEligibleCoursesView(APIView):
 
     def get(self, request):
         from admissions.exemption_services import (
-            ensure_exemption_form_fee_access,
+            exemption_form_fee_status,
             list_eligible_exemption_courses,
         )
 
         admission = self._get_admission(request.user)
         if not admission:
             return Response({"detail": "No active admission found."}, status=404)
-        access = ensure_exemption_form_fee_access(admission)
-        courses = list_eligible_exemption_courses(admission) if access["paid"] else []
+        # Do NOT create the 50k bill here — that happens on submit.
+        # Courses list is optional (students now type papers as free-text fields).
+        access = exemption_form_fee_status(admission)
+        try:
+            courses = list_eligible_exemption_courses(admission)
+        except Exception:
+            courses = []
         return Response({"form_fee": access, "courses": courses})
 
 
@@ -4612,6 +4666,63 @@ class AdminChangeRequestList(APIView):
         )
 
 
+class AdminExemptionCurriculumView(APIView):
+    """
+    Admin/HOD: programme curriculum for an exemption request, plus suggested
+    matches for each typed paper (so reviewers can map before approving).
+    """
+
+    permission_classes = [IsAuthenticated, CanViewAdmissionChangeRequests]
+
+    def get(self, request, pk):
+        from admissions.exemption_services import (
+            list_programme_curriculum_for_review,
+            suggest_curriculum_match,
+        )
+
+        req_obj = get_object_or_404(
+            AdmissionChangeRequest.objects.select_related(
+                "admitted_student__admitted_program"
+            ).prefetch_related("exemption_lines"),
+            pk=pk,
+            change_type="exemption",
+        )
+        qs = filter_admission_change_requests_for_user(
+            AdmissionChangeRequest.objects.filter(pk=req_obj.pk),
+            request.user,
+        )
+        if not qs.exists():
+            return Response({"detail": "Not found."}, status=404)
+
+        curriculum = list_programme_curriculum_for_review(req_obj.admitted_student)
+        papers = []
+        for line in req_obj.exemption_lines.all():
+            suggested = line.curriculum_line_id or suggest_curriculum_match(
+                line.course_code, curriculum
+            )
+            papers.append(
+                {
+                    "id": line.id,
+                    "course_code": line.course_code,
+                    "course_name": line.course_name,
+                    "year_of_study": line.year_of_study,
+                    "term_number": line.term_number,
+                    "score_obtained": line.score_obtained,
+                    "curriculum_line_id": line.curriculum_line_id,
+                    "suggested_curriculum_line_id": suggested,
+                }
+            )
+        program = req_obj.admitted_student.admitted_program
+        return Response(
+            {
+                "change_request_id": req_obj.id,
+                "programme": program.name if program else None,
+                "curriculum": curriculum,
+                "requested_papers": papers,
+            }
+        )
+
+
 class AdminChangeRequestReview(APIView):
     """Admin: approve or reject a specific request."""
     permission_classes = [IsAuthenticated]
@@ -4637,52 +4748,101 @@ class AdminChangeRequestReview(APIView):
                     {"detail": "You do not have permission to review exemption requests."},
                     status=403,
                 )
+            # The alumni flag drives the per-paper exemption fee rate, so the
+            # HOD/Dean gets a final chance to confirm/correct it right before
+            # approving — same request body as the approve/reject action.
+            if "exemption_is_alumnus" in request.data:
+                req_obj.exemption_is_alumnus = bool(request.data.get("exemption_is_alumnus"))
+            if "exemption_attained_at" in request.data:
+                req_obj.exemption_attained_at = (
+                    request.data.get("exemption_attained_at") or ""
+                ).strip()[:255]
+            if "exemption_academic_years" in request.data:
+                req_obj.exemption_academic_years = (
+                    request.data.get("exemption_academic_years") or ""
+                ).strip()[:50]
         elif not user_can_manage_admission_change_requests(request.user):
             return Response(
                 {"detail": "You do not have permission to review this change request."},
                 status=403,
             )
 
-        with transaction.atomic():
-            req_obj.status = 'approved' if action == 'approve' else 'rejected'
-            req_obj.reviewed_by = request.user
-            req_obj.reviewed_at = timezone.now()  
-            req_obj.review_notes = review_notes
-            if action == 'approve':
-                admission = req_obj.admitted_student
-                if req_obj.change_type == 'program' and req_obj.new_program:
-                    from admissions.placement_sync import apply_program_campus_study_mode
+        try:
+            with transaction.atomic():
+                # Apply curriculum side-effects first so a failed match/override
+                # never leaves the request stuck as approved.
+                if action == 'approve':
+                    admission = req_obj.admitted_student
+                    if req_obj.change_type == 'program' and req_obj.new_program:
+                        from admissions.placement_sync import apply_program_campus_study_mode
 
-                    apply_program_campus_study_mode(
-                        admission,
-                        program=req_obj.new_program,
-                        regenerate_reg_no=True,
-                    )
-                elif req_obj.change_type == 'campus' and req_obj.new_campus:
-                    from admissions.placement_sync import apply_program_campus_study_mode
+                        apply_program_campus_study_mode(
+                            admission,
+                            program=req_obj.new_program,
+                            regenerate_reg_no=True,
+                        )
+                    elif req_obj.change_type == 'campus' and req_obj.new_campus:
+                        from admissions.placement_sync import apply_program_campus_study_mode
 
-                    apply_program_campus_study_mode(
-                        admission,
-                        campus=req_obj.new_campus,
-                        regenerate_reg_no=True,
-                    )
-                elif req_obj.change_type == 'study_mode' and req_obj.new_study_mode:
-                    from admissions.placement_sync import apply_program_campus_study_mode
+                        apply_program_campus_study_mode(
+                            admission,
+                            campus=req_obj.new_campus,
+                            regenerate_reg_no=True,
+                        )
+                    elif req_obj.change_type == 'study_mode' and req_obj.new_study_mode:
+                        from admissions.placement_sync import apply_program_campus_study_mode
 
-                    apply_program_campus_study_mode(
-                        admission,
-                        study_mode=req_obj.new_study_mode,
-                        regenerate_reg_no=True,
-                    )
-                elif req_obj.change_type == 'exemption':
-                    from admissions.exemption_services import apply_exemption_overrides
+                        apply_program_campus_study_mode(
+                            admission,
+                            study_mode=req_obj.new_study_mode,
+                            regenerate_reg_no=True,
+                        )
+                    elif req_obj.change_type == 'exemption':
+                        from admissions.exemption_services import (
+                            apply_exemption_overrides,
+                            apply_line_decisions,
+                            apply_line_matches,
+                        )
+                        from admissions.models import ExemptionRequestLine
 
-                    try:
+                        # Preferred: per-paper approve/reject decisions.
+                        # Legacy: line_matches + approve-all still accepted.
+                        decisions = request.data.get("line_decisions")
+                        if decisions is not None:
+                            apply_line_decisions(req_obj, decisions)
+                        else:
+                            matches = request.data.get("line_matches") or []
+                            if matches:
+                                apply_line_matches(req_obj, matches)
+                            # Approve every paper when no per-line decisions sent.
+                            for line in req_obj.exemption_lines.all():
+                                line.decision = ExemptionRequestLine.DECISION_APPROVED
+                                line.save(update_fields=["decision"])
                         apply_exemption_overrides(req_obj, decided_by=request.user)
-                    except ValueError as exc:
-                        return Response({"detail": str(exc)}, status=400)
 
-            req_obj.save()
+                if action == "approve" and req_obj.change_type == "exemption":
+                    from admissions.models import ExemptionRequestLine
+
+                    approved_n = req_obj.exemption_lines.filter(
+                        decision=ExemptionRequestLine.DECISION_APPROVED
+                    ).count()
+                    # Partial OK: request is "approved" if any paper passed;
+                    # "rejected" only when every paper was rejected.
+                    req_obj.status = "approved" if approved_n else "rejected"
+                else:
+                    req_obj.status = "approved" if action == "approve" else "rejected"
+                    if action == "reject" and req_obj.change_type == "exemption":
+                        from admissions.models import ExemptionRequestLine
+
+                        req_obj.exemption_lines.update(
+                            decision=ExemptionRequestLine.DECISION_REJECTED,
+                        )
+                req_obj.reviewed_by = request.user
+                req_obj.reviewed_at = timezone.now()
+                req_obj.review_notes = review_notes
+                req_obj.save()
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
 
         req_obj = (
             AdmissionChangeRequest.objects.select_related("reviewed_by")
@@ -4690,6 +4850,83 @@ class AdminChangeRequestReview(APIView):
             .get(pk=req_obj.pk)
         )
         return Response(AdmissionChangeRequestSerializer(req_obj, context={"request": request}).data)
+
+
+class ExemptionAdvancePositionView(APIView):
+    """
+    HOD/Dean-confirmed action: when an approved course exemption now covers an
+    entire term/year, advance the student's current academic position to the
+    first term that still has non-exempted work. Nothing moves automatically —
+    the caller must confirm the exact (year, term) suggested by
+    suggest_promotion_after_exemption(), which is echoed back on the change
+    request's `suggested_promotion` field.
+
+    POST /api/admissions/change_requests/<pk>/advance_position/
+    Body: { "year_of_study": int, "term_number": int }
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        from admissions.exemption_services import (
+            advance_student_position_for_exemption,
+            suggest_promotion_after_exemption,
+        )
+
+        req_obj = get_object_or_404(AdmissionChangeRequest, pk=pk, change_type="exemption")
+
+        if not user_can_approve_exemption_requests(request.user):
+            return Response(
+                {"detail": "You do not have permission to advance a student's academic position."},
+                status=403,
+            )
+        if req_obj.status != "approved":
+            return Response(
+                {"detail": "The exemption request must be approved before advancing the student."},
+                status=400,
+            )
+
+        suggestion = suggest_promotion_after_exemption(req_obj)
+        if not suggestion:
+            return Response(
+                {"detail": "No advancement is currently suggested for this student."},
+                status=400,
+            )
+
+        try:
+            to_year = int(request.data.get("year_of_study"))
+            to_term = int(request.data.get("term_number"))
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "year_of_study and term_number are required integers."},
+                status=400,
+            )
+
+        # Only allow confirming exactly what was suggested — this stays a
+        # deliberate human click on a system-computed value, not free-form entry.
+        if (to_year, to_term) != (
+            suggestion["suggested_year_of_study"],
+            suggestion["suggested_term_number"],
+        ):
+            return Response(
+                {
+                    "detail": "year_of_study/term_number does not match the current suggestion.",
+                    "suggested_promotion": suggestion,
+                },
+                status=400,
+            )
+
+        result = advance_student_position_for_exemption(
+            req_obj, to_year=to_year, to_term=to_term, decided_by=request.user
+        )
+        req_obj.refresh_from_db()
+        return Response(
+            {
+                **result,
+                "review_notes": req_obj.review_notes,
+            }
+        )
+
 
 # Generate reg no
 @api_view(['POST'])

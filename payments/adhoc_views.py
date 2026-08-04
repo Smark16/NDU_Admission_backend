@@ -342,13 +342,25 @@ class StudentAdHocChargeListCreate(APIView):
             pk=student_id,
         )
 
+        # entry_kind:
+        #   charge (default) — pending ad-hoc bill (increases balance)
+        #   credit — completed payment credit (reduces balance; use for legacy
+        #            prior-paid / write-downs). Never store negative amounts.
+        entry_kind = (request.data.get("entry_kind") or "charge").strip().lower()
+        if entry_kind not in ("charge", "credit"):
+            return Response(
+                {"detail": "entry_kind must be 'charge' or 'credit'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         fee_head_id = request.data.get("fee_head_id")
         amount      = request.data.get("amount")
         label       = (request.data.get("label") or "").strip()
         currency    = (request.data.get("currency") or "UGX").strip().upper()
         notes       = request.data.get("notes", "")
+        reference   = (request.data.get("reference") or "").strip()
 
-        if not fee_head_id:
+        if entry_kind == "charge" and not fee_head_id:
             return Response({"detail": "fee_head_id is required."}, status=status.HTTP_400_BAD_REQUEST)
         if not amount:
             return Response({"detail": "amount is required."}, status=status.HTTP_400_BAD_REQUEST)
@@ -360,7 +372,63 @@ class StudentAdHocChargeListCreate(APIView):
             if amount <= 0:
                 raise ValueError
         except (TypeError, ValueError):
-            return Response({"detail": "amount must be a positive number."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {
+                    "detail": (
+                        "amount must be a positive number. "
+                        "To reduce what a student owes, use entry_kind='credit' "
+                        "(do not enter a negative bill)."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if entry_kind == "credit":
+            fee_head = None
+            if fee_head_id not in (None, ""):
+                fee_head = get_object_or_404(FeeHead, pk=fee_head_id, is_active=True)
+            ref = reference or f"manual-credit-{student.pk}-{timezone.now().strftime('%Y%m%d%H%M%S')}"
+            txn_id = f"MANUAL-CREDIT-{student.pk}-{ref}"[:100]
+            if StudentTuitionPayment.objects.filter(transaction_id=txn_id).exists():
+                return Response(
+                    {
+                        "detail": (
+                            f"A credit with reference '{ref}' already exists for this student. "
+                            "Use a different reference."
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            try:
+                credit = StudentTuitionPayment.objects.create(
+                    student=student,
+                    source="scholarship",
+                    fee_head=fee_head,
+                    label=label[:200],
+                    amount=amount,
+                    currency=currency[:3],
+                    payment_method="other",
+                    status="completed",
+                    transaction_id=txn_id,
+                    payment_reference=ref[:100],
+                    receipt_number=ref[:100],
+                    paid_at=timezone.now(),
+                    verified_by=request.user,
+                    verified_at=timezone.now(),
+                    notes=(
+                        (notes or "").strip()
+                        or "Manual credit / prior-paid adjustment (positive amount; reduces balance)."
+                    ),
+                    charged_by=request.user,
+                )
+            except Exception as exc:
+                return Response(
+                    {"detail": f"Could not create credit: {exc}"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            payload = _charge_to_dict(credit)
+            payload["entry_kind"] = "credit"
+            return Response(payload, status=status.HTTP_201_CREATED)
 
         fee_head = get_object_or_404(FeeHead, pk=fee_head_id, is_active=True)
 
@@ -396,7 +464,9 @@ class StudentAdHocChargeListCreate(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        return Response(_charge_to_dict(charge), status=status.HTTP_201_CREATED)
+        payload = _charge_to_dict(charge)
+        payload["entry_kind"] = "charge"
+        return Response(payload, status=status.HTTP_201_CREATED)
 
 
 class StudentAdHocChargeDetailView(APIView):
@@ -668,6 +738,7 @@ class StudentExemptionChargesCreateView(APIView):
         from admissions.exemption_services import (
             EXEMPTION_COURSE_FEE_CODE,
             ensure_exemption_fee_heads,
+            exemption_course_fee_rate,
         )
         from admissions.models import AdmissionChangeRequest
 
@@ -729,6 +800,10 @@ class StudentExemptionChargesCreateView(APIView):
 
         _, course_head = ensure_exemption_fee_heads()
         created = []
+        # Standard/alumni per-paper rate, resolved once for this request — used
+        # whenever a line doesn't send an explicit override amount, so billing
+        # no longer depends on someone typing the right number from memory.
+        default_rate = exemption_course_fee_rate(req)
 
         for raw in lines:
             code = (raw.get("course_code") or "").strip()
@@ -751,13 +826,16 @@ class StudentExemptionChargesCreateView(APIView):
             if name:
                 label_base = f"{label_base} ({name})"
 
+            raw_amount = raw.get("amount")
+            amount = default_rate if raw_amount in (None, "") else raw_amount
+
             try:
                 created.extend(
                     _create_split_adhoc_charges(
                         student=student,
                         fee_head=course_head,
                         label_base=label_base,
-                        amount=raw.get("amount"),
+                        amount=amount,
                         currency="UGX",
                         notes=(
                             f"Exemption change request #{req.id}; "

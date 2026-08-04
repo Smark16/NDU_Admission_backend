@@ -239,6 +239,16 @@ urlpatterns = [
     path('change_requests/all', views.AdminChangeRequestList.as_view(), name='admin_change_requests'),
     path('change_requests/<int:pk>/review', views.AdminChangeRequestReview.as_view(), name='review_change_request'),
     path(
+        'change_requests/<int:pk>/curriculum',
+        views.AdminExemptionCurriculumView.as_view(),
+        name='exemption_request_curriculum',
+    ),
+    path(
+        'change_requests/<int:pk>/advance_position',
+        views.ExemptionAdvancePositionView.as_view(),
+        name='exemption_advance_position',
+    ),
+    path(
         'change_requests/exemption/fee_report',
         views.ExemptionFormFeeReportView.as_view(),
         name='exemption_form_fee_report',

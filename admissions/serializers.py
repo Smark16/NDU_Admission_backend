@@ -1107,6 +1107,8 @@ class NotificationSerializer(serializers.ModelSerializer):
 
 # ── Admission Change Request ──────────────────────────────────────────────────
 class ExemptionRequestLineSerializer(serializers.ModelSerializer):
+    decision_display = serializers.CharField(source="get_decision_display", read_only=True)
+
     class Meta:
         model = ExemptionRequestLine
         fields = [
@@ -1117,6 +1119,9 @@ class ExemptionRequestLineSerializer(serializers.ModelSerializer):
             "year_of_study",
             "term_number",
             "score_obtained",
+            "decision",
+            "decision_display",
+            "decision_note",
         ]
 
 
@@ -1158,6 +1163,9 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
     exemption_lines = ExemptionRequestLineSerializer(many=True, read_only=True)
     supporting_documents = serializers.SerializerMethodField()
     form_fee_paid = serializers.SerializerMethodField()
+    exemption_course_fee_rate = serializers.SerializerMethodField()
+    exemption_course_fee_total = serializers.SerializerMethodField()
+    suggested_promotion = serializers.SerializerMethodField()
 
     class Meta:
         model = AdmissionChangeRequest
@@ -1170,6 +1178,9 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
             'reason', 'review_notes', 'reviewed_by_name', 'reviewed_at', 'created_at',
             'exemption_lines', 'supporting_documents',
             'form_fee_charge_id', 'form_fee_paid_at', 'form_fee_paid',
+            'exemption_attained_at', 'exemption_academic_years', 'exemption_is_alumnus',
+            'exemption_course_fee_rate', 'exemption_course_fee_total',
+            'suggested_promotion',
         ]
 
     def get_supporting_documents(self, obj):
@@ -1193,22 +1204,46 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
             return None
         return bool(obj.form_fee_paid_at)
 
+    def get_exemption_course_fee_rate(self, obj):
+        if obj.change_type != "exemption":
+            return None
+        from admissions.exemption_services import exemption_course_fee_rate
+
+        return float(exemption_course_fee_rate(obj))
+
+    def get_exemption_course_fee_total(self, obj):
+        if obj.change_type != "exemption":
+            return None
+        from admissions.exemption_services import exemption_course_fee_total
+
+        return float(exemption_course_fee_total(obj))
+
+    def get_suggested_promotion(self, obj):
+        if obj.change_type != "exemption" or obj.status != "approved":
+            return None
+        from admissions.exemption_services import suggest_promotion_after_exemption
+
+        try:
+            return suggest_promotion_after_exemption(obj)
+        except Exception:
+            return None
+
 
 class AdmissionChangeRequestCreateSerializer(serializers.ModelSerializer):
     """Write serializer — student submits a change request."""
     curriculum_line_ids = serializers.ListField(
         child=serializers.IntegerField(min_value=1),
         required=False,
-        allow_empty=False,
+        allow_empty=True,
         write_only=True,
     )
-
     class Meta:
         model = AdmissionChangeRequest
         fields = [
             'change_type', 'new_program', 'new_campus', 'new_study_mode',
             'requested_year', 'requested_semester', 'reason',
             'curriculum_line_ids',
+            'exemption_attained_at', 'exemption_academic_years',
         ]
 
     def validate(self, data):
@@ -1228,13 +1263,14 @@ class AdmissionChangeRequestCreateSerializer(serializers.ModelSerializer):
             if not data.get('requested_year'):
                 raise serializers.ValidationError({'requested_year': 'Year of study is required for a dead year request.'})
         if ct == 'exemption':
-            ids = data.get('curriculum_line_ids') or []
-            if not ids:
-                raise serializers.ValidationError(
-                    {'curriculum_line_ids': 'Select at least one course unit to exempt.'}
-                )
+            # Papers arrive as multipart JSON string (exemption_papers) and are
+            # validated in the view — serializer only checks the common fields.
             if not (data.get('reason') or '').strip():
                 raise serializers.ValidationError({'reason': 'Reason is required for an exemption request.'})
+            if not (data.get('exemption_attained_at') or '').strip():
+                raise serializers.ValidationError(
+                    {'exemption_attained_at': 'Institution where the credit was earned is required.'}
+                )
         return data
 
 # =========================================Additionsl qualifficaations ===================================
