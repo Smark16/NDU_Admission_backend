@@ -16,10 +16,10 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db.models import Q
 from django.utils import timezone
 
-from admissions.models import AdmittedStudent
+from admissions.models import AdmissionChangeRequest, AdmittedStudent
 from payments.billing_visibility import effective_billing_date
 from payments.fee_exemptions import active_fee_exemptions_for_student
-from payments.models import ScholarshipAward, StudentFeeExemption, StudentTuitionPayment, TuitionLedger
+from payments.models import FeeHead, ScholarshipAward, StudentFeeExemption, StudentTuitionPayment, TuitionLedger
 from payments.scholarship_services import (
     already_credited_for_fee_head,
     demand_amount_for_fee_head,
@@ -107,6 +107,44 @@ class Command(BaseCommand):
             w(f"  REVOKED fee_head={row.fee_head.code} reason={row.reason!r} revoked_at={row.revoked_at}")
 
         # ------------------------------------------------------------------
+        # 1b. Academic course-exemption change requests (the Dean-approval flow)
+        # ------------------------------------------------------------------
+        w("\n--- AdmissionChangeRequest (change_type=exemption) ---")
+        change_requests = list(
+            AdmissionChangeRequest.objects.filter(
+                admitted_student=student, change_type="exemption"
+            )
+            .select_related("form_fee_charge", "reviewed_by")
+            .prefetch_related("exemption_lines")
+            .order_by("-created_at")
+        )
+        if not change_requests:
+            w("  (no exemption change requests on record for this student)")
+        for cr in change_requests:
+            w(f"  Request #{cr.id} status={cr.status} created={cr.created_at} "
+              f"reviewed_by={cr.reviewed_by} reviewed_at={cr.reviewed_at}")
+            w(f"    reason={cr.reason!r}")
+            if cr.review_notes:
+                w(f"    review_notes={cr.review_notes!r}")
+            ffc = cr.form_fee_charge
+            if ffc is not None:
+                w(f"    form_fee_charge: amount={ffc.amount} status={ffc.status} "
+                  f"form_fee_paid_at={cr.form_fee_paid_at}")
+            for line in cr.exemption_lines.all():
+                w(f"    line: course_code={line.course_code!r} course_name={line.course_name!r} "
+                  f"Y{line.year_of_study}T{line.term_number} score_obtained={line.score_obtained!r}")
+
+        # ------------------------------------------------------------------
+        # 1c. Fee heads named/coded like an exemption charge
+        # ------------------------------------------------------------------
+        w("\n--- FeeHead rows matching 'exemption' or code EXP ---")
+        fee_heads = FeeHead.objects.filter(
+            Q(code__icontains="exp") | Q(name__icontains="exempt")
+        ).order_by("code")
+        for fh in fee_heads:
+            w(f"  code={fh.code!r} name={fh.name!r} category={fh.category} is_active={fh.is_active}")
+
+        # ------------------------------------------------------------------
         # 2. Scholarship awards + waivers + credits
         # ------------------------------------------------------------------
         w("\n--- ScholarshipAward / Waivers / Credits ---")
@@ -170,16 +208,21 @@ class Command(BaseCommand):
         # ------------------------------------------------------------------
         # 4. Actual money on record
         # ------------------------------------------------------------------
-        w("\n--- StudentTuitionPayment (portal / scholarship credit rows) ---")
+        w("\n--- StudentTuitionPayment (portal / scholarship credit / ad-hoc charge rows) ---")
         payments = list(
-            StudentTuitionPayment.objects.filter(student=student).order_by("-id")[:30]
+            StudentTuitionPayment.objects.filter(student=student)
+            .select_related("semester", "fee_head")
+            .order_by("-id")[:30]
         )
         if not payments:
             w("  (none)")
         for p in payments:
+            sem = p.semester
+            sem_label = f"Y{sem.year_of_study}T{sem.term_number} (id={sem.id})" if sem else "— NO SEMESTER SET"
             w(f"  #{p.id} source={p.source} fee_head={getattr(p.fee_head, 'code', '—')} "
-              f"amount={p.amount} status={p.status} waived={p.is_waived} paid_at={p.paid_at} "
-              f"notes={(p.notes or '')[:80]!r}")
+              f"label={p.label!r} amount={p.amount} status={p.status} waived={p.is_waived} "
+              f"semester={sem_label} paid_at={p.paid_at} created_at={getattr(p, 'created_at', '—')}")
+            w(f"      notes={(p.notes or '')!r}")
 
         w("\n--- TuitionLedger (SchoolPay / bank reconciliation rows) ---")
         ledgers = list(
