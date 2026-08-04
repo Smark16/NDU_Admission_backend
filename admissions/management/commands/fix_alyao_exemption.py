@@ -152,26 +152,42 @@ class Command(BaseCommand):
         )
         w(f"Target curriculum position:  Year {TARGET_YEAR_OF_STUDY} Term {TARGET_TERM_NUMBER}")
 
-        from Programs.models import ProgramCurriculumLine, resolve_program_default_curriculum_version
+        from Programs.curriculum_inheritance import (
+            curriculum_owner_program,
+            resolve_effective_curriculum_version,
+        )
+        from Programs.models import ProgramCurriculumLine
 
-        version = enrollment.curriculum_version
-        if version is None and enrollment.program_batch_id:
-            version = enrollment.program_batch.curriculum_version
-        if version is None:
-            version = resolve_program_default_curriculum_version(enrollment.program)
+        program = enrollment.program
+        owner = curriculum_owner_program(program)
+        batch = enrollment.program_batch if enrollment.program_batch_id else None
+        pinned = enrollment.curriculum_version
+        version = resolve_effective_curriculum_version(program, batch=batch)
 
         if version is None:
             raise CommandError("No curriculum version resolved for this student.")
 
         w(
-            f"Curriculum version: id={version.pk} "
-            f"name={getattr(version, 'name', None) or getattr(version, 'label', version.pk)!r}"
+            f"Programme: id={program.pk} {getattr(program, 'short_form', '') or program.name!r} "
+            f"mode={getattr(program, 'curriculum_mode', '?')}"
         )
+        if owner and owner.pk != program.pk:
+            w(
+                f"Curriculum owner (master): id={owner.pk} "
+                f"{getattr(owner, 'short_form', '') or owner.name!r}"
+            )
+        if pinned and pinned.pk != version.pk:
+            w(
+                f"NOTE: enrollment pinned empty/local version id={pinned.pk} "
+                f"{pinned.name!r}; using effective master version instead."
+            )
+        w(f"Curriculum version: id={version.pk} name={version.name!r}")
 
+        owner_program_id = owner.pk if owner else enrollment.program_id
         curriculum_lines = list(
             ProgramCurriculumLine.objects.filter(
                 curriculum_version=version,
-                program_id=enrollment.program_id,
+                program_id=owner_program_id,
             )
             .select_related("catalog_course")
             .order_by("year_of_study", "term_number", "id")
@@ -186,8 +202,8 @@ class Command(BaseCommand):
             w("  (none found)")
         for line in curriculum_lines:
             code = line.catalog_course.code if line.catalog_course else "?"
-            name = line.catalog_course.name if line.catalog_course else ""
-            w(f"  id={line.id:<6} Y{line.year_of_study}T{line.term_number}  {code:<16} {name}")
+            title = line.catalog_course.title if line.catalog_course else ""
+            w(f"  id={line.id:<6} Y{line.year_of_study}T{line.term_number}  {code:<16} {title}")
 
         # Build the set of curriculum lines to exempt.
         resolved: list[tuple[str, str, object]] = []  # (label_code, score, curriculum_line)
@@ -363,7 +379,7 @@ class Command(BaseCommand):
                             line.catalog_course.code if line.catalog_course else label
                         )[:40],
                         course_name=(
-                            line.catalog_course.name if line and line.catalog_course else ""
+                            line.catalog_course.title if line and line.catalog_course else ""
                         ),
                         year_of_study=getattr(line, "year_of_study", None),
                         term_number=getattr(line, "term_number", None),
@@ -392,7 +408,7 @@ class Command(BaseCommand):
                             line.catalog_course.code if line.catalog_course else label
                         )[:40],
                         course_name=(
-                            line.catalog_course.name if line and line.catalog_course else ""
+                            line.catalog_course.title if line and line.catalog_course else ""
                         ),
                         year_of_study=getattr(line, "year_of_study", None),
                         term_number=getattr(line, "term_number", None),

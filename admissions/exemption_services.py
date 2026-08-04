@@ -307,7 +307,15 @@ def _norm_course_code(code: str) -> str:
 
 
 def _resolve_enrollment_curriculum_version(student: AdmittedStudent):
-    from Programs.models import resolve_program_default_curriculum_version
+    """
+    Return (enrollment, effective_curriculum_version).
+
+    Inherited campus programmes often still pin an empty local "Default
+    curriculum" version on the enrollment; real lines live on the master
+    programme. Use resolve_effective_curriculum_version so those students
+    see the master's units.
+    """
+    from Programs.curriculum_inheritance import resolve_effective_curriculum_version
 
     try:
         enrollment = student.programme_enrollment
@@ -316,12 +324,17 @@ def _resolve_enrollment_curriculum_version(student: AdmittedStudent):
     if enrollment is None:
         return None, None
 
-    version = enrollment.curriculum_version
-    if version is None and enrollment.program_batch_id:
-        version = enrollment.program_batch.curriculum_version
-    if version is None:
-        version = resolve_program_default_curriculum_version(enrollment.program)
+    batch = enrollment.program_batch if enrollment.program_batch_id else None
+    version = resolve_effective_curriculum_version(enrollment.program, batch=batch)
     return enrollment, version
+
+
+def _curriculum_line_program_id(enrollment) -> int | None:
+    """Programme id that owns curriculum lines for this enrollment."""
+    from Programs.curriculum_inheritance import curriculum_owner_program
+
+    owner = curriculum_owner_program(enrollment.program)
+    return owner.pk if owner else enrollment.program_id
 
 
 def list_eligible_exemption_courses(student: AdmittedStudent) -> list[dict]:
@@ -351,11 +364,12 @@ def list_eligible_exemption_courses(student: AdmittedStudent) -> list[dict]:
     )
     existing |= {i for i in pending_line_ids if i}
 
+    owner_program_id = _curriculum_line_program_id(enrollment)
     lines = (
         ProgramCurriculumLine.objects.filter(
             curriculum_version=version,
             is_active=True,
-            program_id=enrollment.program_id,
+            program_id=owner_program_id,
         )
         .select_related("catalog_course")
         .order_by("year_of_study", "term_number", "sort_order", "catalog_course__code")
@@ -397,11 +411,12 @@ def list_programme_curriculum_for_review(student: AdmittedStudent) -> list[dict]
         ).values_list("curriculum_line_id", flat=True)
     )
 
+    owner_program_id = _curriculum_line_program_id(enrollment)
     lines = (
         ProgramCurriculumLine.objects.filter(
             curriculum_version=version,
             is_active=True,
-            program_id=enrollment.program_id,
+            program_id=owner_program_id,
         )
         .select_related("catalog_course")
         .order_by("year_of_study", "term_number", "sort_order", "catalog_course__code")
@@ -664,14 +679,10 @@ def apply_exemption_overrides(change_request: AdmissionChangeRequest, decided_by
 
 
 def _resolve_curriculum_version(enrollment):
-    from Programs.models import resolve_program_default_curriculum_version
+    from Programs.curriculum_inheritance import resolve_effective_curriculum_version
 
-    version = enrollment.curriculum_version
-    if version is None and enrollment.program_batch_id:
-        version = enrollment.program_batch.curriculum_version
-    if version is None:
-        version = resolve_program_default_curriculum_version(enrollment.program)
-    return version
+    batch = enrollment.program_batch if enrollment.program_batch_id else None
+    return resolve_effective_curriculum_version(enrollment.program, batch=batch)
 
 
 def semester_paper_counts_for_exemptions(
@@ -700,9 +711,10 @@ def semester_paper_counts_for_exemptions(
     if version is None:
         return None
 
+    owner_program_id = _curriculum_line_program_id(enrollment)
     total = ProgramCurriculumLine.objects.filter(
         curriculum_version=version,
-        program_id=enrollment.program_id,
+        program_id=owner_program_id,
         year_of_study=year_of_study,
         term_number=term_number,
         is_active=True,
@@ -714,7 +726,7 @@ def semester_paper_counts_for_exemptions(
         enrollment=enrollment,
         override_type="exempted",
         curriculum_line__curriculum_version=version,
-        curriculum_line__program_id=enrollment.program_id,
+        curriculum_line__program_id=owner_program_id,
         curriculum_line__year_of_study=year_of_study,
         curriculum_line__term_number=term_number,
         curriculum_line__is_active=True,
@@ -797,7 +809,7 @@ def suggest_promotion_after_exemption(change_request: AdmissionChangeRequest) ->
     lines = ProgramCurriculumLine.objects.filter(
         curriculum_version=version,
         is_active=True,
-        program_id=enrollment.program_id,
+        program_id=_curriculum_line_program_id(enrollment),
     ).values_list("id", "year_of_study", "term_number")
 
     by_term: dict[tuple[int, int], set[int]] = {}
