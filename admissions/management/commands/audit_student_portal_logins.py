@@ -36,6 +36,16 @@ class Command(BaseCommand):
             default=25,
             help="Max number of broken records to print per category (default 25).",
         )
+        parser.add_argument(
+            "--test-default-password",
+            action="store_true",
+            help=(
+                "For every never-logged-in account, verify (read-only, via authenticate()) "
+                "whether the original default password NDU@1234 still works. Distinguishes "
+                "'account is fine, student just doesn't have/use the right password' from "
+                "a real account defect."
+            ),
+        )
 
     def handle(self, *args, **options):
         from admissions.models import AdmittedStudent
@@ -119,6 +129,31 @@ class Command(BaseCommand):
             self.stdout.write(_line(a))
 
         self.stdout.write(f"\n  Never logged in yet (informational, not necessarily broken): {len(never_logged_in)}")
+
+        if options["test_default_password"] and never_logged_in:
+            from admissions.student_accounts import DEFAULT_STUDENT_PASSWORD
+
+            self.stdout.write(
+                self.style.NOTICE(
+                    f"\n    Checking {len(never_logged_in)} passwords (hashing cost — may take a minute)..."
+                )
+            )
+            works = 0
+            fails = []
+            for a in never_logged_in:
+                if a.student_user.check_password(DEFAULT_STUDENT_PASSWORD):
+                    works += 1
+                else:
+                    fails.append(a)
+            self.stdout.write(
+                self.style.NOTICE(
+                    f"\n    Of the {len(never_logged_in)} never-logged-in accounts: "
+                    f"{works} still authenticate fine with the original default password "
+                    f"({DEFAULT_STUDENT_PASSWORD}); {len(fails)} do NOT."
+                )
+            )
+            for a in fails[:limit]:
+                self.stdout.write(_line(a))
 
         self.stdout.write(self.style.SUCCESS(f"\n  Clean (no issues detected): {len(clean)}"))
 
