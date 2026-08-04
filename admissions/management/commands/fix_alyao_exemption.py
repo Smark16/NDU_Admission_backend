@@ -4,36 +4,25 @@ application of the new Exemption Fee and Promotion System.
 
 Background: her course exemption was approved manually by the HOD outside the
 normal AdmissionChangeRequest workflow. Accounts then typed two raw ad-hoc
-charges totalling UGX 3,240,000 — about 2.4x the correct amount — and those
-charges ignored billing dates entirely (both fixed already, separately). Her
-physical "Application Form for Exemption" lists 9 papers at the standard
-UGX 150,000/paper rate (she attained the credit at Uganda Management
-Institute, 2019/2020 — not an alumna of this university), for a correct total
-of UGX 1,350,000. Once curriculum overrides are applied, Year 1 semester
-tuition is dropped/prorated automatically (functional fees stay); the HOD's
-decision was for her to begin at Year 2 Term 1.
+charges totalling UGX 3,240,000 — about 2.4x the correct amount. Her physical
+"Application Form for Exemption" lists 9 UMI papers at UGX 150,000/paper
+(standard rate; not an alumna), total UGX 1,350,000. The HOD's decision was
+for her to begin at Year 2 Term 1.
 
-This command:
-  1. Creates the AdmissionChangeRequest (exemption, approved) that should have
-     existed from the start, with the 9 ExemptionRequestLine rows from her form.
-  2. Applies the curriculum exemption overrides (same effect as a normal HOD
-     approval via admissions.exemption_services.apply_exemption_overrides).
-  3. Waives the two incorrect ad-hoc charges (ids configurable via
-     --old-charge-ids, default 54 55).
-  4. Reissues the correct exemption fee (9 x 150,000 = 1,350,000 UGX) split
-     across Year 2 Term 1 / Year 2 Term 2 for her program batch.
-  5. Advances her StudentProgrammeEnrollment to Year 2 Term 1 (and records
-     entry_year_of_study/entry_term_number if this is her first advancement).
+Important: form codes (HRM 4102 …) are from Uganda Management Institute, not
+NDU catalog codes. Matching by form code alone will usually fail. Prefer:
 
-Always run with --dry-run first and read the output carefully — in particular
-the curriculum-line matching report — before running for real. This command
-is intentionally idempotent: re-running it after a successful apply reuses
-the existing AdmissionChangeRequest instead of creating a duplicate, and will
-not double-waive or double-charge.
+    python manage.py migrate admissions
+    python manage.py fix_alyao_exemption --dry-run --exempt-year 1
+    python manage.py fix_alyao_exemption --exempt-year 1
+
+Or map explicitly after reading the curriculum dump from --dry-run:
+
+    python manage.py fix_alyao_exemption --map "HRM 4102=BHRM1101" --map "..."
 
 Usage:
-    python manage.py fix_alyao_exemption --dry-run
-    python manage.py fix_alyao_exemption
+    python manage.py fix_alyao_exemption --dry-run --exempt-year 1
+    python manage.py fix_alyao_exemption --exempt-year 1
 """
 from __future__ import annotations
 
@@ -42,6 +31,7 @@ from decimal import Decimal
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
+from django.db.utils import ProgrammingError
 from django.utils import timezone
 
 from admissions.exemption_services import apply_exemption_overrides, ensure_exemption_fee_heads
@@ -56,11 +46,8 @@ ATTAINED_AT = "Uganda Management Institute"
 ACADEMIC_YEARS = "2019/2020"
 IS_ALUMNUS = False
 
-# Transcribed from the physical "Application Form for Exemption". Score
-# columns from the form were not available when this command was written —
-# fill them in below (or via Django admin afterwards on the ExemptionRequestLine
-# rows) if they need to appear on record.
-PAPERS: list[tuple[str, str]] = [
+# UMI codes from the physical form (labels / audit trail — not NDU codes).
+FORM_PAPERS: list[tuple[str, str]] = [
     ("HRM 4102", ""),
     ("HRM 4103", ""),
     ("HRM 4104", ""),
@@ -74,10 +61,20 @@ PAPERS: list[tuple[str, str]] = [
 
 TARGET_YEAR_OF_STUDY = 2
 TARGET_TERM_NUMBER = 1
+BILLABLE_PAPER_COUNT = len(FORM_PAPERS)
 
 
 def _normalize_code(code: str) -> str:
     return code.strip().upper().replace(" ", "").replace("-", "")
+
+
+def exemption_course_fee_rate_for(is_alumnus: bool) -> Decimal:
+    from admissions.exemption_services import (
+        EXEMPTION_COURSE_FEE_ALUMNI_UGX,
+        EXEMPTION_COURSE_FEE_STANDARD_UGX,
+    )
+
+    return EXEMPTION_COURSE_FEE_ALUMNI_UGX if is_alumnus else EXEMPTION_COURSE_FEE_STANDARD_UGX
 
 
 class Command(BaseCommand):
@@ -89,6 +86,30 @@ class Command(BaseCommand):
             "--old-charge-ids",
             default="54,55",
             help="Comma-separated StudentTuitionPayment ids to waive (default: 54,55).",
+        )
+        parser.add_argument(
+            "--exempt-year",
+            type=int,
+            action="append",
+            dest="exempt_years",
+            default=[],
+            help=(
+                "Exempt ALL curriculum lines for this year_of_study (repeatable). "
+                "Use when form codes are from another institution (e.g. UMI). "
+                "Typical for Alyao: --exempt-year 1"
+            ),
+        )
+        parser.add_argument(
+            "--map",
+            action="append",
+            dest="code_maps",
+            default=[],
+            help='Map form code to NDU catalog code, e.g. --map "HRM 4102=BHRM1101" (repeatable).',
+        )
+        parser.add_argument(
+            "--line-ids",
+            default="",
+            help="Comma-separated ProgramCurriculumLine ids to exempt (overrides auto match).",
         )
         parser.add_argument("--dry-run", action="store_true", help="Report only; do not save anything.")
 
@@ -131,9 +152,6 @@ class Command(BaseCommand):
         )
         w(f"Target curriculum position:  Year {TARGET_YEAR_OF_STUDY} Term {TARGET_TERM_NUMBER}")
 
-        # ------------------------------------------------------------------
-        # Resolve curriculum lines by course code (best-effort match).
-        # ------------------------------------------------------------------
         from Programs.models import ProgramCurriculumLine, resolve_program_default_curriculum_version
 
         version = enrollment.curriculum_version
@@ -142,71 +160,173 @@ class Command(BaseCommand):
         if version is None:
             version = resolve_program_default_curriculum_version(enrollment.program)
 
+        if version is None:
+            raise CommandError("No curriculum version resolved for this student.")
+
+        w(
+            f"Curriculum version: id={version.pk} "
+            f"name={getattr(version, 'name', None) or getattr(version, 'label', version.pk)!r}"
+        )
+
+        curriculum_lines = list(
+            ProgramCurriculumLine.objects.filter(
+                curriculum_version=version,
+                program_id=enrollment.program_id,
+            )
+            .select_related("catalog_course")
+            .order_by("year_of_study", "term_number", "id")
+        )
         by_code = {}
-        if version is not None:
-            for line in ProgramCurriculumLine.objects.filter(
-                curriculum_version=version, program_id=enrollment.program_id
-            ).select_related("catalog_course"):
-                if line.catalog_course:
-                    by_code[_normalize_code(line.catalog_course.code)] = line
+        for line in curriculum_lines:
+            if line.catalog_course:
+                by_code[_normalize_code(line.catalog_course.code)] = line
 
-        matched_lines: dict[str, object] = {}
-        unmatched_codes: list[str] = []
-        w("\nCourse code -> curriculum line match report:")
-        for code, _score in PAPERS:
-            line = by_code.get(_normalize_code(code))
-            if line:
-                matched_lines[code] = line
-                w(f"  {code:<12} matched -> Y{line.year_of_study}T{line.term_number} (line id={line.id})")
-            else:
-                unmatched_codes.append(code)
-                w(f"  {code:<12} NOT MATCHED — cannot approve until mapped to curriculum")
+        w("\nNDU curriculum units on this version (use these codes/ids for --map / --line-ids):")
+        if not curriculum_lines:
+            w("  (none found)")
+        for line in curriculum_lines:
+            code = line.catalog_course.code if line.catalog_course else "?"
+            name = line.catalog_course.name if line.catalog_course else ""
+            w(f"  id={line.id:<6} Y{line.year_of_study}T{line.term_number}  {code:<16} {name}")
 
-        if unmatched_codes and not dry_run:
+        # Build the set of curriculum lines to exempt.
+        resolved: list[tuple[str, str, object]] = []  # (label_code, score, curriculum_line)
+
+        line_ids_raw = (options.get("line_ids") or "").strip()
+        if line_ids_raw:
+            try:
+                ids = [int(x) for x in line_ids_raw.split(",") if x.strip()]
+            except ValueError as exc:
+                raise CommandError("--line-ids must be comma-separated integers.") from exc
+            by_id = {line.id: line for line in curriculum_lines}
+            for i, lid in enumerate(ids):
+                line = by_id.get(lid)
+                if line is None:
+                    raise CommandError(f"Curriculum line id={lid} is not on this student's curriculum.")
+                form_code = FORM_PAPERS[i][0] if i < len(FORM_PAPERS) else (
+                    line.catalog_course.code if line.catalog_course else f"LINE-{lid}"
+                )
+                resolved.append((form_code, "", line))
+        elif options["exempt_years"]:
+            years = set(options["exempt_years"])
+            year_lines = [ln for ln in curriculum_lines if ln.year_of_study in years]
+            if not year_lines:
+                raise CommandError(
+                    f"No curriculum lines found for year_of_study in {sorted(years)}."
+                )
+            w(
+                f"\n--exempt-year {sorted(years)} selected {len(year_lines)} NDU unit(s) "
+                f"(form listed {BILLABLE_PAPER_COUNT} UMI papers for billing)."
+            )
+            for i, line in enumerate(year_lines):
+                ndu_code = line.catalog_course.code if line.catalog_course else f"LINE-{line.id}"
+                form_code = FORM_PAPERS[i][0] if i < len(FORM_PAPERS) else ndu_code
+                label = f"{ndu_code} (form: {form_code})" if i < len(FORM_PAPERS) else ndu_code
+                resolved.append((label, "", line))
+        else:
+            code_maps = {}
+            for raw in options.get("code_maps") or []:
+                if "=" not in raw:
+                    raise CommandError(f'Invalid --map {raw!r}; expected FORM=NDUCODE')
+                left, right = raw.split("=", 1)
+                code_maps[_normalize_code(left)] = right.strip()
+
+            w("\nCourse code -> curriculum line match report:")
+            for form_code, score in FORM_PAPERS:
+                lookup = code_maps.get(_normalize_code(form_code), form_code)
+                line = by_code.get(_normalize_code(lookup))
+                if line:
+                    resolved.append((form_code, score, line))
+                    ndu = line.catalog_course.code if line.catalog_course else "?"
+                    w(
+                        f"  {form_code:<12} -> {ndu}  "
+                        f"Y{line.year_of_study}T{line.term_number} (line id={line.id})"
+                    )
+                else:
+                    w(
+                        f"  {form_code:<12} NOT MATCHED "
+                        f"(looked up as {lookup!r}). Form codes are usually UMI, not NDU."
+                    )
+
+        if not resolved:
             raise CommandError(
-                "These paper codes are not on the student's curriculum version: "
-                f"{', '.join(unmatched_codes)}. Fix curriculum codes/mapping, then re-run. "
-                "(Dry-run still reports; real apply requires every paper matched.)"
+                "No curriculum lines resolved. Re-run with --exempt-year 1 "
+                "(recommended for Alyao / full Year-1 exemption) or --map / --line-ids "
+                "after reading the curriculum dump above. Also run: "
+                "python manage.py migrate admissions"
             )
 
-        rate = exemption_course_fee_rate_for(IS_ALUMNUS)
-        total = rate * len(PAPERS)
-        w(f"\nPricing: {'alumni' if IS_ALUMNUS else 'standard'} rate UGX {rate:,}/paper "
-          f"x {len(PAPERS)} papers = UGX {total:,}")
+        w("\nResolved exemption units:")
+        for label, _score, line in resolved:
+            ndu = line.catalog_course.code if line.catalog_course else "?"
+            w(f"  {label:<28} -> {ndu} Y{line.year_of_study}T{line.term_number} (id={line.id})")
 
-        # ------------------------------------------------------------------
-        # Old (incorrect) charges to waive.
-        # ------------------------------------------------------------------
-        old_charges = list(StudentTuitionPayment.objects.filter(student=student, id__in=old_charge_ids))
+        # Bill from the physical form (9 papers), not from how many NDU lines we link.
+        rate = exemption_course_fee_rate_for(IS_ALUMNUS)
+        total = rate * BILLABLE_PAPER_COUNT
+        w(
+            f"\nPricing: {'alumni' if IS_ALUMNUS else 'standard'} rate UGX {rate:,}/paper "
+            f"x {BILLABLE_PAPER_COUNT} form papers = UGX {total:,} "
+            f"(linked to {len(resolved)} NDU curriculum unit(s))"
+        )
+
+        old_charges = list(
+            StudentTuitionPayment.objects.filter(student=student, id__in=old_charge_ids)
+        )
         found_ids = {c.id for c in old_charges}
         missing_ids = [i for i in old_charge_ids if i not in found_ids]
         if missing_ids:
             w(f"\nWARNING: old charge id(s) not found on this student: {missing_ids}")
-        old_total = sum((Decimal(str(c.amount)) for c in old_charges if not c.is_waived), Decimal("0"))
+        old_total = sum(
+            (Decimal(str(c.amount)) for c in old_charges if not c.is_waived), Decimal("0")
+        )
         w(f"\nOld charges to waive ({len(old_charges)} found):")
         for c in old_charges:
-            w(f"  #{c.id} amount={c.amount} status={c.status} is_waived={c.is_waived} label={c.label!r}")
+            w(
+                f"  #{c.id} amount={c.amount} status={c.status} is_waived={c.is_waived} "
+                f"label={c.label!r}"
+            )
         w(f"  total unwaived old amount: UGX {old_total:,}")
 
-        existing = (
-            AdmissionChangeRequest.objects.filter(
-                admitted_student=student,
-                change_type="exemption",
-                exemption_attained_at=ATTAINED_AT,
+        existing = None
+        try:
+            existing = (
+                AdmissionChangeRequest.objects.filter(
+                    admitted_student=student,
+                    change_type="exemption",
+                    exemption_attained_at=ATTAINED_AT,
+                )
+                .prefetch_related("exemption_lines")
+                .first()
             )
-            .prefetch_related("exemption_lines")
-            .first()
-        )
+        except ProgrammingError as exc:
+            raise CommandError(
+                "Database is missing exemption columns (e.g. exemption_attained_at). "
+                "Pull latest code and run:\n"
+                "  python manage.py migrate admissions\n"
+                "Then re-run this command.\n"
+                f"Original error: {exc}"
+            ) from exc
+
         if existing:
-            w(f"\nExisting exemption change request #{existing.id} (status={existing.status}) found for "
-              "this attained-at institution — will reuse it instead of creating a duplicate.")
+            w(
+                f"\nExisting exemption change request #{existing.id} "
+                f"(status={existing.status}) found — will reuse it."
+            )
 
         if dry_run:
             w("\nDRY RUN — no changes were saved. Re-run without --dry-run to apply.")
+            if not options["exempt_years"] and not line_ids_raw and not options.get("code_maps"):
+                w(
+                    "Hint: form HRM codes did not match NDU catalog. "
+                    "Use:  python manage.py fix_alyao_exemption --dry-run --exempt-year 1"
+                )
             return
 
         with transaction.atomic():
             decided_by = User.objects.filter(is_superuser=True).order_by("id").first()
+            if decided_by is None:
+                raise CommandError("No superuser found to attribute the backfill to.")
 
             change_request = existing
             if change_request is None:
@@ -227,30 +347,34 @@ class Command(BaseCommand):
                     review_notes=(
                         "Backfilled from the physical exemption application form. Corrects an earlier "
                         f"billing error (raw ad-hoc charges totalling UGX {old_total:,} instead of the "
-                        f"correct UGX {total:,})."
+                        f"correct UGX {total:,}). Form papers were UMI codes; NDU curriculum links "
+                        "applied via --exempt-year / --map / --line-ids."
                     ),
                     exemption_attained_at=ATTAINED_AT,
                     exemption_academic_years=ACADEMIC_YEARS,
                     exemption_is_alumnus=IS_ALUMNUS,
                     form_fee_paid_at=timezone.now(),
                 )
-                for code, score in PAPERS:
-                    line = matched_lines.get(code)
+                for label, score, line in resolved:
                     ExemptionRequestLine.objects.create(
                         change_request=change_request,
                         curriculum_line=line,
-                        course_code=code,
-                        course_name=(line.catalog_course.name if line and line.catalog_course else ""),
+                        course_code=(
+                            line.catalog_course.code if line.catalog_course else label
+                        )[:40],
+                        course_name=(
+                            line.catalog_course.name if line and line.catalog_course else ""
+                        ),
                         year_of_study=getattr(line, "year_of_study", None),
                         term_number=getattr(line, "term_number", None),
                         score_obtained=score,
-                        # Per-paper decisions are required for apply_exemption_overrides().
                         decision=ExemptionRequestLine.DECISION_APPROVED,
-                        decision_note="Backfilled: HOD approved on physical form.",
+                        decision_note=f"Backfilled from form paper {label}."[:255],
                     )
-                self.stdout.write(f"Created AdmissionChangeRequest #{change_request.id} with {len(PAPERS)} lines.")
+                self.stdout.write(
+                    f"Created AdmissionChangeRequest #{change_request.id} with {len(resolved)} lines."
+                )
             else:
-                # Ensure reused request is approved and every paper is matched + approved.
                 if change_request.status != "approved":
                     change_request.status = "approved"
                     change_request.reviewed_by = decided_by
@@ -258,44 +382,27 @@ class Command(BaseCommand):
                     change_request.save(
                         update_fields=["status", "reviewed_by", "reviewed_at", "updated_at"]
                     )
-                existing_by_code = {
-                    _normalize_code(l.course_code): l
-                    for l in change_request.exemption_lines.all()
-                    if l.course_code
-                }
-                for code, score in PAPERS:
-                    curr = matched_lines.get(code)
-                    row = existing_by_code.get(_normalize_code(code))
-                    if row is None:
-                        ExemptionRequestLine.objects.create(
-                            change_request=change_request,
-                            curriculum_line=curr,
-                            course_code=code,
-                            course_name=(
-                                curr.catalog_course.name if curr and curr.catalog_course else ""
-                            ),
-                            year_of_study=getattr(curr, "year_of_study", None),
-                            term_number=getattr(curr, "term_number", None),
-                            score_obtained=score,
-                            decision=ExemptionRequestLine.DECISION_APPROVED,
-                            decision_note="Backfilled: HOD approved on physical form.",
-                        )
-                        continue
-                    row.curriculum_line = curr
-                    row.course_name = (
-                        curr.catalog_course.name if curr and curr.catalog_course else row.course_name
+                # Replace lines with the resolved set (idempotent refresh).
+                change_request.exemption_lines.all().delete()
+                for label, score, line in resolved:
+                    ExemptionRequestLine.objects.create(
+                        change_request=change_request,
+                        curriculum_line=line,
+                        course_code=(
+                            line.catalog_course.code if line.catalog_course else label
+                        )[:40],
+                        course_name=(
+                            line.catalog_course.name if line and line.catalog_course else ""
+                        ),
+                        year_of_study=getattr(line, "year_of_study", None),
+                        term_number=getattr(line, "term_number", None),
+                        score_obtained=score,
+                        decision=ExemptionRequestLine.DECISION_APPROVED,
+                        decision_note=f"Backfilled from form paper {label}."[:255],
                     )
-                    row.year_of_study = getattr(curr, "year_of_study", None)
-                    row.term_number = getattr(curr, "term_number", None)
-                    if score and not row.score_obtained:
-                        row.score_obtained = score
-                    row.decision = ExemptionRequestLine.DECISION_APPROVED
-                    if not row.decision_note:
-                        row.decision_note = "Backfilled: HOD approved on physical form."
-                    row.save()
                 self.stdout.write(
                     f"Reused AdmissionChangeRequest #{change_request.id}; "
-                    "ensured all papers are approved and curriculum-linked."
+                    f"refreshed {len(resolved)} approved curriculum-linked lines."
                 )
 
             created_overrides = apply_exemption_overrides(change_request, decided_by=decided_by)
@@ -328,7 +435,6 @@ class Command(BaseCommand):
                 waived += 1
             self.stdout.write(f"Waived {waived} old ad-hoc charge(s).")
 
-            # Reissue the correct exemption fee, split across Year 2 Term 1 / Term 2.
             already_reissued = StudentTuitionPayment.objects.filter(
                 student=student,
                 source="ad_hoc",
@@ -361,10 +467,15 @@ class Command(BaseCommand):
                 created = _create_split_adhoc_charges(
                     student=student,
                     fee_head=course_head,
-                    label_base=f"Course exemption — {len(PAPERS)} papers ({ATTAINED_AT})",
+                    label_base=(
+                        f"Course exemption — {BILLABLE_PAPER_COUNT} papers ({ATTAINED_AT})"
+                    ),
                     amount=total,
                     currency="UGX",
-                    notes=f"Exemption change request #{change_request.id}; corrected retroactively by fix_alyao_exemption.",
+                    notes=(
+                        f"Exemption change request #{change_request.id}; "
+                        "corrected retroactively by fix_alyao_exemption."
+                    ),
                     semesters=semesters,
                     charged_by=decided_by,
                 )
@@ -373,9 +484,6 @@ class Command(BaseCommand):
                     f"across {[f'Y{s.year_of_study}T{s.term_number}' for s in semesters]}."
                 )
 
-            # Advance her curriculum position — the HOD's decision was made
-            # out-of-band, so this applies it directly rather than requiring
-            # suggest_promotion_after_exemption() to independently agree.
             if (
                 enrollment.current_year_of_study,
                 enrollment.current_term_number,
@@ -396,11 +504,6 @@ class Command(BaseCommand):
             else:
                 self.stdout.write("Student is already at the target position — no advancement needed.")
 
-        self.stdout.write(self.style.SUCCESS("\nDone. Alyao Jacqueline's exemption billing has been corrected."))
-
-
-def exemption_course_fee_rate_for(is_alumnus: bool) -> Decimal:
-    """Standalone helper so the report section above can print the rate before any DB writes."""
-    from admissions.exemption_services import EXEMPTION_COURSE_FEE_ALUMNI_UGX, EXEMPTION_COURSE_FEE_STANDARD_UGX
-
-    return EXEMPTION_COURSE_FEE_ALUMNI_UGX if is_alumnus else EXEMPTION_COURSE_FEE_STANDARD_UGX
+        self.stdout.write(
+            self.style.SUCCESS("\nDone. Alyao Jacqueline's exemption billing has been corrected.")
+        )
