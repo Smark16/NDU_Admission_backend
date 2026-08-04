@@ -461,6 +461,7 @@ def _finance_totals_from_alloc(alloc) -> dict[str, Any]:
         "pricing": "international" if alloc.international else "local",
         "tuition_structure_total": float(alloc.tuition_structure_total),
         "ad_hoc_total": float(alloc.ad_hoc_total),
+        "ad_hoc_not_yet_due_total": float(alloc.ad_hoc_not_yet_due_total),
         "scheduled_other_fees_due": float(alloc.scheduled_other_due),
         "required_by_currency": {k: float(v) for k, v in alloc.required_by_currency.items()},
         "paid_by_currency": alloc.paid_by_currency,
@@ -739,7 +740,12 @@ def payment_status_dict(student: AdmittedStudent, request=None) -> dict:
 
     history.sort(key=lambda h: h.get("paid_at") or "", reverse=True)
 
-    # Separate ad-hoc outstanding charges for the student's charges section
+    # Separate ad-hoc outstanding charges for the student's charges section. A pending
+    # charge tagged to a future semester (e.g. a course-exemption fee split onto "Year 2
+    # Term 1") isn't due yet, so it's held back from this list the same way future
+    # tuition/scheduled fees are — it reappears once that term's billing date arrives.
+    from payments.billing_visibility import adhoc_charge_billing_reached
+
     adhoc_list = [
         {
             "id":            c.id,
@@ -754,6 +760,7 @@ def payment_status_dict(student: AdmittedStudent, request=None) -> dict:
             "created_at":    c.created_at.isoformat(),
         }
         for c in adhoc_charges
+        if c.status != "pending" or adhoc_charge_billing_reached(c)
     ]
 
     return {

@@ -19,10 +19,16 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Literal
 
+from django.utils import timezone
+
 from admissions.models import AdmittedStudent
 
 from payments.models import FeePlanRule, StudentTuitionPayment, TuitionLedger
-from payments.billing_visibility import billing_date_iso, billing_date_reached
+from payments.billing_visibility import (
+    adhoc_charge_billing_date,
+    billing_date_iso,
+    billing_date_reached,
+)
 from payments.student_fee_pricing import effective_amount_currency, is_international_student
 from payments.utils.tuition_ledger_linking import tuition_ledger_queryset_for_student
 
@@ -64,6 +70,7 @@ class FinanceAllocation:
     tuition_structure_total: Decimal
     scheduled_other_due: Decimal
     ad_hoc_total: Decimal
+    ad_hoc_not_yet_due_total: Decimal
     required_by_currency: dict[str, Decimal]
     paid_by_currency: dict[str, Decimal]
     lifetime_paid_by_currency: dict[str, float] = field(default_factory=dict)
@@ -379,6 +386,31 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
         amt = charge.amount or Decimal("0")
         if amt <= 0:
             continue
+        # When staff split a manual charge (e.g. a course-exemption fee) across chosen
+        # semesters, each half is tagged with a Semester so it lands on the right term —
+        # but until now that tag was cosmetic only: every ad-hoc charge counted as due
+        # the instant it was created, regardless of the semester picked. Gate it by that
+        # semester's own start date, same as tuition/other scheduled fees, so "billed to
+        # Year 2 Term 1" actually waits until Year 2 Term 1 starts.
+        sem = charge.semester
+        billable = True
+        payable_year = payable_term = None
+        extra: dict[str, Any] = {"charge_status": charge.status, "fee_head_id": charge.fee_head_id}
+        if sem is not None:
+            payable_year, payable_term = sem.year_of_study, sem.term_number
+            eff_date = adhoc_charge_billing_date(charge)
+            extra.update(
+                {
+                    "semester_id": sem.id,
+                    "semester_name": sem.name,
+                    "semester_year_of_study": sem.year_of_study,
+                    "semester_term_number": sem.term_number,
+                    "semester_start_date": sem.start_date.isoformat() if sem.start_date else None,
+                    "billing_date": eff_date.isoformat() if eff_date else None,
+                }
+            )
+            if eff_date is not None:
+                billable = timezone.localdate() >= eff_date
         lines.append(
             DemandLine(
                 kind="ad_hoc",
@@ -387,7 +419,10 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
                 description=charge.label or "Ad-hoc charge",
                 amount=amt,
                 currency=cur,
-                extra={"charge_status": charge.status, "fee_head_id": charge.fee_head_id},
+                payable_year=payable_year,
+                payable_term=payable_term,
+                billing_reached=billable,
+                extra=extra,
             )
         )
 
@@ -546,12 +581,26 @@ def build_finance_allocation(student: AdmittedStudent) -> FinanceAllocation:
         and line.currency == primary
     )
 
+    # "Due now" — same billable gate used for total_required/balance, so this figure
+    # never contradicts what the student is actually asked to pay.
     adhoc_total = sum(
         line.amount
         for line in lines
         if line.kind == "ad_hoc"
         and line.extra.get("charge_status") in ("pending", "completed")
         and line.currency == primary
+        and (line.extra.get("prior_period_settled") or _line_is_billable(line))
+    )
+    # Scheduled but not yet due (e.g. a charge split onto a future semester) — surfaced
+    # separately so it doesn't silently vanish from view, it just isn't billed yet.
+    adhoc_not_yet_due = sum(
+        line.amount
+        for line in lines
+        if line.kind == "ad_hoc"
+        and line.extra.get("charge_status") == "pending"
+        and line.currency == primary
+        and not line.extra.get("prior_period_settled")
+        and not _line_is_billable(line)
     )
 
     paid_by = {k: float(v) for k, v in credits_open.items()}
@@ -578,6 +627,7 @@ def build_finance_allocation(student: AdmittedStudent) -> FinanceAllocation:
         ),
         scheduled_other_due=scheduled_due,
         ad_hoc_total=adhoc_total,
+        ad_hoc_not_yet_due_total=adhoc_not_yet_due,
         required_by_currency=dict(required_by),
         paid_by_currency=paid_by,
         lifetime_paid_by_currency=lifetime_by,

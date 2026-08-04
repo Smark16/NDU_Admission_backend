@@ -218,10 +218,17 @@ class Command(BaseCommand):
             w("  (none)")
         for p in payments:
             sem = p.semester
-            sem_label = f"Y{sem.year_of_study}T{sem.term_number} (id={sem.id})" if sem else "— NO SEMESTER SET"
+            if sem:
+                billable = sem.start_date is None or today >= sem.start_date
+                sem_label = (
+                    f"Y{sem.year_of_study}T{sem.term_number} (id={sem.id}) "
+                    f"start_date={sem.start_date} billing_reached={'YES' if billable else 'NO — not due yet'}"
+                )
+            else:
+                sem_label = "— NO SEMESTER SET (always due immediately)"
             w(f"  #{p.id} source={p.source} fee_head={getattr(p.fee_head, 'code', '—')} "
-              f"label={p.label!r} amount={p.amount} status={p.status} waived={p.is_waived} "
-              f"semester={sem_label} paid_at={p.paid_at} created_at={getattr(p, 'created_at', '—')}")
+              f"label={p.label!r} amount={p.amount} status={p.status} waived={p.is_waived}")
+            w(f"      semester={sem_label} paid_at={p.paid_at} created_at={getattr(p, 'created_at', '—')}")
             w(f"      notes={(p.notes or '')!r}")
 
         w("\n--- TuitionLedger (SchoolPay / bank reconciliation rows) ---")
@@ -242,6 +249,13 @@ class Command(BaseCommand):
         w("\n--- Commitment fee summary ---")
         summary = commitment_payment_summary(student)
         for k, v in summary.items():
+            w(f"  {k}: {v}")
+
+        w("\n--- Full finance allocation (what the portal/bursar actually show) ---")
+        from payments.student_portal_finance import student_finance_totals
+
+        totals = student_finance_totals(student)
+        for k, v in totals.items():
             w(f"  {k}: {v}")
 
         w("\nDONE.")

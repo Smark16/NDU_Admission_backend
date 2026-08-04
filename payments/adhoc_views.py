@@ -150,7 +150,10 @@ def _resolve_charge_semester(student: AdmittedStudent, data) -> Semester | None:
 
 
 def _charge_to_dict(c: StudentTuitionPayment) -> dict:
+    from payments.billing_visibility import adhoc_charge_billing_date, adhoc_charge_billing_reached
+
     semester = getattr(c, "semester", None)
+    billing_date = adhoc_charge_billing_date(c)
     return {
         "id":            c.id,
         "source":        c.source,
@@ -175,6 +178,10 @@ def _charge_to_dict(c: StudentTuitionPayment) -> dict:
         "year_of_study": semester.year_of_study if semester else None,
         "term_number":   semester.term_number if semester else None,
         "applies_to":    _semester_label(semester),
+        # When tagged to a future semester, the charge only becomes due/visible to the
+        # student on that term's billing date — not the moment it was created.
+        "billing_date":  billing_date.isoformat() if billing_date else None,
+        "billing_reached": adhoc_charge_billing_reached(c),
     }
 
 

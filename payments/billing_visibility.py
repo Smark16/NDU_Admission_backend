@@ -228,6 +228,35 @@ def billing_date_iso(rule) -> str | None:
     return effective.isoformat()
 
 
+def adhoc_charge_billing_date(charge) -> date | None:
+    """
+    Effective billing date for a manual/ad-hoc charge (StudentTuitionPayment,
+    source='ad_hoc') that was tagged to a Semester — e.g. a course-exemption fee
+    staff split across "Year 2 Term 1" / "Year 2 Term 2". Mirrors
+    default_billing_date_for_semester so the charge only becomes due when that
+    term actually starts, instead of the moment it was created.
+
+    Charges with no semester tag (the historical default for ad-hoc fees like
+    penalties/retakes) have no gate here and remain immediately due.
+    """
+    sem = getattr(charge, "semester", None)
+    if sem is None:
+        return None
+    program_batch = getattr(sem, "program_batch", None)
+    program = getattr(program_batch, "program", None) if program_batch else None
+    if program is None:
+        student = getattr(charge, "student", None)
+        program = getattr(student, "admitted_program", None) if student else None
+    return default_billing_date_for_semester(sem, program_batch, program)
+
+
+def adhoc_charge_billing_reached(charge) -> bool:
+    effective = adhoc_charge_billing_date(charge)
+    if effective is None:
+        return True
+    return timezone.localdate() >= effective
+
+
 def resolve_billing_date_on_save(
     *,
     billing_date,

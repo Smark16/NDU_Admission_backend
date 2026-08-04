@@ -331,6 +331,7 @@ def _student_row(student: AdmittedStudent) -> dict:
         "display_currency": finance["display_currency"],
         "tuition_structure_total": finance["tuition_structure_total"],
         "ad_hoc_total": finance["ad_hoc_total"],
+        "ad_hoc_not_yet_due_total": finance.get("ad_hoc_not_yet_due_total", 0),
         "scheduled_other_fees_due": finance["scheduled_other_fees_due"],
         "commitment_threshold": finance["commitment_threshold"],
         "commitment_paid_ugx": finance["commitment_paid_ugx"],
