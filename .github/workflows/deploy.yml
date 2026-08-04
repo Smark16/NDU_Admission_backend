@@ -42,8 +42,9 @@ jobs:
           python manage.py migrate Programs 0025_courseunitsectionlecturer --fake
 
           # Real migrate: adds registration_kind (fixes registration_lookup 500s).
+          # On prod the column may already exist — fake 0021 if so, then continue.
           python manage.py migrate Programs 0020_alter_lectureattendancerecord_marked_via || true
-          python manage.py migrate Programs 0021_retake_missed_paper_registration
+          python manage.py migrate Programs 0021_retake_missed_paper_registration --fake
           python manage.py migrate Programs 0026_merge_retake_and_teaching_sections || true
           python manage.py migrate
 
