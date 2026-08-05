@@ -306,6 +306,12 @@ class MoveStudentsToSectionView(_BatchUnavailableMixin, APIView):
                 },
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
+        except Exception as exc:
+            # e.g. NotSupportedError from FOR UPDATE + nullable join (fixed in teaching_sections)
+            return Response(
+                {"detail": str(exc) or "Could not move students to section."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         return Response(result)
 

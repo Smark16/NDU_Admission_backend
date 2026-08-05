@@ -201,7 +201,9 @@ def move_students_to_section(
     if not target.is_active:
         raise ValueError("Target teaching section is inactive.")
 
-    qs = StudentProgrammeEnrollment.objects.select_for_update().filter(
+    # of=("self",) is required: teaching_section is a nullable FK, and Postgres
+    # rejects FOR UPDATE on the nullable side of an outer join from select_related.
+    qs = StudentProgrammeEnrollment.objects.select_for_update(of=("self",)).filter(
         program_batch_id=batch.pk
     )
     if enrollment_ids:
