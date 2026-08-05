@@ -7,7 +7,7 @@ from hostel.role_setup import seed_all_hostel_roles
 
 
 class Command(BaseCommand):
-    help = "Create/update Dean of Students and Hostel Viewer groups."
+    help = "Create/update Dean of Students, Hostel Manager, and Hostel Viewer groups."
 
     def handle(self, *args, **options):
         for app_name in ("accounts", "hostel", "admissions"):
