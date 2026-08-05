@@ -1,9 +1,9 @@
 """
-Ensure TeachingSection FK columns exist after Programs.0023 was faked.
+Ensure Programs columns that are often missing after faked migrations.
 
-Production often has Programs_teachingsection (table create succeeded) but
-never got Programs_studentprogrammeenrollment.teaching_section_id because
-migrate stopped / was faked. Moving students into groups then 500s.
+Covers:
+  - Programs.0021 registration_kind on StudentCourseUnitEnrollment
+  - Programs.0023+ teaching_section_id FKs
 """
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ def _pg_table_exists(cursor, table: str) -> bool:
 
 
 class Command(BaseCommand):
-    help = "Add missing teaching_section FK columns (safe / idempotent)."
+    help = "Add missing Programs schema columns after faked migrations (idempotent)."
 
     def handle(self, *args, **options):
         if connection.vendor != "postgresql":
@@ -45,11 +45,28 @@ class Command(BaseCommand):
 
         added: list[str] = []
         with connection.cursor() as cursor:
+            # Programs.0021 — often faked after a false DuplicateColumn, leaving no column.
+            scue = "Programs_studentcourseunitenrollment"
+            if _pg_table_exists(cursor, scue) and not _pg_column_exists(
+                cursor, scue, "registration_kind"
+            ):
+                cursor.execute(
+                    f'ALTER TABLE "{scue}" '
+                    "ADD COLUMN \"registration_kind\" varchar(16) NOT NULL DEFAULT 'normal'"
+                )
+                cursor.execute(
+                    f'CREATE INDEX IF NOT EXISTS "{scue}_registration_kind_idx" '
+                    f'ON "{scue}" ("registration_kind")'
+                )
+                added.append(f"{scue}.registration_kind")
+
             if not _pg_table_exists(cursor, "Programs_teachingsection"):
+                if added:
+                    self.stdout.write(self.style.SUCCESS(f"Added: {', '.join(added)}"))
                 self.stdout.write(
-                    self.style.ERROR(
-                        "Programs_teachingsection does not exist. "
-                        "Run: python manage.py migrate Programs 0023_teaching_section"
+                    self.style.WARNING(
+                        "Programs_teachingsection does not exist yet — "
+                        "skipping teaching_section_id columns."
                     )
                 )
                 return
@@ -67,7 +84,6 @@ class Command(BaseCommand):
                 )
                 added.append(f"{spe}.teaching_section_id")
 
-            # Timetable / lecturer section FKs from later faked migrations.
             for table, column in (
                 ("Programs_timetablesession", "teaching_section_id"),
                 ("Programs_courseunitsectionlecturer", "teaching_section_id"),
@@ -86,4 +102,6 @@ class Command(BaseCommand):
         if added:
             self.stdout.write(self.style.SUCCESS(f"Added: {', '.join(added)}"))
         else:
-            self.stdout.write(self.style.SUCCESS("Teaching section columns already present."))
+            self.stdout.write(
+                self.style.SUCCESS("Programs schema columns already present.")
+            )
