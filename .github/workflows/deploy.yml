@@ -50,6 +50,7 @@ jobs:
 
           python manage.py ensure_program_choice_confirmation_columns || true
           python manage.py ensure_portal_branding_columns || true
+          python manage.py ensure_teaching_section_columns || true
           python manage.py refresh_tuition_pct_cache || true
 
           python manage.py collectstatic --noinput

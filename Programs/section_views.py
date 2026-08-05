@@ -252,6 +252,8 @@ class MoveStudentsToSectionView(_BatchUnavailableMixin, APIView):
     permission_classes = [ProgramSchedulingAPIPermission]
 
     def post(self, request, batch_id: int):
+        from django.db.utils import ProgrammingError
+
         batch = _get_batch_or_404(batch_id)
         if isinstance(batch, Response):
             return batch
@@ -291,6 +293,19 @@ class MoveStudentsToSectionView(_BatchUnavailableMixin, APIView):
             )
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except ProgrammingError as exc:
+            # Common after Programs.0023 was faked without SPE.teaching_section_id DDL.
+            return Response(
+                {
+                    "detail": (
+                        "Cannot move students: enrollment teaching_section column is missing. "
+                        "On the server run: python manage.py ensure_teaching_section_columns "
+                        "&& sudo systemctl restart gunicorn"
+                    ),
+                    "error": str(exc),
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
 
         return Response(result)
 
