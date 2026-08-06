@@ -281,7 +281,8 @@ class RegisterSerializer(serializers.ModelSerializer):
             user.faculties.set(faculties)
 
         user.set_password(password)
-        user.save()
+        user.must_change_password = True
+        user.save(update_fields=["password", "must_change_password"])
 
         from accounts.role_assignment import assign_user_role, set_user_roles
 

@@ -16,14 +16,26 @@ class HostelSerializer(serializers.ModelSerializer):
             "name",
             "gender",
             "is_active",
+            "fresher_min_sort_order",
+            "continuing_max_sort_order",
             "created_at",
             "updated_at",
         ]
+        read_only_fields = ["created_at", "updated_at", "campus_name"]
 
 
 class BuildingSerializer(serializers.ModelSerializer):
     hostel_name = serializers.CharField(source="hostel.name", read_only=True)
     hostel_gender = serializers.CharField(source="hostel.gender", read_only=True)
+    fresher_min_sort_order = serializers.IntegerField(
+        source="hostel.fresher_min_sort_order", read_only=True
+    )
+    continuing_max_sort_order = serializers.IntegerField(
+        source="hostel.continuing_max_sort_order", read_only=True
+    )
+    beds = serializers.SerializerMethodField()
+    occupied = serializers.SerializerMethodField()
+    available = serializers.SerializerMethodField()
 
     class Meta:
         model = Building
@@ -32,13 +44,31 @@ class BuildingSerializer(serializers.ModelSerializer):
             "hostel",
             "hostel_name",
             "hostel_gender",
+            "fresher_min_sort_order",
+            "continuing_max_sort_order",
             "code",
             "name",
             "external_block_id",
             "is_active",
+            "beds",
+            "occupied",
+            "available",
             "created_at",
             "updated_at",
         ]
+
+    def get_beds(self, obj):
+        return getattr(obj, "bed_count", None)
+
+    def get_occupied(self, obj):
+        return getattr(obj, "occupied", None)
+
+    def get_available(self, obj):
+        beds = getattr(obj, "bed_count", None)
+        occupied = getattr(obj, "occupied", None)
+        if beds is None or occupied is None:
+            return None
+        return max(0, int(beds) - int(occupied))
 
 
 class FloorSerializer(serializers.ModelSerializer):
@@ -76,11 +106,14 @@ class BedSerializer(serializers.ModelSerializer):
 
 class RoomSerializer(serializers.ModelSerializer):
     floor_name = serializers.CharField(source="floor.name", read_only=True)
+    floor_code = serializers.CharField(source="floor.code", read_only=True)
+    floor_sort_order = serializers.IntegerField(source="floor.sort_order", read_only=True)
     building_id = serializers.IntegerField(source="floor.building_id", read_only=True)
     building_name = serializers.CharField(source="floor.building.name", read_only=True)
     hostel_id = serializers.IntegerField(source="floor.building.hostel_id", read_only=True)
-    beds = BedSerializer(many=True, read_only=True)
+    beds = serializers.SerializerMethodField()
     occupied_beds = serializers.SerializerMethodField()
+    available_beds = serializers.SerializerMethodField()
 
     class Meta:
         model = Room
@@ -88,6 +121,8 @@ class RoomSerializer(serializers.ModelSerializer):
             "id",
             "floor",
             "floor_name",
+            "floor_code",
+            "floor_sort_order",
             "building_id",
             "building_name",
             "hostel_id",
@@ -99,12 +134,22 @@ class RoomSerializer(serializers.ModelSerializer):
             "is_active",
             "beds",
             "occupied_beds",
+            "available_beds",
             "created_at",
             "updated_at",
         ]
 
+    def get_beds(self, obj):
+        beds = list(obj.beds.all())
+        if self.context.get("available_only"):
+            beds = [b for b in beds if b.status == Bed.STATUS_AVAILABLE]
+        return BedSerializer(beds, many=True).data
+
     def get_occupied_beds(self, obj):
         return sum(1 for b in obj.beds.all() if b.status == Bed.STATUS_OCCUPIED)
+
+    def get_available_beds(self, obj):
+        return sum(1 for b in obj.beds.all() if b.status == Bed.STATUS_AVAILABLE)
 
 
 class HostelAllocationSerializer(serializers.ModelSerializer):

@@ -1183,6 +1183,99 @@ class SystemUsageReport(APIView):
         })
 
 
+class CanManageErpUsers(permissions.BasePermission):
+    message = "You do not have permission to manage users."
+
+    def has_permission(self, request, view):
+        user = request.user
+        if not user or not user.is_authenticated:
+            return False
+        if user_is_super_admin(user) or getattr(user, "is_superuser", False):
+            return True
+        return user.has_perm("accounts.add_user") or user.has_perm("accounts.view_user")
+
+
+class BulkUserTemplateDownload(APIView):
+    """Download Excel template for bulk ERP user creation (* = compulsory)."""
+
+    permission_classes = [IsAuthenticated, CanManageErpUsers]
+
+    def get(self, request):
+        from accounts.bulk_user_import import build_user_upload_workbook
+        from django.http import HttpResponse
+
+        wb = build_user_upload_workbook()
+        response = HttpResponse(
+            content_type=(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+        )
+        response["Content-Disposition"] = (
+            'attachment; filename="erp_users_upload_template.xlsx"'
+        )
+        wb.save(response)
+        return response
+
+
+class BulkUserUpload(APIView):
+    """Upload filled template; create staff users + email temp passwords."""
+
+    permission_classes = [IsAuthenticated, CanManageErpUsers]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request):
+        from accounts.bulk_user_import import import_users_from_rows, parse_upload_file
+
+        upload = request.FILES.get("file") or request.FILES.get("file_path")
+        if not upload:
+            return Response(
+                {"detail": "Attach a file field named 'file' (.xlsx or .csv)."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        name = (upload.name or "").lower()
+        if not (name.endswith(".xlsx") or name.endswith(".xlsm") or name.endswith(".csv")):
+            return Response(
+                {"detail": "Only .xlsx or .csv files are accepted."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            rows = parse_upload_file(upload)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as exc:
+            logger.exception("Bulk user parse failed")
+            return Response(
+                {"detail": f"Could not read file: {exc}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not rows:
+            return Response(
+                {"detail": "No data rows found. Fill the Users sheet using the template."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        result = import_users_from_rows(rows, send_email=True)
+        log_audit_event(
+            request.user,
+            "bulk_user_upload",
+            None,
+            f"Bulk user upload: created={result['created']} errors={len(result['errors'])}",
+            request,
+        )
+        return Response(
+            {
+                "ok": True,
+                "message": (
+                    f"Created {result['created']} user(s); "
+                    f"{result['emails_queued']} credential email(s) queued."
+                ),
+                **result,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+
 
 
 

@@ -8,6 +8,7 @@ from .views import (
     BuildingListView,
     EndAllocationView,
     FloorListView,
+    HostelDetailView,
     HostelFeeExemptionReportView,
     HostelListView,
     HostelReportsDashboardView,
@@ -27,6 +28,11 @@ from .views import (
 
 urlpatterns = [
     path("hostels/", HostelListView.as_view(), name="hostel-list"),
+    path(
+        "hostels/<int:hostel_id>/",
+        HostelDetailView.as_view(),
+        name="hostel-detail",
+    ),
     path("buildings/", BuildingListView.as_view(), name="hostel-buildings"),
     path(
         "buildings/<int:building_id>/",

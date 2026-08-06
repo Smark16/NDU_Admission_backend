@@ -3273,7 +3273,37 @@ class ListBonafideStudents(generics.ListAPIView):
     ordering_fields = ["created_at", "admission_date", "id", "reg_no", "student_id"]
     ordering = ["-created_at"]
     # Ordering only — search is applied once below (avoid SearchFilter double-hit).
+    # work_queue is handled in filter_queryset (not a model field).
     filter_backends = [OrderingFilter]
+
+    def filter_queryset(self, queryset):
+        ordering = (self.request.query_params.get("ordering") or "").strip()
+        if ordering in ("work_queue", "-work_queue"):
+            from django.db.models import Case, F, IntegerField, Value, When
+
+            y1t1 = Q(
+                programme_enrollment__current_year_of_study=1,
+                programme_enrollment__current_term_number=1,
+            ) | Q(programme_enrollment__isnull=True)
+            qs = queryset.annotate(
+                _work_queue_rank=Case(
+                    When(accounts_registration_cleared=False, then=Value(0)),
+                    When(
+                        Q(
+                            accounts_registration_cleared=True,
+                            physical_documents_verified=False,
+                        )
+                        & y1t1,
+                        then=Value(1),
+                    ),
+                    default=Value(2),
+                    output_field=IntegerField(),
+                )
+            )
+            if ordering.startswith("-"):
+                return qs.order_by(F("_work_queue_rank").desc(), "reg_no", "id")
+            return qs.order_by("_work_queue_rank", "reg_no", "id")
+        return super().filter_queryset(queryset)
 
     _BONAFIDE_SELECT_RELATED = (
         "admitted_program__faculty",
@@ -3282,6 +3312,8 @@ class ListBonafideStudents(generics.ListAPIView):
         "admitted_campus",
         "intended_program_batch",
         "application",
+        "accounts_registration_cleared_by",
+        "physical_documents_verified_by",
     )
 
     def _enrich_page(self, page_ids: list[int]) -> list:

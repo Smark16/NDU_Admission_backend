@@ -11,6 +11,7 @@ from rest_framework.views import APIView
 from admissions.models import AdmittedStudent
 from admissions.registration_workflow import student_curriculum_year_term
 
+from .assign_ux import enrichment_for_student, natural_room_sort_key, suggested_floor_sort_orders
 from .eligibility import student_hostel_eligibility
 from .models import Bed, Building, Floor, Hostel, HostelAllocation, Room
 from .permissions import (
@@ -29,6 +30,27 @@ from .serializers import (
     RoomSerializer,
 )
 from .services import assign_bed, end_allocation, transfer_bed
+
+
+def _building_capacity_qs():
+    return (
+        Building.objects.select_related("hostel", "hostel__campus")
+        .annotate(
+            bed_count=Count(
+                "floors__rooms__beds",
+                filter=Q(floors__rooms__room_kind=Room.KIND_BEDROOM),
+                distinct=True,
+            ),
+            occupied=Count(
+                "floors__rooms__beds",
+                filter=Q(
+                    floors__rooms__room_kind=Room.KIND_BEDROOM,
+                    floors__rooms__beds__status=Bed.STATUS_OCCUPIED,
+                ),
+                distinct=True,
+            ),
+        )
+    )
 
 
 def _student_base_qs():
@@ -132,17 +154,71 @@ class HostelListView(APIView):
         return Response(HostelSerializer(qs, many=True).data)
 
 
+class HostelDetailView(APIView):
+    """GET/PATCH hostel including fresher/continuing floor-band settings."""
+
+    permission_classes = [IsAuthenticated, CanManageInventory]
+
+    def get(self, request, hostel_id):
+        hostel = get_object_or_404(Hostel.objects.select_related("campus"), pk=hostel_id)
+        return Response(HostelSerializer(hostel).data)
+
+    def patch(self, request, hostel_id):
+        hostel = get_object_or_404(Hostel.objects.select_related("campus"), pk=hostel_id)
+        if "name" in request.data:
+            name = (request.data.get("name") or "").strip()
+            if not name:
+                return Response(
+                    {"name": "Name is required."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            hostel.name = name
+        if "is_active" in request.data:
+            hostel.is_active = bool(request.data.get("is_active"))
+        if "fresher_min_sort_order" in request.data:
+            try:
+                hostel.fresher_min_sort_order = int(request.data.get("fresher_min_sort_order"))
+            except (TypeError, ValueError):
+                return Response(
+                    {"fresher_min_sort_order": "Must be an integer."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        if "continuing_max_sort_order" in request.data:
+            try:
+                hostel.continuing_max_sort_order = int(
+                    request.data.get("continuing_max_sort_order")
+                )
+            except (TypeError, ValueError):
+                return Response(
+                    {"continuing_max_sort_order": "Must be an integer."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        hostel.save()
+        return Response(HostelSerializer(hostel).data)
+
+
 class BuildingListView(APIView):
     permission_classes = [IsAuthenticated, CanManageInventory]
 
     def get(self, request):
-        qs = Building.objects.select_related("hostel", "hostel__campus").all()
+        qs = _building_capacity_qs()
         hostel_id = request.query_params.get("hostel")
         if hostel_id:
             qs = qs.filter(hostel_id=hostel_id)
         campus_id = request.query_params.get("campus")
         if campus_id:
             qs = qs.filter(hostel__campus_id=campus_id)
+        gender = (request.query_params.get("gender") or "").strip().lower()
+        if gender:
+            qs = qs.filter(hostel__gender=gender)
+        active_only = request.query_params.get("active_only", "true").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        if active_only:
+            qs = qs.filter(is_active=True, hostel__is_active=True)
+        qs = qs.order_by("hostel__name", "name")
         return Response(BuildingSerializer(qs, many=True).data)
 
     def post(self, request):
@@ -180,6 +256,7 @@ class FloorListView(APIView):
         building_id = request.query_params.get("building")
         if building_id:
             qs = qs.filter(building_id=building_id)
+        qs = qs.order_by("sort_order", "code")
         return Response(FloorSerializer(qs, many=True).data)
 
     def post(self, request):
@@ -229,6 +306,7 @@ class RoomListView(APIView):
         hostel_id = request.query_params.get("hostel")
         kind = request.query_params.get("room_kind")
         q = (request.query_params.get("q") or "").strip()
+        floor_band = (request.query_params.get("floor_band") or "").strip().lower()
         available_only = request.query_params.get("available_only", "").lower() in (
             "1",
             "true",
@@ -249,7 +327,43 @@ class RoomListView(APIView):
                 room_kind=Room.KIND_BEDROOM,
                 beds__status=Bed.STATUS_AVAILABLE,
             ).distinct()
-        return Response(RoomSerializer(qs, many=True).data)
+        if floor_band in ("fresher", "continuing"):
+            # Relative to each hall: upper = highest floors here, lower = lowest here.
+            if building_id:
+                building = (
+                    Building.objects.select_related("hostel")
+                    .filter(pk=building_id)
+                    .first()
+                )
+                if building:
+                    allowed = suggested_floor_sort_orders(
+                        building, band=floor_band, hostel=building.hostel
+                    )
+                    qs = qs.filter(floor__sort_order__in=allowed or [-1])
+            elif hostel_id:
+                hostel = Hostel.objects.filter(pk=hostel_id).first()
+                if hostel:
+                    allowed_orders: set[int] = set()
+                    for b in Building.objects.filter(hostel=hostel):
+                        allowed_orders.update(
+                            suggested_floor_sort_orders(
+                                b, band=floor_band, hostel=hostel
+                            )
+                        )
+                    qs = qs.filter(floor__sort_order__in=allowed_orders or [-1])
+                    # Still wrong across mixed-height halls; assign UI always passes building.
+        rooms = list(qs)
+        rooms.sort(
+            key=lambda r: (
+                int(getattr(r.floor, "sort_order", 0) or 0),
+                natural_room_sort_key(r.code),
+            )
+        )
+        return Response(
+            RoomSerializer(
+                rooms, many=True, context={"available_only": available_only}
+            ).data
+        )
 
     def post(self, request):
         from .inventory_ops import create_room
@@ -536,6 +650,10 @@ class StudentEligibilityView(APIView):
 
         student = matches[0]
         elig = student_hostel_eligibility(student)
+        cohort = enrichment_for_student(student)
+        # Merge cohort into meta for assign wizard chips / floor presets.
+        meta = {**(elig.get("meta") or {}), **cohort}
+        elig = {**elig, "meta": meta}
         active = (
             _allocation_qs()
             .filter(student=student, status=HostelAllocation.STATUS_ACTIVE)
@@ -544,6 +662,7 @@ class StudentEligibilityView(APIView):
         return Response(
             {
                 **elig,
+                **cohort,
                 "student_id": student.pk,
                 "student_number": student.student_id,
                 "reg_no": student.reg_no,

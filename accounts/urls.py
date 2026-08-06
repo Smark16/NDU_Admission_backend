@@ -49,4 +49,7 @@ urlpatterns = [
     path('update_system_settings', UpdateSystemSettings.as_view()),
 
     path('system_usage_report', SystemUsageReport.as_view()),
+
+    path('users/bulk/template/', BulkUserTemplateDownload.as_view()),
+    path('users/bulk/upload/', BulkUserUpload.as_view()),
 ]

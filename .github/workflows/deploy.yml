@@ -35,11 +35,11 @@ jobs:
           pip install -r requirements.txt
 
           # Fake known duplicate-column migrations (already present in DB).
-          python manage.py migrate Programs 0019_course_material --fake
-          python manage.py migrate admissions 0053_admittedstudent_registration_tuition_pct_cache --fake
-          python manage.py migrate Programs 0023_teaching_section --fake
-          python manage.py migrate Programs 0024_timetablesession_teaching_section --fake
-          python manage.py migrate Programs 0025_courseunitsectionlecturer --fake
+          # python manage.py migrate Programs 0019_course_material --fake
+          # python manage.py migrate admissions 0053_admittedstudent_registration_tuition_pct_cache --fake
+          # python manage.py migrate Programs 0023_teaching_section --fake
+          # python manage.py migrate Programs 0024_timetablesession_teaching_section --fake
+          # python manage.py migrate Programs 0025_courseunitsectionlecturer --fake
 
           # Real migrate: adds registration_kind (fixes registration_lookup 500s).
           # On prod the column may already exist — fake 0021 if so, then continue.
