@@ -13,6 +13,8 @@ from payments.models import ManualBankPaymentChangeRequest
 
 
 FINANCE_MANAGER_GROUP = "Finance Manager"
+BURSAR_GROUP = "Bursar"
+BANK_APPROVER_GROUPS = frozenset({FINANCE_MANAGER_GROUP, BURSAR_GROUP})
 
 
 def user_is_finance_manager(user) -> bool:
@@ -24,8 +26,24 @@ def user_is_finance_manager(user) -> bool:
         return False
 
 
+def user_is_bursar(user) -> bool:
+    if not user or not getattr(user, "is_authenticated", False):
+        return False
+    try:
+        return user.groups.filter(name__iexact=BURSAR_GROUP).exists()
+    except Exception:
+        return False
+
+
 def user_can_approve_manual_bank(user) -> bool:
-    return user_is_super_admin(user) or user_is_finance_manager(user)
+    if user_is_super_admin(user):
+        return True
+    if not user or not getattr(user, "is_authenticated", False):
+        return False
+    try:
+        return user.groups.filter(name__in=BANK_APPROVER_GROUPS).exists()
+    except Exception:
+        return False
 
 
 def can_approve_change_request(user, change_request: ManualBankPaymentChangeRequest) -> bool:

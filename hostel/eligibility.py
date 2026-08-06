@@ -48,10 +48,17 @@ def student_hostel_eligibility(student: AdmittedStudent) -> dict:
 
     FY Main Campus (Y1T1): require Accounts clearance AND AR document verification.
     Continuing / other: require Accounts registration clearance.
+
+    Temporary Access Pass with allow_hostel can unlock hostel (and meals flag in meta)
+    without full registration clearance or AR docs — for a dated window only.
     """
+    from admissions.temporary_access import student_temporary_access
+
     reasons: list[str] = []
     accounts_ok = bool(getattr(student, "accounts_registration_cleared", False))
     docs_ok = bool(getattr(student, "physical_documents_verified", False))
+    temp = student_temporary_access(student)
+    temp_hostel = bool(temp.get("allow_hostel"))
     gender = student_gender(student)
     main = is_main_campus(student)
     fy = is_first_year_first_term(student)
@@ -60,10 +67,14 @@ def student_hostel_eligibility(student: AdmittedStudent) -> dict:
     if not gender:
         reasons.append("Student gender is missing on the application.")
 
-    if not accounts_ok:
-        reasons.append("Accounts registration clearance is required before hostel assignment.")
+    if not accounts_ok and not temp_hostel:
+        reasons.append(
+            "Accounts registration clearance (or an active temporary hostel pass) "
+            "is required before hostel assignment."
+        )
 
-    if main and fy and needs_docs and not docs_ok:
+    # Temp hostel pass intentionally bypasses AR docs for sponsored interim access.
+    if main and fy and needs_docs and not docs_ok and not temp_hostel:
         reasons.append(
             "AR document verification is required for first-year Main Campus hostel assignment."
         )
@@ -74,9 +85,12 @@ def student_hostel_eligibility(student: AdmittedStudent) -> dict:
         "meta": {
             "accounts_registration_cleared": accounts_ok,
             "physical_documents_verified": docs_ok,
+            "temporary_hostel_pass": temp_hostel,
+            "temporary_meals_pass": bool(temp.get("allow_meals")),
+            "temporary_access": temp if temp.get("has_active_pass") else None,
             "is_main_campus": main,
             "is_first_year_first_term": fy,
-            "requires_ar_docs": bool(main and fy and needs_docs),
+            "requires_ar_docs": bool(main and fy and needs_docs and not temp_hostel),
             "gender": gender,
             "year_term": list(student_curriculum_year_term(student)),
         },

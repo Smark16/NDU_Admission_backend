@@ -247,6 +247,17 @@ def _commitment_student_row(student: AdmittedStudent) -> dict:
     except Exception:
         enrollment_status = None
 
+    has_temp = getattr(student, "has_temporary_access_pass", None)
+    temp_sponsor = getattr(student, "temporary_access_sponsor", None)
+    temp_until = getattr(student, "temporary_access_valid_until", None)
+    if has_temp is None:
+        from admissions.temporary_access import get_active_pass
+
+        active_pass = get_active_pass(student)
+        has_temp = active_pass is not None
+        temp_sponsor = active_pass.sponsor_label if active_pass else None
+        temp_until = active_pass.valid_until if active_pass else None
+
     return {
         "id": student.id,
         "reg_no": student.reg_no,
@@ -265,6 +276,11 @@ def _commitment_student_row(student: AdmittedStudent) -> dict:
         "total_paid": paid,
         "balance": balance,
         "enrollment_status": enrollment_status,
+        "has_temporary_access_pass": bool(has_temp),
+        "temporary_access_sponsor": temp_sponsor or None,
+        "temporary_access_valid_until": (
+            temp_until.isoformat() if hasattr(temp_until, "isoformat") else temp_until
+        ),
     }
 
 
@@ -274,7 +290,9 @@ def _commitment_students_queryset(
     cohort: dict[str, int | str | None] | None = None,
     commitment_met: bool | None = None,
 ):
-    qs = (
+    from admissions.temporary_access import annotate_temporary_access
+
+    qs = annotate_temporary_access(
         AdmittedStudent.objects.filter(is_admitted=True)
         .select_related(
             "admitted_program",
@@ -659,7 +677,7 @@ class AdminTuitionLedgerStudentDetailView(APIView):
 
 
 class CanApproveManualBankPayment(BasePermission):
-    message = "Only Finance Manager or Super Admin can approve bank payment changes."
+    message = "Only Bursar, Finance Manager, or Super Admin can approve bank payment changes."
 
     def has_permission(self, request, view):
         from payments.manual_bank_approval import user_can_approve_manual_bank
@@ -724,7 +742,7 @@ class AdminPostManualBankPaymentView(APIView):
         return Response(
             {
                 "message": (
-                    "Bank payment submitted for Finance Manager approval. "
+                    "Bank payment submitted for Bursar / Finance Manager approval. "
                     "It will credit the student only after approval."
                 ),
                 "pending": True,
@@ -800,7 +818,7 @@ class AdminManualBankPaymentDetailView(APIView):
         )
         return Response(
             {
-                "message": "Edit submitted for Finance Manager approval.",
+                "message": "Edit submitted for Bursar / Finance Manager approval.",
                 "pending": True,
                 "request": serialize_change_request(change),
             },
@@ -866,7 +884,7 @@ class AdminManualBankPaymentDetailView(APIView):
         )
         return Response(
             {
-                "message": "Delete submitted for Finance Manager approval.",
+                "message": "Delete submitted for Bursar / Finance Manager approval.",
                 "pending": True,
                 "request": serialize_change_request(change),
             },
@@ -875,7 +893,7 @@ class AdminManualBankPaymentDetailView(APIView):
 
 
 class CanViewOrApproveManualBankRequests(BasePermission):
-    message = "Only Super Admin or Finance Manager can view bank payment approval requests."
+    message = "Only Super Admin, Bursar, or Finance Manager can view bank payment approval requests."
 
     def has_permission(self, request, view):
         from payments.manual_bank_approval import user_can_approve_manual_bank

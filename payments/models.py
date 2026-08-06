@@ -611,6 +611,19 @@ class StudentFeeExemption(models.Model):
 class ScholarshipProgramme(models.Model):
     """Named scholarship pot, e.g. State House, HESFB, Sports."""
 
+    SPONSOR_STATE_HOUSE = "state_house"
+    SPONSOR_HESFB = "hesfb"
+    SPONSOR_FAWE = "fawe"
+    SPONSOR_CHURCH = "church"
+    SPONSOR_OTHER = "other"
+    SPONSOR_TYPE_CHOICES = [
+        (SPONSOR_STATE_HOUSE, "State House"),
+        (SPONSOR_HESFB, "HESFB"),
+        (SPONSOR_FAWE, "FAWE"),
+        (SPONSOR_CHURCH, "Church sponsored"),
+        (SPONSOR_OTHER, "Other / custom"),
+    ]
+
     name = models.CharField(max_length=150)
     code = models.CharField(
         max_length=40,
@@ -618,6 +631,13 @@ class ScholarshipProgramme(models.Model):
         help_text="Unique code e.g. STATE_HOUSE, HESFB, SPORTS",
     )
     sponsor = models.CharField(max_length=150, blank=True, default="")
+    sponsor_type = models.CharField(
+        max_length=32,
+        choices=SPONSOR_TYPE_CHOICES,
+        default=SPONSOR_OTHER,
+        db_index=True,
+        help_text="Taxonomy for State House, HESFB, FAWE, church, etc.",
+    )
     description = models.TextField(blank=True, default="")
     fund_amount = models.DecimalField(
         max_digits=14,

@@ -49,9 +49,10 @@
   </table>
   <table class="kpi-row">
     <tr>
-      <td width="33%"><div class="kpi"><div class="label">Total Collected</div><div class="value">{{ m.total_collected_display }}</div></div></td>
-      <td width="33%"><div class="kpi"><div class="label">Not yet registration-ready</div><div class="value bad">{{ m.registration_not_ready_total }}</div></div></td>
-      <td width="33%"><div class="kpi"><div class="label">Revenue at Risk</div><div class="value bad">{{ m.revenue_at_risk_display }}</div></div></td>
+      <td width="25%"><div class="kpi"><div class="label">Total Collected</div><div class="value">{{ m.total_collected_display }}</div></div></td>
+      <td width="25%"><div class="kpi"><div class="label">Not yet registration-ready</div><div class="value bad">{{ m.registration_not_ready_total }}</div></div></td>
+      <td width="25%"><div class="kpi"><div class="label">Revenue at Risk</div><div class="value bad">{{ m.revenue_at_risk_display }}</div></div></td>
+      <td width="25%"><div class="kpi"><div class="label">Active temporary access passes</div><div class="value">{{ m.temporary_access_active_total|default:0 }}</div></div></td>
     </tr>
   </table>
 

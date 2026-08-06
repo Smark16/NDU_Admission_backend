@@ -763,6 +763,8 @@ def payment_status_dict(student: AdmittedStudent, request=None) -> dict:
         if c.status != "pending" or adhoc_charge_billing_reached(c)
     ]
 
+    from admissions.temporary_access import student_temporary_access
+
     return {
         **totals,
         "payment_history": history,
@@ -771,5 +773,6 @@ def payment_status_dict(student: AdmittedStudent, request=None) -> dict:
         "scheduled_other_fees_total_due": totals["scheduled_other_fees_due"],
         "billing_lines": student_billing_lines(student),
         "payment_code": student.student_id,
+        "temporary_access": student_temporary_access(student, request=request),
         **offer_letter_portal_fields(student, request),
     }

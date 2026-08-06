@@ -128,14 +128,23 @@ def build_registration_eligibility_payload(student: AdmittedStudent) -> dict:
     if enroll_msg:
         block_messages.append(enroll_msg)
 
-    accounts_cleared = bool(getattr(student, "accounts_registration_cleared", False))
-    if not accounts_cleared:
-        block_messages.append(
-            "Accounts has not cleared you yet. Course registration (and your registration card) "
-            "open only after Accounts confirms payment — for new and continuing students."
-        )
-
     from admissions.registration_workflow import requires_physical_document_verification
+    from admissions.temporary_access import student_temporary_access
+
+    accounts_cleared = bool(getattr(student, "accounts_registration_cleared", False))
+    temp_access = student_temporary_access(student)
+    if not accounts_cleared:
+        if temp_access.get("has_active_pass"):
+            block_messages.append(
+                "You have a temporary access pass (lectures/hostel/meals only). "
+                "Course registration and your registration card stay locked until Accounts "
+                "gives full registration clearance after sponsorship/fee settlement."
+            )
+        else:
+            block_messages.append(
+                "Accounts has not cleared you yet. Course registration (and your registration card) "
+                "open only after Accounts confirms payment — for new and continuing students."
+            )
 
     requires_docs = requires_physical_document_verification(student)
     docs_verified = bool(getattr(student, "physical_documents_verified", False))
@@ -159,6 +168,7 @@ def build_registration_eligibility_payload(student: AdmittedStudent) -> dict:
         "accounts_registration_cleared": accounts_cleared,
         "requires_document_verification": requires_docs,
         "physical_documents_verified": docs_verified,
+        "temporary_access": temp_access,
         "message": message,
         "block_messages": block_messages,
         **enroll_info,

@@ -62,8 +62,9 @@ LOCAL_APPS = [
 ]
 
 MIDDLEWARE = [
-    'django.middleware.security.SecurityMiddleware',
+    # CorsMiddleware must be as high as possible (before CommonMiddleware / debug toolbar).
     "corsheaders.middleware.CorsMiddleware",
+    'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -77,7 +78,8 @@ MIDDLEWARE = [
 
 if DEBUG:
     THIRD_PARTY_APPS += ["debug_toolbar"]
-    MIDDLEWARE.insert(0, "debug_toolbar.middleware.DebugToolbarMiddleware")
+    # Keep after CorsMiddleware so preflight still gets proper ACAO headers.
+    MIDDLEWARE.insert(1, "debug_toolbar.middleware.DebugToolbarMiddleware")
 
     INTERNAL_IPS = [
         "127.0.0.1",
@@ -297,7 +299,8 @@ CSRF_TRUSTED_ORIGINS = [
     "http://137.63.139.78"
 ]
 
-# CORS_ALLOW_ALL_ORIGINS = True
+# Never use '*' with credentialed SPA requests (browser blocks login).
+CORS_ALLOW_ALL_ORIGINS = False
 CORS_ALLOW_CREDENTIALS = True
 
 CORS_ALLOWED_ORIGINS = [
@@ -310,6 +313,7 @@ CORS_ALLOWED_ORIGINS = [
     "http://127.0.0.1:5174",
     "https://admissions.ndu.ac.ug",
     "http://localhost:3001",
+    "http://127.0.0.1:3001",
     "https://erp.ndejje.ndu.ac.ug",
     "https://www.schoolpay.co.ug",
     "https://schoolpaytest.servicecops.com",

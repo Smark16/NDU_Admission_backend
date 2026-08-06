@@ -101,6 +101,10 @@ class UniversityHeadcountView(APIView):
         if not request.user.has_perm("admissions.view_admittedstudent"):
             return Response({"detail": "Forbidden."}, status=403)
 
+        from accounts.finance_access import user_can_view_student_finance
+
+        can_finance = user_can_view_student_finance(request.user)
+
         base = filter_admitted_students_for_user(
             AdmittedStudent.objects.filter(is_admitted=True).select_related(
                 "admitted_campus",
@@ -111,10 +115,14 @@ class UniversityHeadcountView(APIView):
         )
 
         total = base.count()
-        met_qs = filter_by_commitment_met(base, True, strict=False)
-        unpaid_qs = filter_by_commitment_met(base, False, strict=False)
-        commitment_met = met_qs.count()
-        commitment_unpaid = unpaid_qs.count()
+        if can_finance:
+            met_qs = filter_by_commitment_met(base, True, strict=False)
+            unpaid_qs = filter_by_commitment_met(base, False, strict=False)
+            commitment_met = met_qs.count()
+            commitment_unpaid = unpaid_qs.count()
+        else:
+            met_qs = unpaid_qs = None
+            commitment_met = commitment_unpaid = None
 
         # Intake split. Legacy imports are identified by application source,
         # not by which admission batch they carry, so a legacy row mistakenly
@@ -158,11 +166,11 @@ class UniversityHeadcountView(APIView):
         # (a data-entry gap, not a real "no cohort" student) so they show up
         # under their real class instead of silently vanishing into "—".
         #
-        # This breakdown only counts students who have MET the commitment fee
-        # (met_qs, not the full register) - the faculty/programme/batch drill-down
-        # is meant to show who has actually secured their place, not just applied.
+        # Finance staff: cohort drill-down among commitment-paid students.
+        # Academics: same structure over the full census (no payment overlay).
+        cohort_qs = met_qs if can_finance and met_qs is not None else base
         by_cohort = list(
-            met_qs.annotate(
+            cohort_qs.annotate(
                 effective_batch=Coalesce(
                     "intended_program_batch__name",
                     "programme_enrollment__program_batch__name",
@@ -188,15 +196,31 @@ class UniversityHeadcountView(APIView):
         )
         multiple_active_intakes = len(active_intakes) > 1
 
-        unpaid_by_campus = list(
-            unpaid_qs.values("admitted_campus__name")
-            .annotate(count=Count("id"))
-            .order_by("-count")
-        )
+        if can_finance and unpaid_qs is not None:
+            unpaid_by_campus = list(
+                unpaid_qs.values("admitted_campus__name")
+                .annotate(count=Count("id"))
+                .order_by("-count")
+            )
+            commitment_met_pct = round((100.0 * commitment_met / total) if total else 0.0, 1)
+            threshold = float(COMMITMENT_FEE_THRESHOLD)
+            notes = (
+                "total_admitted is the university register. "
+                "commitment_met is finance status (bonafide ops default)."
+            )
+        else:
+            unpaid_by_campus = []
+            commitment_met_pct = None
+            threshold = None
+            notes = (
+                "Census headcount only. Payment / commitment figures are "
+                "visible to Bursar / Finance staff."
+            )
 
         return Response(
             {
                 "total_admitted": total,
+                "can_view_finance": can_finance,
                 "intake_split": {
                     "current_intake_new": intake_split["current_intake_new"],
                     "continuing_total": intake_split["continuing_total"],
@@ -214,10 +238,8 @@ class UniversityHeadcountView(APIView):
                 ],
                 "commitment_met": commitment_met,
                 "commitment_unpaid": commitment_unpaid,
-                "commitment_threshold_ugx": float(COMMITMENT_FEE_THRESHOLD),
-                "commitment_met_pct": round(
-                    (100.0 * commitment_met / total) if total else 0.0, 1
-                ),
+                "commitment_threshold_ugx": threshold,
+                "commitment_met_pct": commitment_met_pct,
                 "by_campus": [
                     {
                         "name": r["admitted_campus__name"] or "—",
@@ -254,9 +276,6 @@ class UniversityHeadcountView(APIView):
                     }
                     for r in unpaid_by_campus
                 ],
-                "notes": (
-                    "total_admitted is the university register. "
-                    "commitment_met is finance status (bonafide ops default)."
-                ),
+                "notes": notes,
             }
         )

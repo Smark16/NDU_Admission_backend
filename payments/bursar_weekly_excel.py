@@ -70,6 +70,7 @@ def render_bursar_weekly_excel(metrics: dict[str, Any]) -> tuple[bytes, str]:
         ),
         ("Not yet registration-ready", metrics.get("registration_not_ready_total")),
         ("Registration-ready rate %", metrics.get("registration_ready_rate")),
+        ("Active temporary access passes", metrics.get("temporary_access_active_total")),
         ("Total collected", metrics.get("total_collected_display")),
         ("Revenue at risk", metrics.get("revenue_at_risk_display")),
         ("Commitment threshold", metrics.get("threshold_display")),

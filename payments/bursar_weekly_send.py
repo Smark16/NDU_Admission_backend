@@ -27,6 +27,8 @@ def _plain_summary(metrics: dict[str, Any]) -> str:
         f"Ready for registration (≥ {pct_label} tuition): "
         f"{metrics.get('registration_ready_total', 0):,} "
         f"({metrics.get('registration_ready_rate', 0)}%)\n"
+        f"Active temporary access passes: "
+        f"{metrics.get('temporary_access_active_total', 0):,}\n"
         f"Total collected: {metrics['total_collected_display']}\n"
         f"Revenue at risk: {metrics['revenue_at_risk_display']}\n\n"
         "Full report attached as PDF and Excel."
