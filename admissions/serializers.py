@@ -845,6 +845,8 @@ class BonafideStudentSerializer(serializers.ModelSerializer):
     registration_stage = serializers.SerializerMethodField()
     registration_stage_label = serializers.SerializerMethodField()
     requires_document_verification = serializers.SerializerMethodField()
+    accounts_registration_cleared_by_name = serializers.SerializerMethodField()
+    physical_documents_verified_by_name = serializers.SerializerMethodField()
     balance = serializers.SerializerMethodField()
     total_required = serializers.SerializerMethodField()
     total_paid = serializers.SerializerMethodField()
@@ -885,8 +887,10 @@ class BonafideStudentSerializer(serializers.ModelSerializer):
             "admission_fee_paid",
             "accounts_registration_cleared",
             "accounts_registration_cleared_at",
+            "accounts_registration_cleared_by_name",
             "physical_documents_verified",
             "physical_documents_verified_at",
+            "physical_documents_verified_by_name",
             "registration_stage",
             "registration_stage_label",
             "requires_document_verification",
@@ -1076,6 +1080,20 @@ class BonafideStudentSerializer(serializers.ModelSerializer):
             data["temporary_access_valid_until"] = None
         return data
 
+    def get_accounts_registration_cleared_by_name(self, obj):
+        u = getattr(obj, "accounts_registration_cleared_by", None)
+        if not u:
+            return None
+        full = (getattr(u, "get_full_name", lambda: "")() or "").strip()
+        return full or getattr(u, "username", None) or getattr(u, "email", None)
+
+    def get_physical_documents_verified_by_name(self, obj):
+        u = getattr(obj, "physical_documents_verified_by", None)
+        if not u:
+            return None
+        full = (getattr(u, "get_full_name", lambda: "")() or "").strip()
+        return full or getattr(u, "username", None) or getattr(u, "email", None)
+
 
 class BonafideStudentProfileSerializer(BonafideStudentSerializer):
     """Full personal profile (application first page) + placement — no qualifications."""
@@ -1101,8 +1119,6 @@ class BonafideStudentProfileSerializer(BonafideStudentSerializer):
         source="application.next_of_kin_relationship", default="", read_only=True
     )
     passport_photo = serializers.SerializerMethodField()
-    accounts_registration_cleared_by_name = serializers.SerializerMethodField()
-    physical_documents_verified_by_name = serializers.SerializerMethodField()
 
     class Meta(BonafideStudentSerializer.Meta):
         fields = BonafideStudentSerializer.Meta.fields + [
@@ -1118,9 +1134,7 @@ class BonafideStudentProfileSerializer(BonafideStudentSerializer):
             "next_of_kin_relationship",
             "passport_photo",
             "accounts_registration_clearance_notes",
-            "accounts_registration_cleared_by_name",
             "physical_documents_notes",
-            "physical_documents_verified_by_name",
         ]
 
     def get_passport_photo(self, obj):
@@ -1131,20 +1145,6 @@ class BonafideStudentProfileSerializer(BonafideStudentSerializer):
             return app.passport_photo.url
         except ValueError:
             return None
-
-    def get_accounts_registration_cleared_by_name(self, obj):
-        u = getattr(obj, "accounts_registration_cleared_by", None)
-        if not u:
-            return None
-        full = (getattr(u, "get_full_name", lambda: "")() or "").strip()
-        return full or getattr(u, "username", None) or getattr(u, "email", None)
-
-    def get_physical_documents_verified_by_name(self, obj):
-        u = getattr(obj, "physical_documents_verified_by", None)
-        if not u:
-            return None
-        full = (getattr(u, "get_full_name", lambda: "")() or "").strip()
-        return full or getattr(u, "username", None) or getattr(u, "email", None)
 
 
 # admission detail serializer

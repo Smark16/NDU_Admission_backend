@@ -23,6 +23,22 @@ class Hostel(models.Model):
     name = models.CharField(max_length=200)
     gender = models.CharField(max_length=16, choices=GENDER_CHOICES, db_index=True)
     is_active = models.BooleanField(default=True, db_index=True)
+    # Soft assignment guidance — counts of floors from each building's extreme.
+    # "Upper" / "lower" are relative to that hall (e.g. a 2-level hall: top=L1, bottom=GF).
+    fresher_min_sort_order = models.PositiveSmallIntegerField(
+        default=1,
+        help_text=(
+            "How many of the highest floors in each hall to suggest for freshers "
+            "(1 = only the top level of that building)."
+        ),
+    )
+    continuing_max_sort_order = models.PositiveSmallIntegerField(
+        default=1,
+        help_text=(
+            "How many of the lowest floors in each hall to suggest for continuing students "
+            "(1 = only the ground/lowest level of that building)."
+        ),
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
