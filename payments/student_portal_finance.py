@@ -468,6 +468,11 @@ def _finance_totals_from_alloc(alloc) -> dict[str, Any]:
         # Full SchoolPay + portal history (all semesters), separate from current-term open paid.
         "lifetime_paid": lifetime_primary,
         "lifetime_paid_by_currency": lifetime,
+        # Unpaid prior-term balance shown as "Balance carried forward".
+        "balance_carried_forward": float(getattr(alloc, "balance_carried_forward", 0) or 0),
+        # Surplus after settling prior + currently billable lines (prepaid for next term).
+        "prepaid_credit": float(getattr(alloc, "prepaid_credit", 0) or 0),
+        "prepaid_credit_by_currency": getattr(alloc, "prepaid_credit_by_currency", None) or {},
     }
 
 

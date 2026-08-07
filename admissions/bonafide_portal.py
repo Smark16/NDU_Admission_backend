@@ -213,6 +213,9 @@ def build_bonafide_portal_snapshot(student: AdmittedStudent, request=None) -> di
             "commitment_threshold": finance.get("commitment_threshold"),
             "lifetime_paid": finance.get("lifetime_paid"),
             "lifetime_paid_by_currency": finance.get("lifetime_paid_by_currency"),
+            "balance_carried_forward": finance.get("balance_carried_forward"),
+            "prepaid_credit": finance.get("prepaid_credit"),
+            "prepaid_credit_by_currency": finance.get("prepaid_credit_by_currency"),
             "payment_history": history,
             "fee_lines": fee_lines,
             # Keep for older clients; prefer fee_lines in UI.
