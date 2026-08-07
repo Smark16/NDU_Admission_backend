@@ -82,7 +82,7 @@ class AdminStudentEnrollmentEligibilityView(APIView):
             pk=student_id,
         )
         assert_admitted_student_program_access(request.user, student)
-        return Response(admin_programme_enrollment_eligibility(student))
+        return Response(admin_programme_enrollment_eligibility(student, user=request.user))
 
 
 class AdminCreateEnrollmentView(APIView):
@@ -243,8 +243,12 @@ class AdminCreateEnrollmentView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        from accounts.finance_access import user_can_view_student_finance
+
         activation_block = admin_programme_enrollment_activation_block(
-            student, target_status=enroll_status
+            student,
+            target_status=enroll_status,
+            reveal_amounts=user_can_view_student_finance(request.user),
         )
         if activation_block:
             return Response({'detail': activation_block}, status=status.HTTP_400_BAD_REQUEST)
@@ -376,8 +380,12 @@ class AdminEnrollmentDetailView(APIView):
 
         # If status is being changed to 'enrolled', record who did it
         if data.get('status') == 'enrolled' and enrollment.status != 'enrolled':
+            from accounts.finance_access import user_can_view_student_finance
+
             activation_block = admin_programme_enrollment_activation_block(
-                enrollment.student, target_status='enrolled'
+                enrollment.student,
+                target_status='enrolled',
+                reveal_amounts=user_can_view_student_finance(request.user),
             )
             if activation_block:
                 return Response({'detail': activation_block}, status=status.HTTP_400_BAD_REQUEST)

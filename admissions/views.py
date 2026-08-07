@@ -3320,11 +3320,15 @@ class ListBonafideStudents(generics.ListAPIView):
         """Load page rows without selecting SPE.teaching_section (may be missing if 0023 was faked)."""
         from Programs.spe_queryset import prefetch_programme_enrollment_for_lists
 
+        from admissions.temporary_access import annotate_temporary_access
+
         enriched = {
             obj.pk: obj
-            for obj in AdmittedStudent.objects.filter(pk__in=page_ids)
-            .select_related(*self._BONAFIDE_SELECT_RELATED)
-            .prefetch_related(prefetch_programme_enrollment_for_lists())
+            for obj in annotate_temporary_access(
+                AdmittedStudent.objects.filter(pk__in=page_ids)
+                .select_related(*self._BONAFIDE_SELECT_RELATED)
+                .prefetch_related(prefetch_programme_enrollment_for_lists())
+            )
         }
         return [enriched[pk] for pk in page_ids if pk in enriched]
 
@@ -3475,57 +3479,75 @@ class ListBonafideStudents(generics.ListAPIView):
         if enrollment_status and enrollment_status != "all":
             queryset = queryset.filter(programme_enrollment__status=enrollment_status)
 
-        # "bonafide" is the new, clearer name for this filter; "commitment_met" is
-        # kept working for existing links/bookmarks. bonafide takes priority when both
-        # are present. Unset == default to bonafide-only (preserves every existing
-        # dashboard/drill-down link that was built assuming this list == paid-only).
-        bonafide_param = self.request.query_params.get("bonafide")
-        commitment_met = (
-            bonafide_param if bonafide_param is not None else self.request.query_params.get("commitment_met")
-        )
-        raw = str(commitment_met).strip().lower() if commitment_met is not None else ""
-        if raw not in ("all",):
-            from payments.commitment_queryset import filter_by_commitment_met
+        from accounts.finance_access import user_can_view_student_finance
 
-            # Default fast path: admission_fee_paid index only (no ledger subqueries).
-            strict = str(self.request.query_params.get("commitment_strict", "")).lower() in (
-                "1",
-                "true",
-                "yes",
+        can_finance = user_can_view_student_finance(self.request.user)
+
+        # Payment / commitment / tuition-% filters are finance-only. Academics
+        # see their full scoped directory without fee-status disclosure.
+        if can_finance:
+            # "bonafide" is the new, clearer name for this filter; "commitment_met" is
+            # kept working for existing links/bookmarks. bonafide takes priority when both
+            # are present. Unset == default to bonafide-only (preserves every existing
+            # dashboard/drill-down link that was built assuming this list == paid-only).
+            bonafide_param = self.request.query_params.get("bonafide")
+            commitment_met = (
+                bonafide_param
+                if bonafide_param is not None
+                else self.request.query_params.get("commitment_met")
             )
-            if raw in ("1", "true", "yes", "bonafide", ""):
-                # "" (param absent entirely) == default == bonafide-only.
-                queryset = filter_by_commitment_met(queryset, True, strict=strict)
-            elif raw in ("0", "false", "no", "not_bonafide"):
-                queryset = filter_by_commitment_met(queryset, False, strict=strict)
+            raw = str(commitment_met).strip().lower() if commitment_met is not None else ""
+            if raw not in ("all",):
+                from payments.commitment_queryset import filter_by_commitment_met
 
-        # Narrow Accounts clearance before expensive tuition-% evaluation when both are set.
-        accounts_cleared = self.request.query_params.get("accounts_registration_cleared")
-        if accounts_cleared is not None and str(accounts_cleared).lower() not in ("all", ""):
-            raw = str(accounts_cleared).lower()
-            if raw in ("1", "true", "yes"):
-                queryset = queryset.filter(accounts_registration_cleared=True)
-            elif raw in ("0", "false", "no"):
-                queryset = queryset.filter(accounts_registration_cleared=False)
+                # Default fast path: admission_fee_paid index only (no ledger subqueries).
+                strict = str(self.request.query_params.get("commitment_strict", "")).lower() in (
+                    "1",
+                    "true",
+                    "yes",
+                )
+                if raw in ("1", "true", "yes", "bonafide", ""):
+                    # "" (param absent entirely) == default == bonafide-only.
+                    queryset = filter_by_commitment_met(queryset, True, strict=strict)
+                elif raw in ("0", "false", "no", "not_bonafide"):
+                    queryset = filter_by_commitment_met(queryset, False, strict=strict)
 
-        # Live semester tuition % gate from RegistrationSettings (same as registration_settings API).
-        # Never silently drop this filter — that previously returned all awaiting-Accounts students.
-        tuition_pct_met = self.request.query_params.get("tuition_pct_met")
-        if tuition_pct_met is not None and str(tuition_pct_met).lower() not in ("all", ""):
-            from payments.tuition_pct_queryset import filter_by_tuition_pct_met
+            # Narrow Accounts clearance before expensive tuition-% evaluation when both are set.
+            accounts_cleared = self.request.query_params.get("accounts_registration_cleared")
+            if accounts_cleared is not None and str(accounts_cleared).lower() not in ("all", ""):
+                raw = str(accounts_cleared).lower()
+                if raw in ("1", "true", "yes"):
+                    queryset = queryset.filter(accounts_registration_cleared=True)
+                elif raw in ("0", "false", "no"):
+                    queryset = queryset.filter(accounts_registration_cleared=False)
 
-            raw = str(tuition_pct_met).lower()
-            min_raw = self.request.query_params.get("tuition_pct_min")
-            min_pct = None
-            if min_raw not in (None, ""):
-                try:
-                    min_pct = float(min_raw)
-                except (TypeError, ValueError):
-                    min_pct = None
-            if raw in ("1", "true", "yes"):
-                queryset = filter_by_tuition_pct_met(queryset, True, min_pct=min_pct)
-            elif raw in ("0", "false", "no"):
-                queryset = filter_by_tuition_pct_met(queryset, False, min_pct=min_pct)
+            # Live semester tuition % gate from RegistrationSettings.
+            tuition_pct_met = self.request.query_params.get("tuition_pct_met")
+            if tuition_pct_met is not None and str(tuition_pct_met).lower() not in ("all", ""):
+                from payments.tuition_pct_queryset import filter_by_tuition_pct_met
+
+                raw = str(tuition_pct_met).lower()
+                min_raw = self.request.query_params.get("tuition_pct_min")
+                min_pct = None
+                if min_raw not in (None, ""):
+                    try:
+                        min_pct = float(min_raw)
+                    except (TypeError, ValueError):
+                        min_pct = None
+                if raw in ("1", "true", "yes"):
+                    queryset = filter_by_tuition_pct_met(queryset, True, min_pct=min_pct)
+                elif raw in ("0", "false", "no"):
+                    queryset = filter_by_tuition_pct_met(queryset, False, min_pct=min_pct)
+
+            temporary_access = (self.request.query_params.get("temporary_access") or "").strip().lower()
+            if temporary_access and temporary_access not in ("all", ""):
+                from admissions.temporary_access import annotate_temporary_access
+
+                queryset = annotate_temporary_access(queryset)
+                if temporary_access in ("1", "true", "yes", "active"):
+                    queryset = queryset.filter(has_temporary_access_pass=True)
+                elif temporary_access in ("0", "false", "no", "none"):
+                    queryset = queryset.filter(has_temporary_access_pass=False)
 
         registration_stage = (self.request.query_params.get("registration_stage") or "").strip().lower()
         if registration_stage and registration_stage not in ("all", ""):
@@ -3566,11 +3588,13 @@ class ListBonafideStudents(generics.ListAPIView):
 
         queryset = filter_admitted_students_for_user(queryset, self.request.user)
         # distinct when joins can duplicate rows (search / enrollment / academic batch)
+        temporary_access = (self.request.query_params.get("temporary_access") or "").strip().lower()
         if (
             search
             or (enrollment_status and enrollment_status != "all")
             or (academic_batch_id and academic_batch_id != "all")
             or (academic_batch_name and academic_batch_name != "all")
+            or (can_finance and temporary_access and temporary_access not in ("all", ""))
         ):
             return queryset.distinct()
         return queryset
@@ -3862,23 +3886,48 @@ class MarkPhysicalDocumentsVerified(APIView):
 
 
 class ClearPhysicalDocumentsVerification(APIView):
+    """Clear AR physical-document verification. Requires confirm + a written reason."""
+
     permission_classes = [IsAuthenticated, VerifyPhysicalDocumentsPermission]
 
     def post(self, request, pk):
         confirm = request.data.get("confirm")
         if confirm is not True and str(confirm).lower() not in ("true", "1", "yes"):
             return Response(
-                {"detail": "Send JSON body {\"confirm\": true} to clear verification."},
+                {
+                    "detail": (
+                        'Send JSON body {"confirm": true, "reason": "..."} '
+                        "to clear AR document verification."
+                    )
+                },
+                status=400,
+            )
+        reason = (request.data.get("reason") or "").strip()
+        if len(reason) < 10:
+            return Response(
+                {
+                    "detail": (
+                        "A reason of at least 10 characters is required to clear "
+                        "AR document verification."
+                    )
+                },
                 status=400,
             )
         student = get_object_or_404(AdmittedStudent, pk=pk)
         assert_admitted_student_access(request.user, student)
         if not student.physical_documents_verified:
             return Response({"detail": "This student is not marked as physically verified."}, status=400)
+
+        clearer = request.user.get_full_name() or request.user.get_username()
+        stamp = timezone.now().strftime("%Y-%m-%d %H:%M")
+        prior = (student.physical_documents_notes or "").strip()
+        revoke_line = f"[{stamp}] Verification cleared by {clearer}: {reason[:2000]}"
         student.physical_documents_verified = False
         student.physical_documents_verified_at = None
         student.physical_documents_verified_by = None
-        student.physical_documents_notes = ""
+        student.physical_documents_notes = (
+            f"{prior}\n{revoke_line}".strip() if prior else revoke_line
+        )[:4000]
         student.save(
             update_fields=[
                 "physical_documents_verified",
@@ -3893,7 +3942,7 @@ class ClearPhysicalDocumentsVerification(APIView):
             "phys_clear",
             student,
             f"Physical document verification cleared for admitted student id={student.pk} "
-            f"student_id={student.student_id}",
+            f"student_id={student.student_id}. Reason: {reason[:500]}",
             request,
         )
         student = AdmittedStudent.objects.select_related(
@@ -4576,12 +4625,19 @@ class ExemptionFormFeeAccessView(APIView):
 
 
 class ExemptionFormFeeReportView(APIView):
-    """Admin/Accounts: every exemption-form-fee charge raised, for payment follow-up."""
+    """Finance only: every exemption-form-fee charge raised, for payment follow-up."""
 
     permission_classes = [IsAuthenticated, CanViewAdmissionChangeRequests]
 
     def get(self, request):
+        from accounts.finance_access import user_can_view_student_finance
         from admissions.exemption_services import exemption_form_fee_report
+
+        if not user_can_view_student_finance(request.user):
+            return Response(
+                {"detail": "Exemption fee reports are visible to Finance staff only."},
+                status=403,
+            )
 
         status_filter = request.query_params.get("status")
         if status_filter not in ("pending", "completed", None, ""):

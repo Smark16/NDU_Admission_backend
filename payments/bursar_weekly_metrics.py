@@ -168,6 +168,10 @@ def build_bursar_weekly_metrics(
     registration_ready_rate = _pct(registration_ready_total, admitted_total)
     batch_scope_label = _batch_label(batch)
 
+    from admissions.temporary_access import count_active_temporary_passes
+
+    temporary_access_active_total = count_active_temporary_passes(admitted_qs)
+
     annotated = annotate_commitment_ugx_paid(admitted_qs)
     paid_filter = Q(pk__in=paid_id_set) if paid_id_set else Q(pk__in=[])
     total_collected = (
@@ -427,6 +431,11 @@ def build_bursar_weekly_metrics(
         f"(≥ {min_reg_pct:g}% semester tuition paid); "
         f"{registration_not_ready_total:,} are not yet at that threshold."
     )
+    if temporary_access_active_total:
+        observations.append(
+            f"{temporary_access_active_total:,} student(s) currently hold an active temporary "
+            "access pass (sponsored / pending settlement — cleared by Bursar only)."
+        )
     observations.append(
         f"Total commitment-related collections recorded: {_money(total_collected)}. "
         f"Estimated revenue at risk (unpaid × {_money(threshold)}): {_money(revenue_at_risk)}."
@@ -535,6 +544,7 @@ def build_bursar_weekly_metrics(
         "registration_ready_total": registration_ready_total,
         "registration_not_ready_total": registration_not_ready_total,
         "registration_ready_rate": registration_ready_rate,
+        "temporary_access_active_total": temporary_access_active_total,
         "total_collected": total_collected,
         "total_collected_display": _money(total_collected),
         "revenue_at_risk": revenue_at_risk,

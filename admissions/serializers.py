@@ -738,16 +738,33 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
 
         return schoolpay_wallet_api_fields(obj)
 
+    def _request_user_can_view_finance(self) -> bool:
+        request = self.context.get("request")
+        user = getattr(request, "user", None) if request is not None else None
+        if user is None:
+            return False
+        from accounts.finance_access import user_can_view_student_finance
+
+        return user_can_view_student_finance(user)
+
     def get_schoolpay_payment_code_locked(self, obj):
+        if not self._request_user_can_view_finance():
+            return None
         return self._wallet_fields(obj)["schoolpay_payment_code_locked"]
 
     def get_schoolpay_ledger_total_ugx(self, obj):
+        if not self._request_user_can_view_finance():
+            return None
         return self._wallet_fields(obj)["schoolpay_ledger_total_ugx"]
 
     def get_schoolpay_payment_warning(self, obj):
+        if not self._request_user_can_view_finance():
+            return None
         return self._wallet_fields(obj)["schoolpay_payment_warning"]
 
     def _commitment_totals(self, obj):
+        if not self._request_user_can_view_finance():
+            return None
         from decimal import Decimal
 
         from payments.student_payment_allocation import COMMITMENT_FEE_THRESHOLD
@@ -782,6 +799,19 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
     def get_commitment_threshold(self, obj):
         totals = self._commitment_totals(obj)
         return totals["commitment_threshold"] if totals else None
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if not self._request_user_can_view_finance():
+            data["admission_fee_paid"] = None
+            data["schoolpay_ledger_total_ugx"] = None
+            data["schoolpay_payment_warning"] = None
+            data["schoolpay_payment_code_locked"] = None
+            data["commitment_met"] = None
+            data["commitment_paid_ugx"] = None
+            data["commitment_balance"] = None
+            data["commitment_threshold"] = None
+        return data
 
 
 class BonafideStudentSerializer(serializers.ModelSerializer):
@@ -821,6 +851,9 @@ class BonafideStudentSerializer(serializers.ModelSerializer):
     total_required = serializers.SerializerMethodField()
     total_paid = serializers.SerializerMethodField()
     balance_currency = serializers.SerializerMethodField()
+    has_temporary_access_pass = serializers.SerializerMethodField()
+    temporary_access_sponsor = serializers.SerializerMethodField()
+    temporary_access_valid_until = serializers.SerializerMethodField()
 
     class Meta:
         model = AdmittedStudent
@@ -865,6 +898,9 @@ class BonafideStudentSerializer(serializers.ModelSerializer):
             "total_required",
             "total_paid",
             "balance_currency",
+            "has_temporary_access_pass",
+            "temporary_access_sponsor",
+            "temporary_access_valid_until",
         ]
 
     def get_name(self, obj):
@@ -939,12 +975,29 @@ class BonafideStudentSerializer(serializers.ModelSerializer):
 
         return registration_stage_label(self.get_registration_stage(obj))
 
+    def _request_user_can_view_finance(self) -> bool:
+        request = self.context.get("request")
+        user = getattr(request, "user", None) if request is not None else None
+        if user is None:
+            return False
+        from accounts.finance_access import user_can_view_student_finance
+
+        return user_can_view_student_finance(user)
+
     def _finance_totals(self, obj):
         """Balance carried forward across all terms (not just the current one).
 
         Cached per-instance so the four balance-related fields below share one
         finance allocation computation instead of recomputing it four times.
+        Only computed for users with finance visibility.
         """
+        if not self._request_user_can_view_finance():
+            return {
+                "balance": None,
+                "total_required": None,
+                "total_paid": None,
+                "display_currency": None,
+            }
         cached = getattr(obj, "_bonafide_finance_totals_cache", None)
         if cached is not None:
             return cached
@@ -973,7 +1026,59 @@ class BonafideStudentSerializer(serializers.ModelSerializer):
         return self._finance_totals(obj).get("total_paid")
 
     def get_balance_currency(self, obj):
-        return self._finance_totals(obj).get("display_currency", "UGX")
+        ccy = self._finance_totals(obj).get("display_currency")
+        return ccy if self._request_user_can_view_finance() else None
+
+    def get_has_temporary_access_pass(self, obj):
+        if not self._request_user_can_view_finance():
+            return None
+        annotated = getattr(obj, "has_temporary_access_pass", None)
+        if annotated is not None:
+            return bool(annotated)
+        from admissions.temporary_access import get_active_pass
+
+        return get_active_pass(obj) is not None
+
+    def get_temporary_access_sponsor(self, obj):
+        if not self._request_user_can_view_finance():
+            return None
+        annotated = getattr(obj, "temporary_access_sponsor", None)
+        if annotated is not None:
+            return annotated or None
+        if not self.get_has_temporary_access_pass(obj):
+            return None
+        from admissions.temporary_access import get_active_pass
+
+        p = get_active_pass(obj)
+        return (p.sponsor_label if p else None) or None
+
+    def get_temporary_access_valid_until(self, obj):
+        if not self._request_user_can_view_finance():
+            return None
+        annotated = getattr(obj, "temporary_access_valid_until", None)
+        if annotated is not None:
+            return annotated.isoformat() if hasattr(annotated, "isoformat") else annotated
+        if not self.get_has_temporary_access_pass(obj):
+            return None
+        from admissions.temporary_access import get_active_pass
+
+        p = get_active_pass(obj)
+        if not p or not p.valid_until:
+            return None
+        return p.valid_until.isoformat()
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if not self._request_user_can_view_finance():
+            data["admission_fee_paid"] = None
+            data["balance"] = None
+            data["total_required"] = None
+            data["total_paid"] = None
+            data["balance_currency"] = None
+            data["has_temporary_access_pass"] = None
+            data["temporary_access_sponsor"] = None
+            data["temporary_access_valid_until"] = None
+        return data
 
     def get_accounts_registration_cleared_by_name(self, obj):
         u = getattr(obj, "accounts_registration_cleared_by", None)
@@ -1199,13 +1304,26 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
             return obj.reviewed_by.get_full_name() or obj.reviewed_by.username
         return None
 
+    def _request_user_can_view_finance(self) -> bool:
+        request = self.context.get("request")
+        user = getattr(request, "user", None) if request is not None else None
+        if user is None:
+            return False
+        from accounts.finance_access import user_can_view_student_finance
+
+        return user_can_view_student_finance(user)
+
     def get_form_fee_paid(self, obj):
         if obj.change_type != "exemption":
+            return None
+        if not self._request_user_can_view_finance():
             return None
         return bool(obj.form_fee_paid_at)
 
     def get_exemption_course_fee_rate(self, obj):
         if obj.change_type != "exemption":
+            return None
+        if not self._request_user_can_view_finance():
             return None
         from admissions.exemption_services import exemption_course_fee_rate
 
@@ -1213,6 +1331,8 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
 
     def get_exemption_course_fee_total(self, obj):
         if obj.change_type != "exemption":
+            return None
+        if not self._request_user_can_view_finance():
             return None
         from admissions.exemption_services import exemption_course_fee_total
 
@@ -1227,6 +1347,16 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
             return suggest_promotion_after_exemption(obj)
         except Exception:
             return None
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if not self._request_user_can_view_finance():
+            data["form_fee_charge_id"] = None
+            data["form_fee_paid_at"] = None
+            data["form_fee_paid"] = None
+            data["exemption_course_fee_rate"] = None
+            data["exemption_course_fee_total"] = None
+        return data
 
 
 class AdmissionChangeRequestCreateSerializer(serializers.ModelSerializer):

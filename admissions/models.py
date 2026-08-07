@@ -1,3 +1,5 @@
+import uuid
+
 from django.db import models
 from django.db.models import Q
 from django.core.validators import MinValueValidator, MaxValueValidator
@@ -1061,4 +1063,161 @@ class WeeklyReportRecipient(models.Model):
     def __str__(self):
         label = self.name.strip() or self.email
         return label
+
+
+class TemporaryAccessPass(models.Model):
+    """
+    Time-bound, scoped access for sponsored / pending-settlement students.
+
+    Distinct from Accounts registration clearance:
+    - May allow lectures, hostel, and/or meals for a dated window
+    - Must never unlock course registration or official documents
+    """
+
+    STATUS_PENDING = "pending"
+    STATUS_ACTIVE = "active"
+    STATUS_REVOKED = "revoked"
+    STATUS_EXPIRED = "expired"
+    STATUS_REJECTED = "rejected"
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "Pending Bursar approval"),
+        (STATUS_ACTIVE, "Active"),
+        (STATUS_REVOKED, "Revoked"),
+        (STATUS_EXPIRED, "Expired"),
+        (STATUS_REJECTED, "Rejected"),
+    ]
+
+    SPONSOR_STATE_HOUSE = "state_house"
+    SPONSOR_HESFB = "hesfb"
+    SPONSOR_FAWE = "fawe"
+    SPONSOR_CHURCH = "church"
+    SPONSOR_OTHER = "other"
+    SPONSOR_CHOICES = [
+        (SPONSOR_STATE_HOUSE, "State House"),
+        (SPONSOR_HESFB, "HESFB"),
+        (SPONSOR_FAWE, "FAWE"),
+        (SPONSOR_CHURCH, "Church sponsored"),
+        (SPONSOR_OTHER, "Other / custom"),
+    ]
+
+    student = models.ForeignKey(
+        AdmittedStudent,
+        on_delete=models.CASCADE,
+        related_name="temporary_access_passes",
+    )
+    verification_token = models.UUIDField(
+        default=uuid.uuid4,
+        unique=True,
+        editable=False,
+        db_index=True,
+        help_text="Public QR verification token for the printed temporary pass card.",
+    )
+    scholarship_award = models.ForeignKey(
+        "payments.ScholarshipAward",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="temporary_access_passes",
+        help_text="Optional link to the scholarship award this pass supports.",
+    )
+    sponsor_type = models.CharField(
+        max_length=32,
+        choices=SPONSOR_CHOICES,
+        default=SPONSOR_OTHER,
+        db_index=True,
+    )
+    sponsor_label = models.CharField(
+        max_length=150,
+        blank=True,
+        default="",
+        help_text="Display name, e.g. parish or custom sponsor.",
+    )
+    reason = models.CharField(max_length=255, blank=True, default="")
+    notes = models.TextField(blank=True, default="")
+
+    allow_lectures = models.BooleanField(
+        default=True,
+        help_text="Temporary permission to attend lectures / classes.",
+    )
+    allow_hostel = models.BooleanField(
+        default=False,
+        help_text="Accounts-approved temporary hostel access.",
+    )
+    allow_meals = models.BooleanField(
+        default=False,
+        help_text="Accounts-approved temporary meals access.",
+    )
+    # Kept for clarity / API symmetry — always treated as False in policy helpers.
+    allow_registration = models.BooleanField(
+        default=False,
+        help_text="Must remain False. Registration requires full Accounts clearance.",
+    )
+    allow_documents = models.BooleanField(
+        default=False,
+        help_text="Must remain False. Official docs require full clearance.",
+    )
+
+    valid_from = models.DateField(default=timezone.localdate)
+    valid_until = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Inclusive end date. Null = until revoked.",
+    )
+    status = models.CharField(
+        max_length=12,
+        choices=STATUS_CHOICES,
+        default=STATUS_PENDING,
+        db_index=True,
+    )
+
+    issued_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="issued_temporary_access_passes",
+    )
+    issued_at = models.DateTimeField(auto_now_add=True)
+    approved_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="approved_temporary_access_passes",
+        help_text="Bursar / Finance Manager who activated the pass.",
+    )
+    approved_at = models.DateTimeField(null=True, blank=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    revoked_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="revoked_temporary_access_passes",
+    )
+    revoke_reason = models.CharField(max_length=255, blank=True, default="")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-issued_at"]
+        verbose_name = "Temporary access pass"
+        verbose_name_plural = "Temporary access passes"
+        indexes = [
+            models.Index(fields=["student", "status"]),
+            models.Index(fields=["status", "valid_until"]),
+        ]
+        permissions = [
+            ("manage_temporary_access_pass", "Can request, approve, and revoke temporary access passes"),
+        ]
+
+    def __str__(self):
+        return f"TempPass #{self.pk} → student {self.student_id} ({self.status})"
+
+    def save(self, *args, **kwargs):
+        # Hard policy: temporary passes never grant registration or documents.
+        self.allow_registration = False
+        self.allow_documents = False
+        if not (self.sponsor_label or "").strip():
+            self.sponsor_label = self.get_sponsor_type_display()
+        super().save(*args, **kwargs)
 

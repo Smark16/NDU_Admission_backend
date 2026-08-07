@@ -152,6 +152,12 @@ def _programme_dict(p: ScholarshipProgramme, *, include_waivers: bool = True) ->
         "name": p.name,
         "code": p.code,
         "sponsor": p.sponsor,
+        "sponsor_type": getattr(p, "sponsor_type", None) or ScholarshipProgramme.SPONSOR_OTHER,
+        "sponsor_type_display": (
+            p.get_sponsor_type_display()
+            if hasattr(p, "get_sponsor_type_display")
+            else "Other / custom"
+        ),
         "description": p.description,
         "fund_amount": str(p.fund_amount) if p.fund_amount is not None else None,
         "currency": p.currency,
@@ -278,10 +284,15 @@ class ScholarshipProgrammeListCreateView(APIView):
         fund = data.get("fund_amount")
         try:
             with transaction.atomic():
+                sponsor_type = (data.get("sponsor_type") or ScholarshipProgramme.SPONSOR_OTHER).strip()
+                valid_sponsor_types = {c[0] for c in ScholarshipProgramme.SPONSOR_TYPE_CHOICES}
+                if sponsor_type not in valid_sponsor_types:
+                    raise ValueError("Invalid sponsor_type.")
                 programme = ScholarshipProgramme.objects.create(
                     name=name,
                     code=code,
                     sponsor=(data.get("sponsor") or "").strip(),
+                    sponsor_type=sponsor_type,
                     description=(data.get("description") or "").strip(),
                     fund_amount=_dec(fund, "fund_amount") if fund not in (None, "") else None,
                     currency=(data.get("currency") or "UGX").strip().upper()[:3],
@@ -336,6 +347,12 @@ class ScholarshipProgrammeDetailView(APIView):
                         programme.code = new_code
                 if "sponsor" in data:
                     programme.sponsor = (data.get("sponsor") or "").strip()
+                if "sponsor_type" in data:
+                    sponsor_type = (data.get("sponsor_type") or "").strip()
+                    valid_sponsor_types = {c[0] for c in ScholarshipProgramme.SPONSOR_TYPE_CHOICES}
+                    if sponsor_type not in valid_sponsor_types:
+                        raise ValueError("Invalid sponsor_type.")
+                    programme.sponsor_type = sponsor_type
                 if "description" in data:
                     programme.description = (data.get("description") or "").strip()
                 if "academic_year" in data:

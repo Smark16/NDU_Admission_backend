@@ -3,6 +3,15 @@ from admissions import views
 from admissions import id_card_views
 from admissions import id_card_template_views
 from admissions import bonafide_admin_views
+from admissions.temporary_access_views import (
+    StudentTemporaryAccessAdminView,
+    StudentTemporaryAccessView,
+    TemporaryAccessPassApproveView,
+    TemporaryAccessPassRejectView,
+    TemporaryAccessPassReportView,
+    TemporaryAccessPassRevokeView,
+    TemporaryAccessPassVerifyPublicView,
+)
 from admissions.headcount_views import UniversityHeadcountView
 from admissions.analytics_views import AnalyticsDashboardView
 from admissions.email_template_views import (
@@ -202,6 +211,41 @@ urlpatterns = [
     path(
         'admitted_students/<int:pk>/revoke_accounts_registration/',
         views.ClearAccountsRegistrationClearance.as_view(),
+    ),
+    path(
+        'student/temporary_access',
+        StudentTemporaryAccessView.as_view(),
+        name='student_temporary_access',
+    ),
+    path(
+        'admitted_students/<int:pk>/temporary_access/',
+        StudentTemporaryAccessAdminView.as_view(),
+        name='admin_student_temporary_access',
+    ),
+    path(
+        'temporary_access/<int:pass_id>/approve/',
+        TemporaryAccessPassApproveView.as_view(),
+        name='admin_temporary_access_approve',
+    ),
+    path(
+        'temporary_access/<int:pass_id>/reject/',
+        TemporaryAccessPassRejectView.as_view(),
+        name='admin_temporary_access_reject',
+    ),
+    path(
+        'temporary_access/<int:pass_id>/revoke/',
+        TemporaryAccessPassRevokeView.as_view(),
+        name='admin_temporary_access_revoke',
+    ),
+    path(
+        'temporary_access/verify/<uuid:token>/',
+        TemporaryAccessPassVerifyPublicView.as_view(),
+        name='temporary_access_verify_public',
+    ),
+    path(
+        'temporary_access/report/',
+        TemporaryAccessPassReportView.as_view(),
+        name='temporary_access_report',
     ),
     path('delete_admission/<int:pk>/', views.DeleteAdmittedStudent.as_view()),
     path('candidate_admission/<int:admission_id>/', views.CandidateAdmission.as_view()),

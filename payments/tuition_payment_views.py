@@ -312,6 +312,14 @@ class ExportTutionExcel(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        from accounts.finance_access import user_can_view_student_finance
+
+        if not user_can_view_student_finance(request.user):
+            return Response(
+                {"detail": "Only Bursar / Finance staff can export tuition payments."},
+                status=403,
+            )
+
         commitment_only = (request.query_params.get("commitment_only") or "").lower() in (
             "1",
             "true",

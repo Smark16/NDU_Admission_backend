@@ -7,7 +7,9 @@ SchoolPay credit before functional and other fees.
 
 When prior terms exist, payments are split by date:
 - history (before current-term start) is allocated onto prior-term fee lines
-- only payments on/after current-term start clear open (current) demand
+- leftover history credit (overpayment) carries forward into open/current demand
+- payments on/after current-term start also clear open (current) demand
+- any credit still left after open demand is prepaid toward future terms
 
 Commitment still uses the full UGX credit pool.
 """
@@ -74,6 +76,11 @@ class FinanceAllocation:
     required_by_currency: dict[str, Decimal]
     paid_by_currency: dict[str, Decimal]
     lifetime_paid_by_currency: dict[str, float] = field(default_factory=dict)
+    # Unpaid prior-term demand still owed (shown as "balance carried forward").
+    balance_carried_forward: Decimal = Decimal("0")
+    # Credit left after settling all prior + currently billable lines (next-semester prepaid).
+    prepaid_credit_by_currency: dict[str, float] = field(default_factory=dict)
+    prepaid_credit: Decimal = Decimal("0")
 
 
 def _norm_ccy(currency: str | None) -> str:
@@ -497,8 +504,9 @@ def _allocate_pools_to_lines(
     credits: dict[str, Decimal],
     *,
     target: Literal["prior", "open", "all"] = "all",
-) -> None:
-    pools = {_norm_ccy(k): v for k, v in credits.items()}
+) -> dict[str, Decimal]:
+    """Apply credit pools to matching demand lines. Returns leftover credit by currency."""
+    pools = {_norm_ccy(k): Decimal(str(v)) for k, v in credits.items() if v}
 
     def take_from_pool(ccy: str, amount: Decimal) -> Decimal:
         c = _norm_ccy(ccy)
@@ -547,7 +555,11 @@ def _allocate_pools_to_lines(
 
     for line in ordered:
         need = line.amount
-        line.paid_amount = take_from_pool(line.currency, need)
+        # When open allocation runs after prior, keep any amount already applied.
+        already = line.paid_amount if target == "open" else Decimal("0")
+        still_need = max(need - already, Decimal("0"))
+        applied = take_from_pool(line.currency, still_need)
+        line.paid_amount = already + applied
         line.balance = max(need - line.paid_amount, Decimal("0"))
         if line.extra.get("prior_period_settled"):
             # Outside open demand; Paid/Balance still reflect history allocation.
@@ -556,6 +568,8 @@ def _allocate_pools_to_lines(
             line.status = "paid"
         else:
             line.status = "due"
+
+    return {k: v for k, v in pools.items() if v > 0}
 
 
 def build_finance_allocation(student: AdmittedStudent) -> FinanceAllocation:
@@ -568,12 +582,19 @@ def build_finance_allocation(student: AdmittedStudent) -> FinanceAllocation:
         credits_history = payment_credits_by_currency(student, before=cutoff)
         credits_open = payment_credits_by_currency(student, on_or_after=cutoff)
         # Historical SchoolPay/portal payments → prior semester fee lines (oldest first).
-        _allocate_pools_to_lines(lines, credits_history, target="prior")
-        # Current-term payments only → open billable demand.
-        _allocate_pools_to_lines(lines, credits_open, target="open")
+        leftover_history = _allocate_pools_to_lines(lines, credits_history, target="prior")
+        # Overpayment from earlier terms + current-term payments → open billable demand.
+        merged_open: dict[str, Decimal] = defaultdict(Decimal)
+        for ccy, amt in leftover_history.items():
+            merged_open[_norm_ccy(ccy)] += Decimal(str(amt))
+        for ccy, amt in credits_open.items():
+            merged_open[_norm_ccy(ccy)] += Decimal(str(amt))
+        leftover_open = _allocate_pools_to_lines(lines, dict(merged_open), target="open")
+        # Open-window credits for reporting: current-term receipts + surplus from prior terms.
+        credits_open = dict(merged_open)
     else:
         credits_open = credits_all
-        _allocate_pools_to_lines(lines, credits_open, target="all")
+        leftover_open = _allocate_pools_to_lines(lines, credits_all, target="all")
 
     # Required/paid/balance carry forward: include prior-term lines (unpaid history)
     # alongside current billable demand, matching the same predicate already used by
@@ -645,6 +666,19 @@ def build_finance_allocation(student: AdmittedStudent) -> FinanceAllocation:
 
     paid_by = {k: float(v) for k, v in credits_open.items()}
     lifetime_by = {k: float(v) for k, v in credits_all.items()}
+    prepaid_by = {k: float(v) for k, v in leftover_open.items()}
+    prepaid_primary = Decimal(str(leftover_open.get(primary, 0) or 0))
+    # Outstanding from earlier terms — what the UI labels "Balance carried forward".
+    carried_forward = sum(
+        (
+            line.balance
+            for line in lines
+            if line.extra.get("prior_period_settled")
+            and line.currency == primary
+            and line.balance > 0
+        ),
+        Decimal("0"),
+    )
 
     return FinanceAllocation(
         international=international,
@@ -671,6 +705,9 @@ def build_finance_allocation(student: AdmittedStudent) -> FinanceAllocation:
         required_by_currency=dict(required_by),
         paid_by_currency=paid_by,
         lifetime_paid_by_currency=lifetime_by,
+        balance_carried_forward=carried_forward,
+        prepaid_credit_by_currency=prepaid_by,
+        prepaid_credit=prepaid_primary,
     )
 
 

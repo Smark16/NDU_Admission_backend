@@ -98,11 +98,29 @@ def filter_applications_for_user(queryset: QuerySet, user) -> QuerySet:
 
 def filter_admitted_students_for_user(queryset: QuerySet, user) -> QuerySet:
     faculty_ids = user_faculty_ids(user, context="admissions")
-    if faculty_ids is None:
+    if faculty_ids is not None:
+        if not faculty_ids:
+            return queryset.none()
+        queryset = queryset.filter(admitted_program__faculty_id__in=faculty_ids)
+
+    # Campus scope for non-finance staff who have campuses assigned.
+    # Bursar / Finance see every campus; faculty-scoped staff may also be
+    # limited to their assigned campuses when set.
+    from accounts.finance_access import user_is_finance_directory_unscoped
+    from accounts.super_admin import user_is_super_admin as _is_sa
+
+    if _is_sa(user) or user_is_finance_directory_unscoped(user):
         return queryset
-    if not faculty_ids:
-        return queryset.none()
-    return queryset.filter(admitted_program__faculty_id__in=faculty_ids)
+    if user_has_institution_wide_admissions_access(user):
+        return queryset
+
+    try:
+        campus_ids = list(user.campuses.values_list("pk", flat=True))
+    except Exception:
+        campus_ids = []
+    if campus_ids:
+        queryset = queryset.filter(admitted_campus_id__in=campus_ids)
+    return queryset
 
 
 def filter_faculties_for_user(queryset: QuerySet, user) -> QuerySet:
@@ -140,14 +158,32 @@ def user_can_access_application(user, application) -> bool:
 
 def user_can_access_admitted_student(user, admitted) -> bool:
     faculty_ids = user_faculty_ids(user, context="admissions")
-    if faculty_ids is None:
+    if faculty_ids is not None:
+        if not faculty_ids:
+            return False
+        prog = getattr(admitted, "admitted_program", None)
+        if prog is None or not prog.faculty_id:
+            return False
+        if prog.faculty_id not in faculty_ids:
+            return False
+
+    from accounts.finance_access import user_is_finance_directory_unscoped
+    from accounts.super_admin import user_is_super_admin as _is_sa
+
+    if _is_sa(user) or user_is_finance_directory_unscoped(user):
         return True
-    if not faculty_ids:
-        return False
-    prog = getattr(admitted, "admitted_program", None)
-    if prog is None or not prog.faculty_id:
-        return False
-    return prog.faculty_id in faculty_ids
+    if user_has_institution_wide_admissions_access(user):
+        return True
+
+    try:
+        campus_ids = list(user.campuses.values_list("pk", flat=True))
+    except Exception:
+        campus_ids = []
+    if campus_ids:
+        campus_id = getattr(admitted, "admitted_campus_id", None)
+        if campus_id not in campus_ids:
+            return False
+    return True
 
 
 def assert_application_access(user, application) -> None:
@@ -164,7 +200,7 @@ def assert_admitted_student_access(user, admitted) -> None:
 
     if not user_can_access_admitted_student(user, admitted):
         raise PermissionDenied(
-            "You can only access admitted students in your assigned faculty."
+            "You can only access admitted students in your assigned faculty / campus."
         )
 
 

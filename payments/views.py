@@ -405,6 +405,14 @@ class ListPayments(generics.ListAPIView):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def generate_paycode(request, student_id):
+    from accounts.finance_access import user_can_view_student_finance
+
+    if not user_can_view_student_finance(request.user):
+        return Response(
+            {"detail": "SchoolPay registration is limited to Finance staff."},
+            status=403,
+        )
+
     student = get_object_or_404(AdmittedStudent, id=student_id)
 
     if student.is_registered_with_schoolpay:

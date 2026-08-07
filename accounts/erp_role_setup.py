@@ -7,18 +7,54 @@ Run: python manage.py seed_team_roles
 # (group_name, list of (app_label, codename))
 ERP_TEAM_ROLE_MATRIX = {
     # ── Finance ──────────────────────────────────────────────────────────────
+    # Bursar: full finance visibility + all sensitive clearances (registration,
+    # temporary passes, charges, credits / bank reconciliation approval).
+    "Bursar": [
+        ("accounts", "access_finance"),
+        ("accounts", "access_reports"),
+        ("accounts", "configure_fee_plans"),
+        ("accounts", "manage_scholarships"),
+        ("accounts", "manage_payment_reconciliation"),
+        ("accounts", "post_manual_bank_payment"),
+        ("admissions", "view_admittedstudent"),
+        ("admissions", "clear_accounts_registration"),
+        ("admissions", "manage_temporary_access_pass"),
+        ("payments", "view_applicationpayment"),
+        ("payments", "change_applicationpayment"),
+        ("payments", "add_applicationpayment"),
+        ("payments", "view_studenttuitionpayment"),
+        ("payments", "change_studenttuitionpayment"),
+        ("payments", "add_studenttuitionpayment"),
+        ("payments", "view_applicationfee"),
+        ("payments", "change_applicationfee"),
+        ("payments", "view_feehead"),
+        ("payments", "change_feehead"),
+        ("payments", "add_feehead"),
+        ("payments", "view_feeplan"),
+        ("payments", "change_feeplan"),
+        ("payments", "add_feeplan"),
+        ("payments", "view_feeplanrule"),
+        ("payments", "change_feeplanrule"),
+        ("payments", "add_feeplanrule"),
+        ("payments", "view_registrationsettings"),
+        ("payments", "change_registrationsettings"),
+        ("payments", "view_tuitionledger"),
+    ],
     "Finance Manager": [
         ("accounts", "access_finance"),
         ("accounts", "access_reports"),
         ("accounts", "configure_fee_plans"),
         ("accounts", "manage_scholarships"),
         ("accounts", "manage_payment_reconciliation"),
+        ("accounts", "post_manual_bank_payment"),
         ("admissions", "view_admittedstudent"),
         ("admissions", "clear_accounts_registration"),
+        ("admissions", "manage_temporary_access_pass"),
         ("payments", "view_applicationpayment"),
         ("payments", "change_applicationpayment"),
         ("payments", "view_studenttuitionpayment"),
         ("payments", "change_studenttuitionpayment"),
+        ("payments", "add_studenttuitionpayment"),
         ("payments", "view_applicationfee"),
         ("payments", "change_applicationfee"),
         ("payments", "view_feehead"),
@@ -32,18 +68,20 @@ ERP_TEAM_ROLE_MATRIX = {
         ("payments", "view_tuitionledger"),
     ],
     "Finance Officer": [
-        # Operational finance: student directory, tuition matrices, ad-hoc charges, payments
+        # Operational finance: view balances, post charges, process payments.
+        # Sensitive clearances (Accounts registration / temp-pass clear / bank
+        # credit approval) stay with Bursar / Finance Manager only.
         ("accounts", "access_finance"),
         ("accounts", "configure_fee_plans"),
         ("accounts", "manage_scholarships"),
         ("admissions", "view_admittedstudent"),
-        ("admissions", "clear_accounts_registration"),
         ("Programs", "view_program"),
         ("Programs", "view_programbatch"),
         ("payments", "view_applicationpayment"),
         ("payments", "change_applicationpayment"),
         ("payments", "view_studenttuitionpayment"),
         ("payments", "change_studenttuitionpayment"),
+        ("payments", "add_studenttuitionpayment"),
         ("payments", "view_applicationfee"),
         ("payments", "change_applicationfee"),
         ("payments", "view_feehead"),
@@ -58,8 +96,10 @@ ERP_TEAM_ROLE_MATRIX = {
         ("payments", "view_tuitionledger"),
     ],
     "Finance Viewer": [
+        # Read-only finance + student directory balances — no clearances.
         ("accounts", "access_finance"),
         ("accounts", "access_reports"),
+        ("admissions", "view_admittedstudent"),
         ("payments", "view_applicationpayment"),
         ("payments", "view_studenttuitionpayment"),
         ("payments", "view_applicationfee"),
@@ -221,15 +261,28 @@ def seed_erp_team_role_group(Group, Permission, group_name: str, *, stdout=None)
         raise ValueError(f"Unknown ERP team role: {group_name}")
 
     group, created = Group.objects.get_or_create(name=group_name)
-    added = 0
+    desired = []
+    missing = []
     for app_label, codename in perms:
         perm = get_permission(Permission, app_label, codename)
-        if perm and not group.permissions.filter(pk=perm.pk).exists():
-            group.permissions.add(perm)
-            added += 1
+        if perm:
+            desired.append(perm)
+        else:
+            missing.append(f"{app_label}.{codename}")
+
+    before = set(group.permissions.values_list("pk", flat=True))
+    desired_ids = {p.pk for p in desired}
+    # Sync to matrix so revoked sensitive perms (e.g. clearance on Finance Officer) are removed.
+    group.permissions.set(desired)
+    added = len(desired_ids - before)
+    removed = len(before - desired_ids)
     if stdout:
         verb = "Created" if created else "Updated"
-        stdout.write(f"{verb} group: {group_name} (+{added} permissions)")
+        stdout.write(
+            f"{verb} group: {group_name} (+{added} / -{removed} permissions)"
+        )
+        for m in missing:
+            stdout.write(f"  ! missing permission: {m}")
     return group
 
 

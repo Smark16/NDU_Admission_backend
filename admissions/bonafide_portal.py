@@ -124,23 +124,35 @@ def build_bonafide_portal_snapshot(student: AdmittedStudent, request=None) -> di
 
     Each section is isolated so one failure (e.g. missing audit table, exam edge
     case) still returns finance / courses / etc.
+
+    Finance amounts are only included for users with finance visibility
+    (Bursar / Finance roles). Academics see registration/results without balances.
     """
     errors: dict[str, str] = {}
+    user = getattr(request, "user", None) if request is not None else None
+    from accounts.finance_access import user_can_view_student_finance
 
-    bundle = _safe(
-        "finance",
-        errors,
-        lambda: student_finance_bundle(student),
-        {"totals": {}, "lines": []},
-    )
-    finance = bundle.get("totals") or {}
-    billing = bundle.get("lines") or []
-    history = _safe(
-        "payment_history",
-        errors,
-        lambda: registration_card_payment_history(student, limit=25),
-        [],
-    )
+    can_finance = user_can_view_student_finance(user) if user is not None else False
+
+    if can_finance:
+        bundle = _safe(
+            "finance",
+            errors,
+            lambda: student_finance_bundle(student),
+            {"totals": {}, "lines": []},
+        )
+        finance = bundle.get("totals") or {}
+        billing = bundle.get("lines") or []
+        history = _safe(
+            "payment_history",
+            errors,
+            lambda: registration_card_payment_history(student, limit=25),
+            [],
+        )
+    else:
+        finance = {}
+        billing = []
+        history = []
     results = _safe(
         "results",
         errors,
@@ -188,10 +200,9 @@ def build_bonafide_portal_snapshot(student: AdmittedStudent, request=None) -> di
 
     outstanding = [ln for ln in fee_lines if float(ln.get("balance") or 0) > 0.01]
 
-    return {
-        "student_id": student.student_id,
-        "reg_no": student.reg_no,
-        "finance": {
+    finance_payload = None
+    if can_finance:
+        finance_payload = {
             "percentage_paid": finance.get("percentage_paid"),
             "total_paid": finance.get("total_paid"),
             "total_required": finance.get("total_required"),
@@ -202,13 +213,42 @@ def build_bonafide_portal_snapshot(student: AdmittedStudent, request=None) -> di
             "commitment_threshold": finance.get("commitment_threshold"),
             "lifetime_paid": finance.get("lifetime_paid"),
             "lifetime_paid_by_currency": finance.get("lifetime_paid_by_currency"),
+            "balance_carried_forward": finance.get("balance_carried_forward"),
+            "prepaid_credit": finance.get("prepaid_credit"),
+            "prepaid_credit_by_currency": finance.get("prepaid_credit_by_currency"),
             "payment_history": history,
             "fee_lines": fee_lines,
             # Keep for older clients; prefer fee_lines in UI.
             "outstanding_lines": outstanding,
-        },
+        }
+
+    return {
+        "student_id": student.student_id,
+        "reg_no": student.reg_no,
+        "can_view_finance": can_finance,
+        "finance": finance_payload,
         "results": results,
-        "exam_permit": exam,
+        "exam_permit": exam if can_finance else {
+            **exam,
+            "total_balance": None,
+            "tuition_cleared": None,
+            "display_currency": None,
+            "message": "Finance details are visible to Bursar / Finance staff only.",
+            # Drop fee/balance wording from exam blockers for non-finance viewers.
+            "blockers": [
+                b
+                for b in (exam.get("blockers") or [])
+                if not any(
+                    token in str(b).lower()
+                    for token in ("balance", "tuition", "fee", "ugx", "payment", "paid")
+                )
+            ]
+            or (
+                ["Exam eligibility details involving fees are visible to Bursar / Finance only."]
+                if not exam.get("eligible")
+                else []
+            ),
+        },
         "registered_courses": courses,
         "registered_courses_count": len(courses),
         "portal_account": portal_account,

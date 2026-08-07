@@ -117,20 +117,14 @@ class VerifyPhysicalDocumentsPermission(BasePermission):
 
 
 class ClearAccountsRegistrationPermission(BasePermission):
-    message = "You do not have permission to clear students for registration after payment."
+    message = (
+        "Only the Bursar / Finance Manager can clear students for registration after payment."
+    )
 
     def has_permission(self, request, view):
-        u = request.user
-        if not u.is_authenticated:
-            return False
-        if user_is_super_admin(u):
-            return True
-        if u.has_perm("admissions.clear_accounts_registration"):
-            return True
-        # Finance staff who already manage payments can clear
-        if user_has_any_erp_perm(u, "access_finance"):
-            return True
-        return False
+        from accounts.finance_access import user_can_clear_accounts_registration
+
+        return user_can_clear_accounts_registration(request.user)
 
 
 class ExportVerificationRegisterPermission(BasePermission):
