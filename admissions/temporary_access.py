@@ -5,7 +5,7 @@ Separate from Accounts registration clearance:
 - Pass must NOT unlock course registration or official documents
 
 Issue policy:
-- May be issued for any admitted student (e.g. sponsors who settle later).
+- Only students with an active scholarship / sponsorship award may receive a pass.
 - Clearing / revoking a pass is restricted to Bursar / Finance clearance roles.
 """
 from __future__ import annotations
@@ -21,6 +21,45 @@ from admissions.models import AdmittedStudent, TemporaryAccessPass
 
 def _today() -> date:
     return timezone.localdate()
+
+
+def student_active_scholarship_awards(student: AdmittedStudent):
+    """Active sponsorship awards linked to this student (Scholarship module)."""
+    from payments.models import ScholarshipAward
+
+    return (
+        ScholarshipAward.objects.filter(
+            student=student,
+            status=ScholarshipAward.STATUS_ACTIVE,
+        )
+        .select_related("programme")
+        .order_by("-awarded_at")
+    )
+
+
+def student_is_sponsored(student: AdmittedStudent) -> bool:
+    """Temporary passes are only for students with an active sponsorship award."""
+    return student_active_scholarship_awards(student).exists()
+
+
+def sponsorship_summary(student: AdmittedStudent) -> dict[str, Any]:
+    awards = list(student_active_scholarship_awards(student)[:20])
+    return {
+        "is_sponsored": bool(awards),
+        "scholarship_awards": [
+            {
+                "id": a.id,
+                "programme_name": a.programme.name if a.programme_id else None,
+                "programme_code": a.programme.code if a.programme_id else None,
+                "sponsor": (a.programme.sponsor if a.programme_id else "") or "",
+                "sponsor_type": getattr(a.programme, "sponsor_type", None) if a.programme_id else None,
+                "award_amount": float(a.award_amount or 0),
+                "currency": a.currency or "UGX",
+                "status": a.status,
+            }
+            for a in awards
+        ],
+    }
 
 
 def active_temporary_access_subquery():

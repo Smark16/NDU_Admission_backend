@@ -18,6 +18,9 @@ from admissions.temporary_access import (
     expire_stale_passes,
     pass_to_dict,
     public_verify_pass,
+    sponsorship_summary,
+    student_active_scholarship_awards,
+    student_is_sponsored,
     student_temporary_access,
 )
 from admissions.faculty_scope import assert_admitted_student_access
@@ -137,6 +140,7 @@ class StudentTemporaryAccessAdminView(APIView):
             .select_related(*related)
             .order_by("-issued_at")[:40]
         ]
+        sponsorship = sponsorship_summary(student)
         return Response(
             {
                 "student_id": student.student_id,
@@ -145,7 +149,9 @@ class StudentTemporaryAccessAdminView(APIView):
                 "active": active,
                 "pending": pending,
                 "history": history,
-                "can_issue": _can_issue_passes(request.user),
+                "is_sponsored": sponsorship["is_sponsored"],
+                "scholarship_awards": sponsorship["scholarship_awards"],
+                "can_issue": _can_issue_passes(request.user) and sponsorship["is_sponsored"],
                 "can_approve": _can_approve_passes(request.user),
                 "can_clear": _can_clear_passes(request.user),
                 "sponsor_type_choices": [
@@ -161,6 +167,17 @@ class StudentTemporaryAccessAdminView(APIView):
         student = get_object_or_404(AdmittedStudent, pk=pk)
         assert_admitted_student_access(request.user, student)
         data = request.data or {}
+
+        if not student_is_sponsored(student):
+            return Response(
+                {
+                    "detail": (
+                        "Temporary access passes are only for sponsored students. "
+                        "Attach an active scholarship / sponsorship award first."
+                    )
+                },
+                status=400,
+            )
 
         try:
             valid_from = _parse_date(data.get("valid_from")) or timezone.localdate()
@@ -178,12 +195,19 @@ class StudentTemporaryAccessAdminView(APIView):
 
         award_id = data.get("scholarship_award_id")
         award = None
+        active_awards = student_active_scholarship_awards(student)
         if award_id:
             from payments.models import ScholarshipAward
 
-            award = ScholarshipAward.objects.filter(pk=award_id, student=student).first()
+            award = active_awards.filter(pk=award_id).first()
             if not award:
-                return Response({"detail": "Scholarship award not found for this student."}, status=400)
+                return Response(
+                    {"detail": "Active scholarship award not found for this student."},
+                    status=400,
+                )
+        else:
+            # Default to the student's primary active sponsorship award.
+            award = active_awards.first()
 
         allow_lectures = bool(data.get("allow_lectures", True))
         allow_hostel = bool(data.get("allow_hostel", False))
@@ -194,13 +218,24 @@ class StudentTemporaryAccessAdminView(APIView):
                 status=400,
             )
 
+        sponsor_label = (data.get("sponsor_label") or "").strip()
+        if award and award.programme_id:
+            prog = award.programme
+            prog_type = getattr(prog, "sponsor_type", None) or ""
+            if prog_type in valid_types and (
+                not data.get("sponsor_type") or sponsor_type == TemporaryAccessPass.SPONSOR_OTHER
+            ):
+                sponsor_type = prog_type
+            if not sponsor_label:
+                sponsor_label = (prog.sponsor or prog.name or "").strip()
+
         # Always create as pending; Bursar / Finance Manager auto-approves.
         auto_approve = _can_approve_passes(request.user)
         pass_obj = TemporaryAccessPass.objects.create(
             student=student,
             scholarship_award=award,
             sponsor_type=sponsor_type,
-            sponsor_label=(data.get("sponsor_label") or "").strip(),
+            sponsor_label=sponsor_label,
             reason=(data.get("reason") or "").strip(),
             notes=(data.get("notes") or "").strip(),
             allow_lectures=allow_lectures,
