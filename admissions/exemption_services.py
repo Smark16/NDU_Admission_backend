@@ -1311,13 +1311,19 @@ def advance_student_position_for_exemption(
     update_fields = ["current_year_of_study", "current_term_number", "updated_at"]
     enrollment.current_year_of_study = to_year
     enrollment.current_term_number = to_term
-    # Document advanced entry when the student was still at the default Y1T1
-    # start point. entry_* is auto-stamped to current on first SPE save, so a
-    # Null check alone would miss every normally-enrolled student — treat the
-    # default (1, 1) the same as "not yet a true advanced-entry record".
+    # Exemption advance = advanced standing: stamp entry so terms before the
+    # new position do not keep full tuition/functional (those years are covered
+    # by per-paper EXEMPTION_COURSE charges instead).
     entry_y = enrollment.entry_year_of_study
     entry_t = enrollment.entry_term_number
-    if (from_year, from_term) == (1, 1) and entry_y in (None, 1) and entry_t in (None, 1):
+    try:
+        entry_pair = (
+            int(entry_y) if entry_y is not None else 1,
+            int(entry_t) if entry_t is not None else 1,
+        )
+    except (TypeError, ValueError):
+        entry_pair = (1, 1)
+    if entry_pair <= (int(from_year), int(from_term)) or entry_pair < (int(to_year), int(to_term)):
         enrollment.entry_year_of_study = to_year
         enrollment.entry_term_number = to_term
         update_fields += ["entry_year_of_study", "entry_term_number"]

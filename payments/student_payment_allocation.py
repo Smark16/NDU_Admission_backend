@@ -266,11 +266,13 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
 
     from admissions.exemption_services import (
         prorate_tuition_for_course_exemptions,
+        semester_paper_counts_for_exemptions,
         year_fully_course_exempted,
     )
 
-    # Cache full-year exemption checks (tuition + functional both waived).
+    # Cache full-year / full-term exemption checks (tuition + functional waived).
     year_fully_exempt_cache: dict[int, bool] = {}
+    term_fully_exempt_cache: dict[tuple[int, int], bool] = {}
 
     def _year_fully_exempt(year: int) -> bool:
         if year not in year_fully_exempt_cache:
@@ -279,6 +281,30 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
             )
         return year_fully_exempt_cache[year]
 
+    def _term_fully_exempt(year: int, term: int) -> bool:
+        key = (year, term)
+        if key not in term_fully_exempt_cache:
+            counts = semester_paper_counts_for_exemptions(
+                student, year_of_study=year, term_number=term
+            )
+            term_fully_exempt_cache[key] = bool(
+                counts and counts["total_papers"] > 0 and counts["non_exempted_papers"] <= 0
+            )
+        return term_fully_exempt_cache[key]
+
+    # Advanced entry (e.g. HOD promote after exemptions): no tuition/functional
+    # for terms before the student's entry year/term — covered by per-paper fees.
+    entry_pair: tuple[int, int] | None = None
+    try:
+        enr = student.programme_enrollment
+        if enr is not None:
+            ey = int(enr.entry_year_of_study or 0)
+            et = int(enr.entry_term_number or 0)
+            if ey >= 1 and et >= 1 and (ey, et) > (1, 1):
+                entry_pair = (ey, et)
+    except Exception:
+        entry_pair = None
+
     tuition_rules = sorted(_rules_for_student(student), key=_tuition_rule_sort_key)
     for rule in tuition_rules:
         amt, cur = effective_amount_currency(rule, international)
@@ -286,40 +312,41 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
             continue
         sem = rule.semester
         billable = billing_date_reached(rule)
-        # Only the programme TUITION_FEE head is prorated for partial exemptions.
-        # When an entire academic year is course-exempted, both TUITION_FEE and
-        # FUNCTIONAL_FEE for that year are omitted — student pays only per-paper
-        # EXEMPTION_COURSE ad-hoc charges for those papers.
+        # Partial exemptions: prorate TUITION only.
+        # Full term / full year / pre-entry terms: omit TUITION + FUNCTIONAL —
+        # student pays only per-paper EXEMPTION_COURSE charges for those papers.
         fee_code = (rule.fee_head.code or "").upper() if rule.fee_head_id else ""
         is_tuition_head = fee_code == "TUITION_FEE"
         is_functional_head = fee_code == "FUNCTIONAL_FEE" or "FUNCTIONAL" in fee_code
         proration_meta: dict[str, Any] | None = None
 
+        sem_year = int(sem.year_of_study) if sem is not None and sem.year_of_study else None
+        sem_term = int(sem.term_number) if sem is not None and sem.term_number else None
+
         if (
-            sem is not None
-            and sem.year_of_study
-            and (is_tuition_head or is_functional_head)
-            and _year_fully_exempt(int(sem.year_of_study))
+            (is_tuition_head or is_functional_head)
+            and sem_year is not None
+            and sem_term is not None
         ):
-            # Whole year exempted → no tuition / functional for any term in it.
-            continue
+            if entry_pair is not None and (sem_year, sem_term) < entry_pair:
+                continue
+            if _year_fully_exempt(sem_year):
+                continue
+            if _term_fully_exempt(sem_year, sem_term):
+                continue
 
         if (
             is_tuition_head
-            and sem is not None
-            and sem.year_of_study
-            and sem.term_number
+            and sem_year is not None
+            and sem_term is not None
         ):
             amt, proration_meta = prorate_tuition_for_course_exemptions(
                 student,
                 amt,
-                year_of_study=int(sem.year_of_study),
-                term_number=int(sem.term_number),
+                year_of_study=sem_year,
+                term_number=sem_term,
             )
             if amt <= 0:
-                # Fully exempted semester (partial year) — omit tuition only.
-                # Functional for that term still applies unless the whole year
-                # is exempted (handled above).
                 continue
         line = DemandLine(
             kind="tuition_structure",
