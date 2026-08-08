@@ -295,6 +295,7 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
     # Advanced entry (e.g. HOD promote after exemptions): no tuition/functional
     # for terms before the student's entry year/term — covered by per-paper fees.
     entry_pair: tuple[int, int] | None = None
+    has_course_exemptions = False
     try:
         enr = student.programme_enrollment
         if enr is not None:
@@ -302,8 +303,20 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
             et = int(enr.entry_term_number or 0)
             if ey >= 1 and et >= 1 and (ey, et) > (1, 1):
                 entry_pair = (ey, et)
+            from Programs.models import StudentCurriculumOverride
+
+            has_course_exemptions = StudentCurriculumOverride.objects.filter(
+                enrollment=enr,
+                override_type="exempted",
+            ).exists()
     except Exception:
         entry_pair = None
+        has_course_exemptions = False
+
+    # Exemptions / promotion: apply the cohort tuition structure immediately
+    # (amounts, waivers, proration) even when the semester billing date has not
+    # arrived yet. Curriculum position still gates future terms below.
+    pick_structure_despite_billing_date = bool(entry_pair or has_course_exemptions)
 
     tuition_rules = sorted(_rules_for_student(student), key=_tuition_rule_sort_key)
     for rule in tuition_rules:
@@ -311,7 +324,6 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
         if amt <= 0:
             continue
         sem = rule.semester
-        billable = billing_date_reached(rule)
         # Partial exemptions: prorate TUITION only.
         # Full term / full year / pre-entry terms: omit TUITION + FUNCTIONAL —
         # student pays only per-paper EXEMPTION_COURSE charges for those papers.
@@ -319,6 +331,11 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
         is_tuition_head = fee_code == "TUITION_FEE"
         is_functional_head = fee_code == "FUNCTIONAL_FEE" or "FUNCTIONAL" in fee_code
         proration_meta: dict[str, Any] | None = None
+
+        if pick_structure_despite_billing_date and (is_tuition_head or is_functional_head):
+            billable = True
+        else:
+            billable = billing_date_reached(rule)
 
         sem_year = int(sem.year_of_study) if sem is not None and sem.year_of_study else None
         sem_term = int(sem.term_number) if sem is not None and sem.term_number else None

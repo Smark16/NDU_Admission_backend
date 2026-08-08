@@ -51,6 +51,10 @@ def semester_tuition_amount_for_student(
     """
     Programme TUITION_FEE amount for the student's cohort semester matching
     (year_of_study, term_number). Functional fees are excluded.
+
+    Uses the fee-plan tuition structure amount regardless of the semester's
+    billing date — required for exemption per-paper fees and for promoted
+    students whose next term has not officially opened yet.
     """
     from payments.student_fee_pricing import effective_amount_currency
     from payments.student_portal_finance import _rules_for_student
