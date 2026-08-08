@@ -4523,6 +4523,16 @@ class StudentChangeRequestListCreate(APIView):
 
             valid_doc_types = {c[0] for c in ExemptionSupportingDocument.DOC_TYPE_CHOICES}
             uploaded_files = request.FILES.getlist("documents")
+            if not uploaded_files:
+                return Response(
+                    {
+                        "detail": (
+                            "Attach at least one supporting document "
+                            "(transcript or certificate)."
+                        )
+                    },
+                    status=400,
+                )
             doc_types_raw = request.data.get("document_types")
             doc_types = []
             if doc_types_raw:
