@@ -1011,6 +1011,50 @@ def semester_paper_counts_for_exemptions(
     }
 
 
+def year_fully_course_exempted(
+    student: AdmittedStudent,
+    *,
+    year_of_study: int,
+) -> bool:
+    """
+    True when every active curriculum paper in that academic year is exempted.
+
+    Accounts rule: a fully exempted year has no semester tuition and no
+    functional fees — the student is billed only per-paper EXEMPTION_COURSE
+    charges for that year.
+    """
+    from Programs.models import ProgramCurriculumLine, StudentCurriculumOverride
+
+    try:
+        enrollment = student.programme_enrollment
+    except Exception:
+        return False
+
+    version = _resolve_curriculum_version(enrollment)
+    if version is None:
+        return False
+
+    owner_program_id = _curriculum_line_program_id(enrollment)
+    total = ProgramCurriculumLine.objects.filter(
+        curriculum_version=version,
+        program_id=owner_program_id,
+        year_of_study=year_of_study,
+        is_active=True,
+    ).count()
+    if total <= 0:
+        return False
+
+    exempted = StudentCurriculumOverride.objects.filter(
+        enrollment=enrollment,
+        override_type="exempted",
+        curriculum_line__curriculum_version=version,
+        curriculum_line__program_id=owner_program_id,
+        curriculum_line__year_of_study=year_of_study,
+        curriculum_line__is_active=True,
+    ).count()
+    return exempted >= total
+
+
 def prorate_tuition_for_course_exemptions(
     student: AdmittedStudent,
     tuition_amount: Decimal,
@@ -1024,10 +1068,17 @@ def prorate_tuition_for_course_exemptions(
 
         amount = (semester_tuition / total_papers) * non_exempted_papers
 
-    Functional fees are NOT adjusted here — they stay charged in full.
-    If every paper is exempted, tuition becomes 0. If no exemptions (or no
-    curriculum), the original tuition_amount is returned unchanged.
+    If every paper in the year is exempted, callers should omit tuition and
+    functional entirely (see year_fully_course_exempted). For a fully exempted
+    term within a partial year, tuition becomes 0 here; functional is handled
+    separately by the allocator.
     """
+    if year_fully_course_exempted(student, year_of_study=year_of_study):
+        counts = semester_paper_counts_for_exemptions(
+            student, year_of_study=year_of_study, term_number=term_number
+        )
+        return Decimal("0.00"), counts
+
     counts = semester_paper_counts_for_exemptions(
         student, year_of_study=year_of_study, term_number=term_number
     )

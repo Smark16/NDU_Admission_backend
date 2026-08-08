@@ -264,6 +264,21 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
     program = getattr(student, "admitted_program", None)
     student_pb_id = _student_program_batch_id(student)
 
+    from admissions.exemption_services import (
+        prorate_tuition_for_course_exemptions,
+        year_fully_course_exempted,
+    )
+
+    # Cache full-year exemption checks (tuition + functional both waived).
+    year_fully_exempt_cache: dict[int, bool] = {}
+
+    def _year_fully_exempt(year: int) -> bool:
+        if year not in year_fully_exempt_cache:
+            year_fully_exempt_cache[year] = year_fully_course_exempted(
+                student, year_of_study=year
+            )
+        return year_fully_exempt_cache[year]
+
     tuition_rules = sorted(_rules_for_student(student), key=_tuition_rule_sort_key)
     for rule in tuition_rules:
         amt, cur = effective_amount_currency(rule, international)
@@ -271,24 +286,30 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
             continue
         sem = rule.semester
         billable = billing_date_reached(rule)
-        # Only the programme TUITION_FEE head is prorated. FUNCTIONAL_FEE stays
-        # full. EXEMPTION_COURSE is also category=tuition but lives on ad-hoc
-        # charges, not FeePlanRule — still match by code so we never touch it.
+        # Only the programme TUITION_FEE head is prorated for partial exemptions.
+        # When an entire academic year is course-exempted, both TUITION_FEE and
+        # FUNCTIONAL_FEE for that year are omitted — student pays only per-paper
+        # EXEMPTION_COURSE ad-hoc charges for those papers.
         fee_code = (rule.fee_head.code or "").upper() if rule.fee_head_id else ""
         is_tuition_head = fee_code == "TUITION_FEE"
-        # Course exemptions replace full semester TUITION with Accounts' paper
-        # math: (tuition / papers) × papers still taken. FUNCTIONAL_FEE is left
-        # alone and stays charged in full. Exempted papers are billed separately
-        # as per-paper EXEMPTION_COURSE ad-hoc charges.
+        is_functional_head = fee_code == "FUNCTIONAL_FEE" or "FUNCTIONAL" in fee_code
         proration_meta: dict[str, Any] | None = None
+
+        if (
+            sem is not None
+            and sem.year_of_study
+            and (is_tuition_head or is_functional_head)
+            and _year_fully_exempt(int(sem.year_of_study))
+        ):
+            # Whole year exempted → no tuition / functional for any term in it.
+            continue
+
         if (
             is_tuition_head
             and sem is not None
             and sem.year_of_study
             and sem.term_number
         ):
-            from admissions.exemption_services import prorate_tuition_for_course_exemptions
-
             amt, proration_meta = prorate_tuition_for_course_exemptions(
                 student,
                 amt,
@@ -296,8 +317,9 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
                 term_number=int(sem.term_number),
             )
             if amt <= 0:
-                # Fully exempted semester — omit the tuition demand line entirely.
-                # Functional fee for the same semester (next rule) is unchanged.
+                # Fully exempted semester (partial year) — omit tuition only.
+                # Functional for that term still applies unless the whole year
+                # is exempted (handled above).
                 continue
         line = DemandLine(
             kind="tuition_structure",
