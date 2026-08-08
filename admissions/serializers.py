@@ -851,6 +851,7 @@ class BonafideStudentSerializer(serializers.ModelSerializer):
     total_required = serializers.SerializerMethodField()
     total_paid = serializers.SerializerMethodField()
     balance_currency = serializers.SerializerMethodField()
+    exemption_pending = serializers.SerializerMethodField()
     has_temporary_access_pass = serializers.SerializerMethodField()
     temporary_access_sponsor = serializers.SerializerMethodField()
     temporary_access_valid_until = serializers.SerializerMethodField()
@@ -900,6 +901,7 @@ class BonafideStudentSerializer(serializers.ModelSerializer):
             "total_required",
             "total_paid",
             "balance_currency",
+            "exemption_pending",
             "has_temporary_access_pass",
             "temporary_access_sponsor",
             "temporary_access_valid_until",
@@ -1010,6 +1012,7 @@ class BonafideStudentSerializer(serializers.ModelSerializer):
                 "total_required": None,
                 "total_paid": None,
                 "display_currency": None,
+                "exemption_pending": None,
             }
         cached = getattr(obj, "_bonafide_finance_totals_cache", None)
         if cached is not None:
@@ -1025,6 +1028,7 @@ class BonafideStudentSerializer(serializers.ModelSerializer):
                 "total_required": None,
                 "total_paid": None,
                 "display_currency": "UGX",
+                "exemption_pending": None,
             }
         obj._bonafide_finance_totals_cache = totals
         return totals
@@ -1041,6 +1045,9 @@ class BonafideStudentSerializer(serializers.ModelSerializer):
     def get_balance_currency(self, obj):
         ccy = self._finance_totals(obj).get("display_currency")
         return ccy if self._request_user_can_view_finance() else None
+
+    def get_exemption_pending(self, obj):
+        return self._finance_totals(obj).get("exemption_pending")
 
     def get_has_temporary_access_pass(self, obj):
         if not self._request_user_can_view_scholarship():

@@ -30,6 +30,7 @@ from payments.billing_visibility import (
     adhoc_charge_billing_date,
     billing_date_iso,
     billing_date_reached,
+    is_exemption_adhoc_charge,
 )
 from payments.student_fee_pricing import effective_amount_currency, is_international_student
 from payments.utils.tuition_ledger_linking import tuition_ledger_queryset_for_student
@@ -433,12 +434,10 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
         amt = charge.amount or Decimal("0")
         if amt <= 0:
             continue
-        # When staff split a manual charge (e.g. a course-exemption fee) across chosen
-        # semesters, each half is tagged with a Semester so it lands on the right term —
-        # but until now that tag was cosmetic only: every ad-hoc charge counted as due
-        # the instant it was created, regardless of the semester picked. Gate it by that
-        # semester's own start date, same as tuition/other scheduled fees, so "billed to
-        # Year 2 Term 1" actually waits until Year 2 Term 1 starts.
+        # When staff split a manual charge across chosen semesters, each part is tagged
+        # with a Semester for ledger placement. Ordinary ad-hoc waits until that term
+        # starts; exemption form/course fees stay immediately due so they appear on
+        # student list balances as soon as Accounts posts them.
         sem = charge.semester
         billable = True
         payable_year = payable_term = None
@@ -456,7 +455,10 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
                     "billing_date": eff_date.isoformat() if eff_date else None,
                 }
             )
-            if eff_date is not None:
+            if is_exemption_adhoc_charge(charge):
+                billable = True
+                extra["exemption_immediate"] = True
+            elif eff_date is not None:
                 billable = timezone.localdate() >= eff_date
         lines.append(
             DemandLine(

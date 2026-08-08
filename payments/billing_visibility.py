@@ -250,7 +250,18 @@ def adhoc_charge_billing_date(charge) -> date | None:
     return default_billing_date_for_semester(sem, program_batch, program)
 
 
+def is_exemption_adhoc_charge(charge) -> bool:
+    """Course / form exemption fees — always visible on student balances."""
+    fee_head = getattr(charge, "fee_head", None)
+    code = (getattr(fee_head, "code", None) or "").upper()
+    return code in {"EXEMPTION_COURSE", "EXEMPTION_FORM"}
+
+
 def adhoc_charge_billing_reached(charge) -> bool:
+    # Exemption fees are owed as soon as Accounts posts them, even when
+    # staff spreads the total across future cohort semesters for ledger tagging.
+    if is_exemption_adhoc_charge(charge):
+        return True
     effective = adhoc_charge_billing_date(charge)
     if effective is None:
         return True

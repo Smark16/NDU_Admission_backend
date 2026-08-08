@@ -444,6 +444,22 @@ def _adhoc_charges_for_student(student: AdmittedStudent):
     )
 
 
+def _exemption_pending_total(student: AdmittedStudent | None) -> Decimal:
+    """Pending EXEMPTION_FORM + EXEMPTION_COURSE amounts (for student-list display)."""
+    if student is None:
+        return Decimal("0")
+    from payments.billing_visibility import is_exemption_adhoc_charge
+
+    total = Decimal("0")
+    for charge in _adhoc_charges_for_student(student):
+        if getattr(charge, "status", None) != "pending":
+            continue
+        if not is_exemption_adhoc_charge(charge):
+            continue
+        total += charge.amount or Decimal("0")
+    return total
+
+
 def _finance_totals_from_alloc(alloc, student: AdmittedStudent | None = None) -> dict[str, Any]:
     lifetime = getattr(alloc, "lifetime_paid_by_currency", None) or {}
     primary = alloc.primary_currency
@@ -479,6 +495,7 @@ def _finance_totals_from_alloc(alloc, student: AdmittedStudent | None = None) ->
         "tuition_structure_total": float(alloc.tuition_structure_total),
         "ad_hoc_total": float(alloc.ad_hoc_total),
         "ad_hoc_not_yet_due_total": float(alloc.ad_hoc_not_yet_due_total),
+        "exemption_pending": float(_exemption_pending_total(student)),
         "scheduled_other_fees_due": float(alloc.scheduled_other_due),
         "required_by_currency": {k: float(v) for k, v in alloc.required_by_currency.items()},
         "paid_by_currency": alloc.paid_by_currency,
