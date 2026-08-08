@@ -148,14 +148,64 @@ def submit_change_request(
     Super Admin never waits on dual-control — the request is applied immediately.
     Returns (change_request, ledger_result_or_None, applied_immediately).
     """
-    change = create_change_request(
-        request_type=request_type,
-        student=student,
-        requested_by=requested_by,
-        ledger=ledger,
-        payload=payload,
-        reason=reason,
-    )
+    payload = dict(payload or {})
+
+    # Super Admin: if an earlier attempt left a pending POST with the same bank
+    # reference, finish that request instead of blocking with a 400.
+    if (
+        user_is_super_admin(requested_by)
+        and request_type == ManualBankPaymentChangeRequest.RequestType.POST
+        and student is not None
+    ):
+        ref = str(payload.get("bank_reference") or "").strip().lower()
+        if ref:
+            pending = (
+                ManualBankPaymentChangeRequest.objects.filter(
+                    status=ManualBankPaymentChangeRequest.Status.PENDING,
+                    request_type=request_type,
+                    student=student,
+                )
+                .order_by("-requested_at")
+            )
+            for row in pending:
+                existing_ref = str((row.payload or {}).get("bank_reference") or "").strip().lower()
+                if existing_ref == ref:
+                    # Prefer latest form values if the user re-submitted.
+                    merged = dict(row.payload or {})
+                    merged.update({k: v for k, v in payload.items() if v not in (None, "")})
+                    row.payload = merged
+                    if reason:
+                        row.reason = (reason or "").strip()
+                    row.save(update_fields=["payload", "reason"])
+                    change, result = apply_change_request(
+                        row,
+                        reviewed_by=requested_by,
+                        review_notes=(
+                            "Auto-applied stuck pending request — Super Admin "
+                            "does not require dual approval."
+                        ),
+                    )
+                    return change, result, True
+
+    try:
+        change = create_change_request(
+            request_type=request_type,
+            student=student,
+            requested_by=requested_by,
+            ledger=ledger,
+            payload=payload,
+            reason=reason,
+        )
+    except ValueError as exc:
+        # Super Admin re-post after a successful credit: surface a clear message.
+        msg = str(exc)
+        if user_is_super_admin(requested_by) and "already" in msg.lower():
+            raise ValueError(
+                f"{msg} Open Finance → Manual bank payments to review it, "
+                "or use a different bank reference."
+            ) from exc
+        raise
+
     if user_is_super_admin(requested_by):
         change, result = apply_change_request(
             change,
