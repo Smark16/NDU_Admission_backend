@@ -715,18 +715,19 @@ def tuition_registration_totals(
     student: AdmittedStudent,
     *,
     current_term_only: bool = True,
+    alloc: FinanceAllocation | None = None,
 ) -> dict[str, Any]:
     """
-    Fee amounts for the registration % gate.
+    Fee amounts for the registration % gate / displayed tuition %.
 
     Uses allocated paid_amount on all billable current-term fee lines
     (tuition + functional / practical / room & board / other scheduled fees,
-    and billable ad-hoc charges) — i.e. the semester total shown on the
-    student finance profile — not tuition-only.
+    and billable ad-hoc charges) — not tuition-only, and not prior-term carry.
     """
     from payments.student_portal_finance import _student_curriculum_year_term
 
-    alloc = build_finance_allocation(student)
+    if alloc is None:
+        alloc = build_finance_allocation(student)
     cy, ct = _student_curriculum_year_term(student)
 
     def _line_year_term(ln: DemandLine) -> tuple[int | None, int | None]:

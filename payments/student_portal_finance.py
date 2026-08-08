@@ -444,10 +444,25 @@ def _adhoc_charges_for_student(student: AdmittedStudent):
     )
 
 
-def _finance_totals_from_alloc(alloc) -> dict[str, Any]:
+def _finance_totals_from_alloc(alloc, student: AdmittedStudent | None = None) -> dict[str, Any]:
     lifetime = getattr(alloc, "lifetime_paid_by_currency", None) or {}
     primary = alloc.primary_currency
     lifetime_primary = float(lifetime.get(primary, 0) or 0)
+
+    # Displayed % is current-term only (same basis as registration gate).
+    # All-terms paid/required/balance still include prior-term carry-forward.
+    from payments.student_payment_allocation import tuition_registration_totals
+
+    if student is not None:
+        term = tuition_registration_totals(student, current_term_only=True, alloc=alloc)
+        percentage_paid = term["percentage_paid"]
+        current_term_required = float(term["total_required"] or 0)
+        current_term_paid = float(term["total_paid_on_tuition"] or 0)
+    else:
+        percentage_paid = alloc.percentage_paid
+        current_term_required = None
+        current_term_paid = None
+
     return {
         "commitment_threshold": float(COMMITMENT_FEE_THRESHOLD),
         "commitment_paid_ugx": float(alloc.commitment_paid_ugx),
@@ -456,7 +471,9 @@ def _finance_totals_from_alloc(alloc) -> dict[str, Any]:
         "total_required": float(alloc.total_required),
         "total_paid": float(alloc.total_paid),
         "balance": float(alloc.balance),
-        "percentage_paid": alloc.percentage_paid,
+        "percentage_paid": percentage_paid,
+        "current_term_required": current_term_required,
+        "current_term_paid": current_term_paid,
         "display_currency": alloc.primary_currency,
         "pricing": "international" if alloc.international else "local",
         "tuition_structure_total": float(alloc.tuition_structure_total),
@@ -576,7 +593,8 @@ def _billing_lines_from_alloc(alloc) -> list[dict[str, Any]]:
 
 def student_finance_totals(student: AdmittedStudent) -> dict[str, Any]:
     """Programme billing totals (payments pooled; credit applied tuition → other → ad-hoc)."""
-    return _finance_totals_from_alloc(build_finance_allocation(student))
+    alloc = build_finance_allocation(student)
+    return _finance_totals_from_alloc(alloc, student)
 
 
 def student_billing_lines(student: AdmittedStudent) -> list[dict[str, Any]]:
@@ -588,7 +606,7 @@ def student_finance_bundle(student: AdmittedStudent) -> dict[str, Any]:
     """Totals + fee lines from one allocation (Bonafide / admin snapshots)."""
     alloc = build_finance_allocation(student)
     return {
-        "totals": _finance_totals_from_alloc(alloc),
+        "totals": _finance_totals_from_alloc(alloc, student),
         "lines": _billing_lines_from_alloc(alloc),
     }
 

@@ -204,6 +204,8 @@ def build_bonafide_portal_snapshot(student: AdmittedStudent, request=None) -> di
     if can_finance:
         finance_payload = {
             "percentage_paid": finance.get("percentage_paid"),
+            "current_term_paid": finance.get("current_term_paid"),
+            "current_term_required": finance.get("current_term_required"),
             "total_paid": finance.get("total_paid"),
             "total_required": finance.get("total_required"),
             "balance": finance.get("balance"),
