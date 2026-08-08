@@ -115,6 +115,41 @@ def _receipt_for_student(student_pk: int, ref: str) -> str:
     return receipt[:100]
 
 
+def _existing_similar_bank_ledger(student: AdmittedStudent, ref: str) -> TuitionLedger | None:
+    """Exact or near-duplicate bank refs (prefix/suffix) already credited for this student."""
+    needle = (ref or "").strip().lower()
+    if not needle:
+        return None
+    exact_receipt = _receipt_for_student(student.pk, ref)
+    exact = TuitionLedger.objects.filter(
+        student=student,
+        schoolpay_receipt_number=exact_receipt,
+    ).first()
+    if exact is not None:
+        return exact
+
+    prefix = f"BANK-{student.pk}-"
+    for row in TuitionLedger.objects.filter(
+        student=student,
+        schoolpay_receipt_number__startswith=prefix,
+        transaction_completion_status="Completed",
+    ).only("id", "schoolpay_receipt_number", "source_channel_transaction_id", "amount"):
+        existing = (row.source_channel_transaction_id or "").strip().lower()
+        if not existing:
+            receipt = (row.schoolpay_receipt_number or "").strip()
+            if receipt.startswith(prefix):
+                existing = receipt[len(prefix) :].lower()
+        if not existing:
+            continue
+        if (
+            existing == needle
+            or existing.startswith(needle)
+            or needle.startswith(existing)
+        ):
+            return row
+    return None
+
+
 @transaction.atomic
 def post_manual_bank_payment(
     *,
@@ -138,10 +173,13 @@ def post_manual_bank_payment(
 
     receipt = _receipt_for_student(student.pk, ref)
 
-    if TuitionLedger.objects.filter(schoolpay_receipt_number=receipt).exists():
+    similar = _existing_similar_bank_ledger(student, ref)
+    if similar is not None:
         raise ValueError(
-            f"A payment with bank reference “{bank_reference}” is already posted "
-            f"for this student (receipt {receipt})."
+            f"A similar bank reference is already posted for this student "
+            f"(receipt {similar.schoolpay_receipt_number}, "
+            f"amount {similar.amount}). "
+            "Do not post again — edit/delete the existing row if it is wrong."
         )
 
     when = _parse_payment_when(payment_date)
@@ -212,15 +250,11 @@ def update_manual_bank_payment(
         if not ref:
             raise ValueError("Bank reference / slip number is required.")
         receipt = _receipt_for_student(student.pk, ref)
-        clash = (
-            TuitionLedger.objects.filter(schoolpay_receipt_number=receipt)
-            .exclude(pk=ledger.pk)
-            .exists()
-        )
-        if clash:
+        similar = _existing_similar_bank_ledger(student, ref)
+        if similar is not None and similar.pk != ledger.pk:
             raise ValueError(
-                f"A payment with bank reference “{bank_reference}” is already posted "
-                f"for this student (receipt {receipt})."
+                f"A similar bank reference is already posted for this student "
+                f"(receipt {similar.schoolpay_receipt_number})."
             )
         ledger.schoolpay_receipt_number = receipt
         ledger.source_channel_transaction_id = ref[:100]
