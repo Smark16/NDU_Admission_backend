@@ -571,26 +571,89 @@ def list_programme_curriculum_for_review(student: AdmittedStudent) -> list[dict]
     return out
 
 
-def suggest_curriculum_match(paper_code: str, curriculum: list[dict]) -> int | None:
-    """Best curriculum line id for a typed paper code, or None."""
-    target = _norm_course_code(paper_code)
-    if not target:
+def _code_digit_tail(code: str) -> str:
+    """Trailing digit run from a course code (e.g. MHR4103 → 4103)."""
+    import re
+
+    m = re.search(r"(\d+)\s*$", (code or "").strip())
+    return m.group(1) if m else ""
+
+
+def suggest_curriculum_match(
+    paper_code: str,
+    curriculum: list[dict],
+    *,
+    course_name: str | None = None,
+    year_of_study: int | None = None,
+    term_number: int | None = None,
+) -> int | None:
+    """
+    Best curriculum line id for a typed student paper.
+
+    Tries exact/soft code match, then same year/term + digit tail / name overlap
+    so HOD review can prefill units the student already identified.
+    """
+    open_rows = [c for c in curriculum if not c.get("already_exempted")]
+    if not open_rows:
         return None
-    exact = [
-        c for c in curriculum
-        if not c.get("already_exempted") and _norm_course_code(c.get("course_code") or "") == target
-    ]
-    if len(exact) == 1:
-        return exact[0]["id"]
-    # Prefix / contains fallback when codes differ slightly (e.g. MHR4103 vs MHR 4103)
-    soft = [
-        c for c in curriculum
-        if not c.get("already_exempted")
-        and target
-        and target in _norm_course_code(c.get("course_code") or "")
-    ]
-    if len(soft) == 1:
-        return soft[0]["id"]
+
+    target = _norm_course_code(paper_code)
+    if target:
+        exact = [
+            c for c in open_rows
+            if _norm_course_code(c.get("course_code") or "") == target
+        ]
+        if len(exact) == 1:
+            return exact[0]["id"]
+        soft = [
+            c for c in open_rows
+            if target in _norm_course_code(c.get("course_code") or "")
+            or _norm_course_code(c.get("course_code") or "") in target
+        ]
+        if len(soft) == 1:
+            return soft[0]["id"]
+
+    pool = open_rows
+    if year_of_study is not None and term_number is not None:
+        yt = [
+            c for c in open_rows
+            if c.get("year_of_study") == year_of_study
+            and c.get("term_number") == term_number
+        ]
+        if yt:
+            pool = yt
+
+    digits = _code_digit_tail(paper_code or "")
+    if digits and len(digits) >= 3:
+        digit_hits = [
+            c for c in pool
+            if _code_digit_tail(c.get("course_code") or "") == digits
+        ]
+        if len(digit_hits) == 1:
+            return digit_hits[0]["id"]
+
+    name = (course_name or "").strip().lower()
+    if name and len(name) >= 6:
+        name_hits = [
+            c for c in pool
+            if name in (c.get("course_name") or "").strip().lower()
+            or (c.get("course_name") or "").strip().lower() in name
+        ]
+        if len(name_hits) == 1:
+            return name_hits[0]["id"]
+        # Token overlap (e.g. "Research Methods" vs "Research Methods in …")
+        tokens = {t for t in name.replace("/", " ").split() if len(t) >= 4}
+        if tokens:
+            scored: list[tuple[int, dict]] = []
+            for c in pool:
+                other = (c.get("course_name") or "").strip().lower()
+                other_tokens = {t for t in other.replace("/", " ").split() if len(t) >= 4}
+                overlap = len(tokens & other_tokens)
+                if overlap >= 2 or (overlap == 1 and len(tokens) == 1):
+                    scored.append((overlap, c))
+            scored.sort(key=lambda x: -x[0])
+            if len(scored) == 1 or (len(scored) >= 2 and scored[0][0] > scored[1][0]):
+                return scored[0][1]["id"]
     return None
 
 
@@ -611,6 +674,7 @@ def lookup_exemption_paper_by_code(student: AdmittedStudent, paper_code: str) ->
     for c in eligible:
         if _norm_course_code(c.get("course_code") or "") == target:
             return {
+                "curriculum_line_id": c.get("id"),
                 "course_code": c.get("course_code") or paper_code.strip(),
                 "course_name": c.get("course_name") or "",
                 "year_of_study": c.get("year_of_study"),
@@ -625,6 +689,7 @@ def lookup_exemption_paper_by_code(student: AdmittedStudent, paper_code: str) ->
     if len(soft) == 1:
         c = soft[0]
         return {
+            "curriculum_line_id": c.get("id"),
             "course_code": c.get("course_code") or paper_code.strip(),
             "course_name": c.get("course_name") or "",
             "year_of_study": c.get("year_of_study"),
@@ -643,6 +708,7 @@ def lookup_exemption_paper_by_code(student: AdmittedStudent, paper_code: str) ->
     )
     if hit:
         return {
+            "curriculum_line_id": None,
             "course_code": hit.code,
             "course_name": hit.title or "",
             "year_of_study": None,
@@ -657,6 +723,7 @@ def lookup_exemption_paper_by_code(student: AdmittedStudent, paper_code: str) ->
         if len(soft_cat) == 1:
             c = soft_cat[0]
             return {
+                "curriculum_line_id": None,
                 "course_code": c.code,
                 "course_name": c.title or "",
                 "year_of_study": None,

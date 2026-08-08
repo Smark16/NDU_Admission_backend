@@ -4583,13 +4583,51 @@ class StudentChangeRequestListCreate(APIView):
                             score_obtained=scores_map.get(str(line.pk), ""),
                         )
                 for paper in exemption_papers:
+                    linked = None
+                    raw_clid = paper.get("curriculum_line_id")
+                    if raw_clid not in (None, ""):
+                        try:
+                            clid = int(raw_clid)
+                        except (TypeError, ValueError):
+                            clid = None
+                        if clid and clid in eligible:
+                            linked = ProgramCurriculumLine.objects.filter(
+                                pk=clid, is_active=True
+                            ).first()
+                    if linked is None:
+                        # Best-effort match from typed code/name so HOD review
+                        # opens with curriculum already selected.
+                        from admissions.exemption_services import (
+                            list_programme_curriculum_for_review,
+                            suggest_curriculum_match,
+                        )
+
+                        sug_id = suggest_curriculum_match(
+                            str(paper.get("course_code") or ""),
+                            list_programme_curriculum_for_review(admission),
+                            course_name=str(paper.get("course_name") or ""),
+                            year_of_study=_int_or_none(paper.get("year_of_study")),
+                            term_number=_int_or_none(paper.get("term_number")),
+                        )
+                        if sug_id:
+                            linked = ProgramCurriculumLine.objects.filter(
+                                pk=sug_id, is_active=True
+                            ).first()
                     ExemptionRequestLine.objects.create(
                         change_request=obj,
-                        curriculum_line=None,
+                        curriculum_line=linked,
                         course_code=str(paper.get("course_code") or "").strip()[:40],
                         course_name=str(paper.get("course_name") or "").strip()[:255],
-                        year_of_study=_int_or_none(paper.get("year_of_study")),
-                        term_number=_int_or_none(paper.get("term_number")),
+                        year_of_study=(
+                            linked.year_of_study
+                            if linked is not None
+                            else _int_or_none(paper.get("year_of_study"))
+                        ),
+                        term_number=(
+                            linked.term_number
+                            if linked is not None
+                            else _int_or_none(paper.get("term_number"))
+                        ),
                         score_obtained=str(paper.get("score_obtained") or "").strip()[:20],
                     )
                 for idx, upload in enumerate(uploaded_files):
@@ -4873,7 +4911,11 @@ class AdminExemptionCurriculumView(APIView):
         papers = []
         for line in req_obj.exemption_lines.all():
             suggested = line.curriculum_line_id or suggest_curriculum_match(
-                line.course_code, curriculum
+                line.course_code,
+                curriculum,
+                course_name=line.course_name,
+                year_of_study=line.year_of_study,
+                term_number=line.term_number,
             )
             papers.append(
                 {
