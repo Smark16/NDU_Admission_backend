@@ -24,13 +24,14 @@ def _today() -> date:
 
 
 def student_active_scholarship_awards(student: AdmittedStudent):
-    """Active sponsorship awards linked to this student (Scholarship module)."""
+    """Active awards on an active scholarship programme (the scholarship student list)."""
     from payments.models import ScholarshipAward
 
     return (
         ScholarshipAward.objects.filter(
             student=student,
             status=ScholarshipAward.STATUS_ACTIVE,
+            programme__is_active=True,
         )
         .select_related("programme")
         .order_by("-awarded_at")
@@ -38,7 +39,7 @@ def student_active_scholarship_awards(student: AdmittedStudent):
 
 
 def student_is_sponsored(student: AdmittedStudent) -> bool:
-    """Temporary passes are only for students with an active sponsorship award."""
+    """Temp cards only for students attached to an active scholarship list."""
     return student_active_scholarship_awards(student).exists()
 
 

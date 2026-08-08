@@ -172,8 +172,8 @@ class StudentTemporaryAccessAdminView(APIView):
             return Response(
                 {
                     "detail": (
-                        "Temporary access passes are only for sponsored students. "
-                        "Attach an active scholarship / sponsorship award first."
+                        "Temporary access cards are only for students on an active "
+                        "scholarship list. Attach the student under Finance → Scholarships first."
                     )
                 },
                 status=400,
