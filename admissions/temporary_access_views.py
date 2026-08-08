@@ -29,6 +29,7 @@ from accounts.finance_access import (
     user_can_approve_temporary_access_pass,
     user_can_clear_temporary_access_pass,
     user_can_issue_temporary_access_pass,
+    user_can_view_scholarship_status,
     user_can_view_student_finance,
 )
 
@@ -50,6 +51,7 @@ def _can_view_passes(user) -> bool:
         user_can_issue_temporary_access_pass(user)
         or user_can_approve_temporary_access_pass(user)
         or user_can_clear_temporary_access_pass(user)
+        or user_can_view_scholarship_status(user)
         or user_can_view_student_finance(user)
     )
 

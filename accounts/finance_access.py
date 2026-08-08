@@ -34,10 +34,6 @@ def user_can_view_student_finance(user) -> bool:
         "access_reports",
         "manage_payment_reconciliation",
         "configure_fee_plans",
-        "manage_scholarships",
-        "view_scholarships",
-        "manage_scholarship_programmes",
-        "manage_scholarship_students",
     ):
         return True
     if user.has_perm("payments.view_tuitionledger"):
@@ -45,6 +41,26 @@ def user_can_view_student_finance(user) -> bool:
     if user.has_perm("admissions.clear_accounts_registration"):
         return True
     return False
+
+
+def user_can_view_scholarship_status(user) -> bool:
+    """See scholarship / sponsored status on student lists and profiles."""
+    if not user or not getattr(user, "is_authenticated", False):
+        return False
+    if user_is_super_admin(user):
+        return True
+    if user_in_bursar_clearance_groups(user):
+        return True
+    if user_has_any_erp_perm(
+        user,
+        "manage_scholarships",
+        "view_scholarships",
+        "manage_scholarship_programmes",
+        "manage_scholarship_students",
+    ):
+        return True
+    # Finance staff who already see student balances can also see sponsorship status.
+    return user_can_view_student_finance(user)
 
 
 def user_can_clear_accounts_registration(user) -> bool:

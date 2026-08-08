@@ -3320,14 +3320,19 @@ class ListBonafideStudents(generics.ListAPIView):
         """Load page rows without selecting SPE.teaching_section (may be missing if 0023 was faked)."""
         from Programs.spe_queryset import prefetch_programme_enrollment_for_lists
 
-        from admissions.temporary_access import annotate_temporary_access
+        from admissions.temporary_access import (
+            annotate_scholarship_status,
+            annotate_temporary_access,
+        )
 
         enriched = {
             obj.pk: obj
-            for obj in annotate_temporary_access(
-                AdmittedStudent.objects.filter(pk__in=page_ids)
-                .select_related(*self._BONAFIDE_SELECT_RELATED)
-                .prefetch_related(prefetch_programme_enrollment_for_lists())
+            for obj in annotate_scholarship_status(
+                annotate_temporary_access(
+                    AdmittedStudent.objects.filter(pk__in=page_ids)
+                    .select_related(*self._BONAFIDE_SELECT_RELATED)
+                    .prefetch_related(prefetch_programme_enrollment_for_lists())
+                )
             )
         }
         return [enriched[pk] for pk in page_ids if pk in enriched]
@@ -3479,9 +3484,13 @@ class ListBonafideStudents(generics.ListAPIView):
         if enrollment_status and enrollment_status != "all":
             queryset = queryset.filter(programme_enrollment__status=enrollment_status)
 
-        from accounts.finance_access import user_can_view_student_finance
+        from accounts.finance_access import (
+            user_can_view_scholarship_status,
+            user_can_view_student_finance,
+        )
 
         can_finance = user_can_view_student_finance(self.request.user)
+        can_scholarship = user_can_view_scholarship_status(self.request.user)
 
         # Payment / commitment / tuition-% filters are finance-only. Academics
         # see their full scoped directory without fee-status disclosure.
@@ -3539,6 +3548,8 @@ class ListBonafideStudents(generics.ListAPIView):
                 elif raw in ("0", "false", "no"):
                     queryset = filter_by_tuition_pct_met(queryset, False, min_pct=min_pct)
 
+        # Scholarship / temp-pass filters for staff with scholarship visibility.
+        if can_scholarship:
             temporary_access = (self.request.query_params.get("temporary_access") or "").strip().lower()
             if temporary_access and temporary_access not in ("all", ""):
                 from admissions.temporary_access import annotate_temporary_access
@@ -3548,6 +3559,16 @@ class ListBonafideStudents(generics.ListAPIView):
                     queryset = queryset.filter(has_temporary_access_pass=True)
                 elif temporary_access in ("0", "false", "no", "none"):
                     queryset = queryset.filter(has_temporary_access_pass=False)
+
+            scholarship = (self.request.query_params.get("scholarship") or "").strip().lower()
+            if scholarship and scholarship not in ("all", ""):
+                from admissions.temporary_access import annotate_scholarship_status
+
+                queryset = annotate_scholarship_status(queryset)
+                if scholarship in ("1", "true", "yes", "sponsored", "active"):
+                    queryset = queryset.filter(is_scholarship_sponsored=True)
+                elif scholarship in ("0", "false", "no", "none"):
+                    queryset = queryset.filter(is_scholarship_sponsored=False)
 
         registration_stage = (self.request.query_params.get("registration_stage") or "").strip().lower()
         if registration_stage and registration_stage not in ("all", ""):

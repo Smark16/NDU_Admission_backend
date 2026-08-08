@@ -82,6 +82,23 @@ def annotate_temporary_access(queryset):
     )
 
 
+def annotate_scholarship_status(queryset):
+    """Annotate active scholarship-list membership for student directory columns."""
+    from payments.models import ScholarshipAward
+
+    active_awards = ScholarshipAward.objects.filter(
+        student_id=OuterRef("pk"),
+        status=ScholarshipAward.STATUS_ACTIVE,
+        programme__is_active=True,
+    )
+    return queryset.annotate(
+        is_scholarship_sponsored=Exists(active_awards),
+        scholarship_name=Subquery(
+            active_awards.order_by("-awarded_at").values("programme__name")[:1]
+        ),
+    )
+
+
 def count_active_temporary_passes(queryset=None) -> int:
     """Count students (or passes) with a currently active temporary access pass."""
     today = _today()

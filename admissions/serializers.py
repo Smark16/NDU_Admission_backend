@@ -854,6 +854,8 @@ class BonafideStudentSerializer(serializers.ModelSerializer):
     has_temporary_access_pass = serializers.SerializerMethodField()
     temporary_access_sponsor = serializers.SerializerMethodField()
     temporary_access_valid_until = serializers.SerializerMethodField()
+    is_scholarship_sponsored = serializers.SerializerMethodField()
+    scholarship_name = serializers.SerializerMethodField()
 
     class Meta:
         model = AdmittedStudent
@@ -901,6 +903,8 @@ class BonafideStudentSerializer(serializers.ModelSerializer):
             "has_temporary_access_pass",
             "temporary_access_sponsor",
             "temporary_access_valid_until",
+            "is_scholarship_sponsored",
+            "scholarship_name",
         ]
 
     def get_name(self, obj):
@@ -984,6 +988,15 @@ class BonafideStudentSerializer(serializers.ModelSerializer):
 
         return user_can_view_student_finance(user)
 
+    def _request_user_can_view_scholarship(self) -> bool:
+        request = self.context.get("request")
+        user = getattr(request, "user", None) if request is not None else None
+        if user is None:
+            return False
+        from accounts.finance_access import user_can_view_scholarship_status
+
+        return user_can_view_scholarship_status(user)
+
     def _finance_totals(self, obj):
         """Balance carried forward across all terms (not just the current one).
 
@@ -1030,7 +1043,7 @@ class BonafideStudentSerializer(serializers.ModelSerializer):
         return ccy if self._request_user_can_view_finance() else None
 
     def get_has_temporary_access_pass(self, obj):
-        if not self._request_user_can_view_finance():
+        if not self._request_user_can_view_scholarship():
             return None
         annotated = getattr(obj, "has_temporary_access_pass", None)
         if annotated is not None:
@@ -1040,7 +1053,7 @@ class BonafideStudentSerializer(serializers.ModelSerializer):
         return get_active_pass(obj) is not None
 
     def get_temporary_access_sponsor(self, obj):
-        if not self._request_user_can_view_finance():
+        if not self._request_user_can_view_scholarship():
             return None
         annotated = getattr(obj, "temporary_access_sponsor", None)
         if annotated is not None:
@@ -1053,7 +1066,7 @@ class BonafideStudentSerializer(serializers.ModelSerializer):
         return (p.sponsor_label if p else None) or None
 
     def get_temporary_access_valid_until(self, obj):
-        if not self._request_user_can_view_finance():
+        if not self._request_user_can_view_scholarship():
             return None
         annotated = getattr(obj, "temporary_access_valid_until", None)
         if annotated is not None:
@@ -1067,6 +1080,31 @@ class BonafideStudentSerializer(serializers.ModelSerializer):
             return None
         return p.valid_until.isoformat()
 
+    def get_is_scholarship_sponsored(self, obj):
+        if not self._request_user_can_view_scholarship():
+            return None
+        annotated = getattr(obj, "is_scholarship_sponsored", None)
+        if annotated is not None:
+            return bool(annotated)
+        from admissions.temporary_access import student_is_sponsored
+
+        return student_is_sponsored(obj)
+
+    def get_scholarship_name(self, obj):
+        if not self._request_user_can_view_scholarship():
+            return None
+        annotated = getattr(obj, "scholarship_name", None)
+        if annotated:
+            return annotated
+        if self.get_is_scholarship_sponsored(obj) is False:
+            return None
+        from admissions.temporary_access import student_active_scholarship_awards
+
+        award = student_active_scholarship_awards(obj).first()
+        if not award or not award.programme_id:
+            return None
+        return award.programme.name
+
     def to_representation(self, instance):
         data = super().to_representation(instance)
         if not self._request_user_can_view_finance():
@@ -1075,9 +1113,12 @@ class BonafideStudentSerializer(serializers.ModelSerializer):
             data["total_required"] = None
             data["total_paid"] = None
             data["balance_currency"] = None
+        if not self._request_user_can_view_scholarship():
             data["has_temporary_access_pass"] = None
             data["temporary_access_sponsor"] = None
             data["temporary_access_valid_until"] = None
+            data["is_scholarship_sponsored"] = None
+            data["scholarship_name"] = None
         return data
 
     def get_accounts_registration_cleared_by_name(self, obj):
