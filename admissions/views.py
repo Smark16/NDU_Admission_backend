@@ -4710,6 +4710,40 @@ class ExemptionEligibleCoursesView(APIView):
         return Response({"form_fee": access, "courses": courses})
 
 
+class ExemptionPaperLookupView(APIView):
+    """Student: type a course/paper code → auto-fill name (and year/sem when known)."""
+
+    permission_classes = [IsAuthenticated]
+
+    def _get_admission(self, user):
+        try:
+            return AdmittedStudent.objects.select_related(
+                "admitted_program", "admitted_campus", "programme_enrollment"
+            ).filter(
+                Q(application__applicant=user) | Q(student_user=user) | Q(reg_no=user.username),
+                is_admitted=True,
+            ).first()
+        except Exception:
+            return None
+
+    def get(self, request):
+        from admissions.exemption_services import lookup_exemption_paper_by_code
+
+        admission = self._get_admission(request.user)
+        if not admission:
+            return Response({"detail": "No active admission found."}, status=404)
+        code = (request.query_params.get("code") or "").strip()
+        if len(code) < 2:
+            return Response(
+                {"detail": "Enter at least 2 characters of the course code."},
+                status=400,
+            )
+        hit = lookup_exemption_paper_by_code(admission, code)
+        if not hit:
+            return Response({"found": False, "detail": "No matching course found."})
+        return Response({"found": True, **hit})
+
+
 class StudentChangeRequestOptions(APIView):
     """Student: fetch available program/campus options for change requests."""
     permission_classes = [IsAuthenticated]

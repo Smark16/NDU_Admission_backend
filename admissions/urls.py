@@ -280,6 +280,11 @@ urlpatterns = [
         views.ExemptionEligibleCoursesView.as_view(),
         name='exemption_eligible_courses',
     ),
+    path(
+        'change_requests/exemption/lookup_paper',
+        views.ExemptionPaperLookupView.as_view(),
+        name='exemption_lookup_paper',
+    ),
     path('change_requests/all', views.AdminChangeRequestList.as_view(), name='admin_change_requests'),
     path('change_requests/<int:pk>/review', views.AdminChangeRequestReview.as_view(), name='review_change_request'),
     path(

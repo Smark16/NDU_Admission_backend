@@ -461,6 +461,78 @@ def suggest_curriculum_match(paper_code: str, curriculum: list[dict]) -> int | N
     return None
 
 
+def lookup_exemption_paper_by_code(student: AdmittedStudent, paper_code: str) -> dict | None:
+    """
+    Resolve a typed paper code to a course name (and year/sem when known).
+
+    Prefer the student's eligible curriculum, then fall back to the shared catalog.
+    """
+    target = _norm_course_code(paper_code)
+    if not target:
+        return None
+
+    try:
+        eligible = list_eligible_exemption_courses(student)
+    except Exception:
+        eligible = []
+    for c in eligible:
+        if _norm_course_code(c.get("course_code") or "") == target:
+            return {
+                "course_code": c.get("course_code") or paper_code.strip(),
+                "course_name": c.get("course_name") or "",
+                "year_of_study": c.get("year_of_study"),
+                "term_number": c.get("term_number"),
+                "source": "curriculum",
+            }
+    soft = [
+        c
+        for c in eligible
+        if target and target in _norm_course_code(c.get("course_code") or "")
+    ]
+    if len(soft) == 1:
+        c = soft[0]
+        return {
+            "course_code": c.get("course_code") or paper_code.strip(),
+            "course_name": c.get("course_name") or "",
+            "year_of_study": c.get("year_of_study"),
+            "term_number": c.get("term_number"),
+            "source": "curriculum",
+        }
+
+    from Programs.models import CourseCatalogUnit
+
+    raw = (paper_code or "").strip()
+    nospace = "".join(raw.split())
+    catalog_qs = CourseCatalogUnit.objects.filter(is_active=True).only("code", "title")
+    hit = (
+        catalog_qs.filter(code__iexact=raw).first()
+        or catalog_qs.filter(code__iexact=nospace).first()
+    )
+    if hit:
+        return {
+            "course_code": hit.code,
+            "course_name": hit.title or "",
+            "year_of_study": None,
+            "term_number": None,
+            "source": "catalog",
+        }
+    # Soft match on a small candidate set (codes that contain the typed digits/letters).
+    tip = nospace[:4] if len(nospace) >= 4 else nospace
+    if tip:
+        candidates = list(catalog_qs.filter(code__icontains=tip)[:80])
+        soft_cat = [c for c in candidates if target in _norm_course_code(c.code)]
+        if len(soft_cat) == 1:
+            c = soft_cat[0]
+            return {
+                "course_code": c.code,
+                "course_name": c.title or "",
+                "year_of_study": None,
+                "term_number": None,
+                "source": "catalog",
+            }
+    return None
+
+
 def apply_line_matches(change_request: AdmissionChangeRequest, matches: list[dict]) -> None:
     """
     Link free-text ExemptionRequestLine rows to ProgrammeCurriculumLine ids.
