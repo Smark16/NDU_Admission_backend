@@ -89,6 +89,11 @@ def enrichment_for_student(student) -> dict:
     gender = student_gender(student)
     year, term = student_curriculum_year_term(student)
     cohort = student_cohort_type(student)
+    app = getattr(student, "application", None)
+    phone = (getattr(app, "phone", None) or "").strip() or None
+    kin_name = (getattr(app, "next_of_kin_name", None) or "").strip() or None
+    kin_contact = (getattr(app, "next_of_kin_contact", None) or "").strip() or None
+    kin_rel = (getattr(app, "next_of_kin_relationship", None) or "").strip() or None
     return {
         "gender": gender,
         "cohort": cohort,
@@ -96,4 +101,8 @@ def enrichment_for_student(student) -> dict:
         "year_of_study": year,
         "term_number": term,
         "year_term_label": f"Y{year}T{term}",
+        "phone": phone,
+        "next_of_kin_name": kin_name,
+        "next_of_kin_contact": kin_contact,
+        "next_of_kin_relationship": kin_rel,
     }
