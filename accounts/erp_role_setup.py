@@ -9,6 +9,7 @@ ERP_TEAM_ROLE_MATRIX = {
     # ── Finance ──────────────────────────────────────────────────────────────
     # Bursar: full finance visibility + all sensitive clearances (registration,
     # temporary passes, charges, credits / bank reconciliation approval).
+    # manage_scholarships is Bursar-only (not Finance Manager / Officer).
     "Bursar": [
         ("accounts", "access_finance"),
         ("accounts", "access_reports"),
@@ -44,7 +45,7 @@ ERP_TEAM_ROLE_MATRIX = {
         ("accounts", "access_finance"),
         ("accounts", "access_reports"),
         ("accounts", "configure_fee_plans"),
-        ("accounts", "manage_scholarships"),
+        # manage_scholarships: Bursar only
         ("accounts", "manage_payment_reconciliation"),
         ("accounts", "post_manual_bank_payment"),
         ("admissions", "view_admittedstudent"),
@@ -71,9 +72,9 @@ ERP_TEAM_ROLE_MATRIX = {
         # Operational finance: view balances, post charges, process payments.
         # Sensitive clearances (Accounts registration / temp-pass clear / bank
         # credit approval) stay with Bursar / Finance Manager only.
+        # manage_scholarships: Bursar only
         ("accounts", "access_finance"),
         ("accounts", "configure_fee_plans"),
-        ("accounts", "manage_scholarships"),
         ("admissions", "view_admittedstudent"),
         ("Programs", "view_program"),
         ("Programs", "view_programbatch"),

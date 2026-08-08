@@ -48,16 +48,8 @@ class ScholarshipAdminPermission(BasePermission):
             return False
         if user_is_super_admin(u):
             return True
-        if user_has_any_erp_perm(
-            u,
-            "manage_scholarships",
-            "configure_fee_plans",
-            "access_finance",
-        ):
-            return True
-        if u.has_perm("payments.change_studenttuitionpayment"):
-            return True
-        return False
+        # Bursar-only ERP permission (Super Admin always allowed above).
+        return user_has_any_erp_perm(u, "manage_scholarships")
 
 
 def _dec(value, field="amount") -> Decimal:
