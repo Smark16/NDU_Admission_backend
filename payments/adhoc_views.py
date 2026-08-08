@@ -728,19 +728,30 @@ class StudentExemptionChargesCreateView(APIView):
 
     Body:
       change_request_id: int
-      lines: [{ curriculum_line_id?, course_code?, amount }]
-      semester_ids: [int, ...]  — split each line amount equally across these semesters
+      lines: [{ curriculum_line_id?, course_code?, course_name?,
+                year_of_study?, term_number?, amount? }]
+      semester_ids: [int, ...]  — spread the TOTAL across these semesters
+      replace_pending: bool — delete pending EXEMPTION_COURSE rows for this
+        change request, then recreate
+
+    Per-paper default = semester tuition ÷ curriculum papers (ex functional).
+    Accounts confirms the line amounts → system sums the total → equal split
+    across the chosen semester_ids.
     """
 
     permission_classes = [StudentChargesPermission]
 
     def post(self, request, student_id):
+        from decimal import Decimal, ROUND_HALF_UP
+
         from admissions.exemption_services import (
             EXEMPTION_COURSE_FEE_CODE,
             ensure_exemption_fee_heads,
-            exemption_course_fee_rate,
+            exemption_billing_lines_for_request,
+            exemption_course_fee_for_paper,
         )
-        from admissions.models import AdmissionChangeRequest
+        from admissions.models import AdmissionChangeRequest, ExemptionRequestLine
+        from django.db import transaction
 
         student = get_object_or_404(
             AdmittedStudent.objects.select_related(
@@ -754,25 +765,23 @@ class StudentExemptionChargesCreateView(APIView):
         change_request_id = request.data.get("change_request_id")
         lines = request.data.get("lines") or []
         semester_ids = request.data.get("semester_ids") or []
+        replace_pending = bool(request.data.get("replace_pending"))
 
         if not change_request_id:
             return Response(
                 {"detail": "change_request_id is required."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        if not lines:
-            return Response(
-                {"detail": "lines with amounts are required."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
         if not semester_ids:
             return Response(
-                {"detail": "Select at least one semester to bill against."},
+                {"detail": "Select at least one semester to spread the total across."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         req = get_object_or_404(
-            AdmissionChangeRequest.objects.prefetch_related("exemption_lines"),
+            AdmissionChangeRequest.objects.prefetch_related(
+                "exemption_lines__curriculum_line"
+            ),
             pk=change_request_id,
             admitted_student=student,
             change_type="exemption",
@@ -798,18 +807,58 @@ class StudentExemptionChargesCreateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        preview_by_key: dict[str, dict] = {}
+        for row in exemption_billing_lines_for_request(req):
+            key = str(row.get("curriculum_line_id") or row.get("course_code") or "")
+            preview_by_key[key] = row
+            if row.get("exemption_line_id"):
+                preview_by_key[f"line:{row['exemption_line_id']}"] = row
+
+        if not lines:
+            lines = [
+                {
+                    "curriculum_line_id": r.get("curriculum_line_id"),
+                    "course_code": r.get("course_code"),
+                    "course_name": r.get("course_name"),
+                    "year_of_study": r.get("year_of_study"),
+                    "term_number": r.get("term_number"),
+                    "amount": r.get("amount"),
+                    "exemption_line_id": r.get("exemption_line_id"),
+                }
+                for r in exemption_billing_lines_for_request(req)
+            ]
+
+        if not lines:
+            return Response(
+                {"detail": "No approved papers to bill on this exemption request."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         _, course_head = ensure_exemption_fee_heads()
-        created = []
-        # Standard/alumni per-paper rate, resolved once for this request — used
-        # whenever a line doesn't send an explicit override amount, so billing
-        # no longer depends on someone typing the right number from memory.
-        default_rate = exemption_course_fee_rate(req)
+        note_marker = f"Exemption change request #{req.id}"
+        paper_total = Decimal("0.00")
+        paper_count = 0
+        paper_labels: list[str] = []
 
         for raw in lines:
             code = (raw.get("course_code") or "").strip()
             name = (raw.get("course_name") or "").strip()
             line_id = raw.get("curriculum_line_id")
-            if not code and line_id:
+            exemption_line_id = raw.get("exemption_line_id")
+            year = raw.get("year_of_study")
+            term = raw.get("term_number")
+
+            match = None
+            if exemption_line_id:
+                match = next(
+                    (
+                        el
+                        for el in req.exemption_lines.all()
+                        if el.id == int(exemption_line_id)
+                    ),
+                    None,
+                )
+            elif line_id:
                 match = next(
                     (
                         el
@@ -818,40 +867,137 @@ class StudentExemptionChargesCreateView(APIView):
                     ),
                     None,
                 )
-                if match:
-                    code = match.course_code
-                    name = match.course_name
+            if match:
+                code = code or match.course_code
+                name = name or match.course_name
+                if year in (None, ""):
+                    year = match.year_of_study
+                if term in (None, ""):
+                    term = match.term_number
+                if (
+                    (year in (None, "") or term in (None, ""))
+                    and match.curriculum_line_id
+                    and match.curriculum_line
+                ):
+                    year = match.curriculum_line.year_of_study
+                    term = match.curriculum_line.term_number
+                if match.decision == ExemptionRequestLine.DECISION_REJECTED:
+                    continue
 
-            label_base = f"Course exemption — {code or 'unit'}"
-            if name:
-                label_base = f"{label_base} ({name})"
+            preview = None
+            if exemption_line_id:
+                preview = preview_by_key.get(f"line:{int(exemption_line_id)}")
+            if preview is None and line_id:
+                preview = preview_by_key.get(str(int(line_id)))
+            if preview is None and code:
+                preview = preview_by_key.get(code)
+
+            if year in (None, "") and preview:
+                year = preview.get("year_of_study")
+            if term in (None, "") and preview:
+                term = preview.get("term_number")
 
             raw_amount = raw.get("amount")
-            amount = default_rate if raw_amount in (None, "") else raw_amount
-
             try:
-                created.extend(
-                    _create_split_adhoc_charges(
-                        student=student,
-                        fee_head=course_head,
-                        label_base=label_base,
-                        amount=amount,
-                        currency="UGX",
-                        notes=(
-                            f"Exemption change request #{req.id}; "
-                            f"fee head {EXEMPTION_COURSE_FEE_CODE}."
-                        ),
-                        semesters=semesters,
-                        charged_by=request.user,
+                if raw_amount in (None, ""):
+                    if preview and preview.get("amount") is not None:
+                        amount = Decimal(str(preview["amount"]))
+                    else:
+                        if year in (None, "") or term in (None, ""):
+                            return Response(
+                                {
+                                    "detail": (
+                                        f"Paper {code or 'unit'} needs year/term "
+                                        "to compute tuition÷papers."
+                                    )
+                                },
+                                status=status.HTTP_400_BAD_REQUEST,
+                            )
+                        amount = exemption_course_fee_for_paper(
+                            student,
+                            year_of_study=int(year),
+                            term_number=int(term),
+                        )
+                else:
+                    amount = Decimal(str(raw_amount)).quantize(
+                        Decimal("0.01"), rounding=ROUND_HALF_UP
                     )
+            except (TypeError, ValueError) as exc:
+                return Response(
+                    {"detail": f"Invalid amount for {code or 'unit'}: {exc}"},
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
-            except ValueError as exc:
-                return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
+            if amount <= 0:
+                return Response(
+                    {"detail": f"Amount for {code or 'unit'} must be positive."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            paper_total += amount
+            paper_count += 1
+            label = code or "unit"
+            if name:
+                label = f"{label} ({name})"
+            paper_labels.append(label)
+
+        if paper_count < 1 or paper_total <= 0:
+            return Response(
+                {"detail": "No billable paper amounts to spread."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        label_base = f"Course exemption fees ({paper_count} paper(s))"
+        notes = (
+            f"{note_marker}; fee head {EXEMPTION_COURSE_FEE_CODE}; "
+            f"total UGX {paper_total} = sum of tuition÷papers; "
+            f"spread across {len(semesters)} semester(s). "
+            f"Papers: {', '.join(paper_labels[:20])}"
+            + ("…" if len(paper_labels) > 20 else "")
+        )[:2000]
+
+        created = []
+        deleted_count = 0
+        try:
+            with transaction.atomic():
+                if replace_pending:
+                    doomed = StudentTuitionPayment.objects.filter(
+                        student=student,
+                        source="ad_hoc",
+                        status="pending",
+                        is_waived=False,
+                        fee_head=course_head,
+                        notes__icontains=note_marker,
+                    )
+                    deleted_count = doomed.count()
+                    doomed.delete()
+
+                created = _create_split_adhoc_charges(
+                    student=student,
+                    fee_head=course_head,
+                    label_base=label_base,
+                    amount=paper_total,
+                    currency="UGX",
+                    notes=notes,
+                    semesters=semesters,
+                    charged_by=request.user,
+                )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        detail = (
+            f"Spread UGX {paper_total:,.2f} across {len(semesters)} semester(s) "
+            f"({paper_count} paper(s))."
+        )
+        if deleted_count:
+            detail = f"Removed {deleted_count} pending charge(s). {detail}"
         return Response(
             {
-                "detail": f"Created {len(created)} exemption charge(s).",
+                "detail": detail,
                 "change_request_id": req.id,
+                "paper_count": paper_count,
+                "total_amount": float(paper_total),
+                "deleted_pending": deleted_count,
                 "charges": created,
             },
             status=status.HTTP_201_CREATED,

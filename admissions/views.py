@@ -4913,9 +4913,8 @@ class AdminChangeRequestReview(APIView):
                     {"detail": "You do not have permission to review exemption requests."},
                     status=403,
                 )
-            # The alumni flag drives the per-paper exemption fee rate, so the
-            # HOD/Dean gets a final chance to confirm/correct it right before
-            # approving — same request body as the approve/reject action.
+            # Alumni flag is metadata for Finance; course fees are billed as
+            # semester tuition ÷ curriculum papers. HOD may still confirm it.
             if "exemption_is_alumnus" in request.data:
                 req_obj.exemption_is_alumnus = bool(request.data.get("exemption_is_alumnus"))
             if "exemption_attained_at" in request.data:
@@ -5017,14 +5016,78 @@ class AdminChangeRequestReview(APIView):
         return Response(AdmissionChangeRequestSerializer(req_obj, context={"request": request}).data)
 
 
+class AdminExemptionLineAddView(APIView):
+    """
+    HOD/Dean: add another curriculum paper to an exemption request.
+
+    POST /api/admissions/change_requests/<pk>/exemption_lines
+    Body: { "curriculum_line_id": int, "score_obtained"?: str }
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        from admissions.exemption_services import add_exemption_line_from_curriculum
+        from admissions.serializers import ExemptionRequestLineSerializer
+
+        req_obj = get_object_or_404(
+            AdmissionChangeRequest.objects.select_related("admitted_student"),
+            pk=pk,
+            change_type="exemption",
+        )
+        if not user_can_approve_exemption_requests(request.user):
+            return Response(
+                {"detail": "You do not have permission to add exemption papers."},
+                status=403,
+            )
+        qs = filter_admission_change_requests_for_user(
+            AdmissionChangeRequest.objects.filter(pk=req_obj.pk),
+            request.user,
+        )
+        if not qs.exists():
+            return Response({"detail": "Not found."}, status=404)
+
+        try:
+            curriculum_line_id = int(request.data.get("curriculum_line_id"))
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "curriculum_line_id is required."},
+                status=400,
+            )
+        score = (request.data.get("score_obtained") or "").strip()
+        try:
+            line = add_exemption_line_from_curriculum(
+                req_obj,
+                curriculum_line_id=curriculum_line_id,
+                score_obtained=score,
+                decided_by=request.user,
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
+
+        req_obj = (
+            AdmissionChangeRequest.objects.select_related("reviewed_by")
+            .prefetch_related("exemption_lines", "supporting_documents")
+            .get(pk=req_obj.pk)
+        )
+        return Response(
+            {
+                "detail": "Paper added to exemption request.",
+                "line": ExemptionRequestLineSerializer(line).data,
+                "change_request": AdmissionChangeRequestSerializer(
+                    req_obj, context={"request": request}
+                ).data,
+            },
+            status=201,
+        )
+
+
 class ExemptionAdvancePositionView(APIView):
     """
-    HOD/Dean-confirmed action: when an approved course exemption now covers an
-    entire term/year, advance the student's current academic position to the
-    first term that still has non-exempted work. Nothing moves automatically —
-    the caller must confirm the exact (year, term) suggested by
-    suggest_promotion_after_exemption(), which is echoed back on the change
-    request's `suggested_promotion` field.
+    HOD/Dean-confirmed action: set the student's current academic position
+    (StudentProgrammeEnrollment year/term) after an approved course exemption.
+    Accepts any valid year/term within the programme; suggested_promotion is
+    optional guidance when a full consecutive term is covered.
 
     POST /api/admissions/change_requests/<pk>/advance_position/
     Body: { "year_of_study": int, "term_number": int }
@@ -5035,6 +5098,7 @@ class ExemptionAdvancePositionView(APIView):
     def post(self, request, pk):
         from admissions.exemption_services import (
             advance_student_position_for_exemption,
+            enrollment_promotion_context,
             suggest_promotion_after_exemption,
         )
 
@@ -5051,13 +5115,6 @@ class ExemptionAdvancePositionView(APIView):
                 status=400,
             )
 
-        suggestion = suggest_promotion_after_exemption(req_obj)
-        if not suggestion:
-            return Response(
-                {"detail": "No advancement is currently suggested for this student."},
-                status=400,
-            )
-
         try:
             to_year = int(request.data.get("year_of_study"))
             to_term = int(request.data.get("term_number"))
@@ -5067,28 +5124,30 @@ class ExemptionAdvancePositionView(APIView):
                 status=400,
             )
 
-        # Only allow confirming exactly what was suggested — this stays a
-        # deliberate human click on a system-computed value, not free-form entry.
-        if (to_year, to_term) != (
-            suggestion["suggested_year_of_study"],
-            suggestion["suggested_term_number"],
-        ):
+        try:
+            result = advance_student_position_for_exemption(
+                req_obj, to_year=to_year, to_term=to_term, decided_by=request.user
+            )
+        except ValueError as exc:
             return Response(
                 {
-                    "detail": "year_of_study/term_number does not match the current suggestion.",
-                    "suggested_promotion": suggestion,
+                    "detail": str(exc),
+                    "suggested_promotion": suggest_promotion_after_exemption(req_obj),
+                    "promotion_context": enrollment_promotion_context(
+                        req_obj.admitted_student
+                    ),
                 },
                 status=400,
             )
 
-        result = advance_student_position_for_exemption(
-            req_obj, to_year=to_year, to_term=to_term, decided_by=request.user
-        )
         req_obj.refresh_from_db()
         return Response(
             {
                 **result,
                 "review_notes": req_obj.review_notes,
+                "promotion_context": enrollment_promotion_context(
+                    req_obj.admitted_student
+                ),
             }
         )
 

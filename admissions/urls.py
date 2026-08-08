@@ -293,6 +293,11 @@ urlpatterns = [
         name='exemption_request_curriculum',
     ),
     path(
+        'change_requests/<int:pk>/exemption_lines',
+        views.AdminExemptionLineAddView.as_view(),
+        name='exemption_request_add_line',
+    ),
+    path(
         'change_requests/<int:pk>/advance_position',
         views.ExemptionAdvancePositionView.as_view(),
         name='exemption_advance_position',

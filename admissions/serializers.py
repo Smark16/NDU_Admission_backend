@@ -1311,7 +1311,9 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
     form_fee_paid = serializers.SerializerMethodField()
     exemption_course_fee_rate = serializers.SerializerMethodField()
     exemption_course_fee_total = serializers.SerializerMethodField()
+    exemption_billing_lines = serializers.SerializerMethodField()
     suggested_promotion = serializers.SerializerMethodField()
+    promotion_context = serializers.SerializerMethodField()
 
     class Meta:
         model = AdmissionChangeRequest
@@ -1326,7 +1328,8 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
             'form_fee_charge_id', 'form_fee_paid_at', 'form_fee_paid',
             'exemption_attained_at', 'exemption_academic_years', 'exemption_is_alumnus',
             'exemption_course_fee_rate', 'exemption_course_fee_total',
-            'suggested_promotion',
+            'exemption_billing_lines',
+            'suggested_promotion', 'promotion_context',
         ]
 
     def get_supporting_documents(self, obj):
@@ -1362,13 +1365,12 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
         return bool(obj.form_fee_paid_at)
 
     def get_exemption_course_fee_rate(self, obj):
+        """Flat rate retired — always None; use exemption_billing_lines amounts."""
         if obj.change_type != "exemption":
             return None
         if not self._request_user_can_view_finance():
             return None
-        from admissions.exemption_services import exemption_course_fee_rate
-
-        return float(exemption_course_fee_rate(obj))
+        return None
 
     def get_exemption_course_fee_total(self, obj):
         if obj.change_type != "exemption":
@@ -1377,7 +1379,22 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
             return None
         from admissions.exemption_services import exemption_course_fee_total
 
-        return float(exemption_course_fee_total(obj))
+        try:
+            return float(exemption_course_fee_total(obj))
+        except Exception:
+            return None
+
+    def get_exemption_billing_lines(self, obj):
+        if obj.change_type != "exemption":
+            return None
+        if not self._request_user_can_view_finance():
+            return None
+        from admissions.exemption_services import exemption_billing_lines_for_request
+
+        try:
+            return exemption_billing_lines_for_request(obj)
+        except Exception:
+            return []
 
     def get_suggested_promotion(self, obj):
         if obj.change_type != "exemption" or obj.status != "approved":
@@ -1389,6 +1406,16 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
         except Exception:
             return None
 
+    def get_promotion_context(self, obj):
+        if obj.change_type != "exemption" or obj.status != "approved":
+            return None
+        from admissions.exemption_services import enrollment_promotion_context
+
+        try:
+            return enrollment_promotion_context(obj.admitted_student)
+        except Exception:
+            return None
+
     def to_representation(self, instance):
         data = super().to_representation(instance)
         if not self._request_user_can_view_finance():
@@ -1397,6 +1424,7 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
             data["form_fee_paid"] = None
             data["exemption_course_fee_rate"] = None
             data["exemption_course_fee_total"] = None
+            data["exemption_billing_lines"] = None
         return data
 
 

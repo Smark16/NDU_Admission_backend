@@ -18,12 +18,9 @@ EXEMPTION_FORM_FEE_UGX = Decimal(
     str(getattr(settings, "EXEMPTION_FORM_FEE_UGX", "50000"))
 )
 
-# Per-paper exemption fee (Accounts):
-#   - non-Ndejje: UGX 150,000 / paper
-#   - Ndejje alumni (did undergrad here): UGX 100,000 / paper
-# Both are settings-overridable so Finance can retune them without a deploy.
-# Separately, semester TUITION (not functional) is replaced by
-# (tuition / papers) × papers still taken — see prorate_tuition_for_course_exemptions.
+# Legacy flat rates (settings-overridable). Kept for display/migration only —
+# Accounts now bills EXEMPTION_COURSE as semester tuition ÷ curriculum papers
+# (no functional fees). See exemption_course_fee_for_paper().
 EXEMPTION_COURSE_FEE_STANDARD_UGX = Decimal(
     str(getattr(settings, "EXEMPTION_COURSE_FEE_STANDARD_UGX", "150000"))
 )
@@ -32,24 +29,160 @@ EXEMPTION_COURSE_FEE_ALUMNI_UGX = Decimal(
 )
 
 
-def exemption_course_fee_rate(change_request: "AdmissionChangeRequest") -> Decimal:
-    """UGX fee per exempted paper for this request, based on its alumni flag."""
-    if getattr(change_request, "exemption_is_alumnus", False):
-        return EXEMPTION_COURSE_FEE_ALUMNI_UGX
-    return EXEMPTION_COURSE_FEE_STANDARD_UGX
+def exemption_course_fee_rate(change_request: "AdmissionChangeRequest") -> Decimal | None:
+    """
+    Legacy single flat rate (alumni vs standard). Prefer per-paper
+    exemption_course_fee_for_paper / exemption_billing_lines_for_request —
+    those use tuition ÷ papers. Returns None when the request should use
+    curriculum-based amounts instead of a flat rate.
+    """
+    # Flat rates are retired as the billing default. Callers that still need a
+    # display fallback can use EXEMPTION_COURSE_FEE_* constants directly.
+    _ = change_request
+    return None
 
 
-def exemption_course_fee_total(change_request: "AdmissionChangeRequest") -> Decimal:
-    """Rate × papers that will be / were approved on this request."""
+def semester_tuition_amount_for_student(
+    student: AdmittedStudent,
+    *,
+    year_of_study: int,
+    term_number: int,
+) -> Decimal | None:
+    """
+    Programme TUITION_FEE amount for the student's cohort semester matching
+    (year_of_study, term_number). Functional fees are excluded.
+    """
+    from payments.student_fee_pricing import effective_amount_currency
+    from payments.student_portal_finance import _rules_for_student
+
+    international = bool(getattr(student, "is_international", False))
+    for rule in _rules_for_student(student):
+        fee_code = (rule.fee_head.code or "").upper() if rule.fee_head_id else ""
+        if fee_code != "TUITION_FEE":
+            continue
+        sem = rule.semester
+        if sem is None:
+            continue
+        if int(sem.year_of_study or 0) != int(year_of_study):
+            continue
+        if int(sem.term_number or 0) != int(term_number):
+            continue
+        amt, _cur = effective_amount_currency(rule, international)
+        if amt > 0:
+            return Decimal(str(amt))
+    return None
+
+
+def exemption_course_fee_for_paper(
+    student: AdmittedStudent,
+    *,
+    year_of_study: int,
+    term_number: int,
+) -> Decimal:
+    """
+    Accounts rule: (semester tuition excluding functional fees) ÷ papers in
+    that curriculum year/term. Raises ValueError when tuition or papers
+    cannot be resolved.
+    """
+    from decimal import ROUND_HALF_UP
+
+    tuition = semester_tuition_amount_for_student(
+        student, year_of_study=year_of_study, term_number=term_number
+    )
+    if tuition is None or tuition <= 0:
+        raise ValueError(
+            f"No semester tuition configured for Year {year_of_study} "
+            f"Term {term_number}."
+        )
+    counts = semester_paper_counts_for_exemptions(
+        student, year_of_study=year_of_study, term_number=term_number
+    )
+    if counts is None or counts["total_papers"] <= 0:
+        raise ValueError(
+            f"No curriculum papers found for Year {year_of_study} "
+            f"Term {term_number}."
+        )
+    total = Decimal(counts["total_papers"])
+    return (tuition / total).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def _billable_exemption_lines(change_request: "AdmissionChangeRequest"):
     from admissions.models import ExemptionRequestLine
 
     qs = change_request.exemption_lines.all()
     if change_request.status == "pending":
-        # Estimate before review: all requested papers.
-        line_count = qs.count()
-    else:
-        line_count = qs.filter(decision=ExemptionRequestLine.DECISION_APPROVED).count()
-    return exemption_course_fee_rate(change_request) * Decimal(line_count)
+        return list(qs)
+    return list(qs.filter(decision=ExemptionRequestLine.DECISION_APPROVED))
+
+
+def exemption_billing_lines_for_request(
+    change_request: "AdmissionChangeRequest",
+) -> list[dict]:
+    """
+    Per approved (or pending-estimate) paper: amount = tuition÷papers for that
+    paper's curriculum year/term, plus resolved semester metadata when available.
+    """
+    from payments.billing_visibility import resolve_semester_for_year_term
+    from payments.student_portal_finance import _student_program_batch_id
+
+    student = change_request.admitted_student
+    pb_id = _student_program_batch_id(student)
+    out: list[dict] = []
+    for line in _billable_exemption_lines(change_request):
+        year = line.year_of_study
+        term = line.term_number
+        if (year is None or term is None) and line.curriculum_line_id:
+            cl = line.curriculum_line
+            if cl is not None:
+                year = cl.year_of_study
+                term = cl.term_number
+        amount = None
+        error = None
+        semester = None
+        if year is not None and term is not None:
+            try:
+                amount = exemption_course_fee_for_paper(
+                    student, year_of_study=int(year), term_number=int(term)
+                )
+            except ValueError as exc:
+                error = str(exc)
+            semester = resolve_semester_for_year_term(
+                program_batch_id=pb_id,
+                year_of_study=int(year),
+                term_number=int(term),
+            )
+        else:
+            error = "Paper has no year/term — match it to a curriculum unit first."
+        out.append(
+            {
+                "exemption_line_id": line.id,
+                "curriculum_line_id": line.curriculum_line_id,
+                "course_code": line.course_code or "",
+                "course_name": line.course_name or "",
+                "score_obtained": line.score_obtained or "",
+                "year_of_study": int(year) if year is not None else None,
+                "term_number": int(term) if term is not None else None,
+                "amount": float(amount) if amount is not None else None,
+                "semester_id": semester.id if semester is not None else None,
+                "semester_label": (
+                    f"Year {semester.year_of_study}, Term {semester.term_number}"
+                    f" — {semester.name}"
+                    if semester is not None
+                    else None
+                ),
+                "error": error,
+            }
+        )
+    return out
+
+
+def exemption_course_fee_total(change_request: "AdmissionChangeRequest") -> Decimal:
+    """Sum of tuition÷papers amounts for billable papers on this request."""
+    total = Decimal("0.00")
+    for row in exemption_billing_lines_for_request(change_request):
+        if row.get("amount") is not None:
+            total += Decimal(str(row["amount"]))
+    return total
 
 
 def ensure_exemption_fee_heads() -> tuple[FeeHead, FeeHead]:
@@ -928,6 +1061,109 @@ def suggest_promotion_after_exemption(change_request: AdmissionChangeRequest) ->
     }
 
 
+def enrollment_promotion_context(student: AdmittedStudent) -> dict | None:
+    """Current SPE position + programme year/term bounds for the HOD promote UI."""
+    try:
+        enrollment = student.programme_enrollment
+    except Exception:
+        return None
+    if enrollment is None or enrollment.program_id is None:
+        return None
+    program = enrollment.program
+    max_years = int(getattr(program, "max_years", None) or 4)
+    max_terms = int(getattr(program, "max_terms_per_year", None) or 2)
+    cur_year = int(enrollment.current_year_of_study or 1)
+    cur_term = int(enrollment.current_term_number or 1)
+    nxt = _next_year_term(
+        cur_year, cur_term, max_terms_per_year=max_terms, max_years=max_years
+    )
+    return {
+        "current_year_of_study": cur_year,
+        "current_term_number": cur_term,
+        "max_years": max_years,
+        "max_terms_per_year": max_terms,
+        "default_year_of_study": nxt[0] if nxt else cur_year,
+        "default_term_number": nxt[1] if nxt else cur_term,
+    }
+
+
+def validate_advance_position(
+    student: AdmittedStudent,
+    *,
+    to_year: int,
+    to_term: int,
+) -> None:
+    """Raise ValueError if (to_year, to_term) is outside the programme range."""
+    ctx = enrollment_promotion_context(student)
+    if ctx is None:
+        raise ValueError("Student has no programme enrollment to advance.")
+    max_years = ctx["max_years"]
+    max_terms = ctx["max_terms_per_year"]
+    if to_year < 1 or to_year > max_years:
+        raise ValueError(f"year_of_study must be between 1 and {max_years}.")
+    if to_term < 1 or to_term > max_terms:
+        raise ValueError(f"term_number must be between 1 and {max_terms}.")
+
+
+def add_exemption_line_from_curriculum(
+    change_request: AdmissionChangeRequest,
+    *,
+    curriculum_line_id: int,
+    score_obtained: str = "",
+    decided_by=None,
+) -> "ExemptionRequestLine":
+    """
+    HOD adds a curriculum paper to an exemption request.
+
+    Pending requests: line stays pending until review.
+    Already-approved requests: line is auto-approved and curriculum override applied.
+    """
+    from admissions.models import ExemptionRequestLine
+    from Programs.models import ProgramCurriculumLine
+
+    if change_request.change_type != "exemption":
+        raise ValueError("Only exemption requests accept additional papers.")
+    if change_request.status == "rejected":
+        raise ValueError("Cannot add papers to a rejected exemption request.")
+
+    student = change_request.admitted_student
+    curriculum = list_programme_curriculum_for_review(student)
+    allowed_ids = {c["id"] for c in curriculum}
+    if curriculum_line_id not in allowed_ids:
+        raise ValueError("That curriculum unit is not on this student's programme.")
+
+    if change_request.exemption_lines.filter(curriculum_line_id=curriculum_line_id).exists():
+        raise ValueError("That paper is already on this exemption request.")
+
+    cl = (
+        ProgramCurriculumLine.objects.select_related("catalog_course")
+        .filter(pk=curriculum_line_id, is_active=True)
+        .first()
+    )
+    if cl is None:
+        raise ValueError("Curriculum unit not found.")
+
+    course = cl.catalog_course
+    auto_approve = change_request.status == "approved"
+    line = ExemptionRequestLine.objects.create(
+        change_request=change_request,
+        curriculum_line=cl,
+        course_code=(course.code if course else "")[:40],
+        course_name=((course.title if course else "") or "")[:255],
+        year_of_study=cl.year_of_study,
+        term_number=cl.term_number,
+        score_obtained=(score_obtained or "").strip()[:20],
+        decision=(
+            ExemptionRequestLine.DECISION_APPROVED
+            if auto_approve
+            else ExemptionRequestLine.DECISION_PENDING
+        ),
+    )
+    if auto_approve:
+        apply_exemption_overrides(change_request, decided_by=decided_by)
+    return line
+
+
 def advance_student_position_for_exemption(
     change_request: AdmissionChangeRequest,
     *,
@@ -936,17 +1172,23 @@ def advance_student_position_for_exemption(
     decided_by,
 ) -> dict:
     """
-    HOD-confirmed action: move the student's current curriculum position forward
+    HOD-confirmed action: move the student's current curriculum position
     to (to_year, to_term) and record it as an advanced-entry point if this is the
     first time her position has moved past the default Year 1 Term 1.
+
+    Student portal (My Courses / Enrolment / Academic Tracker) reads SPE
+    current_year_of_study / current_term_number, so this change is visible there.
     """
     student = change_request.admitted_student
+    validate_advance_position(student, to_year=to_year, to_term=to_term)
     try:
         enrollment = student.programme_enrollment
     except Exception as exc:
         raise ValueError("Student has no programme enrollment to advance.") from exc
 
     from_year, from_term = enrollment.current_year_of_study, enrollment.current_term_number
+    if (int(to_year), int(to_term)) == (int(from_year), int(from_term)):
+        raise ValueError("Student is already at that year/term.")
 
     update_fields = ["current_year_of_study", "current_term_number", "updated_at"]
     enrollment.current_year_of_study = to_year
