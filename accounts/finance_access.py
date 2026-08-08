@@ -35,6 +35,9 @@ def user_can_view_student_finance(user) -> bool:
         "manage_payment_reconciliation",
         "configure_fee_plans",
         "manage_scholarships",
+        "view_scholarships",
+        "manage_scholarship_programmes",
+        "manage_scholarship_students",
     ):
         return True
     if user.has_perm("payments.view_tuitionledger"):
@@ -69,7 +72,11 @@ def user_can_issue_temporary_access_pass(user) -> bool:
         return True
     if user.has_perm("admissions.clear_accounts_registration"):
         return True
-    if user_has_any_erp_perm(user, "manage_scholarships"):
+    if user_has_any_erp_perm(
+        user,
+        "manage_scholarships",
+        "manage_scholarship_students",
+    ):
         return True
     return False
 

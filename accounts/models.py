@@ -232,7 +232,19 @@ class ErpAccessPolicy(models.Model):
             ),
             (
                 "manage_scholarships",
-                "Manage scholarship programmes, student awards, and fee waivers",
+                "Full scholarship access (all scholarship blocks)",
+            ),
+            (
+                "view_scholarships",
+                "View scholarship programmes and sponsored student lists",
+            ),
+            (
+                "manage_scholarship_programmes",
+                "Create, edit, and delete scholarship programmes",
+            ),
+            (
+                "manage_scholarship_students",
+                "Attach, bulk-upload, and remove students on scholarships",
             ),
             ("manage_communication_templates", "Manage system email templates and communications"),
             (

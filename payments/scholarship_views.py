@@ -39,6 +39,73 @@ from payments.scholarship_services import (
 )
 
 
+def _user_can_view_scholarships(user) -> bool:
+    return user_has_any_erp_perm(
+        user,
+        "manage_scholarships",
+        "view_scholarships",
+        "manage_scholarship_programmes",
+        "manage_scholarship_students",
+    )
+
+
+def _user_can_manage_scholarship_programmes(user) -> bool:
+    return user_has_any_erp_perm(
+        user,
+        "manage_scholarships",
+        "manage_scholarship_programmes",
+    )
+
+
+def _user_can_manage_scholarship_students(user) -> bool:
+    return user_has_any_erp_perm(
+        user,
+        "manage_scholarships",
+        "manage_scholarship_students",
+    )
+
+
+class ScholarshipViewPermission(BasePermission):
+    message = "You do not have permission to view scholarships."
+
+    def has_permission(self, request, view):
+        u = request.user
+        if not u.is_authenticated:
+            return False
+        if user_is_super_admin(u):
+            return True
+        return _user_can_view_scholarships(u)
+
+
+class ScholarshipProgrammePermission(BasePermission):
+    message = "You do not have permission to manage scholarship programmes."
+
+    def has_permission(self, request, view):
+        u = request.user
+        if not u.is_authenticated:
+            return False
+        if user_is_super_admin(u):
+            return True
+        if request.method in ("GET", "HEAD", "OPTIONS"):
+            return _user_can_view_scholarships(u)
+        return _user_can_manage_scholarship_programmes(u)
+
+
+class ScholarshipStudentPermission(BasePermission):
+    message = "You do not have permission to attach students to scholarships."
+
+    def has_permission(self, request, view):
+        u = request.user
+        if not u.is_authenticated:
+            return False
+        if user_is_super_admin(u):
+            return True
+        if request.method in ("GET", "HEAD", "OPTIONS"):
+            return _user_can_view_scholarships(u)
+        return _user_can_manage_scholarship_students(u)
+
+
+# Backward-compatible alias used by award apply / credit reverse (full access).
 class ScholarshipAdminPermission(BasePermission):
     message = "You do not have permission to manage scholarships."
 
@@ -48,7 +115,6 @@ class ScholarshipAdminPermission(BasePermission):
             return False
         if user_is_super_admin(u):
             return True
-        # Bursar-only ERP permission (Super Admin always allowed above).
         return user_has_any_erp_perm(u, "manage_scholarships")
 
 
@@ -329,7 +395,7 @@ def _sync_award_waivers(award: ScholarshipAward, rows: list) -> None:
 
 
 class ScholarshipProgrammeListCreateView(APIView):
-    permission_classes = [IsAuthenticated, ScholarshipAdminPermission]
+    permission_classes = [IsAuthenticated, ScholarshipProgrammePermission]
 
     def get(self, request):
         qs = ScholarshipProgramme.objects.all().order_by("name")
@@ -406,7 +472,7 @@ class ScholarshipProgrammeListCreateView(APIView):
 
 
 class ScholarshipProgrammeDetailView(APIView):
-    permission_classes = [IsAuthenticated, ScholarshipAdminPermission]
+    permission_classes = [IsAuthenticated, ScholarshipProgrammePermission]
 
     def get(self, request, pk):
         programme = get_object_or_404(ScholarshipProgramme, pk=pk)
@@ -488,7 +554,7 @@ class ScholarshipProgrammeDetailView(APIView):
 class ScholarshipProgrammeAwardsView(APIView):
     """List / attach students on a programme."""
 
-    permission_classes = [IsAuthenticated, ScholarshipAdminPermission]
+    permission_classes = [IsAuthenticated, ScholarshipStudentPermission]
 
     def get(self, request, pk):
         programme = get_object_or_404(ScholarshipProgramme, pk=pk)
@@ -554,7 +620,7 @@ class ScholarshipProgrammeAwardsView(APIView):
 class ScholarshipProgrammeBulkAwardsView(APIView):
     """CSV / JSON bulk attach of sponsored students (tracking + temp-pass eligibility)."""
 
-    permission_classes = [IsAuthenticated, ScholarshipAdminPermission]
+    permission_classes = [IsAuthenticated, ScholarshipStudentPermission]
 
     TEMPLATE_HEADERS = ["student_id", "reg_no", "amount_covered", "notes"]
 
@@ -736,7 +802,7 @@ class ScholarshipProgrammeBulkAwardsView(APIView):
 
 
 class ScholarshipAwardDetailView(APIView):
-    permission_classes = [IsAuthenticated, ScholarshipAdminPermission]
+    permission_classes = [IsAuthenticated, ScholarshipStudentPermission]
 
     def get(self, request, pk):
         award = get_object_or_404(
@@ -809,7 +875,7 @@ class ScholarshipAwardApplyView(APIView):
 
 
 class ScholarshipAwardRevokeView(APIView):
-    permission_classes = [IsAuthenticated, ScholarshipAdminPermission]
+    permission_classes = [IsAuthenticated, ScholarshipStudentPermission]
 
     def post(self, request, pk):
         award = get_object_or_404(ScholarshipAward, pk=pk)
