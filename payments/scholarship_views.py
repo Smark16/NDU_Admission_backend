@@ -25,7 +25,6 @@ from payments.models import (
 )
 from payments.scholarship_services import (
     apply_award_waivers,
-    copy_programme_waivers_to_award,
     delete_programme,
     programme_applied_amount,
     programme_committed_amount,
@@ -538,10 +537,9 @@ class ScholarshipProgrammeAwardsView(APIView):
                     notes=notes,
                     awarded_by=request.user,
                 )
-                if "waivers" in data:
+                # Tracking / temp-pass eligibility only — do not auto-copy or apply fee waivers.
+                if "waivers" in data and data.get("waivers"):
                     _sync_award_waivers(award, data.get("waivers") or [])
-                else:
-                    copy_programme_waivers_to_award(award)
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except IntegrityError:
@@ -550,7 +548,8 @@ class ScholarshipProgrammeAwardsView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        apply_now = bool(data.get("apply_now"))
+        # Fee-waiver ledger apply is disabled for now (sponsorship tracking + temp passes only).
+        apply_now = False
         if apply_now:
             try:
                 apply_award_waivers(award, request.user)
