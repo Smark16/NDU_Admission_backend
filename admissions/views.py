@@ -4696,6 +4696,8 @@ class ExemptionEligibleCoursesView(APIView):
             exemption_form_fee_status,
             list_eligible_exemption_courses,
         )
+        from examinations.serializers import GradeScaleDetailSerializer
+        from examinations.services.grade_scale_resolver import resolve_grade_scale
 
         admission = self._get_admission(request.user)
         if not admission:
@@ -4707,7 +4709,27 @@ class ExemptionEligibleCoursesView(APIView):
             courses = list_eligible_exemption_courses(admission)
         except Exception:
             courses = []
-        return Response({"form_fee": access, "courses": courses})
+
+        grade_bands = []
+        grade_scale_name = None
+        try:
+            level = getattr(getattr(admission, "admitted_program", None), "academic_level", None)
+            scale = resolve_grade_scale(academic_level=level)
+            if scale:
+                grade_scale_name = scale.name
+                payload = GradeScaleDetailSerializer(scale).data
+                grade_bands = payload.get("bands") or []
+        except Exception:
+            grade_bands = []
+
+        return Response(
+            {
+                "form_fee": access,
+                "courses": courses,
+                "grade_scale_name": grade_scale_name,
+                "grade_bands": grade_bands,
+            }
+        )
 
 
 class ExemptionPaperLookupView(APIView):
