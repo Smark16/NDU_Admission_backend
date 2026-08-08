@@ -133,6 +133,39 @@ def create_change_request(
     )
 
 
+def submit_change_request(
+    *,
+    request_type: str,
+    student,
+    requested_by,
+    ledger=None,
+    payload: dict | None = None,
+    reason: str = "",
+) -> tuple[ManualBankPaymentChangeRequest, object | None, bool]:
+    """
+    Create a bank-payment change request.
+
+    Super Admin never waits on dual-control — the request is applied immediately.
+    Returns (change_request, ledger_result_or_None, applied_immediately).
+    """
+    change = create_change_request(
+        request_type=request_type,
+        student=student,
+        requested_by=requested_by,
+        ledger=ledger,
+        payload=payload,
+        reason=reason,
+    )
+    if user_is_super_admin(requested_by):
+        change, result = apply_change_request(
+            change,
+            reviewed_by=requested_by,
+            review_notes="Auto-applied — Super Admin does not require dual approval.",
+        )
+        return change, result, True
+    return change, None, False
+
+
 def apply_change_request(
     change_request: ManualBankPaymentChangeRequest,
     *,

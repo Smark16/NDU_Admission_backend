@@ -691,15 +691,16 @@ class CanApproveManualBankPayment(BasePermission):
 
 class AdminPostManualBankPaymentView(APIView):
     """
-    POST — submit a *pending* bank payment for Finance Manager approval.
-    Super Admin only for now (request side).
+    POST — record a bank payment (Super Admin).
+
+    Super Admin actions apply immediately (no Bursar dual-control wait).
     """
 
     permission_classes = [IsSuperAdminOnly]
 
     def post(self, request, student_id):
         from audit.utils import log_audit_event
-        from payments.manual_bank_approval import create_change_request, serialize_change_request
+        from payments.manual_bank_approval import serialize_change_request, submit_change_request
         from payments.models import ManualBankPaymentChangeRequest
 
         student = get_object_or_404(
@@ -718,7 +719,7 @@ class AdminPostManualBankPaymentView(APIView):
             "bank_name": request.data.get("bank_name") or "",
         }
         try:
-            change = create_change_request(
+            change, result, applied = submit_change_request(
                 request_type=ManualBankPaymentChangeRequest.RequestType.POST,
                 student=student,
                 requested_by=request.user,
@@ -727,14 +728,16 @@ class AdminPostManualBankPaymentView(APIView):
             )
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except PermissionError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_403_FORBIDDEN)
 
         actor = request.user.get_full_name() or request.user.email or str(request.user.pk)
         log_audit_event(
             request.user,
-            "manual_bank_payment_request",
+            "manual_bank_payment_applied" if applied else "manual_bank_payment_request",
             student,
             (
-                f"Bank payment POST requested amount={payload.get('amount')} "
+                f"Bank payment POST {'applied' if applied else 'requested'} amount={payload.get('amount')} "
                 f"ref={payload.get('bank_reference')} by={actor} request_id={change.id}"
             ),
             request,
@@ -742,11 +745,16 @@ class AdminPostManualBankPaymentView(APIView):
         return Response(
             {
                 "message": (
-                    "Bank payment submitted for Bursar / Finance Manager approval. "
-                    "It will credit the student only after approval."
+                    "Bank payment credited to the student."
+                    if applied
+                    else (
+                        "Bank payment submitted for Bursar / Finance Manager approval. "
+                        "It will credit the student only after approval."
+                    )
                 ),
-                "pending": True,
+                "pending": not applied,
                 "request": serialize_change_request(change),
+                "ledger_id": getattr(result, "id", None) if result is not None else change.ledger_id,
             },
             status=status.HTTP_201_CREATED,
         )
@@ -761,7 +769,7 @@ class AdminManualBankPaymentDetailView(APIView):
 
     def patch(self, request, ledger_id):
         from audit.utils import log_audit_event
-        from payments.manual_bank_approval import create_change_request, serialize_change_request
+        from payments.manual_bank_approval import serialize_change_request, submit_change_request
         from payments.manual_bank_payment import get_manual_bank_ledger
         from payments.models import ManualBankPaymentChangeRequest
 
@@ -794,7 +802,7 @@ class AdminManualBankPaymentDetailView(APIView):
 
         reason = (data.get("reason") or "").strip()
         try:
-            change = create_change_request(
+            change, result, applied = submit_change_request(
                 request_type=ManualBankPaymentChangeRequest.RequestType.UPDATE,
                 student=student,
                 ledger=ledger,
@@ -804,30 +812,37 @@ class AdminManualBankPaymentDetailView(APIView):
             )
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except PermissionError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_403_FORBIDDEN)
 
         actor = request.user.get_full_name() or request.user.email or str(request.user.pk)
         log_audit_event(
             request.user,
-            "manual_bank_payment_edit_request",
+            "manual_bank_payment_edit_applied" if applied else "manual_bank_payment_edit_request",
             student,
             (
-                f"Bank payment EDIT requested ledger={ledger.id} "
+                f"Bank payment EDIT {'applied' if applied else 'requested'} ledger={ledger.id} "
                 f"reason={reason!r} by={actor} request_id={change.id}"
             ),
             request,
         )
         return Response(
             {
-                "message": "Edit submitted for Bursar / Finance Manager approval.",
-                "pending": True,
+                "message": (
+                    "Bank payment updated."
+                    if applied
+                    else "Edit submitted for Bursar / Finance Manager approval."
+                ),
+                "pending": not applied,
                 "request": serialize_change_request(change),
+                "ledger_id": getattr(result, "id", None) if result is not None else change.ledger_id,
             },
             status=status.HTTP_201_CREATED,
         )
 
     def delete(self, request, ledger_id):
         from audit.utils import log_audit_event
-        from payments.manual_bank_approval import create_change_request, serialize_change_request
+        from payments.manual_bank_approval import serialize_change_request, submit_change_request
         from payments.manual_bank_payment import get_manual_bank_ledger
         from payments.models import ManualBankPaymentChangeRequest
 
@@ -855,7 +870,7 @@ class AdminManualBankPaymentDetailView(APIView):
         reason = str(reason).strip()
 
         try:
-            change = create_change_request(
+            change, _result, applied = submit_change_request(
                 request_type=ManualBankPaymentChangeRequest.RequestType.DELETE,
                 student=student,
                 ledger=ledger,
@@ -869,14 +884,16 @@ class AdminManualBankPaymentDetailView(APIView):
             )
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except PermissionError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_403_FORBIDDEN)
 
         actor = request.user.get_full_name() or request.user.email or str(request.user.pk)
         log_audit_event(
             request.user,
-            "manual_bank_payment_delete_request",
+            "manual_bank_payment_delete_applied" if applied else "manual_bank_payment_delete_request",
             student,
             (
-                f"Bank payment DELETE requested ledger={ledger.id} "
+                f"Bank payment DELETE {'applied' if applied else 'requested'} ledger={ledger.id} "
                 f"receipt={ledger.schoolpay_receipt_number} reason={reason!r} "
                 f"by={actor} request_id={change.id}"
             ),
@@ -884,8 +901,12 @@ class AdminManualBankPaymentDetailView(APIView):
         )
         return Response(
             {
-                "message": "Delete submitted for Bursar / Finance Manager approval.",
-                "pending": True,
+                "message": (
+                    "Bank payment deleted."
+                    if applied
+                    else "Delete submitted for Bursar / Finance Manager approval."
+                ),
+                "pending": not applied,
                 "request": serialize_change_request(change),
             },
             status=status.HTTP_201_CREATED,
