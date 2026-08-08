@@ -1,6 +1,7 @@
 """Staff API for scholarship programmes, awards, waivers, and ledger credits."""
 from __future__ import annotations
 
+import re
 from decimal import Decimal, InvalidOperation
 
 from django.db import IntegrityError, transaction
@@ -270,28 +271,44 @@ class ScholarshipProgrammeListCreateView(APIView):
     def post(self, request):
         data = request.data or {}
         name = (data.get("name") or "").strip()
+        if not name:
+            return Response(
+                {"detail": "Scholarship name is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         code = (data.get("code") or "").strip().upper()
-        if not name or not code:
-            return Response(
-                {"detail": "name and code are required."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        if ScholarshipProgramme.objects.filter(code=code).exists():
-            return Response(
-                {"detail": f"Code '{code}' already exists."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        if not code:
+            # Simple create: code from name (FAWE → FAWE).
+            code = re.sub(r"[^A-Z0-9]+", "_", name.upper()).strip("_")[:40] or "SCHOLARSHIP"
+        base_code = code
+        n = 2
+        while ScholarshipProgramme.objects.filter(code=code).exists():
+            suffix = f"_{n}"
+            code = f"{base_code[: max(1, 40 - len(suffix))]}{suffix}"
+            n += 1
         fund = data.get("fund_amount")
         try:
             with transaction.atomic():
-                sponsor_type = (data.get("sponsor_type") or ScholarshipProgramme.SPONSOR_OTHER).strip()
+                sponsor_type = (data.get("sponsor_type") or "").strip()
+                if not sponsor_type:
+                    low = name.lower()
+                    if "hesfb" in low:
+                        sponsor_type = ScholarshipProgramme.SPONSOR_HESFB
+                    elif "fawe" in low:
+                        sponsor_type = ScholarshipProgramme.SPONSOR_FAWE
+                    elif "state house" in low or "statehouse" in low:
+                        sponsor_type = ScholarshipProgramme.SPONSOR_STATE_HOUSE
+                    elif "church" in low or "diocese" in low or "parish" in low:
+                        sponsor_type = ScholarshipProgramme.SPONSOR_CHURCH
+                    else:
+                        sponsor_type = ScholarshipProgramme.SPONSOR_OTHER
                 valid_sponsor_types = {c[0] for c in ScholarshipProgramme.SPONSOR_TYPE_CHOICES}
                 if sponsor_type not in valid_sponsor_types:
                     raise ValueError("Invalid sponsor_type.")
                 programme = ScholarshipProgramme.objects.create(
                     name=name,
                     code=code,
-                    sponsor=(data.get("sponsor") or "").strip(),
+                    sponsor=(data.get("sponsor") or name).strip(),
                     sponsor_type=sponsor_type,
                     description=(data.get("description") or "").strip(),
                     fund_amount=_dec(fund, "fund_amount") if fund not in (None, "") else None,
