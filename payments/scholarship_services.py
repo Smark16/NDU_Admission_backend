@@ -306,3 +306,12 @@ def revoke_award(award: ScholarshipAward, user, *, reverse_credits: bool = True)
     award.revoked_by = user if getattr(user, "is_authenticated", False) else None
     award.save(update_fields=["status", "revoked_at", "revoked_by", "updated_at"])
     return award
+
+
+@transaction.atomic
+def delete_programme(programme: ScholarshipProgramme, user) -> None:
+    """Revoke awards (reverse credits), then hard-delete the scholarship programme."""
+    for award in programme.awards.exclude(status=ScholarshipAward.STATUS_REVOKED):
+        revoke_award(award, user, reverse_credits=True)
+    # Any remaining revoked awards / rates / waivers cascade away with the programme.
+    programme.delete()

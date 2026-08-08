@@ -26,6 +26,7 @@ from payments.models import (
 from payments.scholarship_services import (
     apply_award_waivers,
     copy_programme_waivers_to_award,
+    delete_programme,
     programme_applied_amount,
     programme_committed_amount,
     reverse_credit,
@@ -401,6 +402,18 @@ class ScholarshipProgrammeDetailView(APIView):
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(_programme_dict(programme))
+
+    def delete(self, request, pk):
+        programme = get_object_or_404(ScholarshipProgramme, pk=pk)
+        name = programme.name
+        try:
+            delete_programme(programme, request.user)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(
+            {"detail": f"Scholarship '{name}' deleted. Attached awards were revoked and credits reversed."},
+            status=status.HTTP_200_OK,
+        )
 
 
 class ScholarshipProgrammeAwardsView(APIView):
