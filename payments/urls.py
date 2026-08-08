@@ -83,6 +83,7 @@ from .scholarship_views import (
     ScholarshipAwardRevokeView,
     ScholarshipCreditReverseView,
     ScholarshipProgrammeAwardsView,
+    ScholarshipProgrammeBulkAwardsView,
     ScholarshipProgrammeDetailView,
     ScholarshipProgrammeListCreateView,
 )
@@ -325,6 +326,11 @@ urlpatterns = [
         'scholarships/<int:pk>/awards/',
         ScholarshipProgrammeAwardsView.as_view(),
         name='scholarship-awards',
+    ),
+    path(
+        'scholarships/<int:pk>/awards/bulk/',
+        ScholarshipProgrammeBulkAwardsView.as_view(),
+        name='scholarship-awards-bulk',
     ),
     path(
         'scholarship-awards/<int:pk>/',

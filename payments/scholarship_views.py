@@ -1,10 +1,14 @@
 """Staff API for scholarship programmes, awards, waivers, and ledger credits."""
 from __future__ import annotations
 
+import csv
+import io
 import re
 from decimal import Decimal, InvalidOperation
 
 from django.db import IntegrityError, transaction
+from django.db.models import Q
+from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.permissions import BasePermission, IsAuthenticated
@@ -61,6 +65,80 @@ def _dec(value, field="amount") -> Decimal:
         return Decimal(str(value))
     except (InvalidOperation, TypeError, ValueError) as exc:
         raise ValueError(f"Invalid {field}.") from exc
+
+
+def _find_admitted_student(*, student_id=None, reg_no=None, schoolpay_code=None):
+    """Resolve an admitted student from common spreadsheet identifiers."""
+    sid = (str(student_id).strip() if student_id not in (None, "") else "")
+    reg = (str(reg_no).strip() if reg_no not in (None, "") else "")
+    code = (str(schoolpay_code).strip() if schoolpay_code not in (None, "") else "")
+    if not sid and not reg and not code:
+        raise ValueError("Provide student_id or reg_no (or schoolpay_code).")
+
+    qs = AdmittedStudent.objects.select_related("admitted_program", "application")
+    if sid:
+        # Prefer string student_id; also accept numeric admitted-student PK.
+        by_sid = qs.filter(student_id__iexact=sid).first()
+        if by_sid:
+            return by_sid
+        if sid.isdigit():
+            by_pk = qs.filter(pk=int(sid)).first()
+            if by_pk:
+                return by_pk
+    if reg:
+        by_reg = qs.filter(reg_no__iexact=reg).first()
+        if by_reg:
+            return by_reg
+    if code:
+        by_code = qs.filter(schoolpay_code__iexact=code).first()
+        if by_code:
+            return by_code
+    # Last resort: any of the identifiers in any of those fields.
+    parts = [p for p in (sid, reg, code) if p]
+    if parts:
+        q = Q()
+        for p in parts:
+            q |= Q(student_id__iexact=p) | Q(reg_no__iexact=p) | Q(schoolpay_code__iexact=p)
+        hit = qs.filter(q).first()
+        if hit:
+            return hit
+    raise ValueError(
+        f"Student not found"
+        + (f" (student_id={sid})" if sid else "")
+        + (f" (reg_no={reg})" if reg else "")
+        + (f" (schoolpay_code={code})" if code else "")
+        + "."
+    )
+
+
+def _create_tracking_award(
+    programme: ScholarshipProgramme,
+    student: AdmittedStudent,
+    *,
+    award_amount: Decimal,
+    notes: str,
+    user,
+) -> ScholarshipAward:
+    """Attach student for sponsorship tracking / temp-pass eligibility (no fee waivers)."""
+    if award_amount <= 0:
+        raise ValueError("amount_covered must be greater than zero.")
+    if ScholarshipAward.objects.filter(
+        programme=programme,
+        student=student,
+        status=ScholarshipAward.STATUS_ACTIVE,
+    ).exists():
+        raise ValueError("Student already has an active award on this scholarship.")
+    try:
+        return ScholarshipAward.objects.create(
+            programme=programme,
+            student=student,
+            award_amount=award_amount,
+            currency=(programme.currency or "UGX").strip().upper()[:3],
+            notes=(notes or "").strip(),
+            awarded_by=user if getattr(user, "is_authenticated", False) else None,
+        )
+    except IntegrityError as exc:
+        raise ValueError("Student already has an active award on this scholarship.") from exc
 
 
 def _student_name(student: AdmittedStudent) -> str:
@@ -438,135 +516,231 @@ class ScholarshipProgrammeAwardsView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         data = request.data or {}
-        student_id = data.get("student_id")
-        if not student_id:
+        student_pk = data.get("student_id")
+        if not student_pk:
             return Response(
                 {"detail": "student_id is required."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         student = get_object_or_404(
             AdmittedStudent.objects.select_related("admitted_program", "application"),
-            pk=student_id,
+            pk=student_pk,
         )
 
         raw_amount = data.get("award_amount")
-        suggested, rate_match = suggested_award_amount(programme, student)
-
-        if raw_amount in (None, ""):
-            if suggested is None:
-                return Response(
-                    {
-                        "detail": (
-                            "award_amount is required. No rate is configured for this "
-                            "student's academic programme on this scholarship."
-                        )
-                    },
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-            award_amount = suggested
-        else:
-            try:
-                award_amount = _dec(raw_amount, "award_amount")
-            except ValueError as exc:
-                return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-
-        if award_amount <= 0:
-            return Response(
-                {"detail": "award_amount must be greater than zero."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        if (
-            programme.awarding_mode == ScholarshipProgramme.AWARDING_BY_PROGRAMME
-            and rate_match is None
-            and not bool(data.get("force_custom_amount"))
-        ):
-            return Response(
-                {
-                    "detail": (
-                        "This scholarship uses programme rates, but no rate exists for "
-                        f"{getattr(student.admitted_program, 'name', 'this programme')}. "
-                        "Add a rate, or send force_custom_amount=true with a manual amount."
-                    )
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        if programme.fund_amount is not None:
-            committed = programme_committed_amount(programme)
-            if committed + award_amount > programme.fund_amount:
-                return Response(
-                    {
-                        "detail": (
-                            f"Award would exceed programme fund "
-                            f"({programme.fund_amount} {programme.currency}). "
-                            f"Already committed: {committed}."
-                        )
-                    },
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-        if ScholarshipAward.objects.filter(
-            programme=programme,
-            student=student,
-            status=ScholarshipAward.STATUS_ACTIVE,
-        ).exists():
-            return Response(
-                {"detail": "Student already has an active award on this scholarship."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        rate_note = ""
-        if rate_match is not None and raw_amount in (None, ""):
-            rate_note = (
-                f"Auto from rate: {rate_match.academic_program} = {rate_match.amount}."
-            )
-
+        suggested, _rate_match = suggested_award_amount(programme, student)
         try:
-            with transaction.atomic():
-                notes = (data.get("notes") or "").strip()
-                if rate_note:
-                    notes = f"{notes} {rate_note}".strip()
-                award = ScholarshipAward.objects.create(
-                    programme=programme,
-                    student=student,
-                    award_amount=award_amount,
-                    currency=(data.get("currency") or programme.currency or "UGX")
-                    .strip()
-                    .upper()[:3],
-                    notes=notes,
-                    awarded_by=request.user,
-                )
-                # Tracking / temp-pass eligibility only — do not auto-copy or apply fee waivers.
-                if "waivers" in data and data.get("waivers"):
-                    _sync_award_waivers(award, data.get("waivers") or [])
+            if raw_amount in (None, ""):
+                if suggested is not None:
+                    award_amount = suggested
+                elif programme.fund_amount is not None:
+                    award_amount = programme.fund_amount
+                else:
+                    return Response(
+                        {"detail": "award_amount is required."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+            else:
+                award_amount = _dec(raw_amount, "award_amount")
+            award = _create_tracking_award(
+                programme,
+                student,
+                award_amount=award_amount,
+                notes=(data.get("notes") or "").strip(),
+                user=request.user,
+            )
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-        except IntegrityError:
-            return Response(
-                {"detail": "Student already has an active award on this scholarship."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        # Fee-waiver ledger apply is disabled for now (sponsorship tracking + temp passes only).
-        apply_now = False
-        if apply_now:
-            try:
-                apply_award_waivers(award, request.user)
-            except ValueError as exc:
-                return Response(
-                    {
-                        **_award_dict(award, include_nested=True),
-                        "apply_warning": str(exc),
-                    },
-                    status=status.HTTP_201_CREATED,
-                )
 
         award.refresh_from_db()
         return Response(
             _award_dict(award, include_nested=True),
             status=status.HTTP_201_CREATED,
         )
+
+
+class ScholarshipProgrammeBulkAwardsView(APIView):
+    """CSV / JSON bulk attach of sponsored students (tracking + temp-pass eligibility)."""
+
+    permission_classes = [IsAuthenticated, ScholarshipAdminPermission]
+
+    TEMPLATE_HEADERS = ["student_id", "reg_no", "amount_covered", "notes"]
+
+    def get(self, request, pk):
+        get_object_or_404(ScholarshipProgramme, pk=pk)
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(self.TEMPLATE_HEADERS)
+        writer.writerow(["1012118627", "", "2450000", "Example row — delete before upload"])
+        writer.writerow(["", "NDU/2024/001", "", "Uses scholarship amount covered if amount blank"])
+        content = buf.getvalue()
+        resp = HttpResponse(content, content_type="text/csv; charset=utf-8")
+        resp["Content-Disposition"] = (
+            f'attachment; filename="scholarship_{pk}_students_template.csv"'
+        )
+        return resp
+
+    def post(self, request, pk):
+        programme = get_object_or_404(ScholarshipProgramme, pk=pk)
+        if not programme.is_active:
+            return Response(
+                {"detail": "Cannot attach students to an inactive scholarship."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        rows, parse_error = self._parse_rows(request)
+        if parse_error:
+            return Response({"detail": parse_error}, status=status.HTTP_400_BAD_REQUEST)
+        if not rows:
+            return Response(
+                {"detail": "No student rows found in the upload."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if len(rows) > 500:
+            return Response(
+                {"detail": "Maximum 500 rows per upload."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        default_amount = programme.fund_amount
+        attached = []
+        errors = []
+
+        for idx, row in enumerate(rows, start=1):
+            line = row.get("_line") or idx
+            try:
+                student = _find_admitted_student(
+                    student_id=row.get("student_id"),
+                    reg_no=row.get("reg_no"),
+                    schoolpay_code=row.get("schoolpay_code"),
+                )
+                raw_amount = row.get("amount_covered")
+                if raw_amount in (None, ""):
+                    raw_amount = row.get("award_amount")
+                if raw_amount in (None, ""):
+                    if default_amount is None:
+                        raise ValueError(
+                            "amount_covered is required (or set Amount covered on the scholarship)."
+                        )
+                    award_amount = default_amount
+                else:
+                    award_amount = _dec(raw_amount, "amount_covered")
+                award = _create_tracking_award(
+                    programme,
+                    student,
+                    award_amount=award_amount,
+                    notes=(row.get("notes") or "").strip(),
+                    user=request.user,
+                )
+                attached.append(
+                    {
+                        "line": line,
+                        "student_id": student.student_id,
+                        "reg_no": student.reg_no,
+                        "award_id": award.id,
+                        "amount_covered": str(award.award_amount),
+                    }
+                )
+            except ValueError as exc:
+                errors.append({"line": line, "detail": str(exc), "row": {
+                    "student_id": row.get("student_id") or "",
+                    "reg_no": row.get("reg_no") or "",
+                }})
+
+        return Response(
+            {
+                "attached_count": len(attached),
+                "error_count": len(errors),
+                "attached": attached,
+                "errors": errors,
+                "detail": (
+                    f"Attached {len(attached)} student(s)"
+                    + (f"; {len(errors)} row(s) failed." if errors else ".")
+                ),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    def _parse_rows(self, request):
+        upload = request.FILES.get("file")
+        if upload is not None:
+            name = (upload.name or "").lower()
+            if not name.endswith(".csv"):
+                return [], "Only .csv files are accepted for bulk upload."
+            try:
+                text = upload.read().decode("utf-8-sig")
+            except UnicodeDecodeError:
+                return [], "Could not read CSV as UTF-8. Save as CSV UTF-8 and try again."
+            reader = csv.DictReader(io.StringIO(text))
+            if not reader.fieldnames:
+                return [], "CSV has no header row."
+            headers = {((h or "").strip().lower()): (h or "").strip() for h in reader.fieldnames}
+            alias = {
+                "student_id": ("student_id", "student number", "student_number", "schoolpay", "id"),
+                "reg_no": ("reg_no", "reg no", "registration_number", "registration no", "regno"),
+                "schoolpay_code": ("schoolpay_code", "schoolpay code"),
+                "amount_covered": (
+                    "amount_covered",
+                    "award_amount",
+                    "amount",
+                    "covered",
+                ),
+                "notes": ("notes", "note", "comment"),
+            }
+            colmap = {}
+            for key, names in alias.items():
+                for n in names:
+                    if n in headers:
+                        colmap[key] = headers[n]
+                        break
+            if "student_id" not in colmap and "reg_no" not in colmap and "schoolpay_code" not in colmap:
+                return [], (
+                    "CSV must include a student_id or reg_no column "
+                    "(optional: amount_covered, notes)."
+                )
+            rows = []
+            for i, raw in enumerate(reader, start=2):
+                if not any((str(v or "").strip() for v in raw.values())):
+                    continue
+                rows.append(
+                    {
+                        "student_id": (raw.get(colmap.get("student_id", ""), "") or "").strip(),
+                        "reg_no": (raw.get(colmap.get("reg_no", ""), "") or "").strip(),
+                        "schoolpay_code": (
+                            raw.get(colmap.get("schoolpay_code", ""), "") or ""
+                        ).strip(),
+                        "amount_covered": (
+                            raw.get(colmap.get("amount_covered", ""), "") or ""
+                        ).strip(),
+                        "notes": (raw.get(colmap.get("notes", ""), "") or "").strip(),
+                        "_line": i,
+                    }
+                )
+            return rows, None
+
+        data = request.data or {}
+        payload = data.get("rows") or data.get("students") or []
+        if not isinstance(payload, list):
+            return [], "Send a CSV file, or JSON { rows: [...] }."
+        rows = []
+        for i, item in enumerate(payload, start=1):
+            if not isinstance(item, dict):
+                continue
+            rows.append(
+                {
+                    "student_id": str(item.get("student_id") or "").strip(),
+                    "reg_no": str(item.get("reg_no") or "").strip(),
+                    "schoolpay_code": str(item.get("schoolpay_code") or "").strip(),
+                    "amount_covered": str(
+                        item.get("amount_covered")
+                        if item.get("amount_covered") not in (None,)
+                        else item.get("award_amount") or ""
+                    ).strip(),
+                    "notes": str(item.get("notes") or "").strip(),
+                    "_line": i,
+                }
+            )
+        return rows, None
 
 
 class ScholarshipAwardDetailView(APIView):
