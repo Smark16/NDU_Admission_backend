@@ -742,18 +742,27 @@ class MyExpectedCoursesView(APIView):
                     if cu.curriculum_line_id:
                         operational_map[cu.curriculum_line_id] = cu
 
-        # Build a set of curriculum-line IDs that are deferred for this student.
-        # This must override is_available_in_portal so the portal never shows
-        # a deferred course as "Available".
-        deferred_line_ids = set(
+        # Deferred / exempted curriculum-line IDs for this student — must not
+        # show as Available for registration in the portal.
+        override_types = dict(
             StudentCurriculumOverride.objects
-            .filter(enrollment=enrollment, override_type='deferred')
-            .values_list('curriculum_line_id', flat=True)
+            .filter(
+                enrollment=enrollment,
+                override_type__in=('deferred', 'exempted'),
+            )
+            .values_list('curriculum_line_id', 'override_type')
         )
+        deferred_line_ids = {
+            lid for lid, otype in override_types.items() if otype == 'deferred'
+        }
+        exempted_line_ids = {
+            lid for lid, otype in override_types.items() if otype == 'exempted'
+        }
 
         courses = []
         for line in lines:
             is_deferred = line.id in deferred_line_ids
+            is_exempted = line.id in exempted_line_ids
             entry = {
                 'curriculum_line_id': line.id,
                 'code':               line.catalog_course.code,
@@ -764,14 +773,16 @@ class MyExpectedCoursesView(APIView):
                 'specialization':     line.specialization,
                 'sort_order':         line.sort_order,
                 'is_deferred':        is_deferred,
+                'is_exempted':        is_exempted,
             }
             if include_operational:
                 cu = operational_map.get(line.id) or operational_map.get(line.catalog_course.code)
                 entry['course_unit_id']       = cu.id if cu else None
                 entry['course_unit_name']     = cu.name if cu else None
-                # A deferred course must never appear as Available, even if a
-                # matching CourseUnit exists in this semester.
-                entry['is_available_in_portal'] = (cu is not None) and not is_deferred
+                # Deferred / exempted courses must never appear as Available.
+                entry['is_available_in_portal'] = (
+                    (cu is not None) and not is_deferred and not is_exempted
+                )
             courses.append(entry)
 
         mandatory = [c for c in courses if c['course_type'] == 'mandatory']

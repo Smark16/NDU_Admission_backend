@@ -1718,6 +1718,7 @@ class StudentAcademicTrackerView(APIView):
                         "registered_count": 0,
                     },
                     "deferred": {"count": 0, "courses": []},
+                    "exempted": {"count": 0, "courses": []},
                     "specialization": {
                         "program_has_specialization": has_spec,
                         "entry_year": getattr(program, "specialization_entry_year", None),
@@ -1763,6 +1764,33 @@ class StudentAcademicTrackerView(APIView):
                 'original_term': cl.term_number,
                 'deferred_to_year': ov.effective_year_of_study,
                 'deferred_to_term': ov.effective_term_number,
+            })
+
+        # ── Exempted courses (approved course exemptions) ───────────────────
+        exempted_overrides = list(
+            StudentCurriculumOverride.objects.filter(
+                enrollment=spe,
+                override_type='exempted',
+            )
+            .select_related('curriculum_line', 'curriculum_line__catalog_course')
+            .order_by(
+                'curriculum_line__year_of_study',
+                'curriculum_line__term_number',
+                'curriculum_line__catalog_course__code',
+            )
+        )
+        exempted_list = []
+        for ov in exempted_overrides:
+            cl = ov.curriculum_line
+            if not cl:
+                continue
+            cat = cl.catalog_course
+            exempted_list.append({
+                'course_code': cat.code if cat else '—',
+                'course_name': cat.title if cat else '—',
+                'year_of_study': cl.year_of_study,
+                'term_number': cl.term_number,
+                'notes': (ov.notes or '')[:240],
             })
 
         # ── Registration status ──────────────────────────────────────────────
@@ -1902,6 +1930,10 @@ class StudentAcademicTrackerView(APIView):
             'deferred': {
                 'count': len(deferred_list),
                 'courses': deferred_list,
+            },
+            'exempted': {
+                'count': len(exempted_list),
+                'courses': exempted_list,
             },
             'specialization': {
                 'program_has_specialization': has_spec,
