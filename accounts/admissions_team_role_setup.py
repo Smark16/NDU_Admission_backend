@@ -1,11 +1,11 @@
 """
-Admissions Team — Admissions module only.
+Admissions Team — Admissions module only (sidebar + APIs).
 
-Can use the full Admissions area: applications, admit/revoke, offer letters,
-intakes, subjects/templates, academic levels/years, admission reports.
+Can: applications, approve/reject, admit/revoke, offer letters, intakes,
+subjects/templates, academic levels/years, admission reports (API).
 
-Cannot access Finance, Academics setup, Enrollment admin, Exams, Hostel, or
-User Admin (beyond viewing applicants for Prospective Students).
+Cannot: User Management, Fees & tuition module, Students module menus
+(Finance / Academics / Enrollment). Admit still works from Applications.
 """
 from __future__ import annotations
 
@@ -15,16 +15,18 @@ from accounts.erp_role_setup import get_permission
 
 ROLE_NAME = "Admissions Team"
 
-# Permissions for the Admissions sidebar + admit/revoke/offer workflow.
+# Keep this list free of perms that unlock other top-level sidebar modules:
+# - accounts.view_user           -> User Management
+# - accounts.access_reports      -> broad Reports
+# - payments.view_applicationpayment -> Fees & tuition
+# Students menu uses view_admittedstudent; we keep that for admit/directory APIs
+# but the Horizon sidebar hides non-Admissions modules for this role.
 ADMISSIONS_TEAM_ALLOW = (
-    # Module gates
     ("accounts", "access_admissions"),
     ("accounts", "manage_direct_applications"),
     ("accounts", "approve_admissions"),
     ("accounts", "manage_batches"),
     ("accounts", "manage_communication_templates"),
-    ("accounts", "access_reports"),
-    ("accounts", "view_user"),  # Prospective Students list
     # Applications
     ("admissions", "add_application"),
     ("admissions", "view_application"),
@@ -34,7 +36,7 @@ ADMISSIONS_TEAM_ALLOW = (
     ("admissions", "reject_application"),
     ("admissions", "admit_applicant"),
     ("admissions", "edit_application_registration"),
-    # Admitted students (directory / offers / revoke)
+    # Admitted students (API for admit / offers / revoke — not for other modules)
     ("admissions", "add_admittedstudent"),
     ("admissions", "view_admittedstudent"),
     ("admissions", "change_admittedstudent"),
@@ -42,7 +44,7 @@ ADMISSIONS_TEAM_ALLOW = (
     ("admissions", "revoke_admission"),
     ("admissions", "restore_revoked_admission"),
     ("admissions", "verify_physical_documents"),
-    # Intakes & academic setup used by Admissions
+    # Intakes & admissions setup
     ("admissions", "view_batch"),
     ("admissions", "add_batch"),
     ("admissions", "change_batch"),
@@ -70,27 +72,34 @@ ADMISSIONS_TEAM_ALLOW = (
     ("AdmissionLetter", "add_offerlettertemplate"),
     ("AdmissionLetter", "change_offerlettertemplate"),
     ("AdmissionLetter", "delete_offerlettertemplate"),
-    # Reports / drafts / application fee visibility
+    # Admission report APIs (Reports top-level is hidden in UI for this role)
     ("AdmissionReports", "view_admissionreports"),
     ("AdmissionReports", "view_setup"),
     ("Drafts", "view_draftapplication"),
     ("Drafts", "change_draftapplication"),
-    ("payments", "view_applicationpayment"),
 )
 
-# Keep other modules off. Do NOT deny change_user / view_user here — Deny on any
-# role blocks the user even if they also have User Admin / Super Admin helpers.
 ADMISSIONS_TEAM_DENY = (
     ("accounts", "access_finance"),
     ("accounts", "access_academics"),
+    ("accounts", "access_reports"),
+    ("accounts", "access_user_management"),
     ("accounts", "configure_fee_plans"),
     ("accounts", "manage_payment_reconciliation"),
     ("accounts", "manage_academic_enrollment"),
     ("accounts", "manage_curriculum"),
     ("accounts", "manage_course_catalog"),
+    ("accounts", "manage_program_scheduling"),
     ("admissions", "clear_accounts_registration"),
     ("admissions", "manage_temporary_access_pass"),
     ("admissions", "manage_id_cards"),
+    ("payments", "view_applicationfee"),
+    ("payments", "view_applicationpayment"),
+    ("payments", "view_feehead"),
+    ("payments", "view_feeplan"),
+    ("payments", "view_feeplanrule"),
+    ("payments", "view_studenttuitionpayment"),
+    ("payments", "view_tuitionledger"),
 )
 
 
