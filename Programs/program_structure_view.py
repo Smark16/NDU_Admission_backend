@@ -2,6 +2,8 @@
 REST API endpoint to get program structure (batches, semesters, course units)
 Returns hierarchical structure of program with all its batches, semesters, and course units
 """
+import logging
+
 from django.db.utils import ProgrammingError
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -10,6 +12,8 @@ from .permissions import ProgramSchedulingAPIPermission
 from django.db.models import Prefetch
 from .models import Program, ProgramBatch, Semester, CourseUnit
 from admissions.faculty_scope import assert_program_in_user_faculties
+
+logger = logging.getLogger(__name__)
 
 
 class ProgramStructureView(APIView):
@@ -24,7 +28,19 @@ class ProgramStructureView(APIView):
                 'academic_level'
             ).prefetch_related('campuses').get(id=program_id)
             assert_program_in_user_faculties(request.user, program)
-            
+
+            # Auto-instantiate missing curriculum offerings onto batch semesters
+            # so staff do not need a separate "Load from curriculum" click.
+            try:
+                from Programs.curriculum_offerings import sync_program_curriculum_offerings
+
+                sync_program_curriculum_offerings(program)
+            except Exception:
+                logger.exception(
+                    "Failed to auto-sync curriculum offerings for program %s",
+                    program_id,
+                )
+
             # Fetch program batches with semesters and course units
             batches = ProgramBatch.objects.filter(
                 program=program,

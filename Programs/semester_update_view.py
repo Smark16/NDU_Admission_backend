@@ -142,6 +142,12 @@ class UpdateSemesterView(APIView):
             semester.is_active = bool(is_active)
         semester.save()
 
+        offerings = {"created": 0}
+        if semester.year_of_study and semester.term_number:
+            from Programs.curriculum_offerings import sync_semester_curriculum_offerings
+
+            offerings = sync_semester_curriculum_offerings(semester)
+
         return Response(
             {
                 "id": semester.id,
@@ -153,6 +159,7 @@ class UpdateSemesterView(APIView):
                 "start_date": semester.start_date.isoformat(),
                 "end_date": semester.end_date.isoformat() if semester.end_date else None,
                 "is_active": semester.is_active,
+                "curriculum_offerings_created": offerings.get("created", 0),
                 "message": "Semester updated successfully",
             },
             status=status.HTTP_200_OK,

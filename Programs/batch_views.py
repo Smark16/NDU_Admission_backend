@@ -1,5 +1,6 @@
 import calendar as _calendar
 import csv
+import logging
 from datetime import date, datetime, timedelta
 import io
 
@@ -33,6 +34,8 @@ from .models import (
     resolve_program_default_curriculum_version,
 )
 from .utils.excel import create_workbook
+
+logger = logging.getLogger(__name__)
 
 
 class _BatchUnavailableMixin:
@@ -333,6 +336,13 @@ class CreateSemesterView(_BatchUnavailableMixin, APIView):
                         term_number=term_number,
                         is_active=True,
                     )
+                    offerings = {"created": 0}
+                    if year_of_study and term_number:
+                        from Programs.curriculum_offerings import (
+                            sync_semester_curriculum_offerings,
+                        )
+
+                        offerings = sync_semester_curriculum_offerings(semester)
 
                     return Response(
                         {
@@ -345,6 +355,7 @@ class CreateSemesterView(_BatchUnavailableMixin, APIView):
                             'term_number': semester.term_number,
                             'start_date': semester.start_date.isoformat(),
                             'end_date': semester.end_date.isoformat() if semester.end_date else None,
+                            'curriculum_offerings_created': offerings.get("created", 0),
                             'message': 'Semester created successfully',
                         },
                         status=status.HTTP_201_CREATED,
@@ -434,6 +445,19 @@ class CreateSubjectView(_BatchUnavailableMixin, APIView):
                             course_unit_data['credit_units'] = float(credit_units)
                         except (ValueError, TypeError):
                             pass
+
+                    curriculum_line_id = request.data.get('curriculum_line_id')
+                    if curriculum_line_id not in (None, ''):
+                        from Programs.models import ProgramCurriculumLine
+
+                        try:
+                            line = ProgramCurriculumLine.objects.get(pk=int(curriculum_line_id))
+                            course_unit_data['curriculum_line'] = line
+                        except (ProgramCurriculumLine.DoesNotExist, ValueError, TypeError):
+                            return Response(
+                                {'detail': 'Curriculum line not found'},
+                                status=status.HTTP_404_NOT_FOUND,
+                            )
 
                     course_unit = CourseUnit.objects.create(**course_unit_data)
 
@@ -859,6 +883,16 @@ def _auto_create_semesters(batch: "ProgramBatch", program: "Program") -> int:
             occupied.add((year, term))
             next_order += 1
             created += 1
+
+    # Instantiate curriculum offerings on every positioned semester (new + existing).
+    try:
+        from Programs.curriculum_offerings import sync_batch_curriculum_offerings
+
+        sync_batch_curriculum_offerings(batch)
+    except Exception:
+        logger.exception(
+            "Failed to sync curriculum offerings for ProgramBatch %s", batch.pk
+        )
 
     return created
 

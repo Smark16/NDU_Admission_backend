@@ -177,7 +177,13 @@ class ListCreateCurriculumView(APIView):
 
         serializer = ProgramCurriculumLineSerializer(data=data)
         if serializer.is_valid():
-            serializer.save()
+            line = serializer.save()
+            try:
+                from Programs.curriculum_offerings import sync_offerings_for_curriculum_line
+
+                sync_offerings_for_curriculum_line(line)
+            except Exception:
+                pass
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -525,7 +531,13 @@ class CurriculumLineDetailView(APIView):
             line, data=request.data, partial=True
         )
         if serializer.is_valid():
-            serializer.save()
+            updated = serializer.save()
+            try:
+                from Programs.curriculum_offerings import sync_offerings_for_curriculum_line
+
+                sync_offerings_for_curriculum_line(updated)
+            except Exception:
+                pass
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
