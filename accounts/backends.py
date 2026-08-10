@@ -24,6 +24,22 @@ class DenyAwarePermissionMixin:
         except Exception:
             return perms
 
+    def has_perm(self, user_obj, perm, obj=None):
+        """Deny on any role blocks, even if another role / M2M Allows."""
+        if not getattr(user_obj, "is_active", False):
+            return False
+        try:
+            from accounts.role_capabilities import denied_permission_strings_for_user
+            from accounts.super_admin import user_is_super_admin
+
+            if user_is_super_admin(user_obj) or getattr(user_obj, "is_superuser", False):
+                return super().has_perm(user_obj, perm, obj)
+            if perm in denied_permission_strings_for_user(user_obj):
+                return False
+        except Exception:
+            pass
+        return super().has_perm(user_obj, perm, obj)
+
 
 class StudentIdBackend(DenyAwarePermissionMixin, ModelBackend):
     """Authenticate by email, portal username, registration number, or student ID."""

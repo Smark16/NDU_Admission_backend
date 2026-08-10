@@ -641,6 +641,75 @@ class RoleCapabilityMatrixView(APIView):
         # Return refreshed matrix (same shape as GET).
         return self.get(request, pk)
 
+
+class RoleServiceMatrixView(APIView):
+    """
+    AIMS-style Category / Service / View-Add-Edit-Delete matrix for a role.
+    Deny overrides are edited via advanced_denies.
+    """
+
+    permission_classes = [IsAuthenticated, CanManageRoleCapabilities]
+
+    def get(self, request, pk):
+        from accounts.role_capabilities import build_service_matrix
+
+        group = get_object_or_404(Group, pk=pk)
+        return Response(build_service_matrix(group))
+
+    def put(self, request, pk):
+        from accounts.role_capabilities import apply_service_matrix
+
+        group = get_object_or_404(Group, pk=pk)
+        services = request.data.get("services")
+        advanced_denies = request.data.get("advanced_denies")
+        deny_permission_ids = request.data.get("deny_permission_ids")
+        if (
+            services is None
+            and advanced_denies is None
+            and deny_permission_ids is None
+        ):
+            return Response(
+                {
+                    "detail": (
+                        "Provide services and/or deny_permission_ids "
+                        "(or advanced_denies)."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if services is not None and not isinstance(services, list):
+            return Response(
+                {"detail": "services must be a list."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if advanced_denies is not None and not isinstance(advanced_denies, list):
+            return Response(
+                {"detail": "advanced_denies must be a list."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if deny_permission_ids is not None and not isinstance(
+            deny_permission_ids, list
+        ):
+            return Response(
+                {"detail": "deny_permission_ids must be a list."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        payload = apply_service_matrix(
+            group,
+            services=services,
+            advanced_denies=advanced_denies,
+            deny_permission_ids=deny_permission_ids,
+        )
+        log_audit_event(
+            request.user,
+            "update",
+            group,
+            f"Updated AIMS service matrix for {group.name}",
+            request,
+        )
+        return Response(payload)
+
 # ==================================================campus=================================================
 
 # create campus

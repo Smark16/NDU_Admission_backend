@@ -305,4 +305,12 @@ class RoleCapability(models.Model):
         ]
 
     def __str__(self):
-        return f"{self.group.name}: {self.permission} = {self.state}"
+        try:
+            group_label = self.group.name
+        except Exception:
+            group_label = f"group#{self.group_id}"
+        try:
+            perm_label = str(self.permission)
+        except Exception:
+            perm_label = f"permission#{self.permission_id}"
+        return f"{group_label}: {perm_label} = {self.state}"

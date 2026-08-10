@@ -31,6 +31,11 @@ urlpatterns = [
         RoleCapabilityMatrixView.as_view(),
         name='role_capability_matrix',
     ),
+    path(
+        'roles/<int:pk>/service-matrix',
+        RoleServiceMatrixView.as_view(),
+        name='role_service_matrix',
+    ),
 
     path('list_campus', ListCampus.as_view()),
     path('create_campus', CreateCampus.as_view()),
