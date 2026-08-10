@@ -55,6 +55,17 @@ def user_can_admit_applicant(user) -> bool:
     return False
 
 
+def user_can_use_direct_admission(user) -> bool:
+    """Direct Admission entry / Direct Entry tools (Role matrix: Direct admission)."""
+    if not user.is_authenticated:
+        return False
+    if user_is_super_admin(user):
+        return True
+    if user_has_any_erp_perm(user, "manage_direct_applications"):
+        return True
+    return False
+
+
 def user_can_manage_admission_change_requests(user) -> bool:
     if not user.is_authenticated:
         return False

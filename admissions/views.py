@@ -14,6 +14,7 @@ from .permissions import (
     user_can_reject_application,
     user_can_approve_application,
     user_can_admit_applicant,
+    user_can_use_direct_admission,
     user_can_restore_revoked_admission,
     user_can_manage_admission_change_requests,
     user_can_approve_exemption_requests,
@@ -5476,7 +5477,7 @@ class DirectAdmissionEntryView(APIView):
     parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request):
-        if not user_can_admit_applicant(request.user):
+        if not user_can_use_direct_admission(request.user):
             return Response(
                 {'detail': 'You do not have permission to use direct admission entry.'},
                 status=status.HTTP_403_FORBIDDEN,
