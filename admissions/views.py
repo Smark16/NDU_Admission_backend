@@ -4000,6 +4000,33 @@ class MarkAccountsRegistrationCleared(APIView):
                 },
                 status=400,
             )
+
+        # Enforce the configured semester fee threshold — same gate as course registration.
+        from payments.models import RegistrationSettings
+        from payments.registration_eligibility import _compute_tuition_eligibility
+
+        reg_settings = RegistrationSettings.get_settings()
+        tuition = _compute_tuition_eligibility(student, reg_settings)
+        if not tuition.get("tuition_eligible"):
+            return Response(
+                {
+                    "detail": (
+                        tuition.get("tuition_message")
+                        or (
+                            f"Student has not met the minimum semester fee payment "
+                            f"({tuition.get('minimum_required', 0):.0f}%). "
+                            "Accounts cannot clear until the threshold is met."
+                        )
+                    ),
+                    "percentage_paid": tuition.get("percentage_paid"),
+                    "minimum_required": tuition.get("minimum_required"),
+                    "total_paid": tuition.get("total_paid"),
+                    "total_required": tuition.get("total_required"),
+                    "balance": tuition.get("balance"),
+                },
+                status=400,
+            )
+
         if student.accounts_registration_cleared:
             return Response(
                 {"detail": "Student is already cleared by accounts for registration."},

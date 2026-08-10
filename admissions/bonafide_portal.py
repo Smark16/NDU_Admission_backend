@@ -202,6 +202,17 @@ def build_bonafide_portal_snapshot(student: AdmittedStudent, request=None) -> di
 
     finance_payload = None
     if can_finance:
+        tuition_gate = {}
+        try:
+            from payments.models import RegistrationSettings
+            from payments.registration_eligibility import _compute_tuition_eligibility
+
+            tuition_gate = _compute_tuition_eligibility(
+                student, RegistrationSettings.get_settings()
+            )
+        except Exception:
+            tuition_gate = {}
+
         finance_payload = {
             "percentage_paid": finance.get("percentage_paid"),
             "current_term_paid": finance.get("current_term_paid"),
@@ -213,6 +224,10 @@ def build_bonafide_portal_snapshot(student: AdmittedStudent, request=None) -> di
             "commitment_met": finance.get("commitment_met"),
             "commitment_paid_ugx": finance.get("commitment_paid_ugx"),
             "commitment_threshold": finance.get("commitment_threshold"),
+            "tuition_eligible": bool(tuition_gate.get("tuition_eligible")),
+            "minimum_required": tuition_gate.get("minimum_required"),
+            "tuition_check_skipped": bool(tuition_gate.get("tuition_check_skipped")),
+            "tuition_message": tuition_gate.get("tuition_message"),
             "lifetime_paid": finance.get("lifetime_paid"),
             "lifetime_paid_by_currency": finance.get("lifetime_paid_by_currency"),
             "balance_carried_forward": finance.get("balance_carried_forward"),
