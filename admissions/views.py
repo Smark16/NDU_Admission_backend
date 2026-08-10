@@ -3106,40 +3106,57 @@ class ListAdmittedStudents(generics.ListAPIView):
 
     CSV bulk imports (application.source=legacy_import) are excluded — they already
     have offers and belong on Bonafide / Headcount instead.
+
+    Base QS stays light for COUNT/pagination; select_related applied on the page only.
     """
 
     queryset = AdmittedStudent.objects.filter(is_admitted=True).exclude(
         application__source=Application.SOURCE_LEGACY,
-    ).select_related(
-        'admitted_program__faculty',
-        'admitted_batch',
-        'admitted_campus',
-        'admitted_specialization',
-        'intended_program_batch',
-        'programme_enrollment__program_batch',
-        'application__applicant',
-        'admitted_by',
-        'physical_documents_verified_by',
     )
 
     serializer_class = AdmittedStudentListSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
     pagination_class = StandardPagination
 
-    # Ordering
     ordering_fields = ['created_at', 'admission_date', 'id', 'reg_no', 'student_id']
     ordering = ['-created_at']
+    # Search handled in get_queryset (avoid SearchFilter double-hit + DISTINCT cost).
+    filter_backends = [OrderingFilter]
 
-    # DRF search filters
-    filter_backends = [SearchFilter, OrderingFilter]
-    search_fields = [
-        'student_id',
-        'reg_no',
-        'application__first_name',
-        'application__last_name',
-        'admitted_program__name',
-        'admitted_program__faculty__name',
-    ]
+    _DIRECTORY_SELECT_RELATED = (
+        "admitted_program__faculty",
+        "admitted_batch",
+        "admitted_campus",
+        "admitted_specialization",
+        "intended_program_batch",
+        "application__applicant",
+        "admitted_by",
+        "physical_documents_verified_by",
+    )
+
+    def _enrich_page(self, page_ids: list[int]) -> list:
+        from Programs.spe_queryset import prefetch_programme_enrollment_for_lists
+
+        enriched = {
+            obj.pk: obj
+            for obj in (
+                AdmittedStudent.objects.filter(pk__in=page_ids)
+                .select_related(*self._DIRECTORY_SELECT_RELATED)
+                .prefetch_related(prefetch_programme_enrollment_for_lists())
+            )
+        }
+        return [enriched[pk] for pk in page_ids if pk in enriched]
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            page = self._enrich_page([obj.pk for obj in page])
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        page_ids = list(queryset.values_list("pk", flat=True)[:500])
+        serializer = self.get_serializer(self._enrich_page(page_ids), many=True)
+        return Response(serializer.data)
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -3160,24 +3177,38 @@ class ListAdmittedStudents(generics.ListAPIView):
         date_from = self.request.query_params.get('date_from')
         date_to = self.request.query_params.get('date_to')
         commitment_met = self.request.query_params.get('commitment_met')
+        needs_distinct = False
 
-        # Search across multiple fields
+        # Prefer exact/prefix identity matches before broad OR-icontains.
         if search:
-            queryset = queryset.annotate(
-                    applicant_full_name=Concat(
-                        'application__first_name',
-                        Value(' '),
-                        'application__last_name'
-                    )
-                ).filter(
-                Q(student_id__icontains=search) |
-                Q(reg_no__icontains=search) |
-                Q(application__first_name__icontains=search) |
-                Q(applicant_full_name__icontains=search) |
-                Q(application__last_name__icontains=search) |
-                Q(admitted_program__name__icontains=search) |
-                Q(admitted_program__faculty__name__icontains=search)
+            identity = (
+                Q(student_id__iexact=search)
+                | Q(reg_no__iexact=search)
+                | Q(schoolpay_code__iexact=search)
             )
+            if len(search) >= 2:
+                identity |= (
+                    Q(student_id__istartswith=search)
+                    | Q(reg_no__istartswith=search)
+                    | Q(schoolpay_code__istartswith=search)
+                )
+            name_q = (
+                Q(application__first_name__icontains=search)
+                | Q(application__last_name__icontains=search)
+                | Q(admitted_program__name__icontains=search)
+                | Q(admitted_program__faculty__name__icontains=search)
+            )
+            if " " in search:
+                queryset = queryset.annotate(
+                    applicant_full_name=Concat(
+                        "application__first_name",
+                        Value(" "),
+                        "application__last_name",
+                    )
+                )
+                name_q |= Q(applicant_full_name__icontains=search)
+            queryset = queryset.filter(identity | name_q)
+            needs_distinct = True
 
         # Exact filters
         if batch and batch != "all":
@@ -3251,7 +3282,10 @@ class ListAdmittedStudents(generics.ListAPIView):
             elif raw in ("0", "false", "no"):
                 queryset = filter_by_commitment_met(queryset, False, strict=strict)
 
-        return filter_admitted_students_for_user(queryset.distinct(), self.request.user)
+        queryset = filter_admitted_students_for_user(queryset, self.request.user)
+        if needs_distinct:
+            return queryset.distinct()
+        return queryset
 
 
 class ListBonafideStudents(generics.ListAPIView):

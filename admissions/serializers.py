@@ -733,33 +733,43 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
     def get_approved_at(self, obj):
         return getattr(obj, "approved_at", None)
 
-    def _wallet_fields(self, obj):
-        from payments.utils.tuition_ledger_linking import schoolpay_wallet_api_fields
-
-        return schoolpay_wallet_api_fields(obj)
-
     def _request_user_can_view_finance(self) -> bool:
+        cached = getattr(self, "_directory_can_view_finance", None)
+        if cached is not None:
+            return cached
         request = self.context.get("request")
         user = getattr(request, "user", None) if request is not None else None
         if user is None:
+            self._directory_can_view_finance = False
             return False
         from accounts.finance_access import user_can_view_student_finance
 
-        return user_can_view_student_finance(user)
+        self._directory_can_view_finance = user_can_view_student_finance(user)
+        return self._directory_can_view_finance
+
+    def _wallet_fields(self, obj):
+        if not self._request_user_can_view_finance():
+            return {
+                "schoolpay_payment_code_locked": None,
+                "schoolpay_ledger_total_ugx": None,
+                "schoolpay_payment_warning": None,
+            }
+        cached = getattr(obj, "_directory_wallet_fields_cache", None)
+        if cached is not None:
+            return cached
+        from payments.utils.tuition_ledger_linking import schoolpay_wallet_api_fields
+
+        cached = schoolpay_wallet_api_fields(obj)
+        obj._directory_wallet_fields_cache = cached
+        return cached
 
     def get_schoolpay_payment_code_locked(self, obj):
-        if not self._request_user_can_view_finance():
-            return None
         return self._wallet_fields(obj)["schoolpay_payment_code_locked"]
 
     def get_schoolpay_ledger_total_ugx(self, obj):
-        if not self._request_user_can_view_finance():
-            return None
         return self._wallet_fields(obj)["schoolpay_ledger_total_ugx"]
 
     def get_schoolpay_payment_warning(self, obj):
-        if not self._request_user_can_view_finance():
-            return None
         return self._wallet_fields(obj)["schoolpay_payment_warning"]
 
     def _commitment_totals(self, obj):
