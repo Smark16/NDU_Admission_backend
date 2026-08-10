@@ -22,6 +22,7 @@ ADMISSIONS_STAFF_ROLE_NAMES = frozenset(
     {
         "Admissions Reviewer",
         "Admissions Approver",
+        "Admissions Team",
         "Direct Admission Officer",
         "Document Verification Officer",
         "Admissions Reports Officer",
