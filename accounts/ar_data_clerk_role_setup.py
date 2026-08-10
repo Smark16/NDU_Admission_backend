@@ -1,56 +1,89 @@
 """
-AR Data Clerk — admissions data entry without admit powers.
+AR Data Clerk — full Admissions module access.
 
-Allowed: direct applications, view/edit applications, view admitted students,
-view batches/faculties, view application payments.
+Can: admit, revoke/restore, generate offer letters, manage applications /
+direct admission / intakes / templates / reports.
 
-Denied (hard): admit, add admitted student, revoke/restore admission,
-approve/reject applications, verify physical docs, enrollment admin.
+Kept out (finance / enrollment ops — trim later in Roles UI if needed):
+accounts clearance, temporary access passes, SPE enrollment admin.
 """
 from __future__ import annotations
 
 from django.contrib.auth.models import Group, Permission
+from django.db.models import Q
 
 from accounts.erp_role_setup import get_permission
 
 ROLE_NAME = "AR Data Clerk"
 
-# Exact allow list (re-seed replaces Group.permissions).
+# Broad admissions allow list — re-seed replaces Group.permissions.
 AR_DATA_CLERK_ALLOW = (
+    # Module gates
     ("accounts", "access_admissions"),
     ("accounts", "manage_direct_applications"),
+    ("accounts", "approve_admissions"),
+    ("accounts", "manage_batches"),
+    ("accounts", "manage_communication_templates"),
+    ("accounts", "access_reports"),
+    ("accounts", "view_user"),
+    # Applications
     ("admissions", "add_application"),
     ("admissions", "view_application"),
     ("admissions", "change_application"),
-    ("admissions", "view_admittedstudent"),
-    ("admissions", "view_batch"),
-    ("admissions", "view_faculty"),
-    ("admissions", "view_academiclevel"),
-    ("payments", "view_applicationpayment"),
-    ("accounts", "view_user"),
-)
-
-# Explicit Deny so another overlapping allow cannot unlock admit/clearance.
-AR_DATA_CLERK_DENY = (
+    ("admissions", "delete_application"),
+    ("admissions", "approve_application"),
+    ("admissions", "reject_application"),
     ("admissions", "admit_applicant"),
+    ("admissions", "edit_application_registration"),
+    # Admitted students / offers / revoke
     ("admissions", "add_admittedstudent"),
+    ("admissions", "view_admittedstudent"),
     ("admissions", "change_admittedstudent"),
     ("admissions", "delete_admittedstudent"),
     ("admissions", "revoke_admission"),
     ("admissions", "restore_revoked_admission"),
-    ("admissions", "approve_application"),
-    ("admissions", "reject_application"),
     ("admissions", "verify_physical_documents"),
-    ("admissions", "clear_accounts_registration"),
-    ("accounts", "approve_admissions"),
-    ("accounts", "manage_academic_enrollment"),
+    # Setup
+    ("admissions", "view_batch"),
+    ("admissions", "add_batch"),
+    ("admissions", "change_batch"),
+    ("admissions", "delete_batch"),
+    ("admissions", "view_faculty"),
+    ("admissions", "view_academiclevel"),
+    ("admissions", "add_academiclevel"),
+    ("admissions", "change_academiclevel"),
+    ("admissions", "view_academicyear"),
+    ("admissions", "add_academicyear"),
+    ("admissions", "change_academicyear"),
+    ("admissions", "view_olevelsubject"),
+    ("admissions", "add_olevelsubject"),
+    ("admissions", "change_olevelsubject"),
+    ("admissions", "view_alevelsubject"),
+    ("admissions", "add_alevelsubject"),
+    ("admissions", "change_alevelsubject"),
+    ("admissions", "view_emailtemplate"),
+    ("admissions", "add_emailtemplate"),
+    ("admissions", "change_emailtemplate"),
+    ("admissions", "view_applicationdocument"),
+    ("admissions", "change_applicationdocument"),
+    # Offer letter templates (generate uses admitted-student change/admit)
+    ("AdmissionLetter", "view_offerlettertemplate"),
+    ("AdmissionLetter", "add_offerlettertemplate"),
+    ("AdmissionLetter", "change_offerlettertemplate"),
+    ("AdmissionLetter", "delete_offerlettertemplate"),
+    # Reports / drafts / payments visibility
+    ("AdmissionReports", "view_admissionreports"),
+    ("AdmissionReports", "view_setup"),
+    ("Drafts", "view_draftapplication"),
+    ("Drafts", "change_draftapplication"),
+    ("payments", "view_applicationpayment"),
 )
 
-LEGACY_GROUP_ALIASES = (
-    "AR DATA CLARK",
-    "AR DATA CLERK",
-    "AR Data Clark",
-    "AR data clerk",
+# Soft excludes — not core AR admissions ops.
+AR_DATA_CLERK_DENY = (
+    ("admissions", "clear_accounts_registration"),
+    ("admissions", "manage_temporary_access_pass"),
+    ("accounts", "manage_academic_enrollment"),
 )
 
 
@@ -63,15 +96,49 @@ def _resolve_perms(pairs: tuple[tuple[str, str], ...]) -> list[Permission]:
     return found
 
 
+def _merge_duplicate_clerk_groups(canonical: Group, *, stdout=None) -> int:
+    """
+    Fold every AR Data Clerk / Clark variant into the canonical group, then delete extras.
+    """
+    from accounts.models import User
+
+    duplicates = (
+        Group.objects.filter(
+            Q(name__icontains="ar data clerk")
+            | Q(name__icontains="ar data clark")
+            | Q(name__iexact="AR DATA CLERK")
+            | Q(name__iexact="AR DATA CLARK")
+        )
+        .exclude(pk=canonical.pk)
+        .distinct()
+    )
+    merged = 0
+    for legacy in duplicates:
+        for user in User.objects.filter(groups=legacy).iterator():
+            user.groups.remove(legacy)
+            user.groups.add(canonical)
+        if stdout:
+            stdout.write(f"  merged duplicate group '{legacy.name}' → '{ROLE_NAME}'")
+        legacy.delete()
+        merged += 1
+    return merged
+
+
 def seed_ar_data_clerk_role(*, stdout=None, repair_users: bool = True) -> Group:
     """
-    Create/refresh AR Data Clerk with allow M2M + Deny capabilities for admit gates.
+    Create/refresh AR Data Clerk with full admissions allows.
+    Clears previous Deny matrix for this role, then applies soft finance/enrollment denies.
     Idempotent — safe to re-run on the server.
     """
     from accounts.models import RoleCapability, User
     from accounts.role_capabilities import sync_allows_from_group_m2m
 
     group, created = Group.objects.get_or_create(name=ROLE_NAME)
+    merged = _merge_duplicate_clerk_groups(group, stdout=stdout)
+
+    # Wipe prior Allow/Deny matrix so old "no admit" denies are gone.
+    RoleCapability.objects.filter(group=group).delete()
+
     allows = _resolve_perms(AR_DATA_CLERK_ALLOW)
     group.permissions.set(allows)
     sync_allows_from_group_m2m(group)
@@ -86,25 +153,12 @@ def seed_ar_data_clerk_role(*, stdout=None, repair_users: bool = True) -> Group:
             permission=perm,
             defaults={"state": RoleCapability.STATE_DENY},
         )
-        # Ensure Deny is not also on the M2M allow list.
         group.permissions.remove(perm)
 
-    # Merge typo / legacy group names into the canonical role.
-    for alias in LEGACY_GROUP_ALIASES:
-        legacy = Group.objects.filter(name__iexact=alias).exclude(pk=group.pk).first()
-        if not legacy:
-            continue
-        for user in User.objects.filter(groups=legacy).iterator():
-            user.groups.remove(legacy)
-            user.groups.add(group)
-        if stdout:
-            stdout.write(f"  merged legacy group '{legacy.name}' → '{ROLE_NAME}'")
-        legacy.delete()
-
     if repair_users:
-        clerk_groups = Group.objects.filter(name__icontains="ar data")
+        clerk_users = User.objects.filter(groups=group).distinct()
         updated = 0
-        for user in User.objects.filter(groups__in=clerk_groups).distinct().iterator():
+        for user in clerk_users.iterator():
             dirty = False
             if not user.is_staff:
                 user.is_staff = True
@@ -129,21 +183,15 @@ def seed_ar_data_clerk_role(*, stdout=None, repair_users: bool = True) -> Group:
     if stdout:
         action = "Created" if created else "Updated"
         stdout.write(
-            f"  {action} '{ROLE_NAME}': {len(allows)} allow, {len(deny_perms)} deny"
+            f"  {action} '{ROLE_NAME}': {len(allows)} allow, {len(deny_perms)} soft-deny"
+            + (f", merged {merged} duplicate group(s)" if merged else "")
         )
-        missing_allow = [
+        missing = [
             f"{a}.{c}"
             for a, c in AR_DATA_CLERK_ALLOW
             if not get_permission(Permission, a, c)
         ]
-        missing_deny = [
-            f"{a}.{c}"
-            for a, c in AR_DATA_CLERK_DENY
-            if not get_permission(Permission, a, c)
-        ]
-        if missing_allow:
-            stdout.write(f"  WARNING missing allow perms: {', '.join(missing_allow)}")
-        if missing_deny:
-            stdout.write(f"  WARNING missing deny perms: {', '.join(missing_deny)}")
+        if missing:
+            stdout.write(f"  WARNING missing allow perms: {', '.join(missing)}")
 
     return group

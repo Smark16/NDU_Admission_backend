@@ -1,4 +1,4 @@
-"""Create/refresh the AR Data Clerk role (admissions data entry, no admit)."""
+"""Create/refresh the AR Data Clerk role (full Admissions access)."""
 from django.apps import apps as django_apps
 from django.contrib.auth.management import create_permissions
 from django.contrib.contenttypes.management import create_contenttypes
@@ -9,8 +9,9 @@ from accounts.ar_data_clerk_role_setup import ROLE_NAME, seed_ar_data_clerk_role
 
 class Command(BaseCommand):
     help = (
-        "Create or refresh the AR Data Clerk role: direct applications and "
-        "view admitted students, but cannot admit / revoke / verify docs / enroll."
+        "Create or refresh AR Data Clerk: full Admissions module — admit, revoke, "
+        "offer letters, applications, intakes, templates, reports. "
+        "Merges duplicate AR Data Clerk/Clark groups into one."
     )
 
     def add_arguments(self, parser):
@@ -21,7 +22,15 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
-        for app_name in ("accounts", "admissions", "payments", "Programs"):
+        for app_name in (
+            "accounts",
+            "admissions",
+            "payments",
+            "AdmissionLetter",
+            "AdmissionReports",
+            "Drafts",
+            "Programs",
+        ):
             try:
                 app_config = django_apps.get_app_config(app_name)
             except LookupError:
@@ -29,7 +38,7 @@ class Command(BaseCommand):
             create_contenttypes(app_config, verbosity=0, interactive=False)
             create_permissions(app_config, verbosity=0, interactive=False)
 
-        self.stdout.write(f"Seeding {ROLE_NAME}...")
+        self.stdout.write(f"Seeding {ROLE_NAME} (full Admissions)...")
         seed_ar_data_clerk_role(
             stdout=self.stdout,
             repair_users=not options["no_repair_users"],
@@ -41,6 +50,6 @@ class Command(BaseCommand):
             "They must log out and back in after role changes."
         )
         self.stdout.write(
-            "This role can manage direct applications and view students, "
-            "but cannot admit applicants."
+            "Can admit, revoke, restore, generate offer letters, and use the Admissions module. "
+            "Accounts clearance / temp passes / enrollment admin remain denied — trim more in Roles UI if needed."
         )
