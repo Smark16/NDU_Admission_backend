@@ -93,10 +93,30 @@ class Command(BaseCommand):
                             "schoolpay_receipt_number",
                         )[:20]
                     )
-                    self.stderr.write(
-                        self.style.ERROR(f"No admitted student for: {lookup!r}")
+                    regs = sorted(
+                        {
+                            (row["student_registration_number"] or "").strip()
+                            for row in orphan_rows
+                            if (row["student_registration_number"] or "").strip()
+                        }
                     )
-                    if orphan_rows:
+                    if regs:
+                        student_ids = list(
+                            AdmittedStudent.objects.filter(reg_no__in=regs).values_list(
+                                "id", flat=True
+                            )
+                        )
+                    if student_ids:
+                        self.stdout.write(
+                            self.style.WARNING(
+                                f"Resolved {lookup!r} via ledger reg_no {regs} → "
+                                f"student pk(s) {list(student_ids)}"
+                            )
+                        )
+                    elif orphan_rows:
+                        self.stderr.write(
+                            self.style.ERROR(f"No admitted student for: {lookup!r}")
+                        )
                         self.stderr.write(
                             "Found TuitionLedger row(s) with this payment code "
                             "(not linked to an admitted student):"
@@ -111,15 +131,19 @@ class Command(BaseCommand):
                                 f"receipt={row['schoolpay_receipt_number']!r}"
                             )
                         self.stderr.write(
-                            "Fix: set the student's SchoolPay / student_id to this code "
-                            "(or correct reg_no), then re-run this command."
+                            "No AdmittedStudent matched those reg numbers. "
+                            "Create/correct the student record, then re-run."
                         )
+                        return
                     else:
+                        self.stderr.write(
+                            self.style.ERROR(f"No admitted student for: {lookup!r}")
+                        )
                         self.stderr.write(
                             "No TuitionLedger rows for this payment code either — "
                             "SchoolPay sync may not have imported the payment yet."
                         )
-                    return
+                        return
 
         only_changes = options["only_changes"] or (
             options["all"] and not options["verbose"]

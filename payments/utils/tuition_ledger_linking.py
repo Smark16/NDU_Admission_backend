@@ -112,18 +112,26 @@ def tuition_ledger_queryset_for_student(student: AdmittedStudent):
 
 def relink_tuition_ledgers_for_student(student: AdmittedStudent) -> int:
     """
-    Attach orphan SchoolPay ledger rows to the student when payment codes match.
+    Attach orphan SchoolPay ledger rows to the student when payment codes or
+    SchoolPay registration number match this admitted student.
 
     Returns the number of ledger rows updated.
     """
     codes = payment_codes_for_student(student)
-    if not codes:
+    reg = (student.reg_no or "").strip()
+    match = Q()
+    if codes:
+        match |= Q(student_payment_code__in=codes)
+    if reg:
+        # Orphan rows often keep the reg no even when student_id/code never matched.
+        match |= Q(student_registration_number__iexact=reg)
+    if not match:
         return 0
 
-    qs = TuitionLedger.objects.filter(student_payment_code__in=codes).filter(
+    qs = TuitionLedger.objects.filter(match).filter(
         Q(student__isnull=True) | ~Q(student_id=student.pk)
     )
-    ledgers = list(qs.only("id", "user_id", "student_id"))
+    ledgers = list(qs.only("id", "user_id", "student_id", "student_payment_code"))
     if not ledgers:
         return 0
 
@@ -133,6 +141,27 @@ def relink_tuition_ledgers_for_student(student: AdmittedStudent) -> int:
             ledger.user_id = student.student_user_id
 
     TuitionLedger.objects.bulk_update(ledgers, ["student", "user"])
+
+    # Backfill wallet code when ERP never stored the SchoolPay studentPaymentCode.
+    pay_codes = {
+        (row.student_payment_code or "").strip()
+        for row in ledgers
+        if (row.student_payment_code or "").strip()
+    }
+    update_fields: list[str] = []
+    if pay_codes and not (student.student_id or "").strip():
+        # Prefer a numeric SchoolPay-style code when present.
+        chosen = sorted(pay_codes, key=lambda c: (not c.isdigit(), len(c), c))[0]
+        student.student_id = chosen
+        update_fields.append("student_id")
+    if pay_codes and not (student.schoolpay_code or "").strip():
+        chosen = sorted(pay_codes, key=lambda c: (not c.isdigit(), len(c), c))[0]
+        student.schoolpay_code = chosen
+        update_fields.append("schoolpay_code")
+    if update_fields:
+        update_fields.append("updated_at")
+        student.save(update_fields=update_fields)
+
     sync_admission_fee_paid_from_ledger(student)
     return len(ledgers)
 
