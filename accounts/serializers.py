@@ -64,23 +64,55 @@ class UserManagementUpdateSerializer(serializers.ModelSerializer):
         )
 
     def validate_staff_id(self, value):
-        return normalize_staff_id(value)
+        staff_id = normalize_staff_id(value)
+        if not staff_id:
+            return None
+        qs = User.objects.filter(staff_id__iexact=staff_id)
+        if self.instance:
+            qs = qs.exclude(pk=self.instance.pk)
+        if qs.exists():
+            raise serializers.ValidationError(
+                "That staff ID is already assigned to another user."
+            )
+        return staff_id
 
     def validate_email(self, value):
         email = (value or "").strip()
         if not email:
             raise serializers.ValidationError("Email is required.")
+        # Keeping the same email must succeed even when legacy duplicate emails exist.
+        if self.instance and (self.instance.email or "").strip().lower() == email.lower():
+            return (self.instance.email or "").strip() or email
         qs = User.objects.filter(email__iexact=email)
         if self.instance:
             qs = qs.exclude(pk=self.instance.pk)
         if qs.exists():
             raise serializers.ValidationError("A user with this email already exists.")
+        # Username is the login key and is unique — block email if another account
+        # already uses it as username (email→username sync would fail later).
+        uname_qs = User.objects.filter(username__iexact=email)
+        if self.instance:
+            uname_qs = uname_qs.exclude(pk=self.instance.pk)
+        if uname_qs.exists():
+            raise serializers.ValidationError(
+                "A user with this email (as username) already exists."
+            )
         return email
 
     def update(self, instance, validated_data):
-        email = validated_data.get("email")
+        email = validated_data.get("email", instance.email)
+        email = (email or "").strip()
         instance = super().update(instance, validated_data)
-        if email and instance.username != email:
+        if not email or instance.username == email:
+            return instance
+        # Prefer aligning username to email when free; never fail the whole edit
+        # if only the username sync conflicts (legacy login names).
+        taken = (
+            User.objects.filter(username__iexact=email)
+            .exclude(pk=instance.pk)
+            .exists()
+        )
+        if not taken:
             instance.username = email
             instance.save(update_fields=["username"])
         return instance

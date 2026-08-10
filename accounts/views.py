@@ -216,9 +216,15 @@ class UpdateUser(generics.UpdateAPIView):
             serializer.is_valid(raise_exception=True)
             serializer.save()
         except IntegrityError as exc:
-            if "staff_id" in str(exc).lower():
+            msg = str(exc).lower()
+            if "staff_id" in msg:
                 return Response(
                     {"staff_id": "That staff ID is already assigned to another user."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if "username" in msg or "email" in msg:
+                return Response(
+                    {"email": "A user with this email or username already exists."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
             raise
