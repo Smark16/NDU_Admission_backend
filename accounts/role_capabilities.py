@@ -372,8 +372,12 @@ def apply_service_matrix(
         if st == RoleCapability.STATE_ALLOW and pid not in catalog_perm_ids:
             next_state[pid] = RoleCapability.STATE_ALLOW
 
-    # Catalog checkboxes → Allow / clear
+    # Catalog checkboxes → Allow / clear.
+    # One permission can map to multiple columns (or appear in several services).
+    # Allow if ANY checked column votes for it; clear only when every vote is off.
+    # (Sequential pop-then-set was order-dependent and left shared perms granted.)
     grid_allow_ids: set[int] = set()
+    perm_votes: dict[int, bool] = {}
     for raw in services or []:
         if not isinstance(raw, dict):
             continue
@@ -389,10 +393,15 @@ def apply_service_matrix(
             if perm is None:
                 continue
             if bool(raw.get(col)):
-                next_state[perm.id] = RoleCapability.STATE_ALLOW
-                grid_allow_ids.add(perm.id)
+                perm_votes[perm.id] = True
             else:
-                next_state.pop(perm.id, None)
+                perm_votes.setdefault(perm.id, False)
+    for pid, allow in perm_votes.items():
+        if allow:
+            next_state[pid] = RoleCapability.STATE_ALLOW
+            grid_allow_ids.add(pid)
+        else:
+            next_state.pop(pid, None)
 
     # Authoritative Deny set
     if deny_permission_ids is not None:

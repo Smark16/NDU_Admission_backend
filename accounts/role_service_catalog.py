@@ -64,9 +64,10 @@ ROLE_SERVICE_CATALOG: list[CategoryDef] = [
             _svc("admissions_access", "Admissions module access", _cols(view="accounts.access_admissions")),
             _svc("applications", "Applications", _crud("admissions", "application")),
             _svc("application_documents", "Application documents", _crud("admissions", "applicationdocument")),
+            # Single column only — View+Edit used to share one perm, so unticking
+            # View left Edit checked and the grant never cleared.
             _svc("direct_applications", "Direct admission", _cols(
                 view="accounts.manage_direct_applications",
-                edit="accounts.manage_direct_applications",
             )),
             _svc("intakes", "Admission intakes", _crud("admissions", "batch")),
             _svc("manage_batches", "Manage intakes / batches (admin)", _cols(
