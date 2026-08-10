@@ -205,7 +205,7 @@ ROLE_SERVICE_CATALOG: list[CategoryDef] = [
     {
         "name": "Hostel",
         "services": [
-            _svc("hostel_access", "Hostel module access", _cols(view="accounts.access_hostel")),
+            _svc("hostel_access", "Hostel module access", _toggle("accounts.access_hostel")),
             _svc("hostels", "Hostels", _crud("hostel", "hostel")),
             _svc("buildings", "Buildings", _crud("hostel", "building")),
             _svc("floors", "Floors", _crud("hostel", "floor")),
@@ -215,7 +215,7 @@ ROLE_SERVICE_CATALOG: list[CategoryDef] = [
             _svc("hostel_assign", "Assign hostel / room", _toggle("hostel.assign_hostel")),
             _svc("hostel_allocations", "Allocations / occupancy", _crud("hostel", "hostelallocation")),
             _svc("end_allocation", "End hostel allocation", _toggle("hostel.end_hostel_allocation")),
-            _svc("hostel_reports", "Hostel reports", _cols(view="hostel.view_hostel_reports")),
+            _svc("hostel_reports", "Hostel reports", _toggle("hostel.view_hostel_reports")),
         ],
     },
     {
