@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+from django.conf import settings
 from django.db import models
 from accounts.models import Campus
 from admissions.models import *
@@ -574,16 +575,30 @@ class ProgramBatch(models.Model):
 
 
 class TeachingSection(models.Model):
-    """Teaching section within an academic cohort (ProgramBatch).
+    """Teaching section for timetabling students within (or across) cohorts.
 
-    Every cohort gets a default section at creation. Staff can add more sections
-    and move students between them for timetabling without changing tuition cohort.
+    Every ProgramBatch gets a default section at creation. Staff can add more
+    sections and move students between them without changing tuition cohort.
+
+    Shared sections (``is_shared=True``) may include students from additional
+    programme batches in the same faculty via ``linked_batches``. The owning
+    ``program_batch`` is where the section was created; linked cohorts can
+    assign SPE rows and timetable slots to the same section.
     """
 
     program_batch = models.ForeignKey(
         ProgramBatch,
         on_delete=models.CASCADE,
         related_name="teaching_sections",
+    )
+    linked_batches = models.ManyToManyField(
+        ProgramBatch,
+        blank=True,
+        related_name="linked_shared_sections",
+        help_text=(
+            "Additional academic cohorts that may use this section when "
+            "is_shared is true (same faculty as the owning batch)."
+        ),
     )
     code = models.CharField(
         max_length=20,
@@ -596,6 +611,13 @@ class TeachingSection(models.Model):
     is_default = models.BooleanField(
         default=False,
         help_text="Catch-all section for new enrollments. Exactly one per cohort.",
+    )
+    is_shared = models.BooleanField(
+        default=False,
+        help_text=(
+            "When true, students from the owning batch and linked_batches may "
+            "be assigned to this section for shared teaching/timetable."
+        ),
     )
     max_capacity = models.PositiveIntegerField(
         default=120,
@@ -620,7 +642,8 @@ class TeachingSection(models.Model):
 
     def __str__(self):
         default = " (default)" if self.is_default else ""
-        return f"{self.program_batch} · {self.code}{default}"
+        shared = " [shared]" if self.is_shared else ""
+        return f"{self.program_batch} · {self.code}{default}{shared}"
 
     def clean(self):
         from django.core.exceptions import ValidationError
@@ -629,6 +652,10 @@ class TeachingSection(models.Model):
         if not code:
             raise ValidationError({"code": "Section code is required."})
         self.code = code
+        if self.is_default and self.is_shared:
+            raise ValidationError(
+                {"is_shared": "The default section cannot be a shared cross-programme section."}
+            )
         if self.is_default and self.program_batch_id:
             other = (
                 TeachingSection.objects.filter(
@@ -835,15 +862,18 @@ class CourseUnitSectionLecturer(models.Model):
         from django.core.exceptions import ValidationError
 
         if self.teaching_section_id and self.course_unit_id:
+            from Programs.teaching_sections import section_covers_batch
+
             batch_id = self.course_unit.program_batch_id
             if batch_id is None and self.course_unit.semester_id:
                 sem = getattr(self.course_unit, "semester", None)
                 batch_id = getattr(sem, "program_batch_id", None) if sem else None
-            if batch_id and self.teaching_section.program_batch_id != batch_id:
+            if batch_id and not section_covers_batch(self.teaching_section, batch_id):
                 raise ValidationError(
                     {
                         "teaching_section": (
-                            "Teaching section must belong to this course unit's cohort."
+                            "Teaching section must belong to this course unit's cohort "
+                            "(or be a shared section linked to it)."
                         )
                     }
                 )
@@ -1195,11 +1225,14 @@ class StudentProgrammeEnrollment(models.Model):
                     )
                 })
         if self.teaching_section_id and self.program_batch_id:
-            if self.teaching_section.program_batch_id != self.program_batch_id:
+            from Programs.teaching_sections import section_covers_batch
+
+            if not section_covers_batch(self.teaching_section, self.program_batch_id):
                 raise ValidationError(
                     {
                         "teaching_section": (
-                            "Teaching section must belong to the student's academic cohort."
+                            "Teaching section must belong to the student's academic "
+                            "cohort (or be a shared section linked to it)."
                         )
                     }
                 )
@@ -1596,6 +1629,8 @@ class TimetableSession(models.Model):
                     )
 
         if self.teaching_section_id and self.course_unit_id:
+            from Programs.teaching_sections import section_covers_batch
+
             batch_id = None
             cu = getattr(self, "course_unit", None)
             if cu is not None:
@@ -1603,11 +1638,12 @@ class TimetableSession(models.Model):
                 if batch_id is None and getattr(cu, "semester_id", None):
                     sem = getattr(cu, "semester", None)
                     batch_id = getattr(sem, "program_batch_id", None) if sem else None
-            if batch_id and self.teaching_section.program_batch_id != batch_id:
+            if batch_id and not section_covers_batch(self.teaching_section, batch_id):
                 raise ValidationError(
                     {
                         "teaching_section": (
-                            "Teaching section must belong to this course unit's academic cohort."
+                            "Teaching section must belong to this course unit's academic "
+                            "cohort (or be a shared section linked to it)."
                         )
                     }
                 )

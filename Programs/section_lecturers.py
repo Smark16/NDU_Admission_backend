@@ -29,16 +29,19 @@ def resolve_section_for_course_unit(course_unit, raw_section_id):
     except (TypeError, ValueError) as exc:
         raise ValueError("teaching_section_id must be an integer or empty for all sections.") from exc
 
+    from Programs.teaching_sections import section_covers_batch
+
     batch = resolve_program_batch_for_course_unit(course_unit)
     if batch is None:
         raise ValueError("Course unit has no academic cohort for teaching sections.")
 
     try:
-        return TeachingSection.objects.get(
-            pk=section_id, program_batch_id=batch.pk, is_active=True
-        )
+        section = TeachingSection.objects.get(pk=section_id, is_active=True)
     except TeachingSection.DoesNotExist as exc:
         raise ValueError("Teaching section not found on this course unit's cohort.") from exc
+    if not section_covers_batch(section, batch.pk):
+        raise ValueError("Teaching section not found on this course unit's cohort.")
+    return section
 
 
 @transaction.atomic

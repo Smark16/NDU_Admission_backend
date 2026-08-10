@@ -156,6 +156,7 @@ def serialize_session(session: TimetableSession) -> dict:
         "teaching_section_id": section.id if section else None,
         "teaching_section_code": section.code if section else "",
         "teaching_section_name": section.name if section else "",
+        "teaching_section_is_shared": bool(getattr(section, "is_shared", False)) if section else False,
         "is_cohort_wide": section is None,
         "day_of_week": session.day_of_week,
         "day_label": day_label,

@@ -123,19 +123,10 @@ class GetAvailableStudentsForCourseUnit(APIView):
         from payments.admin_enrollment_requirements import batch_course_enrollment_block
 
         reg_settings = RegistrationSettings.get_settings()
-        if reg_settings.require_programme_enrollment:
-            requirement_note = (
-                "Batch course enrollment requires academic programme enrollment (Enrolled) "
-                "and commitment fee confirmed, because "
-                "'Require active academic programme enrollment' is enabled in Registration Settings."
-            )
-        else:
-            requirement_note = (
-                "Batch course enrollment follows Registration Settings. "
-                "Commitment fee is not required for batch enrollment while "
-                "'Require active academic programme enrollment' is off. "
-                "Student course registration still uses the minimum tuition % you configured."
-            )
+        requirement_note = (
+            "Only students who have paid the commitment fee and have academic "
+            "programme enrollment (Enrolled) appear for selection."
+        )
 
         # Get already enrolled student IDs
         enrolled_student_ids = StudentCourseUnitEnrollment.objects.filter(

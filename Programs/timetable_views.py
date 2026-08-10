@@ -67,14 +67,19 @@ def _resolve_teaching_section_for_session(course_unit, raw_section_id):
     if not batch_id:
         raise ValueError("Course unit has no academic cohort for teaching sections.")
 
+    from Programs.teaching_sections import section_covers_batch
+
     try:
-        return TeachingSection.objects.get(
-            pk=section_id, program_batch_id=batch_id, is_active=True
-        )
+        section = TeachingSection.objects.get(pk=section_id, is_active=True)
     except TeachingSection.DoesNotExist as exc:
         raise ValueError(
             "Teaching section not found on this course unit's academic cohort."
         ) from exc
+    if not section_covers_batch(section, batch_id):
+        raise ValueError(
+            "Teaching section not found on this course unit's academic cohort."
+        )
+    return section
 
 
 def _parse_time(value: str, label: str):

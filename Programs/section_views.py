@@ -15,8 +15,12 @@ from .models import ProgramBatch, StudentProgrammeEnrollment, TeachingSection
 from .permissions import ProgramSchedulingAPIPermission
 from .teaching_sections import (
     DEFAULT_MAX_CAPACITY,
+    get_section_for_batch_or_raise,
+    list_peer_batches_for_sharing,
     list_sections_for_batch,
     move_students_to_section,
+    serialize_section,
+    validate_linked_batches,
 )
 
 
@@ -43,6 +47,20 @@ def _get_batch_or_404(batch_id: int) -> ProgramBatch | Response:
         )
 
 
+def _parse_linked_batch_ids(raw) -> list[int]:
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raw = [raw]
+    out = []
+    for x in raw:
+        try:
+            out.append(int(x))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 class ListTeachingSectionsView(_BatchUnavailableMixin, APIView):
     permission_classes = [ProgramSchedulingAPIPermission]
 
@@ -56,6 +74,7 @@ class ListTeachingSectionsView(_BatchUnavailableMixin, APIView):
                 "program_batch_id": batch.id,
                 "program_batch_name": batch.name,
                 "sections": list_sections_for_batch(batch.id),
+                "peer_batches": list_peer_batches_for_sharing(batch.id),
             }
         )
 
@@ -94,9 +113,39 @@ class CreateTeachingSectionView(_BatchUnavailableMixin, APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        is_shared_raw = request.data.get("is_shared", False)
+        if isinstance(is_shared_raw, bool):
+            is_shared = is_shared_raw
+        else:
+            is_shared = str(is_shared_raw).lower() in ("1", "true", "yes", "on")
+
+        linked_batch_ids = _parse_linked_batch_ids(
+            request.data.get("linked_batch_ids")
+        )
+
         if TeachingSection.objects.filter(program_batch=batch, code=code).exists():
             return Response(
                 {"detail": f"Section code '{code}' already exists on this cohort."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        linked_batches = []
+        if is_shared:
+            try:
+                linked_batches = validate_linked_batches(
+                    owner_batch=batch, linked_batch_ids=linked_batch_ids
+                )
+            except ValueError as exc:
+                return Response(
+                    {"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST
+                )
+        elif linked_batch_ids:
+            return Response(
+                {
+                    "detail": (
+                        "linked_batch_ids can only be set when is_shared is true."
+                    )
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -105,20 +154,15 @@ class CreateTeachingSectionView(_BatchUnavailableMixin, APIView):
             code=code,
             name=name,
             is_default=False,
+            is_shared=is_shared,
             max_capacity=max_capacity,
             is_active=True,
         )
+        if linked_batches:
+            section.linked_batches.set(linked_batches)
+
         return Response(
-            {
-                "id": section.id,
-                "program_batch_id": batch.id,
-                "code": section.code,
-                "name": section.name,
-                "is_default": section.is_default,
-                "max_capacity": section.max_capacity,
-                "is_active": section.is_active,
-                "student_count": 0,
-            },
+            serialize_section(section, student_count=0),
             status=status.HTTP_201_CREATED,
         )
 
@@ -177,11 +221,62 @@ class UpdateTeachingSectionView(_BatchUnavailableMixin, APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-        # Do not allow flipping is_default via this endpoint (protect uniqueness).
-        section.save()
-        sections = list_sections_for_batch(section.program_batch_id)
+        update_links = "linked_batch_ids" in request.data or "is_shared" in request.data
+        if update_links:
+            if section.is_default:
+                return Response(
+                    {
+                        "detail": (
+                            "The default section cannot become a shared "
+                            "cross-programme section."
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            is_shared = section.is_shared
+            if "is_shared" in request.data:
+                raw = request.data.get("is_shared")
+                if isinstance(raw, bool):
+                    is_shared = raw
+                else:
+                    is_shared = str(raw).lower() in ("1", "true", "yes", "on")
+            linked_batch_ids = _parse_linked_batch_ids(
+                request.data.get(
+                    "linked_batch_ids",
+                    list(section.linked_batches.values_list("id", flat=True)),
+                )
+            )
+            if is_shared:
+                try:
+                    linked_batches = validate_linked_batches(
+                        owner_batch=section.program_batch,
+                        linked_batch_ids=linked_batch_ids,
+                    )
+                except ValueError as exc:
+                    return Response(
+                        {"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST
+                    )
+                section.is_shared = True
+                section.save()
+                section.linked_batches.set(linked_batches)
+            else:
+                section.is_shared = False
+                section.save()
+                section.linked_batches.clear()
+        else:
+            section.save()
+
+        # Prefer listing from the caller's batch context when provided.
+        list_batch_id = section.program_batch_id
+        try:
+            ctx = int(request.query_params.get("batch_id") or 0)
+            if ctx:
+                list_batch_id = ctx
+        except (TypeError, ValueError):
+            pass
+        sections = list_sections_for_batch(list_batch_id)
         payload = next((s for s in sections if s["id"] == section.id), None)
-        return Response(payload or {"id": section.id})
+        return Response(payload or serialize_section(section))
 
 
 class ListSectionStudentsView(_BatchUnavailableMixin, APIView):
@@ -194,19 +289,28 @@ class ListSectionStudentsView(_BatchUnavailableMixin, APIView):
         assert_program_in_user_faculties(request.user, batch.program)
 
         try:
-            section = TeachingSection.objects.get(
-                pk=section_id, program_batch_id=batch.pk
-            )
-        except TeachingSection.DoesNotExist:
+            section = get_section_for_batch_or_raise(section_id, batch.pk)
+        except ValueError as exc:
             return Response(
-                {"detail": "Teaching section not found on this cohort."},
+                {"detail": str(exc)},
                 status=status.HTTP_404_NOT_FOUND,
             )
 
+        # Shared sections: show all members; for local view of a shared section
+        # from one batch, still show everyone so staff see the combined class.
         qs = (
             StudentProgrammeEnrollment.objects.filter(teaching_section=section)
-            .select_related("student__application", "program", "program_batch")
-            .order_by("student__reg_no", "student__student_id")
+            .select_related(
+                "student__application",
+                "program",
+                "program_batch",
+                "program_batch__program",
+            )
+            .order_by(
+                "program_batch__program__name",
+                "student__reg_no",
+                "student__student_id",
+            )
         )
         search = (request.query_params.get("search") or "").strip()
         if search:
@@ -218,11 +322,14 @@ class ListSectionStudentsView(_BatchUnavailableMixin, APIView):
             )
 
         students = []
-        for spe in qs[:500]:
+        for spe in qs[:800]:
             app = getattr(spe.student, "application", None)
             name = ""
             if app is not None:
                 name = f"{app.first_name or ''} {app.last_name or ''}".strip()
+            prog = getattr(spe, "program", None) or getattr(
+                spe.program_batch, "program", None
+            )
             students.append(
                 {
                     "enrollment_id": spe.id,
@@ -234,6 +341,10 @@ class ListSectionStudentsView(_BatchUnavailableMixin, APIView):
                     "status": spe.status,
                     "current_year_of_study": spe.current_year_of_study,
                     "current_term_number": spe.current_term_number,
+                    "program_batch_id": spe.program_batch_id,
+                    "program_name": prog.name if prog else None,
+                    "program_code": getattr(prog, "short_form", None) if prog else None,
+                    "from_this_batch": spe.program_batch_id == batch.pk,
                 }
             )
 
@@ -242,6 +353,7 @@ class ListSectionStudentsView(_BatchUnavailableMixin, APIView):
                 "section_id": section.id,
                 "section_code": section.code,
                 "section_name": section.name,
+                "is_shared": bool(section.is_shared),
                 "count": len(students),
                 "students": students,
             }
@@ -294,7 +406,6 @@ class MoveStudentsToSectionView(_BatchUnavailableMixin, APIView):
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except ProgrammingError as exc:
-            # Common after Programs.0023 was faked without SPE.teaching_section_id DDL.
             return Response(
                 {
                     "detail": (
@@ -307,7 +418,6 @@ class MoveStudentsToSectionView(_BatchUnavailableMixin, APIView):
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
         except Exception as exc:
-            # e.g. NotSupportedError from FOR UPDATE + nullable join (fixed in teaching_sections)
             return Response(
                 {"detail": str(exc) or "Could not move students to section."},
                 status=status.HTTP_400_BAD_REQUEST,

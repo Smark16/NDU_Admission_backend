@@ -1,4 +1,4 @@
-"""Teaching sections within an academic cohort (ProgramBatch)."""
+"""Teaching sections within an academic cohort (ProgramBatch), including shared ones."""
 from __future__ import annotations
 
 import logging
@@ -41,6 +41,73 @@ def resolve_program_batch_for_course_unit(course_unit):
     return None
 
 
+def section_covers_batch(section, program_batch_id: int | None) -> bool:
+    """True if the section's owning or linked cohorts include this batch."""
+    if section is None or not program_batch_id:
+        return False
+    if section.program_batch_id == program_batch_id:
+        return True
+    if not getattr(section, "is_shared", False):
+        return False
+    linked = getattr(section, "linked_batches", None)
+    if linked is None:
+        return False
+    return linked.filter(pk=program_batch_id).exists()
+
+
+def serialize_section(section, *, student_count: int | None = None) -> dict:
+    if student_count is None:
+        student_count = section_headcount(section)
+
+    linked = []
+    if getattr(section, "is_shared", False):
+        # Prefer prefetched relation when available
+        try:
+            batches = list(section.linked_batches.select_related("program").all())
+        except Exception:
+            batches = []
+        linked = [
+            {
+                "id": b.id,
+                "name": b.name,
+                "program_id": b.program_id,
+                "program_name": b.program.name if b.program_id else None,
+                "program_code": getattr(b.program, "short_form", None) if b.program_id else None,
+            }
+            for b in batches
+        ]
+
+    owner_program = None
+    try:
+        owner_program = section.program_batch.program
+    except Exception:
+        owner_program = None
+
+    return {
+        "id": section.id,
+        "program_batch_id": section.program_batch_id,
+        "owner_program_id": getattr(owner_program, "id", None),
+        "owner_program_code": getattr(owner_program, "short_form", None),
+        "owner_batch_name": (
+            section.program_batch.name
+            if getattr(section, "program_batch_id", None)
+            else None
+        ),
+        "code": section.code,
+        "name": section.name,
+        "is_default": section.is_default,
+        "is_shared": bool(section.is_shared),
+        "linked_batches": linked,
+        "linked_batch_ids": [b["id"] for b in linked],
+        "max_capacity": section.max_capacity,
+        "is_active": section.is_active,
+        "student_count": student_count,
+        "at_or_over_capacity": (
+            section.max_capacity > 0 and student_count >= section.max_capacity
+        ),
+    }
+
+
 def ensure_default_teaching_section(program_batch, *, max_capacity: int = DEFAULT_MAX_CAPACITY):
     """
     Ensure the cohort has exactly one default teaching section.
@@ -65,6 +132,7 @@ def ensure_default_teaching_section(program_batch, *, max_capacity: int = DEFAUL
         defaults={
             "name": DEFAULT_SECTION_NAME,
             "is_default": True,
+            "is_shared": False,
             "max_capacity": max_capacity,
             "is_active": True,
         },
@@ -87,7 +155,7 @@ def ensure_default_teaching_section(program_batch, *, max_capacity: int = DEFAUL
 def ensure_enrollment_teaching_section(enrollment, *, assign_only: bool = False):
     """
     Assign enrollment.teaching_section to the cohort default when missing or
-    when the current section belongs to a different cohort.
+    when the current section does not cover this cohort (including shared).
 
     When assign_only=True, only mutates the in-memory instance (for use inside save()).
     """
@@ -100,18 +168,12 @@ def ensure_enrollment_teaching_section(enrollment, *, assign_only: bool = False)
     if not enrollment.teaching_section_id:
         needs = True
     else:
-        section_batch_id = None
-        # Prefer cached related object when loaded
         section = getattr(enrollment, "teaching_section", None)
-        if section is not None and getattr(section, "pk", None):
-            section_batch_id = section.program_batch_id
-        else:
-            section_batch_id = (
-                TeachingSection.objects.filter(pk=enrollment.teaching_section_id)
-                .values_list("program_batch_id", flat=True)
-                .first()
-            )
-        if section_batch_id != enrollment.program_batch_id:
+        if section is None or not getattr(section, "pk", None):
+            section = TeachingSection.objects.filter(pk=enrollment.teaching_section_id).first()
+        if section is None:
+            needs = True
+        elif not section_covers_batch(section, enrollment.program_batch_id):
             needs = True
 
     if not needs:
@@ -140,6 +202,43 @@ def section_headcount(section) -> int:
     return StudentProgrammeEnrollment.objects.filter(teaching_section_id=section.pk).count()
 
 
+def list_peer_batches_for_sharing(program_batch_id: int) -> list[dict]:
+    """Other active cohorts in the same faculty (candidates for shared sections)."""
+    from Programs.models import ProgramBatch
+
+    batch = (
+        ProgramBatch.objects.select_related("program__faculty")
+        .filter(pk=program_batch_id)
+        .first()
+    )
+    if batch is None or not batch.program_id:
+        return []
+    faculty_id = getattr(batch.program, "faculty_id", None)
+    if not faculty_id:
+        return []
+
+    peers = (
+        ProgramBatch.objects.filter(
+            program__faculty_id=faculty_id,
+            is_active=True,
+        )
+        .exclude(pk=batch.pk)
+        .select_related("program")
+        .order_by("program__name", "name")
+    )
+    return [
+        {
+            "id": b.id,
+            "name": b.name,
+            "program_id": b.program_id,
+            "program_name": b.program.name,
+            "program_code": getattr(b.program, "short_form", None),
+            "academic_year": b.academic_year or "",
+        }
+        for b in peers[:300]
+    ]
+
+
 def list_sections_for_batch(program_batch_id: int) -> list[dict]:
     from Programs.models import ProgramBatch, TeachingSection
 
@@ -149,26 +248,66 @@ def list_sections_for_batch(program_batch_id: int) -> list[dict]:
     ensure_default_teaching_section(batch)
 
     qs = (
-        TeachingSection.objects.filter(program_batch_id=program_batch_id)
-        .annotate(student_count=Count("student_enrollments"))
-        .order_by("-is_default", "code", "name")
+        TeachingSection.objects.filter(
+            Q(program_batch_id=program_batch_id)
+            | Q(is_shared=True, linked_batches__id=program_batch_id)
+        )
+        .select_related("program_batch__program")
+        .prefetch_related("linked_batches__program")
+        .annotate(student_count=Count("student_enrollments", distinct=True))
+        .distinct()
+        .order_by("-is_default", "-is_shared", "code", "name")
     )
-    return [
-        {
-            "id": s.id,
-            "program_batch_id": s.program_batch_id,
-            "code": s.code,
-            "name": s.name,
-            "is_default": s.is_default,
-            "max_capacity": s.max_capacity,
-            "is_active": s.is_active,
-            "student_count": s.student_count,
-            "at_or_over_capacity": (
-                s.max_capacity > 0 and s.student_count >= s.max_capacity
-            ),
-        }
-        for s in qs
-    ]
+    return [serialize_section(s, student_count=s.student_count) for s in qs]
+
+
+def get_section_for_batch_or_raise(section_id: int, program_batch_id: int):
+    """Return active/usable section that covers this batch, or raise ValueError."""
+    from Programs.models import TeachingSection
+
+    section = (
+        TeachingSection.objects.select_related("program_batch__program")
+        .prefetch_related("linked_batches")
+        .filter(pk=section_id)
+        .first()
+    )
+    if section is None:
+        raise ValueError("Teaching section not found.")
+    if not section_covers_batch(section, program_batch_id):
+        raise ValueError("Teaching section is not available on this academic cohort.")
+    return section
+
+
+def validate_linked_batches(*, owner_batch, linked_batch_ids: list[int]) -> list:
+    """Ensure linked batches exist, differ from owner, and share the same faculty."""
+    from Programs.models import ProgramBatch
+
+    ids = sorted({int(x) for x in linked_batch_ids if x is not None})
+    ids = [i for i in ids if i != owner_batch.pk]
+    if not ids:
+        raise ValueError(
+            "Shared sections require at least one other programme batch "
+            "in the same faculty."
+        )
+
+    faculty_id = getattr(owner_batch.program, "faculty_id", None)
+    if not faculty_id:
+        raise ValueError("Owning programme has no faculty; cannot create a shared section.")
+
+    batches = list(
+        ProgramBatch.objects.filter(pk__in=ids).select_related("program")
+    )
+    if len(batches) != len(ids):
+        raise ValueError("One or more linked programme batches were not found.")
+
+    for b in batches:
+        if getattr(b.program, "faculty_id", None) != faculty_id:
+            raise ValueError(
+                f"Batch '{b}' is not in the same faculty as the owning cohort."
+            )
+        if not b.is_active:
+            raise ValueError(f"Batch '{b}' is inactive and cannot be linked.")
+    return batches
 
 
 @transaction.atomic
@@ -181,7 +320,8 @@ def move_students_to_section(
     enforce_capacity: bool = True,
 ) -> dict:
     """
-    Move programme enrollments into a teaching section on the same cohort.
+    Move programme enrollments into a teaching section that covers this cohort
+    (own section or shared section linked to this batch).
     ``student_ids`` are AdmittedStudent PKs; ``enrollment_ids`` are SPE PKs.
     """
     from Programs.models import ProgramBatch, StudentProgrammeEnrollment, TeachingSection
@@ -192,11 +332,12 @@ def move_students_to_section(
         raise ValueError("Academic programme batch not found.") from exc
 
     try:
-        target = TeachingSection.objects.select_for_update().get(
-            pk=target_section_id, program_batch_id=batch.pk
-        )
+        target = TeachingSection.objects.select_for_update().get(pk=target_section_id)
     except TeachingSection.DoesNotExist as exc:
-        raise ValueError("Target teaching section not found on this cohort.") from exc
+        raise ValueError("Target teaching section not found.") from exc
+
+    if not section_covers_batch(target, batch.pk):
+        raise ValueError("Target teaching section is not available on this cohort.")
 
     if not target.is_active:
         raise ValueError("Target teaching section is inactive.")
@@ -231,8 +372,6 @@ def move_students_to_section(
 
     moved = 0
     for enrollment in to_move:
-        enrollment.teaching_section = target
-        # Bypass SPE.save section auto-logic by setting FK then saving fields
         StudentProgrammeEnrollment.objects.filter(pk=enrollment.pk).update(
             teaching_section_id=target.pk
         )
@@ -244,6 +383,7 @@ def move_students_to_section(
         "target_section_id": target.id,
         "target_section_code": target.code,
         "target_student_count": section_headcount(target),
+        "is_shared": bool(target.is_shared),
     }
 
 
@@ -262,10 +402,18 @@ def backfill_all_teaching_sections(*, dry_run: bool = False) -> dict:
                 program_batch_id=batch.pk, is_default=True
             ).exists():
                 missing_defaults += 1
-        needing = StudentProgrammeEnrollment.objects.filter(
+        needing = 0
+        for enrollment in StudentProgrammeEnrollment.objects.filter(
             Q(teaching_section__isnull=True)
             | ~Q(teaching_section__program_batch_id=F("program_batch_id"))
-        ).count()
+        ).iterator():
+            section = enrollment.teaching_section
+            if enrollment.teaching_section_id is None:
+                needing += 1
+            elif section is None or not section_covers_batch(
+                section, enrollment.program_batch_id
+            ):
+                needing += 1
         return {
             "dry_run": True,
             "batches": len(batches),
@@ -281,12 +429,17 @@ def backfill_all_teaching_sections(*, dry_run: bool = False) -> dict:
         if not before and section is not None:
             created_defaults += 1
 
-    to_fix = StudentProgrammeEnrollment.objects.filter(
+    # Only reset rows whose section does not cover their cohort (shared OK).
+    candidates = StudentProgrammeEnrollment.objects.filter(
         Q(teaching_section__isnull=True)
         | ~Q(teaching_section__program_batch_id=F("program_batch_id"))
-    ).select_related("program_batch")
+    ).select_related("program_batch", "teaching_section")
 
-    for enrollment in to_fix.iterator():
+    for enrollment in candidates.iterator():
+        section = enrollment.teaching_section
+        if enrollment.teaching_section_id and section is not None:
+            if section_covers_batch(section, enrollment.program_batch_id):
+                continue
         ensure_enrollment_teaching_section(enrollment, assign_only=False)
         assigned += 1
 
