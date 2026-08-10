@@ -3321,21 +3321,21 @@ class ListBonafideStudents(generics.ListAPIView):
         """Load page rows without selecting SPE.teaching_section (may be missing if 0023 was faked)."""
         from Programs.spe_queryset import prefetch_programme_enrollment_for_lists
 
+        from accounts.finance_access import user_can_view_scholarship_status
         from admissions.temporary_access import (
             annotate_scholarship_status,
             annotate_temporary_access,
         )
 
-        enriched = {
-            obj.pk: obj
-            for obj in annotate_scholarship_status(
-                annotate_temporary_access(
-                    AdmittedStudent.objects.filter(pk__in=page_ids)
-                    .select_related(*self._BONAFIDE_SELECT_RELATED)
-                    .prefetch_related(prefetch_programme_enrollment_for_lists())
-                )
-            )
-        }
+        qs = (
+            AdmittedStudent.objects.filter(pk__in=page_ids)
+            .select_related(*self._BONAFIDE_SELECT_RELATED)
+            .prefetch_related(prefetch_programme_enrollment_for_lists())
+        )
+        # Scholarship / temp-pass subqueries are unused for Admissions-only users.
+        if user_can_view_scholarship_status(self.request.user):
+            qs = annotate_scholarship_status(annotate_temporary_access(qs))
+        enriched = {obj.pk: obj for obj in qs}
         return [enriched[pk] for pk in page_ids if pk in enriched]
 
     def list(self, request, *args, **kwargs):

@@ -981,23 +981,33 @@ class BonafideStudentSerializer(serializers.ModelSerializer):
 
         return registration_stage_label(self.get_registration_stage(obj))
 
-    def _request_user_can_view_finance(self) -> bool:
+    def _cached_access_flags(self) -> tuple[bool, bool]:
+        """Cache finance/scholarship visibility once per serializer instance."""
+        cached = getattr(self, "_bonafide_access_flags", None)
+        if cached is not None:
+            return cached
         request = self.context.get("request")
         user = getattr(request, "user", None) if request is not None else None
         if user is None:
-            return False
-        from accounts.finance_access import user_can_view_student_finance
+            flags = (False, False)
+        else:
+            from accounts.finance_access import (
+                user_can_view_scholarship_status,
+                user_can_view_student_finance,
+            )
 
-        return user_can_view_student_finance(user)
+            flags = (
+                user_can_view_student_finance(user),
+                user_can_view_scholarship_status(user),
+            )
+        self._bonafide_access_flags = flags
+        return flags
+
+    def _request_user_can_view_finance(self) -> bool:
+        return self._cached_access_flags()[0]
 
     def _request_user_can_view_scholarship(self) -> bool:
-        request = self.context.get("request")
-        user = getattr(request, "user", None) if request is not None else None
-        if user is None:
-            return False
-        from accounts.finance_access import user_can_view_scholarship_status
-
-        return user_can_view_scholarship_status(user)
+        return self._cached_access_flags()[1]
 
     def _finance_totals(self, obj):
         """Balance carried forward across all terms (not just the current one).
