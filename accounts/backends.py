@@ -4,7 +4,28 @@ from django.db.models import Q
 from .models import User
 
 
-class StudentIdBackend(ModelBackend):
+class DenyAwarePermissionMixin:
+    """Subtract RoleCapability Deny rows from ModelBackend permission sets."""
+
+    def get_all_permissions(self, user_obj, obj=None):
+        perms = super().get_all_permissions(user_obj, obj)
+        if not perms:
+            return perms
+        try:
+            from accounts.role_capabilities import denied_permission_strings_for_user
+            from accounts.super_admin import user_is_super_admin
+
+            if user_is_super_admin(user_obj) or getattr(user_obj, "is_superuser", False):
+                return perms
+            denied = denied_permission_strings_for_user(user_obj)
+            if not denied:
+                return perms
+            return perms - denied
+        except Exception:
+            return perms
+
+
+class StudentIdBackend(DenyAwarePermissionMixin, ModelBackend):
     """Authenticate by email, portal username, registration number, or student ID."""
 
     def authenticate(self, request, username=None, password=None, **kwargs):
@@ -71,3 +92,9 @@ class StudentIdBackend(ModelBackend):
             pass
 
         return None
+
+
+class DenyAwareModelBackend(DenyAwarePermissionMixin, ModelBackend):
+    """Default ModelBackend with role Deny support."""
+
+    pass

@@ -259,7 +259,50 @@ class ErpAccessPolicy(models.Model):
                 "access_hostel",
                 "Access Hostel / Halls of Residence module",
             ),
+            (
+                "manage_role_capabilities",
+                "Manage role capability matrix (Allow / Deny permissions on roles)",
+            ),
         ]
 
     def __str__(self):
         return self.label
+
+
+class RoleCapability(models.Model):
+    """Per-role Allow / Deny for an auth.Permission (Moodle-style Prohibit = Deny)."""
+
+    STATE_ALLOW = "allow"
+    STATE_DENY = "deny"
+    STATE_CHOICES = (
+        (STATE_ALLOW, "Allow"),
+        (STATE_DENY, "Deny"),
+    )
+
+    group = models.ForeignKey(
+        "auth.Group",
+        on_delete=models.CASCADE,
+        related_name="role_capabilities",
+    )
+    permission = models.ForeignKey(
+        "auth.Permission",
+        on_delete=models.CASCADE,
+        related_name="role_capabilities",
+    )
+    state = models.CharField(max_length=8, choices=STATE_CHOICES)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["group", "permission"],
+                name="uniq_role_capability_group_permission",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["group", "state"]),
+            models.Index(fields=["permission", "state"]),
+        ]
+
+    def __str__(self):
+        return f"{self.group.name}: {self.permission} = {self.state}"

@@ -200,6 +200,14 @@ ERP_TEAM_ROLE_MATRIX = {
         ("auth", "add_group"),
         ("auth", "change_group"),
     ],
+    # Capability matrix editor (Allow / Deny) — not full user admin.
+    "Permission Admin": [
+        ("accounts", "access_user_management"),
+        ("accounts", "manage_role_capabilities"),
+        ("auth", "view_group"),
+        ("auth", "change_group"),
+        ("auth", "view_permission"),
+    ],
     "System Settings Officer": [
         ("accounts", "access_system_settings"),
         ("accounts", "manage_communication_templates"),
@@ -278,6 +286,12 @@ def seed_erp_team_role_group(Group, Permission, group_name: str, *, stdout=None)
     desired_ids = {p.pk for p in desired}
     # Sync to matrix so revoked sensitive perms (e.g. clearance on Finance Officer) are removed.
     group.permissions.set(desired)
+    try:
+        from accounts.role_capabilities import sync_allows_from_group_m2m
+
+        sync_allows_from_group_m2m(group)
+    except Exception:
+        pass
     added = len(desired_ids - before)
     removed = len(before - desired_ids)
     if stdout:

@@ -7,15 +7,34 @@ from hostel.role_setup import seed_all_hostel_roles
 
 
 class Command(BaseCommand):
-    help = "Create/update Dean of Students, Hostel Manager, and Hostel Viewer groups."
+    help = (
+        "Create/sync Dean of Students, Hostel Manager, and Hostel Viewer groups "
+        "to hostel-module permissions only."
+    )
+
+    def add_arguments(self, parser):
+        parser.add_argument(
+            "--no-sync",
+            action="store_true",
+            help="Only add missing permissions; do not remove extras from the groups.",
+        )
 
     def handle(self, *args, **options):
-        for app_name in ("accounts", "hostel", "admissions"):
+        for app_name in ("accounts", "hostel"):
             app_config = django_apps.get_app_config(app_name)
             create_contenttypes(app_config, verbosity=0, interactive=False)
             create_permissions(app_config, verbosity=0, interactive=False)
 
         from django.contrib.auth.models import Group, Permission
 
-        seed_all_hostel_roles(Group, Permission, stdout=self.stdout)
-        self.stdout.write(self.style.SUCCESS("Hostel roles ready."))
+        seed_all_hostel_roles(
+            Group,
+            Permission,
+            stdout=self.stdout,
+            sync=not options["no_sync"],
+        )
+        self.stdout.write(
+            self.style.SUCCESS(
+                "Hostel roles ready (hostel module only — Students module locked out)."
+            )
+        )

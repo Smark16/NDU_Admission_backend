@@ -26,6 +26,11 @@ urlpatterns = [
     path('create_roles', CreateRoles.as_view()),
     path('edit_roles/<int:pk>', EditRoles.as_view()),
     path('delete_roles/<int:pk>', DeleteRoles.as_view()),
+    path(
+        'roles/<int:pk>/capabilities',
+        RoleCapabilityMatrixView.as_view(),
+        name='role_capability_matrix',
+    ),
 
     path('list_campus', ListCampus.as_view()),
     path('create_campus', CreateCampus.as_view()),

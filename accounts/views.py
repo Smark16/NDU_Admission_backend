@@ -505,6 +505,8 @@ class CreateRoles(generics.CreateAPIView):
     parser_classes = [JSONParser, MultiPartParser, FormParser]
 
     def create(self, request, *args, **kwargs):
+        from accounts.role_capabilities import sync_allows_from_group_m2m
+
         name = (request.data.get("name") or "").strip()
         if not name:
             return Response({"detail": "name is required."}, status=status.HTTP_400_BAD_REQUEST)
@@ -514,6 +516,7 @@ class CreateRoles(generics.CreateAPIView):
         )
         serializer.is_valid(raise_exception=True)
         self.perform_create(serializer)
+        sync_allows_from_group_m2m(serializer.instance)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
@@ -525,6 +528,8 @@ class EditRoles(generics.UpdateAPIView):
     parser_classes = [JSONParser, MultiPartParser, FormParser]
 
     def put(self, request, *args, **kwargs):
+        from accounts.role_capabilities import sync_allows_from_group_m2m
+
         instance = self.get_object()
         name = (request.data.get("name") or "").strip() or instance.name
         perm_ids = _permission_ids_from_request(request)
@@ -534,6 +539,7 @@ class EditRoles(generics.UpdateAPIView):
         )
         serializer.is_valid(raise_exception=True)
         serializer.save()
+        sync_allows_from_group_m2m(instance)
 
         return Response(serializer.data, status=200)
 
@@ -548,6 +554,92 @@ class DeleteRoles(generics.RetrieveDestroyAPIView):
         instance.delete()
 
         return Response({"detail":"role deleted successfully"})
+
+
+class CanManageRoleCapabilities(permissions.BasePermission):
+    message = "You do not have permission to manage role capabilities."
+
+    def has_permission(self, request, view):
+        from accounts.role_capabilities import user_can_manage_role_capabilities
+
+        return user_can_manage_role_capabilities(request.user)
+
+
+class RoleCapabilityMatrixView(APIView):
+    """
+    GET/PUT capability matrix for a Django Group (role).
+    States: allow | deny. Omitted permissions = not set.
+    """
+
+    permission_classes = [IsAuthenticated, CanManageRoleCapabilities]
+
+    def get(self, request, pk):
+        from accounts.models import RoleCapability
+        from accounts.role_capabilities import permission_label
+
+        group = get_object_or_404(Group, pk=pk)
+        caps = {
+            rc.permission_id: rc.state
+            for rc in RoleCapability.objects.filter(group=group).only(
+                "permission_id", "state"
+            )
+        }
+        perms = (
+            Permission.objects.select_related("content_type")
+            .order_by("content_type__app_label", "codename")
+        )
+        rows = []
+        for p in perms:
+            rows.append(
+                {
+                    "permission_id": p.id,
+                    "app_label": p.content_type.app_label,
+                    "codename": p.codename,
+                    "name": p.name,
+                    "label": permission_label(p),
+                    "state": caps.get(p.id) or "not_set",
+                }
+            )
+        allow_n = sum(1 for r in rows if r["state"] == "allow")
+        deny_n = sum(1 for r in rows if r["state"] == "deny")
+        return Response(
+            {
+                "group": {"id": group.id, "name": group.name},
+                "summary": {
+                    "allow": allow_n,
+                    "deny": deny_n,
+                    "not_set": len(rows) - allow_n - deny_n,
+                },
+                "capabilities": rows,
+            }
+        )
+
+    def put(self, request, pk):
+        from accounts.role_capabilities import replace_group_capabilities
+
+        group = get_object_or_404(Group, pk=pk)
+        raw = request.data.get("capabilities")
+        if raw is None:
+            return Response(
+                {"detail": "capabilities list is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not isinstance(raw, list):
+            return Response(
+                {"detail": "capabilities must be a list."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        replace_group_capabilities(group, raw)
+        log_audit_event(
+            request.user,
+            "update",
+            group,
+            f"Updated role capability matrix for {group.name} "
+            f"({len(raw)} capability row(s) submitted)",
+            request,
+        )
+        # Return refreshed matrix (same shape as GET).
+        return self.get(request, pk)
 
 # ==================================================campus=================================================
 

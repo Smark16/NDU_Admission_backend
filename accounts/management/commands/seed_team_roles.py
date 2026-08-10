@@ -34,6 +34,11 @@ class Command(BaseCommand):
         self.stdout.write("")
         self.stdout.write("Seeding Super Admin (all permissions)...")
         seed_super_admin_role(Group, Permission, stdout=self.stdout)
+        self.stdout.write("")
+        self.stdout.write("Backfilling RoleCapability Allow rows from group M2M...")
+        from accounts.role_capabilities import backfill_all_group_allows
+
+        backfill_all_group_allows(stdout=self.stdout)
 
         if options["all_modules"]:
             self.stdout.write("")

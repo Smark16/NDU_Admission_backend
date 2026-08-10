@@ -43,6 +43,7 @@ def _all_permission_strings() -> list[str]:
 
 def session_payload(user) -> dict:
     """Live session snapshot for /api/accounts/session/ (no new JWT required)."""
+    from accounts.role_capabilities import effective_permission_strings
     from accounts.super_admin import user_is_super_admin
 
     portal_mode = resolve_portal_mode(user)
@@ -51,7 +52,10 @@ def session_payload(user) -> dict:
     is_super = user_is_super_admin(user)
     # Super Admin always gets every permission, even if the group was not
     # re-seeded after a new custom permission was added.
-    permissions = _all_permission_strings() if is_super else list(user.get_all_permissions())
+    # Non-super: Allows minus any role Deny (Moodle-style Prohibit).
+    permissions = (
+        _all_permission_strings() if is_super else effective_permission_strings(user)
+    )
 
     return {
         "first_name": user.first_name,
