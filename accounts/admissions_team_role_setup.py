@@ -1,11 +1,12 @@
 """
-Admissions Team — Admissions module only (sidebar + APIs).
+Admissions Team — Admissions-focused staff role.
 
 Can: applications, approve/reject, admit/revoke, offer letters, intakes,
-subjects/templates, academic levels/years, admission reports (API).
+subjects/templates, academic levels/years, admission reports.
 
-Cannot: User Management, Fees & tuition module, Students module menus
-(Finance / Academics / Enrollment). Admit still works from Applications.
+Sidebar follows Role Management ticks (no hard module hide). Soft-deny blocks
+Finance / Academics / User Management / Fees. Student directory View is kept
+for admit/offer APIs and will show Students menus that use that permission.
 """
 from __future__ import annotations
 
@@ -15,12 +16,11 @@ from accounts.erp_role_setup import get_permission
 
 ROLE_NAME = "Admissions Team"
 
-# Keep this list free of perms that unlock other top-level sidebar modules:
-# - accounts.view_user           -> User Management
+# Avoid granting perms that open unrelated modules unless intended:
+# - accounts.view_user           -> User Management + Prospective Students
 # - accounts.access_reports      -> broad Reports
 # - payments.view_applicationpayment -> Fees & tuition
-# Students menu uses view_admittedstudent; we keep that for admit/directory APIs
-# but the Horizon sidebar hides non-Admissions modules for this role.
+# view_admittedstudent is required for admit/offer APIs (also unlocks Students menus).
 ADMISSIONS_TEAM_ALLOW = (
     ("accounts", "access_admissions"),
     ("accounts", "manage_direct_applications"),
