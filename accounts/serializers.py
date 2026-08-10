@@ -47,6 +47,45 @@ class UserSerializer(serializers.ModelSerializer):
         return response
 
 
+class UserManagementUpdateSerializer(serializers.ModelSerializer):
+    """Safe subset for User Management edits — never touches groups/permissions M2M."""
+
+    class Meta:
+        model = User
+        fields = (
+            "first_name",
+            "last_name",
+            "email",
+            "phone",
+            "staff_id",
+            "role",
+            "is_staff",
+            "is_active",
+        )
+
+    def validate_staff_id(self, value):
+        return normalize_staff_id(value)
+
+    def validate_email(self, value):
+        email = (value or "").strip()
+        if not email:
+            raise serializers.ValidationError("Email is required.")
+        qs = User.objects.filter(email__iexact=email)
+        if self.instance:
+            qs = qs.exclude(pk=self.instance.pk)
+        if qs.exists():
+            raise serializers.ValidationError("A user with this email already exists.")
+        return email
+
+    def update(self, instance, validated_data):
+        email = validated_data.get("email")
+        instance = super().update(instance, validated_data)
+        if email and instance.username != email:
+            instance.username = email
+            instance.save(update_fields=["username"])
+        return instance
+
+
 class ListUserSerializer(serializers.ModelSerializer):
     """Lightweight user payload for admin list screens (no password hash)."""
 

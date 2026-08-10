@@ -46,7 +46,7 @@ class Command(BaseCommand):
         self.stdout.write("")
         self.stdout.write(self.style.SUCCESS(f"{ROLE_NAME} ready."))
         self.stdout.write(
-            "Assign users in Admin → User Management → Users. "
+            "Assign users in Admin > User Management > Users. "
             "They must log out and back in after role changes."
         )
         self.stdout.write(

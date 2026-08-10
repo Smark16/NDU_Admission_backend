@@ -155,6 +155,8 @@ class UpdateUser(generics.UpdateAPIView):
     permission_classes = [IsAuthenticated]
 
     def put(self, request, *args, **kwargs):
+        from accounts.serializers import UserManagementUpdateSerializer
+
         instance = self.get_object()
         # Never accept raw password writes through ModelSerializer; hash it properly.
         data = request.data.copy()
@@ -164,6 +166,8 @@ class UpdateUser(generics.UpdateAPIView):
             data.pop("user_permissions", None)
         new_role = (data.get("role") or "").strip()
         roles_payload = data.pop("roles", None)
+        if roles_payload is not None and not isinstance(roles_payload, list):
+            roles_payload = [roles_payload]
         if new_role.lower() == "student":
             return Response(
                 {"detail": "Student accounts are created from Admissions/Direct Admission, not User Management."},
@@ -208,7 +212,7 @@ class UpdateUser(generics.UpdateAPIView):
             data["staff_id"] = normalize_staff_id(data.get("staff_id"))
 
         try:
-            serializer = self.serializer_class(instance, data=data, partial=True)
+            serializer = UserManagementUpdateSerializer(instance, data=data, partial=True)
             serializer.is_valid(raise_exception=True)
             serializer.save()
         except IntegrityError as exc:
@@ -256,8 +260,13 @@ class UpdateUser(generics.UpdateAPIView):
             User.objects.prefetch_related("groups", "campuses", "faculties")
             .get(pk=instance.pk)
         )
-        from hr.staff.utils.profile_sync import ensure_staff_profile_for_user
-        ensure_staff_profile_for_user(instance)
+        try:
+            from hr.staff.utils.profile_sync import ensure_staff_profile_for_user
+
+            ensure_staff_profile_for_user(instance)
+        except Exception:
+            # Staff profile sync must not block role assignment.
+            pass
         return Response(ListUserSerializer(instance).data, status=200)
     
 # get single user
