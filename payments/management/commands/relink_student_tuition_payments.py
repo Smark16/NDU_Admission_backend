@@ -62,8 +62,64 @@ class Command(BaseCommand):
                 ).values_list("id", flat=True)
             )
             if not student_ids:
-                self.stderr.write(self.style.ERROR(f"No admitted student for: {lookup!r}"))
-                return
+                # Payment code may exist on ledger only (student_id never set / mistyped).
+                from payments.models import TuitionLedger
+
+                ledger_student_ids = list(
+                    TuitionLedger.objects.filter(student_payment_code__iexact=lookup)
+                    .exclude(student_id__isnull=True)
+                    .values_list("student_id", flat=True)
+                    .distinct()
+                )
+                if ledger_student_ids:
+                    student_ids = ledger_student_ids
+                    self.stdout.write(
+                        self.style.WARNING(
+                            f"No student_id/schoolpay_code/reg_no match for {lookup!r}; "
+                            f"using student(s) already linked on TuitionLedger: {student_ids}"
+                        )
+                    )
+                else:
+                    orphan_rows = list(
+                        TuitionLedger.objects.filter(student_payment_code__iexact=lookup)
+                        .order_by("-created_at")
+                        .values(
+                            "id",
+                            "amount",
+                            "transaction_completion_status",
+                            "student_name",
+                            "student_registration_number",
+                            "student_id",
+                            "schoolpay_receipt_number",
+                        )[:20]
+                    )
+                    self.stderr.write(
+                        self.style.ERROR(f"No admitted student for: {lookup!r}")
+                    )
+                    if orphan_rows:
+                        self.stderr.write(
+                            "Found TuitionLedger row(s) with this payment code "
+                            "(not linked to an admitted student):"
+                        )
+                        for row in orphan_rows:
+                            self.stderr.write(
+                                f"  ledger#{row['id']} amount={row['amount']} "
+                                f"status={row['transaction_completion_status']} "
+                                f"name={row['student_name']!r} "
+                                f"reg={row['student_registration_number']!r} "
+                                f"student_fk={row['student_id']} "
+                                f"receipt={row['schoolpay_receipt_number']!r}"
+                            )
+                        self.stderr.write(
+                            "Fix: set the student's SchoolPay / student_id to this code "
+                            "(or correct reg_no), then re-run this command."
+                        )
+                    else:
+                        self.stderr.write(
+                            "No TuitionLedger rows for this payment code either — "
+                            "SchoolPay sync may not have imported the payment yet."
+                        )
+                    return
 
         only_changes = options["only_changes"] or (
             options["all"] and not options["verbose"]
