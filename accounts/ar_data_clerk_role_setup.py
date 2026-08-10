@@ -138,6 +138,21 @@ def seed_ar_data_clerk_role(*, stdout=None, repair_users: bool = True) -> Group:
 
     # Wipe prior Allow/Deny matrix so old "no admit" denies are gone.
     RoleCapability.objects.filter(group=group).delete()
+    # Also clear admit-related Deny rows left on any leftover AR Data* groups.
+    admit_deny_codes = (
+        "admit_applicant",
+        "add_admittedstudent",
+        "change_admittedstudent",
+        "revoke_admission",
+        "restore_revoked_admission",
+        "approve_application",
+        "reject_application",
+    )
+    RoleCapability.objects.filter(
+        group__name__icontains="ar data",
+        state=RoleCapability.STATE_DENY,
+        permission__codename__in=admit_deny_codes,
+    ).delete()
 
     allows = _resolve_perms(AR_DATA_CLERK_ALLOW)
     group.permissions.set(allows)
