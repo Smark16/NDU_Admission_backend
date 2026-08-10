@@ -110,6 +110,53 @@ def tuition_ledger_queryset_for_student(student: AdmittedStudent):
     )
 
 
+def attach_extra_payment_codes_to_student(
+    student: AdmittedStudent,
+    extra_codes: list[str] | set[str],
+) -> int:
+    """
+    After a programme change SchoolPay may issue a new wallet code while older
+    payments remain on the previous code. Attach those ledger rows to the
+    current student and keep the old code on ``schoolpay_code`` when the
+    locked ``student_id`` is already the new wallet.
+    """
+    codes = {(c or "").strip() for c in extra_codes if (c or "").strip()}
+    if not codes:
+        return 0
+
+    qs = TuitionLedger.objects.filter(student_payment_code__in=codes).filter(
+        Q(student__isnull=True) | ~Q(student_id=student.pk)
+    )
+    ledgers = list(qs.only("id", "user_id", "student_id", "student_payment_code"))
+    for ledger in ledgers:
+        ledger.student_id = student.pk
+        if student.student_user_id and ledger.user_id is None:
+            ledger.user_id = student.student_user_id
+    if ledgers:
+        TuitionLedger.objects.bulk_update(ledgers, ["student", "user"])
+
+    current_id = (student.student_id or "").strip()
+    current_sp = (student.schoolpay_code or "").strip()
+    update_fields: list[str] = []
+    # Prefer keeping the locked/new wallet on student_id; park prior code on schoolpay_code.
+    prior = sorted(codes, key=lambda c: (not c.isdigit(), len(c), c))[0]
+    if current_id and prior != current_id and (not current_sp or current_sp == current_id):
+        student.schoolpay_code = prior
+        update_fields.append("schoolpay_code")
+    elif not current_id:
+        student.student_id = prior
+        update_fields.append("student_id")
+        if not current_sp:
+            student.schoolpay_code = prior
+            update_fields.append("schoolpay_code")
+    if update_fields:
+        update_fields.append("updated_at")
+        student.save(update_fields=list(dict.fromkeys(update_fields)))
+
+    sync_admission_fee_paid_from_ledger(student)
+    return len(ledgers)
+
+
 def relink_tuition_ledgers_for_student(student: AdmittedStudent) -> int:
     """
     Attach orphan SchoolPay ledger rows to the student when payment codes or

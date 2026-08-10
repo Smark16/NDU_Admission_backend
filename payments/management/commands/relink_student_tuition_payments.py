@@ -7,6 +7,7 @@ from django.db.models import Q
 from admissions.models import AdmittedStudent
 from payments.student_portal_finance import commitment_payment_summary
 from payments.utils.tuition_ledger_linking import (
+    attach_extra_payment_codes_to_student,
     payment_codes_for_student,
     relink_tuition_ledgers_for_student,
     tuition_ledger_queryset_for_student,
@@ -40,11 +41,27 @@ class Command(BaseCommand):
             action="store_true",
             help="With --all, print every student (very long).",
         )
+        parser.add_argument(
+            "--also-code",
+            action="append",
+            default=[],
+            dest="also_codes",
+            help=(
+                "Extra SchoolPay wallet code to merge onto this student "
+                "(programme-change prior wallet). Repeatable."
+            ),
+        )
 
     def handle(self, *args, **options):
         lookup = (options.get("lookup") or "").strip()
+        also_codes = [
+            (c or "").strip() for c in (options.get("also_codes") or []) if (c or "").strip()
+        ]
         if not lookup and not options["all"]:
             self.stderr.write("Provide a lookup value or use --all.")
+            return
+        if also_codes and options["all"]:
+            self.stderr.write("--also-code cannot be used with --all.")
             return
 
         if options["all"]:
@@ -162,7 +179,23 @@ class Command(BaseCommand):
 
             before = commitment_payment_summary(student)
             linked = relink_tuition_ledgers_for_student(student)
-            student.refresh_from_db(fields=["admission_fee_paid", "admission_fee_paid_at"])
+            if also_codes:
+                merged = attach_extra_payment_codes_to_student(student, also_codes)
+                linked += merged
+                self.stdout.write(
+                    self.style.WARNING(
+                        f"Merged prior wallet code(s) {also_codes} → "
+                        f"{merged} ledger row(s) attached"
+                    )
+                )
+            student.refresh_from_db(
+                fields=[
+                    "admission_fee_paid",
+                    "admission_fee_paid_at",
+                    "student_id",
+                    "schoolpay_code",
+                ]
+            )
             after = commitment_payment_summary(student)
             processed += 1
             total_linked += linked
