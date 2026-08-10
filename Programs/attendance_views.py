@@ -31,7 +31,11 @@ from .models import (
     TimetableSession,
 )
 from .permissions import LectureAttendanceAdminPermission
-from .timetable_utils import session_location_label, weekday_dates_in_range
+from .timetable_utils import (
+    session_location_label,
+    session_occurrence_bounds,
+    weekday_dates_in_range,
+)
 
 
 STATUS_LABELS = dict(LectureAttendanceRecord.STATUS_CHOICES)
@@ -250,7 +254,7 @@ def _match_timetable_session(course_unit: CourseUnit, session_date):
         return fixed[0]
     if len(fixed) > 1:
         return None
-    # Weekly templates for this weekday
+    # Recurring templates for this weekday whose set date range covers the date.
     weekday = session_date.weekday() + 1
     weekly = list(
         TimetableSession.objects.filter(
@@ -260,11 +264,16 @@ def _match_timetable_session(course_unit: CourseUnit, session_date):
             session_date__isnull=True,
             day_of_week=weekday,
         )
-        .select_related("venue", "venue__campus")
+        .select_related("venue", "venue__campus", "course_unit__semester")
         .order_by("start_time")
     )
-    if len(weekly) == 1:
-        return weekly[0]
+    covering = []
+    for slot in weekly:
+        start, end = session_occurrence_bounds(slot)
+        if start and end and start <= session_date <= end:
+            covering.append(slot)
+    if len(covering) == 1:
+        return covering[0]
     return None
 
 
@@ -359,12 +368,12 @@ def _lecturer_schedule_meetings(user, *, from_date=None, to_date=None) -> list[d
             if start <= slot.session_date <= end:
                 dates = [slot.session_date]
         else:
-            # Weekly template: only dates in range whose weekday matches the slot.
-            semester = getattr(slot.course_unit, "semester", None)
-            sem_start = getattr(semester, "start_date", None) if semester else None
-            sem_end = getattr(semester, "end_date", None) if semester else None
-            range_start = max(start, sem_start) if sem_start else start
-            range_end = min(end, sem_end) if sem_end else end
+            # Recurring slot: weekday meetings only inside the admin-set start/end.
+            slot_start, slot_end = session_occurrence_bounds(slot)
+            if not slot_start or not slot_end:
+                continue
+            range_start = max(start, slot_start)
+            range_end = min(end, slot_end)
             if range_start <= range_end:
                 dates = weekday_dates_in_range(range_start, range_end, slot.day_of_week)
 
@@ -976,8 +985,14 @@ def _admin_missing_meetings(*, capture_date, user=None, faculty_ids=None, progra
         if slot.session_date:
             if slot.session_date != capture_date:
                 continue
-        elif capture_date.weekday() + 1 != slot.day_of_week:
-            continue
+        else:
+            if capture_date.weekday() + 1 != slot.day_of_week:
+                continue
+            slot_start, slot_end = session_occurrence_bounds(slot)
+            if not slot_start or not slot_end:
+                continue
+            if capture_date < slot_start or capture_date > slot_end:
+                continue
         slots_per_course[slot.course_unit_id] = slots_per_course.get(slot.course_unit_id, 0) + 1
 
     missing: list[dict] = []
@@ -989,12 +1004,10 @@ def _admin_missing_meetings(*, capture_date, user=None, faculty_ids=None, progra
         else:
             if capture_date.weekday() + 1 != slot.day_of_week:
                 continue
-            semester = getattr(slot.course_unit, "semester", None)
-            sem_start = getattr(semester, "start_date", None) if semester else None
-            sem_end = getattr(semester, "end_date", None) if semester else None
-            if sem_start and capture_date < sem_start:
+            slot_start, slot_end = session_occurrence_bounds(slot)
+            if not slot_start or not slot_end:
                 continue
-            if sem_end and capture_date > sem_end:
+            if capture_date < slot_start or capture_date > slot_end:
                 continue
             dates = [capture_date]
 

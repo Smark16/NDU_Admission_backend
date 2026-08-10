@@ -612,9 +612,35 @@ class SemesterTimetableView(APIView):
             is_active=True,
         )
 
+        session_date = None
+        start_date = None
+        end_date = None
+        raw_session_date = request.data.get("session_date")
+        raw_start = request.data.get("start_date")
+        raw_end = request.data.get("end_date")
+
         try:
-            session_date = _parse_date(request.data.get("session_date"), "session_date")
-            day = session_date.weekday() + 1
+            if raw_session_date not in (None, ""):
+                # One-off class on a single calendar date.
+                session_date = _parse_date(raw_session_date, "session_date")
+                day = session_date.weekday() + 1
+                start_date = session_date
+                end_date = session_date
+            else:
+                # Recurring: every day_of_week between start_date and end_date.
+                start_date = _parse_date(raw_start, "start_date")
+                end_date = _parse_date(raw_end, "end_date")
+                if end_date < start_date:
+                    return Response(
+                        {"detail": "end_date must be on or after start_date."},
+                        status=400,
+                    )
+                day = int(request.data.get("day_of_week") or 0)
+                if day not in range(1, 8):
+                    return Response(
+                        {"detail": "day_of_week must be 1-7 for a recurring class."},
+                        status=400,
+                    )
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=400)
 
@@ -658,6 +684,8 @@ class SemesterTimetableView(APIView):
             teaching_section=teaching_section,
             day_of_week=day,
             session_date=session_date,
+            start_date=start_date,
+            end_date=end_date,
             start_time=start_time,
             end_time=end_time,
             venue=venue,
@@ -881,17 +909,44 @@ class TimetableSessionDetailView(APIView):
         assert_timetable_session_access(request.user, session)
 
         if "session_date" in request.data:
+            raw = request.data.get("session_date")
+            if raw in (None, ""):
+                session.session_date = None
+            else:
+                try:
+                    session_date = _parse_date(raw, "session_date")
+                except ValueError as exc:
+                    return Response({"detail": str(exc)}, status=400)
+                session.session_date = session_date
+                session.day_of_week = session_date.weekday() + 1
+                session.start_date = session_date
+                session.end_date = session_date
+        if "start_date" in request.data:
             try:
-                session_date = _parse_date(request.data.get("session_date"), "session_date")
+                session.start_date = _parse_date(request.data.get("start_date"), "start_date")
             except ValueError as exc:
                 return Response({"detail": str(exc)}, status=400)
-            session.session_date = session_date
-            session.day_of_week = session_date.weekday() + 1
-        elif "day_of_week" in request.data:
+        if "end_date" in request.data:
+            try:
+                session.end_date = _parse_date(request.data.get("end_date"), "end_date")
+            except ValueError as exc:
+                return Response({"detail": str(exc)}, status=400)
+        if "day_of_week" in request.data and not session.session_date:
             day = int(request.data["day_of_week"])
             if day not in range(1, 8):
                 return Response({"detail": "day_of_week must be 1-7."}, status=400)
             session.day_of_week = day
+        # Recurring edit: clear one-off date when range fields are the source of truth.
+        if (
+            session.session_date is None
+            and session.start_date
+            and session.end_date
+            and session.end_date < session.start_date
+        ):
+            return Response(
+                {"detail": "end_date must be on or after start_date."},
+                status=400,
+            )
 
         if "start_time" in request.data:
             session.start_time = _parse_time(request.data["start_time"], "start_time")

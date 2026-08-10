@@ -1543,7 +1543,20 @@ class TimetableSession(models.Model):
     session_date = models.DateField(
         null=True,
         blank=True,
-        help_text="Calendar date when this class takes place.",
+        help_text=(
+            "One-off class date. Leave blank for a recurring slot that meets every "
+            "day_of_week between start_date and end_date."
+        ),
+    )
+    start_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text="First date of the recurring period (inclusive).",
+    )
+    end_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Last date of the recurring period (inclusive).",
     )
     start_time = models.TimeField()
     end_time = models.TimeField()
@@ -1595,7 +1608,12 @@ class TimetableSession(models.Model):
         if self.start_time and self.end_time and self.end_time <= self.start_time:
             raise ValidationError({"end_time": "End time must be after start time."})
 
+        semester = getattr(self.course_unit, "semester", None)
+
         if self.session_date:
+            # One-off: sync range to the single date.
+            self.start_date = self.session_date
+            self.end_date = self.session_date
             expected_day = self.session_date.weekday() + 1
             if self.day_of_week != expected_day:
                 day_name = dict(self.DAY_CHOICES).get(expected_day, "")
@@ -1607,7 +1625,6 @@ class TimetableSession(models.Model):
                         )
                     }
                 )
-            semester = getattr(self.course_unit, "semester", None)
             if semester:
                 if semester.start_date and self.session_date < semester.start_date:
                     raise ValidationError(
@@ -1623,6 +1640,40 @@ class TimetableSession(models.Model):
                         {
                             "session_date": (
                                 f"Class date cannot be after semester end "
+                                f"({semester.end_date.strftime('%d %b %Y')})."
+                            )
+                        }
+                    )
+        else:
+            # Recurring slot: day_of_week repeats within start_date..end_date.
+            if not self.start_date or not self.end_date:
+                raise ValidationError(
+                    {
+                        "start_date": (
+                            "Set start date and end date for a recurring class "
+                            "(or pick a single class date)."
+                        )
+                    }
+                )
+            if self.end_date < self.start_date:
+                raise ValidationError(
+                    {"end_date": "End date must be on or after start date."}
+                )
+            if semester:
+                if semester.start_date and self.start_date < semester.start_date:
+                    raise ValidationError(
+                        {
+                            "start_date": (
+                                f"Start date cannot be before semester start "
+                                f"({semester.start_date.strftime('%d %b %Y')})."
+                            )
+                        }
+                    )
+                if semester.end_date and self.end_date > semester.end_date:
+                    raise ValidationError(
+                        {
+                            "end_date": (
+                                f"End date cannot be after semester end "
                                 f"({semester.end_date.strftime('%d %b %Y')})."
                             )
                         }

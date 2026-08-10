@@ -80,7 +80,7 @@ def format_short_date(value: date) -> str:
 
 
 def weekday_dates_in_range(start: date, end: date, day_of_week: int) -> list[date]:
-    """Return each calendar date for a weekday between semester start and end."""
+    """Return each calendar date for a weekday between start and end (inclusive)."""
     if not start or not end or end < start:
         return []
     target_weekday = int(day_of_week) - 1  # TimetableSession: 1=Mon … 7=Sun
@@ -96,12 +96,49 @@ def weekday_dates_in_range(start: date, end: date, day_of_week: int) -> list[dat
     return dates
 
 
-def session_date_label(day_label: str, session_dates: list[date]) -> str:
+def session_occurrence_bounds(session: TimetableSession) -> tuple[date | None, date | None]:
+    """Inclusive date window when this slot meets (one-off or recurring)."""
+    if session.session_date:
+        return session.session_date, session.session_date
+    start = getattr(session, "start_date", None)
+    end = getattr(session, "end_date", None)
+    if start and end:
+        return start, end
+    # Legacy rows without a set range: fall back to semester window.
+    semester = getattr(getattr(session, "course_unit", None), "semester", None)
+    if semester and semester.start_date:
+        return semester.start_date, semester.end_date or semester.start_date
+    return None, None
+
+
+def session_occurrence_dates(session: TimetableSession) -> list[date]:
+    """Concrete meeting dates for a slot (one-off or every matching weekday in range)."""
+    if session.session_date:
+        return [session.session_date]
+    start, end = session_occurrence_bounds(session)
+    if not start or not end:
+        return []
+    return weekday_dates_in_range(start, end, session.day_of_week)
+
+
+def occurrence_ranges_overlap(a: TimetableSession, b: TimetableSession) -> bool:
+    a0, a1 = session_occurrence_bounds(a)
+    b0, b1 = session_occurrence_bounds(b)
+    if not a0 or not a1 or not b0 or not b1:
+        return True
+    return a0 <= b1 and b0 <= a1
+
+
+def session_date_label(day_label: str, session_dates: list[date], *, recurring: bool = False) -> str:
     if not session_dates:
         return day_label or ""
-    if len(session_dates) == 1:
+    if len(session_dates) == 1 and not recurring:
         return format_short_date(session_dates[0])
-    return f"{format_short_date(session_dates[0])} – {format_short_date(session_dates[-1])}"
+    day_part = f"{day_label}s" if day_label else "Classes"
+    return (
+        f"{day_part} · {format_short_date(session_dates[0])} – "
+        f"{format_short_date(session_dates[-1])}"
+    )
 
 
 def semester_period_label(name: str, start: date | None, end: date | None) -> str:
@@ -134,16 +171,15 @@ def serialize_session(session: TimetableSession) -> dict:
         semester_end = semester_start
     day_label = DAY_LABELS.get(session.day_of_week, "")
     session_date = session.session_date
+    range_start, range_end = session_occurrence_bounds(session)
+    session_dates = session_occurrence_dates(session)
+    recurring = session_date is None
     if session_date:
-        session_dates = [session_date]
         date_label = format_short_date(session_date)
+    elif range_start and range_end:
+        date_label = session_date_label(day_label, [range_start, range_end], recurring=True)
     else:
-        session_dates = (
-            weekday_dates_in_range(semester_start, semester_end, session.day_of_week)
-            if semester_start and semester_end
-            else []
-        )
-        date_label = session_date_label(day_label, session_dates)
+        date_label = day_label
     section = getattr(session, "teaching_section", None)
     return {
         "id": session.id,
@@ -161,6 +197,9 @@ def serialize_session(session: TimetableSession) -> dict:
         "day_of_week": session.day_of_week,
         "day_label": day_label,
         "session_date": session_date.isoformat() if session_date else "",
+        "start_date": range_start.isoformat() if range_start else "",
+        "end_date": range_end.isoformat() if range_end else "",
+        "is_recurring": recurring,
         "session_dates": [d.isoformat() for d in session_dates],
         "date_label": date_label,
         "semester_name": semester.name if semester else "",
@@ -280,6 +319,8 @@ def validate_session_scheduling(
         if not times_overlap(
             session.start_time, session.end_time, other.start_time, other.end_time
         ):
+            continue
+        if not occurrence_ranges_overlap(session, other):
             continue
 
         shared_catalog = shares_catalog_unit(session, other)
