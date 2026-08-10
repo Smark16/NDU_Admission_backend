@@ -78,7 +78,8 @@ ADMISSIONS_TEAM_ALLOW = (
     ("payments", "view_applicationpayment"),
 )
 
-# Keep other modules off even if someone later adds them on the M2M by mistake.
+# Keep other modules off. Do NOT deny change_user / view_user here — Deny on any
+# role blocks the user even if they also have User Admin / Super Admin helpers.
 ADMISSIONS_TEAM_DENY = (
     ("accounts", "access_finance"),
     ("accounts", "access_academics"),
@@ -87,9 +88,6 @@ ADMISSIONS_TEAM_DENY = (
     ("accounts", "manage_academic_enrollment"),
     ("accounts", "manage_curriculum"),
     ("accounts", "manage_course_catalog"),
-    ("accounts", "add_user"),
-    ("accounts", "change_user"),
-    ("accounts", "delete_user"),
     ("admissions", "clear_accounts_registration"),
     ("admissions", "manage_temporary_access_pass"),
     ("admissions", "manage_id_cards"),

@@ -158,6 +158,10 @@ class UpdateUser(generics.UpdateAPIView):
         instance = self.get_object()
         # Never accept raw password writes through ModelSerializer; hash it properly.
         data = request.data.copy()
+        # Roles are applied via set_user_roles — never let ModelSerializer clear M2M groups.
+        if hasattr(data, "pop"):
+            data.pop("groups", None)
+            data.pop("user_permissions", None)
         new_role = (data.get("role") or "").strip()
         roles_payload = data.pop("roles", None)
         if new_role.lower() == "student":
@@ -407,9 +411,29 @@ class AssignLecturerRole(APIView):
 #=======================================================================roles================================================    
 # List roles
 class ListRoles(generics.ListAPIView):
-    queryset = Group.objects.all()
+    """Role names for User Management assignment dropdown."""
+
+    queryset = Group.objects.all().order_by("name")
     serializer_class = RoleSerializer
-    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        # User Management needs this list; auth.view_group is not always on staff roles.
+        user = request.user
+        from accounts.super_admin import user_is_super_admin
+
+        if not (
+            user_is_super_admin(user)
+            or user.has_perm("auth.view_group")
+            or user.has_perm("accounts.view_user")
+            or user.has_perm("accounts.access_user_management")
+            or user.has_perm("accounts.change_user")
+        ):
+            return Response(
+                {"detail": "You do not have permission to list roles."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        return super().get(request, *args, **kwargs)
 
 # list detailed roles
 class ListDetailedRoles(generics.ListAPIView):
