@@ -72,7 +72,7 @@ ADMISSIONS_TEAM_ALLOW = (
     ("AdmissionLetter", "add_offerlettertemplate"),
     ("AdmissionLetter", "change_offerlettertemplate"),
     ("AdmissionLetter", "delete_offerlettertemplate"),
-    # Admission report APIs (Reports top-level is hidden in UI for this role)
+    # Reports category: Admission reports (+ setup). access_reports stays denied.
     ("AdmissionReports", "view_admissionreports"),
     ("AdmissionReports", "view_setup"),
     ("Drafts", "view_draftapplication"),

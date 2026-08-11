@@ -66,3 +66,21 @@ class RoleServiceCatalogTests(SimpleTestCase):
             "offer_letter_templates",
         ):
             self.assertIn(expected, keys)
+        self.assertNotIn("admission_reports", keys)
+
+    def test_reports_category_present(self):
+        cats = {cat["name"] for cat in ROLE_SERVICE_CATALOG}
+        self.assertIn("Reports", cats)
+        keys = {
+            s["key"]
+            for cat in ROLE_SERVICE_CATALOG
+            if cat["name"] == "Reports"
+            for s in cat["services"]
+        }
+        for expected in (
+            "reports_access",
+            "admission_reports",
+            "admission_reports_setup",
+            "system_usage_report",
+        ):
+            self.assertIn(expected, keys)

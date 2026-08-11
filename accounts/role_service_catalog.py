@@ -93,8 +93,25 @@ ROLE_SERVICE_CATALOG: list[CategoryDef] = [
             _svc("email_templates", "Email templates", _crud("admissions", "emailtemplate")),
             _svc("communication_templates", "Communication templates", _toggle("accounts.manage_communication_templates")),
             _svc("offer_letter_templates", "Offer letter templates", _crud("AdmissionLetter", "offerlettertemplate")),
-            _svc("admission_reports", "Admission reports", _toggle("AdmissionReports.view_admissionreports")),
             _svc("draft_applications", "Draft applications", _crud("Drafts", "draftapplication")),
+        ],
+    },
+    {
+        "name": "Reports",
+        "services": [
+            _svc("reports_access", "Reports module access", _toggle("accounts.access_reports")),
+            _svc(
+                "admission_reports",
+                "Admission reports",
+                _toggle("AdmissionReports.view_admissionreports"),
+            ),
+            _svc(
+                "admission_reports_setup",
+                "Admission reports setup",
+                _toggle("AdmissionReports.view_setup"),
+            ),
+            _svc("system_usage_report", "System usage", _toggle("audit.view_auditlog")),
+            # All Applicants / Analytics share Applications View — tick Applications for those menus.
         ],
     },
     {
@@ -187,7 +204,6 @@ ROLE_SERVICE_CATALOG: list[CategoryDef] = [
         "name": "Finance",
         "services": [
             _svc("finance_access", "Finance module access", _cols(view="accounts.access_finance")),
-            _svc("reports_access", "Finance / reports access", _cols(view="accounts.access_reports")),
             _svc("tuition_ledger", "Tuition ledger", _cols(view="payments.view_tuitionledger")),
             _svc("tuition_payments", "Tuition payments", _crud("payments", "studenttuitionpayment")),
             _svc("application_payments", "Application payments", _crud("payments", "applicationpayment")),
