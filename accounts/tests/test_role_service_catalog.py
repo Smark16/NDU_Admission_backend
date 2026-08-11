@@ -2,7 +2,11 @@
 
 from django.test import SimpleTestCase
 
-from accounts.role_service_catalog import COLUMN_KEYS, ROLE_SERVICE_CATALOG
+from accounts.role_service_catalog import (
+    COLUMN_KEYS,
+    FULL_ACCESS_SERVICE_KEYS,
+    ROLE_SERVICE_CATALOG,
+)
 
 
 class RoleServiceCatalogTests(SimpleTestCase):
@@ -10,6 +14,8 @@ class RoleServiceCatalogTests(SimpleTestCase):
         offenders = []
         for category in ROLE_SERVICE_CATALOG:
             for service in category["services"]:
+                if service["key"] in FULL_ACCESS_SERVICE_KEYS:
+                    continue
                 mapped = {}
                 for col in COLUMN_KEYS:
                     label = service["columns"].get(col)
@@ -27,6 +33,19 @@ class RoleServiceCatalogTests(SimpleTestCase):
             "Services must not map the same permission to multiple CRUD columns:\n"
             + "\n".join(offenders),
         )
+
+    def test_direct_entry_applications_exposes_all_crud_boxes(self):
+        svc = next(
+            s
+            for cat in ROLE_SERVICE_CATALOG
+            for s in cat["services"]
+            if s["key"] == "direct_applications"
+        )
+        for col in COLUMN_KEYS:
+            self.assertEqual(
+                svc["columns"][col],
+                "accounts.manage_direct_applications",
+            )
 
     def test_admissions_core_services_present(self):
         keys = {

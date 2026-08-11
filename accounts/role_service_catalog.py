@@ -54,6 +54,15 @@ def _toggle(perm: str) -> ServiceColumns:
     return _cols(view=perm)
 
 
+def _full_access(perm: str) -> ServiceColumns:
+    """One ERP flag shown on all CRUD boxes (UI keeps them synced)."""
+    return _cols(view=perm, add=perm, edit=perm, delete=perm)
+
+
+# Service keys that intentionally map one permission to every CRUD column.
+FULL_ACCESS_SERVICE_KEYS = frozenset({"direct_applications"})
+
+
 def _svc(key: str, label: str, columns: ServiceColumns) -> ServiceDef:
     return {"key": key, "label": label, "columns": columns}
 
@@ -69,7 +78,12 @@ ROLE_SERVICE_CATALOG: list[CategoryDef] = [
             _svc("admissions_access", "Admissions module access", _toggle("accounts.access_admissions")),
             _svc("applications", "Applications", _crud("admissions", "application")),
             _svc("application_documents", "Application documents", _crud("admissions", "applicationdocument")),
-            _svc("direct_applications", "Direct admission", _toggle("accounts.manage_direct_applications")),
+            # All four boxes share manage_direct_applications; matrix UI syncs them.
+            _svc(
+                "direct_applications",
+                "Direct entry applications",
+                _full_access("accounts.manage_direct_applications"),
+            ),
             _svc("intakes", "Admission intakes", _crud("admissions", "batch")),
             _svc("manage_batches", "Manage intakes / batches (admin)", _toggle("accounts.manage_batches")),
             _svc("academic_levels", "Academic levels", _crud("admissions", "academiclevel")),

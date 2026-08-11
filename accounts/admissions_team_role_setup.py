@@ -1,8 +1,8 @@
 """
 Admissions Team — Admissions-focused staff role.
 
-Can: applications, approve/reject, admit/revoke, offer letters, intakes,
-subjects/templates, academic levels/years, admission reports.
+Can: applications, direct entry / direct admission, approve/reject, admit/revoke,
+offer letters, intakes, subjects/templates, academic levels/years, admission reports.
 
 Sidebar follows Role Management ticks (no hard module hide). Soft-deny blocks
 Finance / Academics / User Management / Fees. Student directory View is kept
