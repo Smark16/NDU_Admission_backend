@@ -17,6 +17,71 @@ EXEMPTION_COURSE_FEE_CODE = "EXEMPTION_COURSE"
 EXEMPTION_FORM_FEE_UGX = Decimal(
     str(getattr(settings, "EXEMPTION_FORM_FEE_UGX", "50000"))
 )
+# Minimum mark (%) a candidate must have scored for a paper to be exemptable.
+EXEMPTION_MIN_MARK_PERCENT = Decimal(
+    str(getattr(settings, "EXEMPTION_MIN_MARK_PERCENT", "60"))
+)
+
+
+def parse_exemption_mark_floor(score_obtained: str | None) -> Decimal | None:
+    """
+    Best-effort lower mark from student score text.
+
+    Accepts:
+      - "65"
+      - "60-64" / "60–64.9"
+      - "B+ (60-64.9)" / "B+ (60–64.9)"
+    Returns the first numeric floor found, or None if unparseable.
+    """
+    import re
+
+    text = (score_obtained or "").strip()
+    if not text:
+        return None
+    # Prefer range inside parentheses (grade + scheme range).
+    paren = re.search(r"\(([^)]*)\)", text)
+    chunk = paren.group(1) if paren else text
+    m = re.search(r"(\d+(?:\.\d+)?)", chunk.replace(",", ""))
+    if not m:
+        return None
+    try:
+        return Decimal(m.group(1))
+    except Exception:
+        return None
+
+
+def exemption_paper_meets_min_mark(
+    paper: dict,
+    *,
+    min_percent: Decimal | None = None,
+) -> tuple[bool, str]:
+    """
+    True when the paper's score/grade band floor is >= EXEMPTION_MIN_MARK_PERCENT.
+    Optionally accepts client-supplied min_mark (from grading scheme band).
+    """
+    threshold = min_percent if min_percent is not None else EXEMPTION_MIN_MARK_PERCENT
+    floor: Decimal | None = None
+    raw_min = paper.get("min_mark")
+    if raw_min not in (None, ""):
+        try:
+            floor = Decimal(str(raw_min))
+        except Exception:
+            floor = None
+    if floor is None:
+        floor = parse_exemption_mark_floor(str(paper.get("score_obtained") or ""))
+    code = (str(paper.get("course_code") or "").strip() or "paper")
+    if floor is None:
+        return (
+            False,
+            f"{code}: enter a grade/score of at least {threshold:g}% "
+            "(papers below 60% cannot be exempted).",
+        )
+    if floor < threshold:
+        return (
+            False,
+            f"{code}: scored {floor:g}% — exemption requires {threshold:g}% and above.",
+        )
+    return True, ""
 
 # Legacy flat rates (settings-overridable). Kept for display/migration only —
 # Accounts now bills EXEMPTION_COURSE as semester tuition ÷ curriculum papers

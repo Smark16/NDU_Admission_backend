@@ -4566,8 +4566,7 @@ class StudentChangeRequestListCreate(APIView):
                     status=400,
                 )
 
-            # Optional curriculum-line IDs (legacy checkbox UI). Free-text papers
-            # from the typed form are preferred and do not require curriculum match.
+            # Papers must target this university's curriculum (eligible lines).
             eligible = {
                 c["id"]: c for c in list_eligible_exemption_courses(admission)
             }
@@ -4596,9 +4595,65 @@ class StudentChangeRequestListCreate(APIView):
 
             if not curriculum_line_ids and not exemption_papers:
                 return Response(
-                    {"detail": "Enter at least one course/paper to exempt."},
+                    {"detail": "Select at least one Ndejje curriculum unit to exempt."},
                     status=400,
                 )
+
+            # Student-typed papers must include a valid eligible curriculum_line_id.
+            if exemption_papers:
+                missing_links = []
+                bad_links = []
+                for idx, paper in enumerate(exemption_papers):
+                    raw_clid = paper.get("curriculum_line_id")
+                    if raw_clid in (None, "", 0, "0"):
+                        missing_links.append(idx + 1)
+                        continue
+                    try:
+                        clid = int(raw_clid)
+                    except (TypeError, ValueError):
+                        bad_links.append(idx + 1)
+                        continue
+                    if clid not in eligible:
+                        bad_links.append(idx + 1)
+                if missing_links or bad_links:
+                    parts = []
+                    if missing_links:
+                        parts.append(
+                            "each paper must be a selected Ndejje curriculum unit "
+                            f"(missing on row(s) {', '.join(str(i) for i in missing_links)})"
+                        )
+                    if bad_links:
+                        parts.append(
+                            "invalid or already-exempted curriculum unit "
+                            f"on row(s) {', '.join(str(i) for i in bad_links)}"
+                        )
+                    return Response(
+                        {
+                            "detail": (
+                                "Select Ndejje curriculum units to exempt — not prior "
+                                "university course codes. " + "; ".join(parts) + "."
+                            )
+                        },
+                        status=400,
+                    )
+
+                from admissions.exemption_services import exemption_paper_meets_min_mark
+
+                score_errors = []
+                for idx, paper in enumerate(exemption_papers):
+                    ok, msg = exemption_paper_meets_min_mark(paper)
+                    if not ok:
+                        score_errors.append(f"Row {idx + 1}: {msg}")
+                if score_errors:
+                    return Response(
+                        {
+                            "detail": (
+                                "Exemption requires a score of 60% and above on each paper. "
+                                + " ".join(score_errors)
+                            )
+                        },
+                        status=400,
+                    )
 
             valid_doc_types = {c[0] for c in ExemptionSupportingDocument.DOC_TYPE_CHOICES}
             uploaded_files = request.FILES.getlist("documents")
@@ -4662,51 +4717,21 @@ class StudentChangeRequestListCreate(APIView):
                             score_obtained=scores_map.get(str(line.pk), ""),
                         )
                 for paper in exemption_papers:
-                    linked = None
-                    raw_clid = paper.get("curriculum_line_id")
-                    if raw_clid not in (None, ""):
-                        try:
-                            clid = int(raw_clid)
-                        except (TypeError, ValueError):
-                            clid = None
-                        if clid and clid in eligible:
-                            linked = ProgramCurriculumLine.objects.filter(
-                                pk=clid, is_active=True
-                            ).first()
+                    clid = int(paper["curriculum_line_id"])
+                    linked = ProgramCurriculumLine.objects.filter(
+                        pk=clid, is_active=True
+                    ).select_related("catalog_course").first()
                     if linked is None:
-                        # Best-effort match from typed code/name so HOD review
-                        # opens with curriculum already selected.
-                        from admissions.exemption_services import (
-                            list_programme_curriculum_for_review,
-                            suggest_curriculum_match,
-                        )
-
-                        sug_id = suggest_curriculum_match(
-                            str(paper.get("course_code") or ""),
-                            list_programme_curriculum_for_review(admission),
-                            course_name=str(paper.get("course_name") or ""),
-                            year_of_study=_int_or_none(paper.get("year_of_study")),
-                            term_number=_int_or_none(paper.get("term_number")),
-                        )
-                        if sug_id:
-                            linked = ProgramCurriculumLine.objects.filter(
-                                pk=sug_id, is_active=True
-                            ).first()
+                        # Should not happen after eligibility check; skip safely.
+                        continue
+                    course = linked.catalog_course
                     ExemptionRequestLine.objects.create(
                         change_request=obj,
                         curriculum_line=linked,
-                        course_code=str(paper.get("course_code") or "").strip()[:40],
-                        course_name=str(paper.get("course_name") or "").strip()[:255],
-                        year_of_study=(
-                            linked.year_of_study
-                            if linked is not None
-                            else _int_or_none(paper.get("year_of_study"))
-                        ),
-                        term_number=(
-                            linked.term_number
-                            if linked is not None
-                            else _int_or_none(paper.get("term_number"))
-                        ),
+                        course_code=(course.code if course else "")[:40],
+                        course_name=((course.title if course else "") or "")[:255],
+                        year_of_study=linked.year_of_study,
+                        term_number=linked.term_number,
                         score_obtained=str(paper.get("score_obtained") or "").strip()[:20],
                     )
                 for idx, upload in enumerate(uploaded_files):
@@ -4823,14 +4848,13 @@ class ExemptionEligibleCoursesView(APIView):
             ensure_exemption_form_fee_access,
             list_eligible_exemption_courses,
         )
-        from examinations.serializers import GradeScaleDetailSerializer
         from examinations.services.grade_scale_resolver import resolve_grade_scale
 
         admission = self._get_admission(request.user)
         if not admission:
             return Response({"detail": "No active admission found."}, status=404)
         # Raise / reuse the UGX 50k form fee so the student can pay before submit.
-        # Courses list is optional (students now type papers as free-text fields).
+        # Courses list powers the Ndejje curriculum unit picker on the student form.
         access = ensure_exemption_form_fee_access(admission, charged_by=None)
         try:
             courses = list_eligible_exemption_courses(admission)
@@ -4840,14 +4864,36 @@ class ExemptionEligibleCoursesView(APIView):
         grade_bands = []
         grade_scale_name = None
         try:
+            from examinations.models import GradeScale
+
             level = getattr(getattr(admission, "admitted_program", None), "academic_level", None)
-            scale = resolve_grade_scale(academic_level=level)
+            scale = resolve_grade_scale(student=admission, academic_level=level)
+            # Prefer any active scale that actually has bands (level-specific scales
+            # often leave academic_level__isnull=True empty, so default can miss).
+            if scale is None or not scale.bands.exists():
+                scale = (
+                    GradeScale.objects.filter(is_active=True)
+                    .prefetch_related("bands")
+                    .order_by("-id")
+                    .first()
+                )
             if scale:
                 grade_scale_name = scale.name
-                payload = GradeScaleDetailSerializer(scale).data
-                grade_bands = payload.get("bands") or []
+                # Serialize marks as numbers so the student UI can match scores reliably.
+                grade_bands = [
+                    {
+                        "id": b.id,
+                        "letter": b.letter,
+                        "min_mark": float(b.min_mark),
+                        "max_mark": float(b.max_mark),
+                        "grade_point": float(b.grade_point),
+                        "order": b.order,
+                    }
+                    for b in scale.bands.all()
+                ]
         except Exception:
             grade_bands = []
+            grade_scale_name = None
 
         return Response(
             {
