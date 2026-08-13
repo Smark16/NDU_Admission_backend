@@ -81,18 +81,25 @@ def _serialize_material(material: CourseMaterial, request=None) -> dict:
 
 
 def published_outline_for_course(course_unit_id: int, request=None) -> dict | None:
-    material = (
-        CourseMaterial.objects.filter(
-            course_unit_id=course_unit_id,
-            material_type=CourseMaterial.TYPE_OUTLINE,
-            is_published=True,
+    try:
+        material = (
+            CourseMaterial.objects.filter(
+                course_unit_id=course_unit_id,
+                material_type=CourseMaterial.TYPE_OUTLINE,
+                is_published=True,
+            )
+            .order_by("-uploaded_at")
+            .first()
         )
-        .order_by("-uploaded_at")
-        .first()
-    )
+    except Exception:
+        # Missing table/migration or storage error must not break student my_courses.
+        return None
     if not material:
         return None
-    return _serialize_material(material, request)
+    try:
+        return _serialize_material(material, request)
+    except Exception:
+        return None
 
 
 class LecturerCourseMaterialListCreateView(APIView):

@@ -795,6 +795,8 @@ class GetStudentEnrolledCourses(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        import logging
+
         from .models import (
             StudentCourseUnitEnrollment,
             StudentProgrammeEnrollment,
@@ -806,6 +808,8 @@ class GetStudentEnrolledCourses(APIView):
             registration_card_payment_history,
             student_finance_totals,
         )
+
+        logger = logging.getLogger(__name__)
 
         admitted_student = get_admitted_student_for_user(request.user)
         if not admitted_student:
@@ -829,94 +833,155 @@ class GetStudentEnrolledCourses(APIView):
         deferred_cl_ids = set()  # used below to exclude these from active list
 
         if spe:
-            deferred_overrides = StudentCurriculumOverride.objects.filter(
-                enrollment=spe,
-                override_type='deferred',
-            ).select_related(
-                'curriculum_line',
-                'curriculum_line__catalog_course',
-            )
-            for ov in deferred_overrides:
-                cl = ov.curriculum_line
-                if not cl:
-                    continue
-                cat = cl.catalog_course
-                deferred_cl_ids.add(cl.id)
-                deferred_courses.append({
-                    'curriculum_line_id': cl.id,
-                    'course_code': cat.code if cat else '—',
-                    'course_name': cat.title if cat else '—',
-                    'credit_units': float(cat.credit_units) if cat and cat.credit_units else None,
-                    'blueprint_year': cl.year_of_study,
-                    'blueprint_term': cl.term_number,
-                    'deferred_until': {
-                        'year': ov.effective_year_of_study,
-                        'term': ov.effective_term_number,
-                    },
-                })
+            try:
+                deferred_overrides = StudentCurriculumOverride.objects.filter(
+                    enrollment=spe,
+                    override_type='deferred',
+                ).select_related(
+                    'curriculum_line',
+                    'curriculum_line__catalog_course',
+                )
+                for ov in deferred_overrides:
+                    cl = ov.curriculum_line
+                    if not cl:
+                        continue
+                    cat = cl.catalog_course
+                    deferred_cl_ids.add(cl.id)
+                    deferred_courses.append({
+                        'curriculum_line_id': cl.id,
+                        'course_code': cat.code if cat else '—',
+                        'course_name': cat.title if cat else '—',
+                        'credit_units': float(cat.credit_units) if cat and cat.credit_units else None,
+                        'blueprint_year': cl.year_of_study,
+                        'blueprint_term': cl.term_number,
+                        'deferred_until': {
+                            'year': ov.effective_year_of_study,
+                            'term': ov.effective_term_number,
+                        },
+                    })
+            except Exception:
+                logger.exception(
+                    "my_courses: deferred overrides failed for student %s",
+                    admitted_student.pk,
+                )
 
         # ── Active enrollments: from StudentCourseUnitEnrollment ─────────────
-        enrollments = StudentCourseUnitEnrollment.objects.filter(
-            student=admitted_student
-        ).select_related(
-            'course_unit',
-            'course_unit__semester',
-            'course_unit__semester__program_batch',
-            'course_unit__program_batch',
-            'course_unit__program_batch__program'
-        ).prefetch_related('course_unit__lecturers').order_by('-enrollment_date')
+        try:
+            enrollments = list(
+                StudentCourseUnitEnrollment.objects.filter(
+                    student=admitted_student
+                ).select_related(
+                    'course_unit',
+                    'course_unit__semester',
+                    'course_unit__semester__program_batch',
+                    'course_unit__program_batch',
+                    'course_unit__program_batch__program',
+                ).prefetch_related('course_unit__lecturers').order_by('-enrollment_date')
+            )
+        except Exception as exc:
+            logger.exception(
+                "my_courses: enrollment query failed for student %s",
+                admitted_student.pk,
+            )
+            return Response(
+                {
+                    "detail": (
+                        "Could not load your course enrollments. "
+                        "If this persists, ask ICT to run Programs migrations "
+                        f"(registration_kind / course materials). ({exc.__class__.__name__})"
+                    ),
+                    "enrolled_courses": [],
+                    "registered_courses": [],
+                    "deferred_courses": [],
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
         active_courses = []
+        from .course_material_views import published_outline_for_course
 
         for enrollment in enrollments:
-            course_unit = enrollment.course_unit
+            try:
+                course_unit = enrollment.course_unit
+                if course_unit is None:
+                    continue
 
-            # Skip if this enrollment corresponds to a deferred curriculum line
-            if course_unit.curriculum_line_id and course_unit.curriculum_line_id in deferred_cl_ids:
-                continue
+                # Skip if this enrollment corresponds to a deferred curriculum line
+                if course_unit.curriculum_line_id and course_unit.curriculum_line_id in deferred_cl_ids:
+                    continue
 
-            semester = course_unit.semester
-            program_batch = course_unit.program_batch or (semester.program_batch if semester else None)
+                semester = course_unit.semester
+                program_batch = course_unit.program_batch or (
+                    semester.program_batch if semester else None
+                )
 
-            lecturers = [
-                {
-                    'id': lecturer.id,
-                    'name': lecturer.get_full_name(),
-                    'email': lecturer.email
-                }
-                for lecturer in course_unit.lecturers.all()
-            ]
+                lecturers = [
+                    {
+                        'id': lecturer.id,
+                        'name': lecturer.get_full_name() or lecturer.username,
+                        'email': lecturer.email or '',
+                    }
+                    for lecturer in course_unit.lecturers.all()
+                ]
 
-            from .course_material_views import published_outline_for_course
+                outline = None
+                try:
+                    outline = published_outline_for_course(course_unit.id, request)
+                except Exception:
+                    logger.exception(
+                        "my_courses: outline lookup failed for course_unit %s",
+                        course_unit.id,
+                    )
 
-            active_courses.append({
-                'enrollment_id': enrollment.id,
-                'course_unit_id': course_unit.id,
-                'course_code': course_unit.code,
-                'course_name': course_unit.name,
-                'credit_units': float(course_unit.credit_units) if course_unit.credit_units else None,
-                'semester': {
-                    'id': semester.id if semester else None,
-                    'name': semester.name if semester else None,
-                    'order': semester.order if semester else None,
-                } if semester else None,
-                'program_batch': {
-                    'id': program_batch.id if program_batch else None,
-                    'name': program_batch.name if program_batch else None,
-                } if program_batch else None,
-                'program': {
-                    'id': program_batch.program.id if program_batch and program_batch.program else None,
-                    'name': program_batch.program.name if program_batch and program_batch.program else None,
-                } if program_batch and program_batch.program else None,
-                'lecturers': lecturers,
-                'enrollment_date': enrollment.enrollment_date,
-                'registration_date': enrollment.registration_date.isoformat() if enrollment.registration_date else None,
-                'is_registered': enrollment.registration_date is not None,
-                'status': enrollment.status,
-                'registration_kind': enrollment.registration_kind or 'normal',
-                'grade': enrollment.grade,
-                'published_outline': published_outline_for_course(course_unit.id, request),
-            })
+                cu_credits = None
+                try:
+                    if course_unit.credit_units is not None:
+                        cu_credits = float(course_unit.credit_units)
+                except (TypeError, ValueError):
+                    cu_credits = None
+
+                active_courses.append({
+                    'enrollment_id': enrollment.id,
+                    'course_unit_id': course_unit.id,
+                    'course_code': course_unit.code,
+                    'course_name': course_unit.name,
+                    'credit_units': cu_credits,
+                    'semester': {
+                        'id': semester.id if semester else None,
+                        'name': semester.name if semester else None,
+                        'order': semester.order if semester else None,
+                    } if semester else None,
+                    'program_batch': {
+                        'id': program_batch.id if program_batch else None,
+                        'name': program_batch.name if program_batch else None,
+                    } if program_batch else None,
+                    'program': {
+                        'id': program_batch.program.id if program_batch and program_batch.program else None,
+                        'name': program_batch.program.name if program_batch and program_batch.program else None,
+                    } if program_batch and program_batch.program else None,
+                    'lecturers': lecturers,
+                    'enrollment_date': (
+                        enrollment.enrollment_date.isoformat()
+                        if enrollment.enrollment_date
+                        else None
+                    ),
+                    'registration_date': (
+                        enrollment.registration_date.isoformat()
+                        if enrollment.registration_date
+                        else None
+                    ),
+                    'is_registered': enrollment.registration_date is not None,
+                    'status': enrollment.status,
+                    'registration_kind': getattr(enrollment, 'registration_kind', None) or 'normal',
+                    'grade': enrollment.grade,
+                    'published_outline': outline,
+                })
+            except Exception:
+                logger.exception(
+                    "my_courses: skipped broken enrollment %s for student %s",
+                    getattr(enrollment, "id", None),
+                    admitted_student.pk,
+                )
 
         registered_courses = [c for c in active_courses if c['is_registered']]
 
@@ -929,16 +994,63 @@ class GetStudentEnrolledCourses(APIView):
         except Exception:
             pass
 
-        finance = student_finance_totals(admitted_student)
+        finance = {
+            "percentage_paid": 0.0,
+            "total_paid": 0.0,
+            "total_required": 0.0,
+            "balance": 0.0,
+            "display_currency": "UGX",
+            "commitment_met": False,
+        }
+        try:
+            finance = student_finance_totals(admitted_student)
+        except Exception:
+            logger.exception(
+                "my_courses: finance totals failed for student %s",
+                admitted_student.pk,
+            )
 
-        from payments.registration_eligibility import build_registration_eligibility_payload
+        registration = {
+            "is_eligible": False,
+            "minimum_required": 0,
+            "percentage_paid": finance.get("percentage_paid", 0),
+            "message": "Could not evaluate registration eligibility.",
+            "block_messages": [],
+            "tuition_eligible": False,
+        }
+        try:
+            from payments.registration_eligibility import build_registration_eligibility_payload
 
-        registration = build_registration_eligibility_payload(admitted_student)
+            registration = build_registration_eligibility_payload(admitted_student)
+        except Exception:
+            logger.exception(
+                "my_courses: eligibility failed for student %s",
+                admitted_student.pk,
+            )
+
+        payment_history = []
+        try:
+            payment_history = registration_card_payment_history(admitted_student, limit=12)
+        except Exception:
+            logger.exception(
+                "my_courses: payment history failed for student %s",
+                admitted_student.pk,
+            )
+
+        offer_fields = {}
+        try:
+            offer_fields = offer_letter_portal_fields(admitted_student, request)
+        except Exception:
+            logger.exception(
+                "my_courses: offer letter fields failed for student %s",
+                admitted_student.pk,
+            )
 
         return Response({
             'student_id': admitted_student.student_id,
             'reg_no': admitted_student.reg_no,
-            'schoolpay_code': admitted_student.effective_schoolpay_code,
+            'schoolpay_code': getattr(admitted_student, "effective_schoolpay_code", None)
+            or admitted_student.student_id,
             'student_name': admitted_student.full_name,
             'program': admitted_student.admitted_program.name if admitted_student.admitted_program else None,
             'campus': admitted_student.admitted_campus.name if admitted_student.admitted_campus else None,
@@ -965,7 +1077,7 @@ class GetStudentEnrolledCourses(APIView):
             'total_deferred': len(deferred_courses),
             'total_registered': len(registered_courses),
             'total_courses': len(active_courses) + len(deferred_courses),
-            'payment_history': registration_card_payment_history(admitted_student, limit=12),
+            'payment_history': payment_history,
             'accounts_registration_cleared': bool(
                 getattr(admitted_student, "accounts_registration_cleared", False)
             ),
@@ -981,7 +1093,7 @@ class GetStudentEnrolledCourses(APIView):
                     "(applies to new and continuing students)."
                 )
             ),
-            **offer_letter_portal_fields(admitted_student, request),
+            **offer_fields,
         }, status=status.HTTP_200_OK)
 
 class CheckLecturerStatus(APIView):
