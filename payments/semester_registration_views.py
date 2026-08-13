@@ -231,8 +231,10 @@ class RegisterForCourses(APIView):
             return Response({"detail": "No course unit IDs provided"}, status=status.HTTP_400_BAD_REQUEST)
         result = register_student_for_course_units(student, course_unit_ids)
         if not result["registered"] and result["errors"]:
+            detail = "; ".join(result["errors"])
             return Response(
                 {
+                    "detail": detail or "Could not complete registration",
                     "message": "Could not complete registration",
                     "registered": result["registered"],
                     "errors": result["errors"],

@@ -491,9 +491,9 @@ class GetAvailableCoursesForRegistration(APIView):
       - program_batch  → which batch the student belongs to
       - current_year_of_study + current_term_number → which Semester to scope to
 
-    Courses are filtered to those where admin has enrolled the student
-    (StudentCourseUnitEnrollment) but the student has not yet registered
-    (registration_date is null).
+    Courses come from the student's current SPE curriculum term (plus deferred /
+    backlog / retake offerings). Registration creates a StudentCourseUnitEnrollment
+    if one does not already exist, then sets registration_date.
 
     Falls back to the old StudentSemesterProgression method only when no
     StudentProgrammeEnrollment record exists (backward compatibility).

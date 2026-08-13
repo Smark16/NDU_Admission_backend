@@ -62,6 +62,7 @@ from .timetable_views import (
     RoomTypeListCreateView,
     SemesterTeachingLoadPdfView,
     SemesterTimetableBulkPublishView,
+    SemesterTimetableCopyView,
     SemesterTimetablePdfView,
     SemesterTimetableView,
     StudentMyTimetablePdfView,
@@ -269,6 +270,11 @@ urlpatterns = [
         'semester/<int:semester_id>/timetable/publish',
         SemesterTimetableBulkPublishView.as_view(),
         name='semester_timetable_publish',
+    ),
+    path(
+        'semester/<int:semester_id>/timetable/copy',
+        SemesterTimetableCopyView.as_view(),
+        name='semester_timetable_copy',
     ),
     path(
         'timetable/sessions/<int:pk>',

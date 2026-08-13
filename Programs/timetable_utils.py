@@ -150,17 +150,17 @@ def semester_period_label(name: str, start: date | None, end: date | None) -> st
     return label
 
 
+def serialize_lecturer_brief(lec) -> dict:
+    return {
+        "id": lec.id,
+        "name": lec.get_full_name() or lec.username,
+        "email": lec.email,
+        "primary_campus_id": getattr(lec, "primary_campus_id", None),
+    }
+
+
 def serialize_session(session: TimetableSession) -> dict:
-    lecturers = []
-    for lec in session.course_unit.lecturers.all():
-        lecturers.append(
-            {
-                "id": lec.id,
-                "name": lec.get_full_name() or lec.username,
-                "email": lec.email,
-                "primary_campus_id": lec.primary_campus_id,
-            }
-        )
+    lecturers = [serialize_lecturer_brief(lec) for lec in session.course_unit.lecturers.all()]
     venue = session.venue
     cu = session.course_unit
     cat = cu.catalog_unit if cu and cu.catalog_unit_id else None
@@ -417,13 +417,210 @@ def sessions_for_semester(semester_id: int, *, published_only: bool = False) -> 
             course_unit__semester_id=semester_id,
             course_unit__is_active=True,
         )
-        .select_related("course_unit", "course_unit__catalog_unit", "venue", "venue__campus")
+        .select_related(
+            "course_unit",
+            "course_unit__catalog_unit",
+            "venue",
+            "venue__campus",
+            "teaching_section",
+        )
         .prefetch_related("course_unit__lecturers")
         .order_by("day_of_week", "start_time", "course_unit__code")
     )
     if published_only:
         qs = qs.filter(is_published=True)
     return list(qs)
+
+
+def normalize_course_unit_code(code: str | None) -> str:
+    return (code or "").strip().casefold()
+
+
+def build_target_course_unit_maps(target_semester_id: int) -> tuple[dict[int, object], dict[str, object]]:
+    """Return (by_catalog_unit_id, by_normalized_code) for active units on the target semester."""
+    from Programs.models import CourseUnit
+
+    units = list(
+        CourseUnit.objects.filter(semester_id=target_semester_id, is_active=True).select_related(
+            "catalog_unit"
+        )
+    )
+    by_catalog: dict[int, object] = {}
+    by_code: dict[str, object] = {}
+    for cu in units:
+        if cu.catalog_unit_id and cu.catalog_unit_id not in by_catalog:
+            by_catalog[cu.catalog_unit_id] = cu
+        key = normalize_course_unit_code(cu.code)
+        if key and key not in by_code:
+            by_code[key] = cu
+    return by_catalog, by_code
+
+
+def resolve_target_course_unit(source_unit, by_catalog: dict, by_code: dict):
+    if source_unit.catalog_unit_id and source_unit.catalog_unit_id in by_catalog:
+        return by_catalog[source_unit.catalog_unit_id], "catalog_unit"
+    key = normalize_course_unit_code(source_unit.code)
+    if key and key in by_code:
+        return by_code[key], "code"
+    return None, None
+
+
+def build_target_section_code_map(target_batch_id: int) -> dict[str, object]:
+    """Map section code (casefold) → TeachingSection available on the target batch."""
+    from Programs.models import TeachingSection
+    from Programs.teaching_sections import ensure_default_teaching_section
+
+    from Programs.models import ProgramBatch
+
+    batch = ProgramBatch.objects.filter(pk=target_batch_id).first()
+    if batch is None:
+        return {}
+    ensure_default_teaching_section(batch)
+
+    qs = TeachingSection.objects.filter(
+        Q(program_batch_id=target_batch_id)
+        | Q(is_shared=True, linked_batches__id=target_batch_id),
+        is_active=True,
+    ).distinct()
+    out: dict[str, object] = {}
+    for section in qs:
+        key = (section.code or "").strip().casefold()
+        if key and key not in out:
+            out[key] = section
+    return out
+
+
+def map_teaching_section_for_copy(source_section, section_by_code: dict):
+    if source_section is None:
+        return None
+    key = (source_section.code or "").strip().casefold()
+    if not key:
+        return None
+    return section_by_code.get(key)
+
+
+def copy_timetable_between_semesters(
+    *,
+    source_semester,
+    target_semester,
+    include_unpublished: bool = True,
+    replace_existing: bool = False,
+) -> dict:
+    """
+    One-time clone of TimetableSession rows from source → target semester.
+    Matches course units by catalog_unit_id, then by normalized code.
+    Does not copy lecturers.
+    """
+    from Programs.models import TimetableSession as TS
+
+    source_sessions = sessions_for_semester(
+        source_semester.id, published_only=not include_unpublished
+    )
+    by_catalog, by_code = build_target_course_unit_maps(target_semester.id)
+    section_by_code = build_target_section_code_map(target_semester.program_batch_id)
+
+    matched_target_unit_ids: set[int] = set()
+    for src in source_sessions:
+        target_unit, _ = resolve_target_course_unit(src.course_unit, by_catalog, by_code)
+        if target_unit is not None:
+            matched_target_unit_ids.add(target_unit.id)
+
+    replaced_count = 0
+    if replace_existing and matched_target_unit_ids:
+        replaced_count = TS.objects.filter(
+            is_active=True,
+            course_unit_id__in=matched_target_unit_ids,
+        ).update(is_active=False)
+
+    created: list[dict] = []
+    skipped: list[dict] = []
+
+    for src in source_sessions:
+        source_unit = src.course_unit
+        target_unit, match_how = resolve_target_course_unit(source_unit, by_catalog, by_code)
+        if target_unit is None:
+            skipped.append(
+                {
+                    "reason": "unmatched_course_unit",
+                    "source_session_id": src.id,
+                    "source_course_code": source_unit.code,
+                    "source_course_name": source_unit.name,
+                    "detail": (
+                        f"No matching course unit on target for {source_unit.code}."
+                    ),
+                }
+            )
+            continue
+
+        teaching_section = map_teaching_section_for_copy(src.teaching_section, section_by_code)
+        clone = TS(
+            course_unit=target_unit,
+            teaching_section=teaching_section,
+            day_of_week=src.day_of_week,
+            session_date=src.session_date,
+            start_date=src.start_date,
+            end_date=src.end_date,
+            start_time=src.start_time,
+            end_time=src.end_time,
+            venue=src.venue,
+            room_label=src.room_label or "",
+            session_type=src.session_type,
+            delivery_mode=src.delivery_mode,
+            notes=src.notes or "",
+            is_published=src.is_published,
+            is_active=True,
+        )
+        validation = validate_session_scheduling(clone, require_venue=True)
+        if not validation.ok:
+            skipped.append(
+                {
+                    "reason": "validation",
+                    "source_session_id": src.id,
+                    "source_course_code": source_unit.code,
+                    "target_course_unit_id": target_unit.id,
+                    "target_course_code": target_unit.code,
+                    "detail": "; ".join(validation.errors) or "Validation failed.",
+                    "errors": validation.errors,
+                }
+            )
+            continue
+
+        try:
+            clone.full_clean()
+            clone.save()
+        except Exception as exc:  # noqa: BLE001 — report and continue
+            skipped.append(
+                {
+                    "reason": "save_error",
+                    "source_session_id": src.id,
+                    "source_course_code": source_unit.code,
+                    "target_course_unit_id": target_unit.id,
+                    "detail": str(exc),
+                }
+            )
+            continue
+
+        created.append(
+            {
+                "id": clone.id,
+                "source_session_id": src.id,
+                "course_unit_id": target_unit.id,
+                "course_code": target_unit.code,
+                "matched_by": match_how,
+                "warnings": validation.warnings,
+            }
+        )
+
+    return {
+        "source_semester_id": source_semester.id,
+        "target_semester_id": target_semester.id,
+        "source_session_count": len(source_sessions),
+        "created_count": len(created),
+        "skipped_count": len(skipped),
+        "replaced_count": replaced_count,
+        "created": created,
+        "skipped": skipped,
+    }
 
 
 def build_catalog_overview(sessions: list[TimetableSession]) -> list[dict]:

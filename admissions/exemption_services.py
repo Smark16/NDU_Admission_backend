@@ -259,7 +259,7 @@ def _ensure_form_fee_charge(student: AdmittedStudent, *, charged_by=None) -> Stu
                     amount=EXEMPTION_FORM_FEE_UGX,
                     currency="UGX",
                     status="pending",
-                    notes="Auto-created to unlock course exemption change request form.",
+                    notes="Auto-created when the student opens the course exemption form; must be paid before submit.",
                     charged_by=charged_by,
                     semester=None,
                 )
@@ -299,10 +299,9 @@ def _form_fee_status_dict(
             "bill_generated": False,
             "payment_code": payment_code,
             "schoolpay_hint": (
-                f"On submit, a UGX {int(EXEMPTION_FORM_FEE_UGX):,} bill is posted to your "
-                f"account. Pay via SchoolPay"
+                f"Pay UGX {int(EXEMPTION_FORM_FEE_UGX):,} via SchoolPay to unlock this form"
                 + (f" using payment code {payment_code}" if payment_code else "")
-                + ". Payment does not have to be instant."
+                + ". Submit is blocked until the form fee is paid."
             ),
         }
 
@@ -343,24 +342,28 @@ def _form_fee_status_dict(
         "bill_generated": True,
         "payment_code": payment_code,
         "schoolpay_hint": (
-            f"Pay via SchoolPay using payment code {payment_code}. "
-            "Payment does not have to be instant — refresh after it posts."
+            (
+                f"Pay UGX {int(EXEMPTION_FORM_FEE_UGX):,} via SchoolPay using payment code "
+                f"{payment_code}. Refresh after payment posts — submit stays locked until paid."
+            )
             if payment_code
-            else "Pay via SchoolPay using your student payment code. "
-            "Refresh after payment posts."
+            else (
+                f"Pay UGX {int(EXEMPTION_FORM_FEE_UGX):,} via SchoolPay using your student "
+                "payment code. Refresh after payment posts — submit stays locked until paid."
+            )
         ),
     }
 
 
 def exemption_form_fee_status(student: AdmittedStudent) -> dict:
-    """Report existing form-fee charge without creating one (for form preview)."""
+    """Report existing form-fee charge without creating one."""
     return _form_fee_status_dict(student, _open_form_fee_charge(student))
 
 
 def ensure_exemption_form_fee_access(student: AdmittedStudent, *, charged_by=None) -> dict:
     """
     Ensure a 50k form-fee charge exists (creates on first call) and report status.
-    Called at exemption *submission* so the bill is generated with the application.
+    Called when the student opens the exemption form so they can pay before submit.
     """
     charge = _ensure_form_fee_charge(student, charged_by=charged_by)
     return _form_fee_status_dict(student, charge)

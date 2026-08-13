@@ -5,6 +5,69 @@ from django.utils import timezone
 from admissions.models import AdmittedStudent
 
 
+def _unit_allowed_for_self_register(student, cu, spe) -> tuple[bool, str]:
+    """
+    Align with GetAvailableCoursesForRegistration: students may register for
+    current-term (or deferred/backlog) offerings even when admin auto-assign
+    never created a StudentCourseUnitEnrollment row.
+    """
+    if spe is None:
+        return False, (
+            f"Not enrolled in {cu.code}; programme enrollment is missing. "
+            "Contact admissions/registry."
+        )
+    if not cu.is_active:
+        return False, f"{cu.code} is not active."
+
+    from Programs.models import StudentCurriculumOverride
+
+    if cu.curriculum_line_id:
+        blocked = (
+            StudentCurriculumOverride.objects.filter(
+                enrollment=spe,
+                curriculum_line_id=cu.curriculum_line_id,
+                override_type__in=("exempted", "transferred"),
+            )
+            .values_list("override_type", flat=True)
+            .first()
+        )
+        if blocked:
+            return False, f"{cu.code} is marked {blocked} and cannot be registered."
+
+    sem = cu.semester
+    if sem is None:
+        return False, f"{cu.code} has no semester assigned."
+
+    if spe.program_batch_id and sem.program_batch_id != spe.program_batch_id:
+        return False, f"{cu.code} is not on your academic cohort."
+
+    if (
+        sem.year_of_study == spe.current_year_of_study
+        and sem.term_number == spe.current_term_number
+    ):
+        return True, ""
+
+    if cu.curriculum_line_id and StudentCurriculumOverride.objects.filter(
+        enrollment=spe,
+        curriculum_line_id=cu.curriculum_line_id,
+        override_type__in=("deferred", "backlog"),
+        effective_year_of_study=spe.current_year_of_study,
+        effective_term_number=spe.current_term_number,
+    ).exists():
+        return True, ""
+
+    # Legacy semesters without year/term metadata on the same cohort.
+    if (sem.year_of_study is None or sem.term_number is None) and (
+        spe.program_batch_id and sem.program_batch_id == spe.program_batch_id
+    ):
+        return True, ""
+
+    return False, (
+        f"Cannot register for {cu.code}: it is not offered for your current term "
+        f"(Year {spe.current_year_of_study}, Term {spe.current_term_number})."
+    )
+
+
 def register_student_for_course_units(student: AdmittedStudent, course_unit_ids: list) -> dict:
     from Programs.models import CourseUnit, StudentCourseUnitEnrollment, StudentProgrammeEnrollment
     from examinations.models import ExamRetakeRegistration
@@ -15,7 +78,7 @@ def register_student_for_course_units(student: AdmittedStudent, course_unit_ids:
     errors = []
     t = timezone.now()
     spe = (
-        StudentProgrammeEnrollment.objects.select_related("program")
+        StudentProgrammeEnrollment.objects.select_related("program", "program_batch")
         .filter(student=student)
         .first()
     )
@@ -32,7 +95,9 @@ def register_student_for_course_units(student: AdmittedStudent, course_unit_ids:
     with transaction.atomic():
         for cid in ids:
             try:
-                cu = CourseUnit.objects.select_related("curriculum_line", "semester").get(id=cid)
+                cu = CourseUnit.objects.select_related(
+                    "curriculum_line", "semester", "semester__program_batch"
+                ).get(id=cid)
             except CourseUnit.DoesNotExist:
                 errors.append(f"Course unit {cid} not found")
                 continue
@@ -56,17 +121,26 @@ def register_student_for_course_units(student: AdmittedStudent, course_unit_ids:
 
             en = StudentCourseUnitEnrollment.objects.filter(student=student, course_unit=cu).first()
             if not en:
-                if not is_retake_offer:
-                    errors.append(f"Not enrolled in {cu.code}; ask admin to enroll you first.")
-                    continue
-                kind = offering.get("registration_kind") or StudentCourseUnitEnrollment.KIND_RETAKE
-                en = StudentCourseUnitEnrollment.objects.create(
-                    student=student,
-                    course_unit=cu,
-                    status="enrolled",
-                    source="self_registered",
-                    registration_kind=kind,
-                )
+                if is_retake_offer:
+                    kind = offering.get("registration_kind") or StudentCourseUnitEnrollment.KIND_RETAKE
+                    en = StudentCourseUnitEnrollment.objects.create(
+                        student=student,
+                        course_unit=cu,
+                        status="enrolled",
+                        source="self_registered",
+                        registration_kind=kind,
+                    )
+                else:
+                    allowed, reason = _unit_allowed_for_self_register(student, cu, spe)
+                    if not allowed:
+                        errors.append(reason)
+                        continue
+                    en = StudentCourseUnitEnrollment.objects.create(
+                        student=student,
+                        course_unit=cu,
+                        status="enrolled",
+                        source="self_registered",
+                    )
             if en.registration_date:
                 errors.append(f"Already registered for {cu.code}")
                 continue

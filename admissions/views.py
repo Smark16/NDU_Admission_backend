@@ -4545,9 +4545,26 @@ class StudentChangeRequestListCreate(APIView):
             )
             from Programs.models import ProgramCurriculumLine
 
-            # Form fee is raised on submit (not when the student opens the form).
-            # Payment may land later via SchoolPay — do not block submission.
+            # Form fee (UGX 50k) must be paid before the request is accepted.
             access = ensure_exemption_form_fee_access(admission, charged_by=None)
+            if not access.get("paid"):
+                code = access.get("payment_code") or ""
+                amount = int(float(access.get("amount") or 50000))
+                balance = int(float(access.get("balance") or amount))
+                detail = (
+                    f"Pay the exemption form fee (UGX {amount:,}) via SchoolPay before "
+                    f"submitting. Outstanding: UGX {balance:,}"
+                    + (f". Use payment code {code}" if code else "")
+                    + ". Refresh after payment posts, then submit again."
+                )
+                return Response(
+                    {
+                        "detail": detail,
+                        "form_fee": access,
+                        "code": "exemption_form_fee_required",
+                    },
+                    status=400,
+                )
 
             # Optional curriculum-line IDs (legacy checkbox UI). Free-text papers
             # from the typed form are preferred and do not require curriculum match.
@@ -4743,13 +4760,13 @@ class ExemptionFormFeeAccessView(APIView):
             return None
 
     def get(self, request):
-        from admissions.exemption_services import exemption_form_fee_status
+        from admissions.exemption_services import ensure_exemption_form_fee_access
 
         admission = self._get_admission(request.user)
         if not admission:
             return Response({"detail": "No active admission found."}, status=404)
-        # Status only — the UGX 50k bill is created when the student submits.
-        return Response(exemption_form_fee_status(admission))
+        # Create / reuse the UGX 50k bill so the student can pay before submit.
+        return Response(ensure_exemption_form_fee_access(admission, charged_by=None))
 
     def post(self, request):
         return self.get(request)
@@ -4803,7 +4820,7 @@ class ExemptionEligibleCoursesView(APIView):
 
     def get(self, request):
         from admissions.exemption_services import (
-            exemption_form_fee_status,
+            ensure_exemption_form_fee_access,
             list_eligible_exemption_courses,
         )
         from examinations.serializers import GradeScaleDetailSerializer
@@ -4812,9 +4829,9 @@ class ExemptionEligibleCoursesView(APIView):
         admission = self._get_admission(request.user)
         if not admission:
             return Response({"detail": "No active admission found."}, status=404)
-        # Do NOT create the 50k bill here — that happens on submit.
+        # Raise / reuse the UGX 50k form fee so the student can pay before submit.
         # Courses list is optional (students now type papers as free-text fields).
-        access = exemption_form_fee_status(admission)
+        access = ensure_exemption_form_fee_access(admission, charged_by=None)
         try:
             courses = list_eligible_exemption_courses(admission)
         except Exception:

@@ -34,8 +34,10 @@ from Programs.timetable_pdf import (
 from Programs.timetable_utils import (
     build_catalog_overview,
     compute_teaching_load,
+    copy_timetable_between_semesters,
     parse_delivery_mode,
     resolve_semester_campuses,
+    serialize_lecturer_brief,
     serialize_session,
     sessions_for_semester,
     validate_session_scheduling,
@@ -554,6 +556,7 @@ class SemesterTimetableView(APIView):
                     "credit_units": float(cu.credit_units) if cu.credit_units else None,
                     "catalog_unit_id": cat.id if cat else None,
                     "catalog_code": cat.code if cat else "",
+                    "lecturers": [serialize_lecturer_brief(lec) for lec in cu.lecturers.all()],
                     "sessions": by_unit.get(cu.id, []),
                 }
             )
@@ -703,10 +706,104 @@ class SemesterTimetableView(APIView):
         session.full_clean()
         session.save()
 
+        warnings = list(validation.warnings)
+        raw_lecturer_ids = request.data.get("lecturer_ids", None)
+        if raw_lecturer_ids is not None:
+            if not isinstance(raw_lecturer_ids, list):
+                warnings.append("lecturer_ids must be a list — session saved without updating lecturers.")
+            else:
+                try:
+                    from Programs.section_lecturers import assign_lecturers_to_section
+
+                    assign_lecturers_to_section(
+                        course_unit,
+                        [int(x) for x in raw_lecturer_ids],
+                        teaching_section=None,
+                        mode="replace",
+                    )
+                    session = (
+                        TimetableSession.objects.select_related(
+                            "course_unit",
+                            "course_unit__catalog_unit",
+                            "venue",
+                            "venue__campus",
+                            "teaching_section",
+                        )
+                        .prefetch_related("course_unit__lecturers")
+                        .get(pk=session.pk)
+                    )
+                except (TypeError, ValueError) as exc:
+                    warnings.append(f"Session saved, but lecturers were not updated: {exc}")
+                except Exception as exc:  # noqa: BLE001
+                    warnings.append(f"Session saved, but lecturers were not updated: {exc}")
+
         data = serialize_session(session)
-        data["warnings"] = validation.warnings
+        data["warnings"] = warnings
         data["clashes"] = validation.clashes
         return Response(data, status=201)
+
+
+class SemesterTimetableCopyView(APIView):
+    """One-time copy of timetable sessions from another semester into this one."""
+
+    permission_classes = [IsAuthenticated, ProgramSchedulingAPIPermission]
+
+    def post(self, request, semester_id):
+        target = get_object_or_404(
+            Semester.objects.select_related("program_batch__program"),
+            pk=semester_id,
+            is_active=True,
+        )
+        assert_semester_access(request.user, target)
+
+        source_id = request.data.get("source_semester_id")
+        if not source_id:
+            return Response({"detail": "source_semester_id is required."}, status=400)
+        try:
+            source_id = int(source_id)
+        except (TypeError, ValueError):
+            return Response({"detail": "source_semester_id must be an integer."}, status=400)
+
+        if source_id == target.id:
+            return Response(
+                {"detail": "Source and target semester must be different."},
+                status=400,
+            )
+
+        source = get_object_or_404(
+            Semester.objects.select_related("program_batch__program"),
+            pk=source_id,
+            is_active=True,
+        )
+        assert_semester_access(request.user, source)
+
+        include_unpublished = request.data.get("include_unpublished", True)
+        if isinstance(include_unpublished, str):
+            include_unpublished = include_unpublished.strip().lower() not in (
+                "0",
+                "false",
+                "no",
+            )
+        else:
+            include_unpublished = bool(include_unpublished)
+
+        replace_existing = request.data.get("replace_existing", False)
+        if isinstance(replace_existing, str):
+            replace_existing = replace_existing.strip().lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+        else:
+            replace_existing = bool(replace_existing)
+
+        result = copy_timetable_between_semesters(
+            source_semester=source,
+            target_semester=target,
+            include_unpublished=include_unpublished,
+            replace_existing=replace_existing,
+        )
+        return Response(result, status=200)
 
 
 class SemesterTimetablePdfView(APIView):
