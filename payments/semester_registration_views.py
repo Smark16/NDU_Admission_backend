@@ -15,7 +15,6 @@ from admissions.models import AdmittedStudent
 from Programs.models import ProgramBatch, Semester
 
 from .models import RegistrationSettings
-from accounts.portal_branding import get_university_display_name
 
 
 def _parse_optional_dt(val):
@@ -368,12 +367,10 @@ class UpdateRegistrationSettings(APIView):
 @permission_classes([AllowAny])
 def verify_registration_card_public(request, student_id: str):
     """
-    Public: scan QR on printed registration card (no auth).
-    Returns live tuition paid % from the finance engine.
+    Public: scan QR on printed registration / student ID card (no auth).
+    Returns live ID-mapped fields (identity, programme, fees, registered courses).
     """
-    from Programs.models import StudentCourseUnitEnrollment, StudentProgrammeEnrollment
-
-    from .student_portal_finance import student_finance_totals
+    from .registration_lookup import build_public_verify_payload
 
     lookup = (student_id or "").strip()
     if not lookup:
@@ -409,41 +406,4 @@ def verify_registration_card_public(request, student_id: str):
             status=status.HTTP_403_FORBIDDEN,
         )
 
-    finance = student_finance_totals(student)
-    registered_count = StudentCourseUnitEnrollment.objects.filter(
-        student=student,
-        registration_date__isnull=False,
-    ).count()
-
-    enrollment_status = None
-    enrollment_status_display = None
-    try:
-        spe = StudentProgrammeEnrollment.objects.get(student=student)
-        enrollment_status = spe.status
-        enrollment_status_display = spe.get_status_display()
-    except StudentProgrammeEnrollment.DoesNotExist:
-        enrollment_status = "none"
-        enrollment_status_display = "Not enrolled"
-
-    return Response(
-        {
-            "valid": True,
-            "student_id": student.student_id,
-            "reg_no": student.reg_no,
-            "student_name": student.full_name,
-            "programme": student.admitted_program.name if student.admitted_program_id else None,
-            "campus": student.admitted_campus.name if student.admitted_campus_id else None,
-            "enrollment_status": enrollment_status,
-            "enrollment_status_display": enrollment_status_display,
-            "registered_courses_count": registered_count,
-            "percentage_paid": finance["percentage_paid"],
-            "total_paid": finance["total_paid"],
-            "total_required": finance["total_required"],
-            "balance": finance["balance"],
-            "display_currency": finance["display_currency"],
-            "commitment_met": finance["commitment_met"],
-            "commitment_paid_ugx": finance["commitment_paid_ugx"],
-            "commitment_threshold": finance["commitment_threshold"],
-            "system": get_university_display_name(),
-        }
-    )
+    return Response(build_public_verify_payload(student, request))

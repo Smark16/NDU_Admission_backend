@@ -122,14 +122,13 @@ def _safe_payment_history(student: AdmittedStudent, *, limit: int = 25) -> list:
         return []
 
 
-def build_registration_lookup_payload(student: AdmittedStudent, request=None) -> dict:
-    finance = _safe_finance(student)
-    registered_courses = _course_rows_for_student(student)
-
+def _programme_position(student: AdmittedStudent) -> dict:
     enrollment_status = "none"
     enrollment_status_display = "Not enrolled"
     current_year = None
     current_term = None
+    batch_name = None
+    specialization = ""
     try:
         spe = (
             StudentProgrammeEnrollment.objects.select_related("program_batch")
@@ -141,8 +140,87 @@ def build_registration_lookup_payload(student: AdmittedStudent, request=None) ->
             enrollment_status_display = spe.get_status_display()
             current_year = spe.current_year_of_study
             current_term = spe.current_term_number
+            if spe.program_batch_id and spe.program_batch:
+                batch_name = spe.program_batch.name
+            specialization = (spe.specialization or "").strip()
     except ProgrammingError:
         logger.exception("registration_lookup programme enrollment query failed")
+    return {
+        "enrollment_status": enrollment_status,
+        "enrollment_status_display": enrollment_status_display,
+        "current_year_of_study": current_year,
+        "current_term_number": current_term,
+        "batch_name": batch_name,
+        "specialization": specialization or None,
+    }
+
+
+def _registration_dates(student: AdmittedStudent, registered_courses: list[dict]) -> dict:
+    student_reg = getattr(student, "registration_date", None)
+    earliest = None
+    for row in registered_courses:
+        raw = row.get("registration_date")
+        if not raw:
+            continue
+        if earliest is None or str(raw) < str(earliest):
+            earliest = raw
+    reg_iso = None
+    if student_reg is not None:
+        try:
+            reg_iso = student_reg.isoformat()
+        except Exception:
+            reg_iso = str(student_reg)
+    elif earliest:
+        reg_iso = earliest
+    return {
+        "is_registered": bool(getattr(student, "is_registered", False) or registered_courses),
+        "registration_date": reg_iso,
+    }
+
+
+def build_public_verify_payload(student: AdmittedStudent, request=None) -> dict:
+    """
+    Live fields mapped for QR scan on the registration / student ID card.
+    Public-safe: no payment history or contact PII.
+    """
+    finance = _safe_finance(student)
+    registered_courses = _course_rows_for_student(student)
+    position = _programme_position(student)
+    reg_dates = _registration_dates(student, registered_courses)
+    accounts_cleared = bool(getattr(student, "accounts_registration_cleared", False))
+
+    return {
+        "valid": True,
+        "student_id": student.student_id,
+        "schoolpay_code": student.effective_schoolpay_code,
+        "reg_no": student.reg_no,
+        "student_name": student.full_name,
+        "programme": student.admitted_program.name if student.admitted_program_id else None,
+        "campus": student.admitted_campus.name if student.admitted_campus_id else None,
+        "passport_photo": _passport_photo_url(student, request),
+        **position,
+        "accounts_registration_cleared": accounts_cleared,
+        "registered_courses_count": len(registered_courses),
+        "registered_courses": registered_courses,
+        **reg_dates,
+        "percentage_paid": finance["percentage_paid"],
+        "total_paid": finance["total_paid"],
+        "total_required": finance["total_required"],
+        "balance": finance["balance"],
+        "display_currency": finance["display_currency"],
+        "commitment_met": finance["commitment_met"],
+        "commitment_paid_ugx": finance["commitment_paid_ugx"],
+        "commitment_threshold": finance["commitment_threshold"],
+        "admission_fee_paid": bool(getattr(student, "admission_fee_paid", False)),
+        "system": get_university_display_name(),
+    }
+
+
+def build_registration_lookup_payload(student: AdmittedStudent, request=None) -> dict:
+    finance = _safe_finance(student)
+    registered_courses = _course_rows_for_student(student)
+    position = _programme_position(student)
+    reg_dates = _registration_dates(student, registered_courses)
 
     return {
         "id": student.id,
@@ -154,12 +232,13 @@ def build_registration_lookup_payload(student: AdmittedStudent, request=None) ->
         "programme": student.admitted_program.name if student.admitted_program_id else None,
         "campus": student.admitted_campus.name if student.admitted_campus_id else None,
         "passport_photo": _passport_photo_url(student, request),
-        "enrollment_status": enrollment_status,
-        "enrollment_status_display": enrollment_status_display,
-        "current_year_of_study": current_year,
-        "current_term_number": current_term,
+        **position,
+        "accounts_registration_cleared": bool(
+            getattr(student, "accounts_registration_cleared", False)
+        ),
         "registered_courses_count": len(registered_courses),
         "registered_courses": registered_courses,
+        **reg_dates,
         "percentage_paid": finance["percentage_paid"],
         "total_paid": finance["total_paid"],
         "total_required": finance["total_required"],
