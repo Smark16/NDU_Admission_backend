@@ -223,6 +223,16 @@ class BonafideTranscriptPdfView(APIView):
 
         from examinations.services.graduation_status import graduation_show_scores_default
         from examinations.services.provisional_results_pdf import render_provisional_results_pdf
+        from examinations.services.transcript import (
+            TRANSCRIPT_REQUIRES_PUBLISHED_MARKS,
+            student_has_published_marks,
+        )
+
+        if not student_has_published_marks(student):
+            return Response(
+                {"detail": TRANSCRIPT_REQUIRES_PUBLISHED_MARKS},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         show_param = request.query_params.get("show_scores")
         if show_param is None:

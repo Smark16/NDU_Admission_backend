@@ -213,6 +213,10 @@ class ErpAccessPolicy(models.Model):
             ("assign_roles", "Assign Django groups to staff users"),
             ("manage_payment_reconciliation", "Manage payment reconciliation tools"),
             (
+                "verify_student_cards",
+                "Verify student ID / registration cards (Finance card scan desk)",
+            ),
+            (
                 "post_manual_bank_payment",
                 "Post manual bank / reconciliation payments onto student tuition ledgers",
             ),

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import secrets
-import json
 import logging
 from datetime import date, timedelta
 
@@ -273,17 +272,8 @@ def _preview_payload(request, card: StudentIdCard) -> dict:
     if not return_to:
         return_to = _default_id_card_return_address()
     institution = (tmpl.get("institution") or "Ndejje University").strip()
-    qr_obj = {
-        "v": 1,
-        "type": "ndu_student_id",
-        "card_number": card.card_number,
-        "name": st.full_name,
-        "student_no": student_no,
-        "reg_no": st.reg_no or "",
-        "course": st.admitted_program.name if st.admitted_program_id else "",
-        "gender": app.gender or "",
-        "expiry_date": expiry.isoformat(),
-    }
+    from .id_card_pdf_render import build_id_card_qr_payload
+
     payload = {
         "card_number": card.card_number,
         "template": {
@@ -300,7 +290,7 @@ def _preview_payload(request, card: StudentIdCard) -> dict:
             "gender": app.gender or "",
             "expiry_date": expiry.isoformat(),
             "barcode_value": student_no or st.reg_no or card.card_number,
-            "qr_payload": json.dumps(qr_obj, ensure_ascii=False),
+            "qr_payload": build_id_card_qr_payload(card),
             "passport_photo": _passport_absolute_url(request, app),
         },
         "back": {

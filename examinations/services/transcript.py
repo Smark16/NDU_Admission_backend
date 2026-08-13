@@ -5,6 +5,17 @@ from ..models import CourseUnitResult
 from .graduation_status import get_transcript_document_meta
 from .program_display import program_award_display_name
 
+TRANSCRIPT_REQUIRES_PUBLISHED_MARKS = (
+    "Transcript / provisional results can only be downloaded after marks have been published."
+)
+
+
+def student_has_published_marks(student: AdmittedStudent) -> bool:
+    return CourseUnitResult.objects.filter(
+        enrollment__student=student,
+        status=CourseUnitResult.STATUS_PUBLISHED,
+    ).exists()
+
 
 def build_student_transcript(student: AdmittedStudent) -> dict:
     results = (
@@ -59,6 +70,7 @@ def build_student_transcript(student: AdmittedStudent) -> dict:
     cgpa = round(weighted_gp / total_credits, 2) if total_credits else None
 
     document = get_transcript_document_meta(student)
+    published_count = results.count()
 
     return {
         "student": {
@@ -74,7 +86,11 @@ def build_student_transcript(student: AdmittedStudent) -> dict:
         "summary": {
             "total_credit_units": total_credits,
             "cgpa": cgpa,
-            "published_course_count": results.count(),
+            "published_course_count": published_count,
         },
         "document": document,
+        "can_download": published_count > 0,
+        "download_blocked_reason": (
+            None if published_count > 0 else TRANSCRIPT_REQUIRES_PUBLISHED_MARKS
+        ),
     }

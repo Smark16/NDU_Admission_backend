@@ -7,7 +7,7 @@ from Programs.permissions import FeePlanConfigurationPermission
 from rest_framework import status
 from django.db.models import Q
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -364,13 +364,23 @@ class UpdateRegistrationSettings(APIView):
 
 
 @api_view(["GET"])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def verify_registration_card_public(request, student_id: str):
     """
-    Public: scan QR on printed registration / student ID card (no auth).
-    Returns live ID-mapped fields (identity, programme, fees, registered courses).
+    Staff-only: scan QR on printed registration / student ID card.
+    Requires a university staff account; returns live ID-mapped fields.
     """
+    from accounts.erp_drf_permissions import CanVerifyStudentCardPermission
     from .registration_lookup import build_public_verify_payload
+
+    if not CanVerifyStudentCardPermission().has_permission(request, None):
+        return Response(
+            {
+                "valid": False,
+                "detail": CanVerifyStudentCardPermission.message,
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
 
     lookup = (student_id or "").strip()
     if not lookup:

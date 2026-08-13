@@ -181,7 +181,7 @@ def _registration_dates(student: AdmittedStudent, registered_courses: list[dict]
 def build_public_verify_payload(student: AdmittedStudent, request=None) -> dict:
     """
     Live fields mapped for QR scan on the registration / student ID card.
-    Public-safe: no payment history or contact PII.
+    Staff-gated at the API; omits payment history and contact PII.
     """
     finance = _safe_finance(student)
     registered_courses = _course_rows_for_student(student)

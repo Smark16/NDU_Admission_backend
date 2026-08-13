@@ -220,6 +220,11 @@ ROLE_SERVICE_CATALOG: list[CategoryDef] = [
             _svc("temp_access_pass", "Temporary access passes", _toggle("admissions.manage_temporary_access_pass")),
             _svc("temp_access_pass_records", "Temporary access pass records", _crud("admissions", "temporaryaccesspass")),
             _svc("payment_reconciliation", "Payment reconciliation", _toggle("accounts.manage_payment_reconciliation")),
+            _svc(
+                "verify_student_cards",
+                "Card scan desk (verify student ID / registration QR)",
+                _toggle("accounts.verify_student_cards"),
+            ),
             _svc("manual_bank_payment", "Post manual bank payment", _toggle("accounts.post_manual_bank_payment")),
             _svc("manual_bank_change", "Manual bank payment change requests", _crud(
                 "payments", "manualbankpaymentchangerequest"

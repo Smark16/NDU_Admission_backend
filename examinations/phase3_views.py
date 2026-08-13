@@ -38,7 +38,11 @@ from .services.provisional_results_pdf import (
     render_provisional_results_html,
     render_provisional_results_pdf,
 )
-from .services.transcript import build_student_transcript
+from .services.transcript import (
+    TRANSCRIPT_REQUIRES_PUBLISHED_MARKS,
+    build_student_transcript,
+    student_has_published_marks,
+)
 from .views import _get_course_unit_or_404, _student_for_user
 
 
@@ -247,6 +251,12 @@ class StudentTranscriptView(APIView):
         # Use `output=pdf` — `format=pdf` is reserved by DRF content negotiation and returns 404.
         output = request.query_params.get("output", "").lower()
         if output in ("pdf", "html"):
+            if not student_has_published_marks(student):
+                return Response(
+                    {"detail": TRANSCRIPT_REQUIRES_PUBLISHED_MARKS},
+                    status=400,
+                )
+
             from .services.graduation_status import graduation_show_scores_default
 
             show_param = request.query_params.get("show_scores")

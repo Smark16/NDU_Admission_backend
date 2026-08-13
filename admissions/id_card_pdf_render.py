@@ -4,16 +4,17 @@ from __future__ import annotations
 
 import base64
 import io
-import json
 import logging
 import os
 import platform
 from datetime import date, timedelta
 from pathlib import Path
+from urllib.parse import quote
 
 import fitz
 
 from accounts.models import SystemSettings
+from accounts.portal_branding import get_erp_frontend_url
 
 from .models import IdCardPdfTemplate, StudentIdCard
 
@@ -153,25 +154,16 @@ def _passport_photo_path(card: StudentIdCard) -> str | None:
 
 
 def build_id_card_qr_payload(card: StudentIdCard) -> str:
-    """Same JSON payload shown in the admin ID-card QR preview."""
+    """
+    Staff-gated verify URL (same path as registration-card QR).
+    Details load only after university staff login — no PII in the QR itself.
+    """
     st = card.admitted_student
-    app = st.application
-    issue = card.issue_date or date.today()
-    expiry = card.expiry_date or _default_expiry(issue)
-    return json.dumps(
-        {
-            "v": 1,
-            "type": "ndu_student_id",
-            "card_number": card.card_number or "",
-            "name": st.full_name or "",
-            "student_no": (st.student_id or "").strip(),
-            "reg_no": (st.reg_no or "").strip(),
-            "course": st.admitted_program.name if st.admitted_program_id else "",
-            "gender": (app.gender or "").strip() if app else "",
-            "expiry_date": expiry.isoformat(),
-        },
-        ensure_ascii=False,
-    )
+    lookup = (st.student_id or st.reg_no or "").strip()
+    if not lookup:
+        lookup = str(st.pk)
+    base = get_erp_frontend_url().rstrip("/")
+    return f"{base}/verify-registration/{quote(lookup, safe='')}"
 
 
 def _qr_png_bytes(payload: str) -> bytes | None:

@@ -105,3 +105,20 @@ class CanViewAdmissionQueues(BasePermission):
         if u.has_perm("admissions.view_application"):
             return True
         return False
+
+
+class CanVerifyStudentCardPermission(BasePermission):
+    """
+    Finance card scan desk — assignable via Role Management
+    (accounts.verify_student_cards).
+    """
+
+    message = "You do not have permission to verify student ID / registration cards."
+
+    def has_permission(self, request, view):
+        u = request.user
+        if not u.is_authenticated:
+            return False
+        if user_is_super_admin(u):
+            return True
+        return user_has_any_erp_perm(u, "verify_student_cards")
