@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import base64
+import io
+import json
 import logging
 import os
 import platform
@@ -17,9 +19,10 @@ from .models import IdCardPdfTemplate, StudentIdCard
 
 logger = logging.getLogger(__name__)
 
-IMAGE_FIELD_KEYS = frozenset({"passport_photo"})
+IMAGE_FIELD_KEYS = frozenset({"passport_photo", "qr_code"})
 DEFAULT_PHOTO_WIDTH = 85.0
 DEFAULT_PHOTO_HEIGHT = 105.0
+DEFAULT_QR_SIZE = 70.0
 
 
 def _default_expiry(issue: date) -> date:
@@ -149,16 +152,59 @@ def _passport_photo_path(card: StudentIdCard) -> str | None:
     return None
 
 
+def build_id_card_qr_payload(card: StudentIdCard) -> str:
+    """Same JSON payload shown in the admin ID-card QR preview."""
+    st = card.admitted_student
+    app = st.application
+    issue = card.issue_date or date.today()
+    expiry = card.expiry_date or _default_expiry(issue)
+    return json.dumps(
+        {
+            "v": 1,
+            "type": "ndu_student_id",
+            "card_number": card.card_number or "",
+            "name": st.full_name or "",
+            "student_no": (st.student_id or "").strip(),
+            "reg_no": (st.reg_no or "").strip(),
+            "course": st.admitted_program.name if st.admitted_program_id else "",
+            "gender": (app.gender or "").strip() if app else "",
+            "expiry_date": expiry.isoformat(),
+        },
+        ensure_ascii=False,
+    )
+
+
+def _qr_png_bytes(payload: str) -> bytes | None:
+    try:
+        import qrcode
+    except ImportError:
+        logger.warning("qrcode package not installed; skipping ID card QR")
+        return None
+    try:
+        qr = qrcode.QRCode(version=None, box_size=6, border=1)
+        qr.add_data(payload)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white")
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return buf.getvalue()
+    except Exception:
+        logger.exception("Failed to generate ID card QR PNG")
+        return None
+
+
 def fill_id_card_pdf_template(
     template_path: str,
     context: dict[str, str],
     field_positions: dict,
     *,
     image_paths: dict[str, str] | None = None,
+    image_streams: dict[str, bytes] | None = None,
 ) -> bytes:
     """Overlay mapped text and optional images onto the PDF template."""
     doc = fitz.open(template_path)
     image_paths = image_paths or {}
+    image_streams = image_streams or {}
 
     for field_name, pos in (field_positions or {}).items():
         if not isinstance(pos, dict):
@@ -169,18 +215,24 @@ def fill_id_card_pdf_template(
         page = doc[page_num]
 
         if field_name in IMAGE_FIELD_KEYS:
-            img_path = image_paths.get(field_name)
-            if not img_path:
-                continue
+            default_w = DEFAULT_QR_SIZE if field_name == "qr_code" else DEFAULT_PHOTO_WIDTH
+            default_h = DEFAULT_QR_SIZE if field_name == "qr_code" else DEFAULT_PHOTO_HEIGHT
             x = float(pos.get("x", 0))
             y = float(pos.get("y", 0))
-            width = float(pos.get("width") or DEFAULT_PHOTO_WIDTH)
-            height = float(pos.get("height") or DEFAULT_PHOTO_HEIGHT)
+            width = float(pos.get("width") or default_w)
+            height = float(pos.get("height") or default_h)
             rect = fitz.Rect(x, y, x + width, y + height)
             try:
+                stream = image_streams.get(field_name)
+                if stream:
+                    page.insert_image(rect, stream=stream, keep_proportion=True)
+                    continue
+                img_path = image_paths.get(field_name)
+                if not img_path:
+                    continue
                 page.insert_image(rect, filename=img_path, keep_proportion=True)
             except Exception:
-                logger.exception("Failed to insert passport photo on ID card PDF")
+                logger.exception("Failed to insert %s on ID card PDF", field_name)
             continue
 
         value = str(context.get(field_name, "") or "")
@@ -222,12 +274,23 @@ def render_id_card_pdf(card: StudentIdCard) -> bytes | None:
 
     context = build_id_card_field_context(card)
     image_paths: dict[str, str] = {}
+    image_streams: dict[str, bytes] = {}
     photo_path = _passport_photo_path(card)
     positions = template.field_positions or {}
     if photo_path and "passport_photo" in positions:
         image_paths["passport_photo"] = photo_path
+    if "qr_code" in positions:
+        qr_bytes = _qr_png_bytes(build_id_card_qr_payload(card))
+        if qr_bytes:
+            image_streams["qr_code"] = qr_bytes
 
-    return fill_id_card_pdf_template(pdf_path, context, positions, image_paths=image_paths)
+    return fill_id_card_pdf_template(
+        pdf_path,
+        context,
+        positions,
+        image_paths=image_paths,
+        image_streams=image_streams,
+    )
 
 
 def pdf_first_page_png_base64(pdf_bytes: bytes, *, scale: float = 2.0) -> str:
