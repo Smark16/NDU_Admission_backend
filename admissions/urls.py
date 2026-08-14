@@ -32,6 +32,7 @@ from admissions.weekly_report_views import (
 )
 
 from admissions.announcement_views import SendAnnouncementView, TestAnnouncementView
+from admissions.student_notify_views import StudentNotifyPreviewView, StudentNotifySendView
 from admissions.student_bulk_import_views import (
     StudentBulkImportTemplateView,
     StudentBulkImportView,
@@ -73,6 +74,8 @@ urlpatterns = [
     path('application_choice_stats/', views.ApplicationChoiceStatsView.as_view()),
     path('test_announcement', TestAnnouncementView.as_view()),
     path('send_announcement', SendAnnouncementView.as_view()),
+    path('notify_students/preview', StudentNotifyPreviewView.as_view()),
+    path('notify_students', StudentNotifySendView.as_view()),
 
     path('rejected_applications', views.ListRejectedApplications.as_view()),
     path('revoked_applications', views.ListRevokedApplications.as_view()),
