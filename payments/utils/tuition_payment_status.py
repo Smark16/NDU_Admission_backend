@@ -80,6 +80,20 @@ def mark_tuition_payment_completed(
 
         locked.save(update_fields=list(dict.fromkeys(update_fields)))
         student = locked.student
+        payment = locked
+
+    try:
+        from admissions.exemption_form_fee_payment import (
+            is_exemption_form_fee_charge,
+            sync_exemption_form_fee_paid_at,
+        )
+
+        if is_exemption_form_fee_charge(payment):
+            sync_exemption_form_fee_paid_at(payment)
+    except Exception:
+        logger.exception(
+            "Exemption form fee paid_at sync failed for payment %s", payment.pk
+        )
 
     if student_id := getattr(student, "pk", None):
         _sync_commitment_and_enrollment(student_id)
@@ -157,6 +171,20 @@ def reconcile_pending_tuition_payment(
         return "paid"
 
     if gateway_status in GATEWAY_FAILED_STATUSES:
+        try:
+            from admissions.exemption_form_fee_payment import (
+                clear_exemption_form_stk_attempt,
+                is_exemption_form_fee_charge,
+            )
+
+            if is_exemption_form_fee_charge(payment):
+                clear_exemption_form_stk_attempt(payment)
+                return "failed"
+        except Exception:
+            logger.exception(
+                "Exemption form fee STK clear failed for payment %s", payment.pk
+            )
+
         StudentTuitionPayment.objects.filter(pk=payment.pk, status="pending").update(
             status="failed"
         )
@@ -219,6 +247,22 @@ def reconcile_stale_pending_tuition_payments(
             continue
 
         # Still pending at gateway after stale window — abandon so student can retry.
+        # Exemption form fee bills must stay open (clear STK refs only).
+        try:
+            from admissions.exemption_form_fee_payment import (
+                clear_exemption_form_stk_attempt,
+                is_exemption_form_fee_charge,
+            )
+
+            if is_exemption_form_fee_charge(payment):
+                clear_exemption_form_stk_attempt(payment)
+                results["cleared"] += 1
+                continue
+        except Exception:
+            logger.exception(
+                "Exemption form fee stale clear failed for payment %s", payment.pk
+            )
+
         StudentTuitionPayment.objects.filter(pk=payment.pk, status="pending").update(
             status="failed"
         )

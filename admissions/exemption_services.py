@@ -292,15 +292,19 @@ def _open_form_fee_charge(student: AdmittedStudent) -> StudentTuitionPayment | N
 
 
 def form_fee_paid_for_charge(student: AdmittedStudent, charge: StudentTuitionPayment) -> bool:
-    if charge.status == "completed":
-        return True
+    """
+    Unlock only after this portal sent a SchoolPay phone prompt (STK).
+
+    A random payment_reference on the bill is not enough — tuition / ledger
+    sync can copy SchoolPay refs without the student paying the form fee.
+    """
     if charge.is_waived:
         return False
-    alloc = build_finance_allocation(student)
-    for line in alloc.demand_lines:
-        if line.kind == "ad_hoc" and line.charge_id == charge.id:
-            return line.status == "paid" or line.balance <= 0
-    return False
+    if charge.status != "completed":
+        return False
+    tid = (charge.transaction_id or "").strip()
+    notes = charge.notes or ""
+    return tid.startswith("EXF-") or "Exemption form fee STK" in notes
 
 
 def _ensure_form_fee_charge(student: AdmittedStudent, *, charged_by=None) -> StudentTuitionPayment:
@@ -363,23 +367,20 @@ def _form_fee_status_dict(
             "fee_head_code": EXEMPTION_FORM_FEE_CODE,
             "bill_generated": False,
             "payment_code": payment_code,
+            "payment_reference": None,
+            "stk_pending": False,
             "schoolpay_hint": (
-                f"Pay UGX {int(EXEMPTION_FORM_FEE_UGX):,} via SchoolPay to unlock this form"
-                + (f" using payment code {payment_code}" if payment_code else "")
-                + ". Submit is blocked until the form fee is paid."
+                f"Pay UGX {int(EXEMPTION_FORM_FEE_UGX):,} via mobile money prompt on this page "
+                f"(or SchoolPay"
+                + (f" code {payment_code}" if payment_code else "")
+                + "). Submit is blocked until the form fee is paid."
             ),
         }
 
     paid = form_fee_paid_for_charge(student, charge)
     paid_at = None
     if paid:
-        if charge.status != "completed":
-            charge.status = "completed"
-            if not charge.paid_at:
-                charge.paid_at = timezone.now()
-            charge.save(update_fields=["status", "paid_at", "updated_at"])
         paid_at = charge.paid_at
-
         AdmissionChangeRequest.objects.filter(
             admitted_student=student,
             change_type="exemption",
@@ -389,11 +390,15 @@ def _form_fee_status_dict(
 
     balance = Decimal("0") if paid else Decimal(str(charge.amount))
     if not paid:
-        alloc = build_finance_allocation(student)
-        for line in alloc.demand_lines:
-            if line.kind == "ad_hoc" and line.charge_id == charge.id:
-                balance = line.balance
-                break
+        # Informational only — unlock still requires charge.status == completed.
+        try:
+            alloc = build_finance_allocation(student)
+            for line in alloc.demand_lines:
+                if line.kind == "ad_hoc" and line.charge_id == charge.id:
+                    balance = line.balance
+                    break
+        except Exception:
+            pass
 
     return {
         "paid": paid,
@@ -406,15 +411,19 @@ def _form_fee_status_dict(
         "fee_head_code": EXEMPTION_FORM_FEE_CODE,
         "bill_generated": True,
         "payment_code": payment_code,
+        "payment_reference": (charge.payment_reference or "").strip() or None,
+        "stk_pending": bool(
+            not paid
+            and charge.status == "pending"
+            and (charge.payment_reference or "").strip()
+        ),
         "schoolpay_hint": (
-            (
-                f"Pay UGX {int(EXEMPTION_FORM_FEE_UGX):,} via SchoolPay using payment code "
-                f"{payment_code}. Refresh after payment posts — submit stays locked until paid."
-            )
-            if payment_code
-            else (
-                f"Pay UGX {int(EXEMPTION_FORM_FEE_UGX):,} via SchoolPay using your student "
-                "payment code. Refresh after payment posts — submit stays locked until paid."
+            f"Enter your MoMo number below to receive a UGX {int(EXEMPTION_FORM_FEE_UGX):,} "
+            "payment prompt on your phone."
+            + (
+                f" You can also pay via SchoolPay using code {payment_code}."
+                if payment_code
+                else ""
             )
         ),
     }

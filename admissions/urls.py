@@ -3,6 +3,7 @@ from admissions import views
 from admissions import id_card_views
 from admissions import id_card_template_views
 from admissions import bonafide_admin_views
+from admissions import exemption_form_fee_payment
 from admissions.temporary_access_views import (
     StudentTemporaryAccessAdminView,
     StudentTemporaryAccessView,
@@ -274,6 +275,21 @@ urlpatterns = [
         'change_requests/exemption/access',
         views.ExemptionFormFeeAccessView.as_view(),
         name='exemption_form_fee_access',
+    ),
+    path(
+        'change_requests/exemption/form_fee',
+        views.ExemptionFormFeeAccessView.as_view(),
+        name='exemption_form_fee_access_alias',
+    ),
+    path(
+        'change_requests/exemption/form_fee/pay',
+        exemption_form_fee_payment.InitiateExemptionFormFeePaymentView.as_view(),
+        name='exemption_form_fee_pay',
+    ),
+    path(
+        'change_requests/exemption/form_fee/pay/<str:payment_ref>',
+        exemption_form_fee_payment.ExemptionFormFeePaymentStatusView.as_view(),
+        name='exemption_form_fee_pay_status',
     ),
     path(
         'change_requests/exemption/eligible_courses',

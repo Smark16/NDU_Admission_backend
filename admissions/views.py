@@ -4552,10 +4552,11 @@ class StudentChangeRequestListCreate(APIView):
                 amount = int(float(access.get("amount") or 50000))
                 balance = int(float(access.get("balance") or amount))
                 detail = (
-                    f"Pay the exemption form fee (UGX {amount:,}) via SchoolPay before "
-                    f"submitting. Outstanding: UGX {balance:,}"
-                    + (f". Use payment code {code}" if code else "")
-                    + ". Refresh after payment posts, then submit again."
+                    f"Pay the exemption form fee (UGX {amount:,}) with the mobile money "
+                    f"prompt on the Course Exemption page before submitting. "
+                    f"Outstanding: UGX {balance:,}"
+                    + (f". SchoolPay code {code}" if code else "")
+                    + "."
                 )
                 return Response(
                     {

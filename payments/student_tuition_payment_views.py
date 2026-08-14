@@ -121,7 +121,13 @@ class InitiateTuitionPaymentView(APIView):
             stale_minutes=10,
         )
 
-        if StudentTuitionPayment.objects.filter(student=student, status="pending").exists():
+        # Only block active SchoolPay STK prompts (payment_reference set).
+        # Open ad-hoc bills (e.g. unpaid exemption form fee) are pending without a ref.
+        if (
+            StudentTuitionPayment.objects.filter(student=student, status="pending")
+            .exclude(payment_reference="")
+            .exists()
+        ):
             return Response(
                 {"detail": "You already have a pending tuition payment. Wait or try again in a few minutes."},
                 status=status.HTTP_400_BAD_REQUEST,
