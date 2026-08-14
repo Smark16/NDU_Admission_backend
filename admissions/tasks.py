@@ -165,3 +165,35 @@ def celery_maybe_send_weekly_admissions_digest():
             return {"skipped": "already_sent_this_week"}
 
     return send_weekly_admissions_digest()
+
+
+@shared_task(bind=True, max_retries=5, default_retry_delay=60)
+def celery_send_accounts_registration_cleared_email(self, student_id):
+    """Background email after Accounts registration clearance (does not block the API)."""
+    try:
+        Admission = apps.get_model("admissions", "AdmittedStudent")
+        student = Admission.objects.select_related(
+            "application",
+            "admitted_program",
+            "admitted_campus",
+            "programme_enrollment",
+        ).get(pk=student_id)
+        if not student.accounts_registration_cleared:
+            logger.info(
+                "Skip accounts-clearance email: student %s is not cleared",
+                student_id,
+            )
+            return False
+        from admissions.utils.email import send_accounts_registration_cleared_email
+
+        ok = send_accounts_registration_cleared_email(student)
+        if not ok:
+            raise RuntimeError(
+                f"Accounts clearance email failed for student {student_id}"
+            )
+        return True
+    except Exception as exc:
+        logger.exception(
+            "Accounts clearance email task failed for student %s", student_id
+        )
+        raise self.retry(exc=exc)

@@ -2,6 +2,9 @@ from ndu_portal.send_grid import send_configurable_email
 from django.conf import settings
 from django.template.loader import render_to_string
 from accounts.portal_branding import get_university_display_name
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def _uni() -> str:
@@ -175,3 +178,80 @@ def send_rejection_email(application, msg, subject="Application Update: Admissio
     )
 
     return send_configurable_email(application.email, subject, body)
+
+
+def send_accounts_registration_cleared_email(student) -> bool:
+    """Notify student that Accounts has cleared them; report to AR with originals."""
+    from admissions.email_templates import render_email_template
+    from admissions.models import EmailTemplate
+    from admissions.registration_workflow import requires_physical_document_verification
+
+    app = getattr(student, "application", None)
+    to_email = (getattr(app, "email", None) or "").strip()
+    if not to_email:
+        logger.warning(
+            "Accounts clearance email skipped: no application email for student pk=%s",
+            getattr(student, "pk", None),
+        )
+        return False
+
+    first = (getattr(app, "first_name", "") or "").strip()
+    last = (getattr(app, "last_name", "") or "").strip()
+    middle = (getattr(app, "middle_name", "") or "").strip()
+    full_name = " ".join(p for p in (first, middle, last) if p).strip() or "Student"
+
+    cleared_at = getattr(student, "accounts_registration_cleared_at", None)
+    if cleared_at:
+        try:
+            from django.utils import timezone as tz
+
+            cleared_at = tz.localtime(cleared_at).strftime("%d %B %Y at %H:%M")
+        except Exception:
+            cleared_at = str(cleared_at)
+    else:
+        cleared_at = "today"
+
+    if requires_physical_document_verification(student) and not getattr(
+        student, "physical_documents_verified", False
+    ):
+        next_step_html = (
+            "<strong>Next step — Academic Registrar (AR)</strong><br/>"
+            "Please report in person to the Academic Registrar's office with your "
+            "<strong>original academic documents</strong> for physical verification. "
+            "This step is required before your registration can be completed."
+        )
+    else:
+        next_step_html = (
+            "<strong>Next step</strong><br/>"
+            "If Academic Registrar has not yet verified your file, please report with your "
+            "<strong>original academic documents</strong> so AR clearance can be completed."
+        )
+
+    program = ""
+    if getattr(student, "admitted_program", None):
+        program = student.admitted_program.name or ""
+    campus = ""
+    if getattr(student, "admitted_campus", None):
+        campus = student.admitted_campus.name or ""
+
+    subject, html_body, plain_text = render_email_template(
+        EmailTemplate.KEY_ACCOUNTS_REGISTRATION_CLEARED,
+        {
+            "first_name": first,
+            "last_name": last,
+            "full_name": full_name,
+            "reg_no": student.reg_no or "—",
+            "student_id": student.student_id or "—",
+            "program": program or "—",
+            "campus": campus or "—",
+            "cleared_at": cleared_at,
+            "next_step_html": next_step_html,
+        },
+    )
+    return send_configurable_email(
+        to_email=to_email,
+        subject=subject,
+        body=html_body,
+        is_html=True,
+        plain_text_fallback=plain_text,
+    )

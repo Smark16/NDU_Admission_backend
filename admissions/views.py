@@ -41,7 +41,7 @@ from django.db import IntegrityError, transaction
 from django.db.models.deletion import ProtectedError
 from django.db.utils import OperationalError
 # from .utils.validate_photo import validate_passport_photo
-from .tasks import celery_send_application_email, celery_application_notification, celery_admission_email, celery_admission_update, celery_create_student_account, celery_send_rejection_email, celery_update_student_account
+from .tasks import celery_send_application_email, celery_application_notification, celery_admission_email, celery_admission_update, celery_create_student_account, celery_send_rejection_email, celery_update_student_account, celery_send_accounts_registration_cleared_email
 from accounts.tasks import celery_send_account_email
 from payments.utils.school_pay_code import register_student_with_schoolpay
 from .utils.trigger_background_tasks import queue_admission_notification_emails
@@ -4089,6 +4089,12 @@ class MarkAccountsRegistrationCleared(APIView):
             f"student_id={student.student_id}. Notes: {notes[:500]}",
             request,
         )
+        try:
+            celery_send_accounts_registration_cleared_email.delay(student.pk)
+        except Exception:
+            logger.exception(
+                "Could not queue accounts-clearance email for student %s", student.pk
+            )
         student = AdmittedStudent.objects.select_related(
             "accounts_registration_cleared_by",
             "physical_documents_verified_by",

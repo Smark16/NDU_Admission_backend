@@ -963,6 +963,7 @@ class EmailTemplate(models.Model):
     KEY_ADMISSION_UPDATED = "admission_updated"
     KEY_OFFER_LETTER_SENT = "offer_letter_sent"
     KEY_WEEKLY_ADMISSIONS_DIGEST = "weekly_admissions_digest"
+    KEY_ACCOUNTS_REGISTRATION_CLEARED = "accounts_registration_cleared"
 
     TEMPLATE_KEY_CHOICES = [
         (KEY_APPLICATION_SUBMITTED, "Application Submitted"),
@@ -970,6 +971,7 @@ class EmailTemplate(models.Model):
         (KEY_ADMISSION_UPDATED, "Admission Updated"),
         (KEY_OFFER_LETTER_SENT, "Offer Letter Sent"),
         (KEY_WEEKLY_ADMISSIONS_DIGEST, "Weekly Admissions Digest"),
+        (KEY_ACCOUNTS_REGISTRATION_CLEARED, "Accounts Registration Cleared"),
     ]
 
     key = models.CharField(max_length=80, unique=True, choices=TEMPLATE_KEY_CHOICES)

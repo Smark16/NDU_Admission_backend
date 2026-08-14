@@ -177,6 +177,50 @@ EMAIL_TEMPLATE_DEFINITIONS: Dict[str, Dict[str, object]] = {
             "generated_at",
         ],
     },
+    EmailTemplate.KEY_ACCOUNTS_REGISTRATION_CLEARED: {
+        "name": "Accounts Registration Cleared",
+        "description": (
+            "Sent when Accounts clears a student for registration. Instructs the student "
+            "to report to Academic Registrar with original academic documents (where required)."
+        ),
+        "subject_template": (
+            "Accounts clearance confirmed — next step: Academic Registrar ({{university_name}})"
+        ),
+        "body_template_html": (
+            "Dear {{full_name}},<br/><br/>"
+            "This is to confirm that the <strong>Accounts Office</strong> has successfully "
+            "cleared you for registration at <strong>{{university_name}}</strong>.<br/><br/>"
+            "<strong>Your details</strong><br/>"
+            "Registration number: {{reg_no}}<br/>"
+            "Student number: {{student_id}}<br/>"
+            "Programme: {{program}}<br/>"
+            "Campus: {{campus}}<br/>"
+            "Cleared on: {{cleared_at}}<br/><br/>"
+            "{{next_step_html}}<br/><br/>"
+            "Please bring the following when you report to the Academic Registrar's office:<br/>"
+            "&nbsp;&nbsp;&bull; Original academic documents (O-Level / A-Level certificates or equivalent)<br/>"
+            "&nbsp;&nbsp;&bull; Original identification (national ID or passport)<br/>"
+            "&nbsp;&nbsp;&bull; A copy of this clearance email or your registration number<br/><br/>"
+            "Kindly complete this step promptly so that your registration can proceed without delay.<br/><br/>"
+            "If you have already completed Academic Registrar verification, you may disregard "
+            "the document reporting instruction.<br/><br/>"
+            "Yours faithfully,<br/>"
+            "Office of the Bursar / Accounts<br/>"
+            "{{university_name}}"
+        ),
+        "placeholders": [
+            *_BRANDING_PLACEHOLDERS,
+            "first_name",
+            "last_name",
+            "full_name",
+            "reg_no",
+            "student_id",
+            "program",
+            "campus",
+            "cleared_at",
+            "next_step_html",
+        ],
+    },
 }
 
 _PLACEHOLDER_RE = re.compile(r"\{\{\s*([a-zA-Z0-9_]+)\s*\}\}")
