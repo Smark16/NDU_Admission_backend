@@ -68,14 +68,10 @@ def _allocate_card_number() -> str:
     raise RuntimeError("Could not allocate a unique card number")
 
 
-def _passport_absolute_url(request, application) -> str | None:
-    photo = application.passport_photo
-    if not photo or not getattr(photo, "name", None):
-        return None
-    try:
-        return request.build_absolute_uri(photo.url)
-    except ValueError:
-        return None
+def _passport_absolute_url(request, admitted) -> str | None:
+    from admissions.student_photo import admitted_student_photo_url
+
+    return admitted_student_photo_url(admitted, request)
 
 
 def _active_card_subquery():
@@ -182,9 +178,10 @@ def _filter_options_admitted_scope():
 
 
 def _eligible_payload(request, admitted: AdmittedStudent) -> dict:
+    from admissions.student_photo import admitted_student_has_photo
+
     app = admitted.application
-    photo = app.passport_photo
-    has_photo = bool(photo and getattr(photo, "name", None))
+    has_photo = admitted_student_has_photo(admitted)
     faculty_name = ""
     if admitted.admitted_program_id and admitted.admitted_program.faculty_id:
         faculty_name = admitted.admitted_program.faculty.name
@@ -291,7 +288,7 @@ def _preview_payload(request, card: StudentIdCard) -> dict:
             "expiry_date": expiry.isoformat(),
             "barcode_value": student_no or st.reg_no or card.card_number,
             "qr_payload": build_id_card_qr_payload(card),
-            "passport_photo": _passport_absolute_url(request, app),
+            "passport_photo": _passport_absolute_url(request, st),
         },
         "back": {
             "institution": institution,
@@ -390,8 +387,10 @@ class IdCardAdmittedPassportPhotoView(APIView):
             return Response(status=status.HTTP_404_NOT_FOUND)
         if not admitted.physical_documents_verified:
             return Response(status=status.HTTP_404_NOT_FOUND)
-        photo = admitted.application.passport_photo
-        if not photo or not getattr(photo, "name", None):
+        from admissions.student_photo import admitted_student_photo_file
+
+        photo = admitted_student_photo_file(admitted)
+        if not photo:
             return Response(status=status.HTTP_404_NOT_FOUND)
         try:
             fh = photo.open("rb")
@@ -457,6 +456,10 @@ class IdCardAdmittedPassportPhotoView(APIView):
         fname = f"passport_app_{application.pk}.jpg"
         with transaction.atomic():
             application.passport_photo.save(fname, ContentFile(jpeg_bytes), save=True)
+            user = admitted.student_user or getattr(application, "applicant", None)
+            profile = getattr(user, "profile", None) if user is not None else None
+            if profile is not None:
+                profile.profile_photo.save(fname, ContentFile(jpeg_bytes), save=True)
 
         log_audit_event(
             request.user,
@@ -569,8 +572,10 @@ class IdCardGenerateView(APIView):
             )
         if not (admitted.student_id or "").strip():
             return Response({"detail": "Student number must be assigned before generating an ID card."}, status=400)
-        photo = admitted.application.passport_photo
-        if not photo or not getattr(photo, "name", None):
+        from admissions.student_photo import admitted_student_photo_file
+
+        photo = admitted_student_photo_file(admitted)
+        if not photo:
             return Response({"detail": "A passport photo is required on the application."}, status=400)
         if StudentIdCard.objects.filter(admitted_student=admitted, is_active=True).exists():
             return Response({"detail": "An active ID card already exists for this student."}, status=400)
@@ -698,8 +703,10 @@ class IdCardReissueView(APIView):
                     {"detail": "Physical documents must be verified before reissuing an ID card."},
                     status=400,
                 )
-            photo = admitted.application.passport_photo
-            if not photo or not getattr(photo, "name", None):
+            from admissions.student_photo import admitted_student_photo_file
+
+            photo = admitted_student_photo_file(admitted)
+            if not photo:
                 return Response({"detail": "A passport photo is required on the application."}, status=400)
 
             issue = timezone.now().date()

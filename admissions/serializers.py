@@ -1256,13 +1256,10 @@ class BonafideStudentProfileSerializer(BonafideStudentSerializer):
         ]
 
     def get_passport_photo(self, obj):
-        app = obj.application
-        if not app or not getattr(app, "passport_photo", None):
-            return None
-        try:
-            return app.passport_photo.url
-        except ValueError:
-            return None
+        from admissions.student_photo import admitted_student_photo_url
+
+        request = self.context.get("request")
+        return admitted_student_photo_url(obj, request)
 
 
 # admission detail serializer

@@ -440,6 +440,31 @@ class ProfileSerializer(serializers.ModelSerializer):
         model = Profile
         fields = '__all__'
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get("request")
+        photo = getattr(instance, "profile_photo", None)
+        url = None
+        if photo and getattr(photo, "name", None):
+            try:
+                url = photo.url
+                if request:
+                    url = request.build_absolute_uri(url)
+            except ValueError:
+                url = None
+        if not url:
+            from admissions.models import AdmittedStudent
+            from admissions.student_photo import admitted_student_photo_url
+
+            student = (
+                AdmittedStudent.objects.filter(student_user=instance.user).first()
+                or AdmittedStudent.objects.filter(application__applicant=instance.user).first()
+            )
+            if student is not None:
+                url = admitted_student_photo_url(student, request)
+        data["profile_photo"] = url
+        return data
+
 
 class SystemSettingsSerializer(serializers.ModelSerializer):
     updated_by_name = serializers.CharField(source='updated_by.full_name', read_only=True, allow_null=True)

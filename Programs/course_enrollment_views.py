@@ -985,14 +985,10 @@ class GetStudentEnrolledCourses(APIView):
 
         registered_courses = [c for c in active_courses if c['is_registered']]
 
-        # Build passport photo URL if available
-        photo_url = None
-        try:
-            photo = admitted_student.application.passport_photo
-            if photo and photo.name:
-                photo_url = request.build_absolute_uri(photo.url)
-        except Exception:
-            pass
+        # Build passport photo URL if available (application photo, else profile photo)
+        from admissions.student_photo import admitted_student_photo_url
+
+        photo_url = admitted_student_photo_url(admitted_student, request)
 
         finance = {
             "percentage_paid": 0.0,

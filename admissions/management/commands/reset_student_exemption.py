@@ -26,7 +26,11 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.db.models import Q
 
-from admissions.exemption_services import EXEMPTION_COURSE_FEE_CODE, ensure_exemption_fee_heads
+from admissions.exemption_services import (
+    EXEMPTION_COURSE_FEE_CODE,
+    EXEMPTION_FORM_FEE_CODE,
+    ensure_exemption_fee_heads,
+)
 from admissions.models import AdmissionChangeRequest, AdmittedStudent
 from payments.models import StudentTuitionPayment
 from Programs.models import StudentCurriculumOverride
@@ -71,6 +75,11 @@ class Command(BaseCommand):
             action="store_true",
             help="Do not reset StudentProgrammeEnrollment year/term to Y1T1.",
         )
+        parser.add_argument(
+            "--wipe-form-fee",
+            action="store_true",
+            help="Also delete EXEMPTION_FORM (50k) bills so the student must pay via SchoolPay again.",
+        )
         parser.add_argument("--dry-run", action="store_true")
 
     def handle(self, *args, **options):
@@ -98,7 +107,9 @@ class Command(BaseCommand):
 
         requests = list(qs.order_by("id"))
         _, course_head = ensure_exemption_fee_heads()
+        form_head, _ = ensure_exemption_fee_heads()
         reset_position = not options["no_reset_position"]
+        wipe_form = options["wipe_form_fee"]
 
         try:
             enrollment = student.programme_enrollment
@@ -193,9 +204,17 @@ class Command(BaseCommand):
                 Q(fee_head=course_head) | Q(fee_head__code=EXEMPTION_COURSE_FEE_CODE)
             ).filter(q)
 
+        leftover_form_fees = StudentTuitionPayment.objects.none()
+        if wipe_form:
+            leftover_form_fees = StudentTuitionPayment.objects.filter(
+                student=student,
+                source="ad_hoc",
+            ).filter(Q(fee_head=form_head) | Q(fee_head__code=EXEMPTION_FORM_FEE_CODE))
+
         w(
             f"  Will remove: exempted_overrides={leftover_overrides.count()} "
             f"EXEMPTION_COURSE_charges={leftover_charges.count()} "
+            f"EXEMPTION_FORM_charges={leftover_form_fees.count()} "
             f"change_requests={len(requests)}"
         )
         if enrollment is not None:
@@ -218,6 +237,9 @@ class Command(BaseCommand):
         with transaction.atomic():
             deleted_overrides, _ = leftover_overrides.delete()
             deleted_charges, _ = leftover_charges.delete()
+            deleted_form = 0
+            if wipe_form:
+                deleted_form, _ = leftover_form_fees.delete()
             for req in requests:
                 req_id = req.id
                 req.delete()
@@ -241,11 +263,18 @@ class Command(BaseCommand):
 
             w(self.style.SUCCESS(
                 f"  Removed {deleted_overrides} override(s), "
-                f"{deleted_charges} EXEMPTION_COURSE charge(s)."
+                f"{deleted_charges} EXEMPTION_COURSE charge(s)"
+                + (f", {deleted_form} EXEMPTION_FORM charge(s)." if wipe_form else ".")
             ))
 
-        w(self.style.WARNING(
-            "EXEMPTION_FORM fee was kept (form stays unlocked if already paid). "
-            "Student can submit a new course exemption request."
-        ))
+        if wipe_form:
+            w(self.style.WARNING(
+                "EXEMPTION_FORM fee was deleted. Student must pay the 50k via SchoolPay "
+                "before submitting a new application."
+            ))
+        else:
+            w(self.style.WARNING(
+                "EXEMPTION_FORM fee was kept (form stays unlocked if already paid). "
+                "Student can submit a new course exemption request."
+            ))
         w(self.style.SUCCESS("Done. Student can submit a new exemption request."))

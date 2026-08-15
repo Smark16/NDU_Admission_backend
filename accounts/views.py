@@ -813,10 +813,14 @@ class EditProfile(generics.UpdateAPIView):
 
     def put(self, request, *args, **kwargs):
         instance = self.get_object()
-        serializer = self.serializer_class(instance, data=request.data, partial=True)
+        serializer = self.serializer_class(
+            instance, data=request.data, partial=True, context={"request": request}
+        )
         serializer.is_valid(raise_exception=True)
         serializer.save()
+        from admissions.student_photo import sync_profile_photo_to_application
 
+        sync_profile_photo_to_application(instance.user)
         return Response(serializer.data, status=200)
     
 class GetUserProfile(generics.ListAPIView):
@@ -826,7 +830,7 @@ class GetUserProfile(generics.ListAPIView):
     def get(self, request):
         user = request.user
         profile = Profile.objects.get(user=user)
-        serializer = ProfileSerializer(profile)
+        serializer = ProfileSerializer(profile, context={"request": request})
         return Response(serializer.data, status=200)
 
 # password reset link

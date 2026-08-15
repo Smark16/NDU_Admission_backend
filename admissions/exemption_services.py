@@ -21,6 +21,100 @@ EXEMPTION_FORM_FEE_UGX = Decimal(
 EXEMPTION_MIN_MARK_PERCENT = Decimal(
     str(getattr(settings, "EXEMPTION_MIN_MARK_PERCENT", "60"))
 )
+# Senate / Accounts rule: at most two academic years = four terms (semesters).
+MAX_EXEMPTION_YEARS = 2
+MAX_EXEMPTION_TERMS = 4
+EXEMPTION_TERM_CAP_MESSAGE = (
+    "Students may be exempted for at most 2 academic years (4 terms). "
+    "Remove papers that fall in extra years or terms."
+)
+
+
+def _term_key(year, term) -> tuple[int, int] | None:
+    try:
+        y = int(year)
+        t = int(term)
+    except (TypeError, ValueError):
+        return None
+    if y < 1 or t < 1:
+        return None
+    return (y, t)
+
+
+def exemption_terms_already_committed(student: AdmittedStudent) -> set[tuple[int, int]]:
+    """
+    Distinct curriculum (year, term) already used by approved exemptions
+    or by papers on a pending/approved request (not rejected).
+    """
+    from admissions.models import ExemptionRequestLine
+    from Programs.models import StudentCurriculumOverride
+
+    keys: set[tuple[int, int]] = set()
+    try:
+        enrollment = student.programme_enrollment
+    except Exception:
+        enrollment = None
+    if enrollment is not None:
+        for year, term in StudentCurriculumOverride.objects.filter(
+            enrollment=enrollment,
+            override_type="exempted",
+        ).values_list("curriculum_line__year_of_study", "curriculum_line__term_number"):
+            key = _term_key(year, term)
+            if key:
+                keys.add(key)
+
+    for year, term in ExemptionRequestLine.objects.filter(
+        change_request__admitted_student=student,
+        change_request__change_type="exemption",
+        change_request__status__in=("pending", "approved"),
+    ).exclude(decision=ExemptionRequestLine.DECISION_REJECTED).values_list(
+        "year_of_study", "term_number"
+    ):
+        key = _term_key(year, term)
+        if key:
+            keys.add(key)
+    return keys
+
+
+def exemption_term_cap_error(combined: set[tuple[int, int]]) -> str | None:
+    years = {y for y, _t in combined}
+    if len(combined) <= MAX_EXEMPTION_TERMS and len(years) <= MAX_EXEMPTION_YEARS:
+        return None
+    return (
+        f"{EXEMPTION_TERM_CAP_MESSAGE} "
+        f"This selection covers {len(years)} year(s) and {len(combined)} term(s)."
+    )
+
+
+def assert_exemption_term_cap(
+    student: AdmittedStudent,
+    extra_terms: set[tuple[int, int]] | None = None,
+) -> None:
+    combined = set(exemption_terms_already_committed(student))
+    if extra_terms:
+        combined |= {k for k in extra_terms if k}
+    err = exemption_term_cap_error(combined)
+    if err:
+        raise ValueError(err)
+
+
+def term_open_for_new_exemption(
+    used: set[tuple[int, int]],
+    year,
+    term,
+) -> bool:
+    """True if a paper in this year/term can be added without breaking the 2-year / 4-term cap."""
+    key = _term_key(year, term)
+    if key is None:
+        return True
+    if key in used:
+        return True
+    years = {y for y, _t in used}
+    if len(used) >= MAX_EXEMPTION_TERMS:
+        return False
+    if key[0] not in years and len(years) >= MAX_EXEMPTION_YEARS:
+        return False
+    return True
 
 
 def parse_exemption_mark_floor(score_obtained: str | None) -> Decimal | None:
@@ -583,6 +677,8 @@ def list_eligible_exemption_courses(student: AdmittedStudent) -> list[dict]:
     )
     existing |= {i for i in pending_line_ids if i}
 
+    used_terms = exemption_terms_already_committed(student)
+
     owner_program_id = _curriculum_line_program_id(enrollment)
     lines = (
         ProgramCurriculumLine.objects.filter(
@@ -596,6 +692,8 @@ def list_eligible_exemption_courses(student: AdmittedStudent) -> list[dict]:
     out = []
     for line in lines:
         if line.id in existing:
+            continue
+        if not term_open_for_new_exemption(used_terms, line.year_of_study, line.term_number):
             continue
         course = line.catalog_course
         out.append(
@@ -992,6 +1090,19 @@ def apply_exemption_overrides(change_request: AdmissionChangeRequest, decided_by
         # All papers rejected — valid outcome; no curriculum overrides.
         return 0
 
+    extra = set()
+    for line in lines:
+        key = _term_key(line.year_of_study, line.term_number)
+        if key is None and line.curriculum_line_id:
+            cl = line.curriculum_line
+            key = _term_key(
+                getattr(cl, "year_of_study", None),
+                getattr(cl, "term_number", None),
+            )
+        if key:
+            extra.add(key)
+    assert_exemption_term_cap(student, extra)
+
     unmapped = [l for l in lines if not l.curriculum_line_id]
     if unmapped:
         codes = ", ".join((l.course_code or f"#{l.id}") for l in unmapped[:8])
@@ -1346,6 +1457,11 @@ def add_exemption_line_from_curriculum(
     )
     if cl is None:
         raise ValueError("Curriculum unit not found.")
+
+    assert_exemption_term_cap(
+        student,
+        {k for k in (_term_key(cl.year_of_study, cl.term_number),) if k},
+    )
 
     course = cl.catalog_course
     auto_approve = change_request.status == "approved"

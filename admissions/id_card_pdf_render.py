@@ -138,9 +138,10 @@ def build_id_card_field_context(card: StudentIdCard) -> dict[str, str]:
 
 
 def _passport_photo_path(card: StudentIdCard) -> str | None:
-    app = card.admitted_student.application
-    photo = getattr(app, "passport_photo", None)
-    if not photo or not getattr(photo, "name", None):
+    from admissions.student_photo import admitted_student_photo_file
+
+    photo = admitted_student_photo_file(card.admitted_student)
+    if not photo:
         return None
     try:
         path = photo.path

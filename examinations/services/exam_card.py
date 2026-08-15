@@ -207,13 +207,12 @@ def build_exam_card_payload(
             qr_b64 = qr_png_base64(verify_url)
 
     photo_url = None
-    app = getattr(student, "application", None)
-    if app and app.passport_photo:
-        try:
-            url = app.passport_photo.url
-            photo_url = request.build_absolute_uri(url) if request else url
-        except Exception:
-            photo_url = None
+    try:
+        from admissions.student_photo import admitted_student_photo_url
+
+        photo_url = admitted_student_photo_url(student, request)
+    except Exception:
+        photo_url = None
 
     blockers = []
     if not finance["tuition_cleared"]:
@@ -255,13 +254,12 @@ def build_exam_card_verify_payload(token: ExamCardToken, *, request=None) -> dic
     courses = academically_eligible_courses(student)
 
     photo_url = None
-    app = getattr(student, "application", None)
-    if app and app.passport_photo:
-        try:
-            url = app.passport_photo.url
-            photo_url = request.build_absolute_uri(url) if request else url
-        except Exception:
-            photo_url = None
+    try:
+        from admissions.student_photo import admitted_student_photo_url
+
+        photo_url = admitted_student_photo_url(student, request)
+    except Exception:
+        photo_url = None
 
     payment_ok = finance["tuition_cleared"]
     return {

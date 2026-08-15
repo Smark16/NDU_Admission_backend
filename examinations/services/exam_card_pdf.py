@@ -27,13 +27,15 @@ def render_exam_card_pdf(student: AdmittedStudent, *, request=None) -> bytes:
     qr_b64 = payload["qr_png_base64"] or qr_png_base64(verify_url)
 
     photo_b64 = None
-    app = getattr(student, "application", None)
-    if app and app.passport_photo:
-        try:
-            with app.passport_photo.open("rb") as fh:
+    try:
+        from admissions.student_photo import admitted_student_photo_file
+
+        photo = admitted_student_photo_file(student)
+        if photo:
+            with photo.open("rb") as fh:
                 photo_b64 = base64.b64encode(fh.read()).decode("ascii")
-        except Exception:
-            photo_b64 = None
+    except Exception:
+        photo_b64 = None
 
     context = {
         "student_name": (student.full_name or "").upper(),

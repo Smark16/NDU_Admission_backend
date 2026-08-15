@@ -2453,6 +2453,8 @@ class CheckStudentStatus(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        from admissions.student_photo import admitted_student_photo_url
+
         user = request.user
         try:
             admitted_student = (
@@ -2483,9 +2485,9 @@ class CheckStudentStatus(APIView):
                         else None,
                         "campus_id": admitted_student.admitted_campus_id,
                         "study_mode": admitted_student.study_mode,
-                        "passport_photo": request.build_absolute_uri(admitted_student.application.passport_photo.url)
-                            if admitted_student.application and admitted_student.application.passport_photo
-                            else None,
+                        "passport_photo": (
+                            admitted_student_photo_url(admitted_student, request)
+                        ),
                     },
                     status=status.HTTP_200_OK,
                 )
@@ -4672,8 +4674,10 @@ class StudentChangeRequestListCreate(APIView):
 
         if change_type == 'exemption':
             from admissions.exemption_services import (
+                assert_exemption_term_cap,
                 ensure_exemption_form_fee_access,
                 list_eligible_exemption_courses,
+                _term_key,
             )
             from Programs.models import ProgramCurriculumLine
 
@@ -4731,6 +4735,26 @@ class StudentChangeRequestListCreate(APIView):
                     {"detail": "Select at least one Ndejje curriculum unit to exempt."},
                     status=400,
                 )
+
+            extra_terms = set()
+            for lid in curriculum_line_ids:
+                row = eligible.get(lid) or {}
+                key = _term_key(row.get("year_of_study"), row.get("term_number"))
+                if key:
+                    extra_terms.add(key)
+            for paper in exemption_papers:
+                try:
+                    clid = int(paper.get("curriculum_line_id"))
+                except (TypeError, ValueError):
+                    continue
+                row = eligible.get(clid) or {}
+                key = _term_key(row.get("year_of_study"), row.get("term_number"))
+                if key:
+                    extra_terms.add(key)
+            try:
+                assert_exemption_term_cap(admission, extra_terms)
+            except ValueError as exc:
+                return Response({"detail": str(exc)}, status=400)
 
             # Student-typed papers must include a valid eligible curriculum_line_id.
             if exemption_papers:

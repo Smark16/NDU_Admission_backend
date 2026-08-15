@@ -86,13 +86,9 @@ def _course_rows_for_student(student: AdmittedStudent) -> list[dict]:
 
 
 def _passport_photo_url(student: AdmittedStudent, request) -> str | None:
-    try:
-        photo = student.application.passport_photo
-        if photo and photo.name and request is not None:
-            return request.build_absolute_uri(photo.url)
-    except Exception:
-        pass
-    return None
+    from admissions.student_photo import admitted_student_photo_url
+
+    return admitted_student_photo_url(student, request)
 
 
 def _safe_finance(student: AdmittedStudent) -> dict:
