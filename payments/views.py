@@ -245,6 +245,22 @@ def schoolpay_webhook(request):
     # === LOG EVERYTHING SO YOU CAN SEE WHAT ARRIVES ===
     logger.info("SchoolPay webhook received: %s", json.dumps(data, indent=2))
 
+    # Wallet / SchoolPay-app payments (student payment code) — not adhoc STK.
+    nested = data.get("payment") if isinstance(data.get("payment"), dict) else None
+    if nested and nested.get("schoolpayReceiptNumber"):
+        try:
+            from payments.utils.Transaction_sync import reconcile_transactions
+
+            kind = (data.get("type") or "").strip().upper()
+            payload = {"transactions": [], "supplementaryFeePayments": []}
+            if kind == "OTHER_FEES":
+                payload["supplementaryFeePayments"] = [nested]
+            else:
+                payload["transactions"] = [nested]
+            reconcile_transactions(payload)
+        except Exception:
+            logger.exception("SchoolPay webhook: failed to ingest wallet payment")
+
     # For admission/application fees, SchoolPay usually sends a simple payload
     status = data.get('status')
     payment_ref = data.get('paymentReference')

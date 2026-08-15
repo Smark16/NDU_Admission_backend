@@ -694,9 +694,14 @@ def _persist_settled_exemption_form_charges(lines: list[DemandLine]) -> None:
 
 def build_finance_allocation(student: AdmittedStudent) -> FinanceAllocation:
     try:
-        relink_tuition_ledgers_for_student(student)
+        from payments.utils.Transaction_sync import ingest_schoolpay_for_student_if_missing
+
+        ingest_schoolpay_for_student_if_missing(student)
     except Exception:
-        pass
+        try:
+            relink_tuition_ledgers_for_student(student)
+        except Exception:
+            pass
     international = is_international_student(student)
     credits_all = payment_credits_by_currency(student)
     lines = _build_demand_lines(student, international)

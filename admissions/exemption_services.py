@@ -529,10 +529,9 @@ def _form_fee_status_dict(
             "payment_reference": None,
             "stk_pending": False,
             "schoolpay_hint": (
-                f"Pay UGX {int(EXEMPTION_FORM_FEE_UGX):,} via mobile money prompt on this page "
-                f"(or SchoolPay"
-                + (f" code {payment_code}" if payment_code else "")
-                + "). Submit is blocked until the form fee is paid."
+                f"Pay UGX {int(EXEMPTION_FORM_FEE_UGX):,} with the mobile money prompt on "
+                "the Course Exemption page. Paying your SchoolPay student code in the app "
+                "does not unlock submit."
             ),
             "attempts": exemption_application_attempt_state(student),
         }
@@ -586,12 +585,7 @@ def _form_fee_status_dict(
         ),
         "schoolpay_hint": (
             f"Enter your MoMo number below to receive a UGX {int(EXEMPTION_FORM_FEE_UGX):,} "
-            "payment prompt on your phone."
-            + (
-                f" You can also pay via SchoolPay using code {payment_code}."
-                if payment_code
-                else ""
-            )
+            "payment prompt on your phone. Do not pay this fee with a SchoolPay student code."
         ),
         "attempts": exemption_application_attempt_state(student),
     }

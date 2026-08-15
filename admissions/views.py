@@ -4686,15 +4686,14 @@ class StudentChangeRequestListCreate(APIView):
             # Form fee (UGX 50k) must be paid before the request is accepted.
             access = ensure_exemption_form_fee_access(admission, charged_by=None)
             if not access.get("paid"):
-                code = access.get("payment_code") or ""
                 amount = int(float(access.get("amount") or 50000))
                 balance = int(float(access.get("balance") or amount))
                 detail = (
                     f"Pay the exemption form fee (UGX {amount:,}) with the mobile money "
-                    f"prompt on the Course Exemption page before submitting. "
-                    f"Outstanding: UGX {balance:,}"
-                    + (f". SchoolPay code {code}" if code else "")
-                    + "."
+                    f"prompt on the Course Exemption page (Submit and Pay). "
+                    f"Outstanding: UGX {balance:,}. "
+                    "Do not pay with your SchoolPay student code in the SchoolPay app — "
+                    "that does not unlock this form."
                 )
                 return Response(
                     {

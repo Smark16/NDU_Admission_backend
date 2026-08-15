@@ -71,13 +71,24 @@ def fetch_transactions_by_range(
 
     return response.json()
 
+def _schoolpay_payload_rows(data: dict | None) -> list[dict]:
+    """Tuition rows plus supplementary / other-fee payments (SchoolPay splits these)."""
+    payload = data if isinstance(data, dict) else {}
+    rows: list[dict] = []
+    for key in ("transactions", "supplementaryFeePayments"):
+        chunk = payload.get(key) or []
+        if isinstance(chunk, dict):
+            chunk = [chunk]
+        for tx in chunk:
+            if isinstance(tx, dict):
+                rows.append(tx)
+    return rows
+
+
 # Reconcile transactions with our database
 def reconcile_transactions(data):
 
-    transactions = data.get(
-        "transactions",
-        []
-    )
+    transactions = _schoolpay_payload_rows(data)
 
     created_count = 0
     touched_student_ids: set[int] = set()
@@ -136,9 +147,11 @@ def reconcile_transactions(data):
                         ),
 
                     "source_channel_trans_detail":
-                        tx.get(
-                            "sourceChannelTransDetail"
-                        ) or "",
+                        (
+                            tx.get("sourceChannelTransDetail")
+                            or tx.get("supplementaryFeeDescription")
+                            or ""
+                        ),
 
                     "source_channel_transaction_id":
                         tx.get(
@@ -216,3 +229,44 @@ def reconcile_transactions(data):
             pass
 
     return created_count
+
+
+def pull_schoolpay_range(from_date: str, to_date: str) -> int:
+    data = fetch_transactions_by_range(from_date=from_date, to_date=to_date)
+    return reconcile_transactions(data)
+
+
+def ingest_schoolpay_for_student_if_missing(student) -> int:
+    """
+    If this student has no completed SchoolPay ledger rows, pull the last 90
+    days from SchoolPay (including supplementary / other fees) and ingest them.
+    """
+    from datetime import timedelta
+
+    from django.core.cache import cache
+
+    from payments.utils.tuition_ledger_linking import (
+        completed_ledger_status_q,
+        relink_tuition_ledgers_for_student,
+        tuition_ledger_queryset_for_student,
+    )
+
+    relink_tuition_ledgers_for_student(student)
+    if tuition_ledger_queryset_for_student(student).filter(completed_ledger_status_q()).exists():
+        return 0
+
+    cache_key = f"schoolpay_backfill:{student.pk}"
+    if cache.get(cache_key):
+        return 0
+    cache.set(cache_key, 1, 600)
+
+    created = 0
+    today = timezone.now().date()
+    cursor = today
+    for _ in range(3):
+        start = cursor - timedelta(days=30)
+        created += pull_schoolpay_range(start.strftime("%Y-%m-%d"), cursor.strftime("%Y-%m-%d"))
+        cursor = start - timedelta(days=1)
+
+    relink_tuition_ledgers_for_student(student)
+    return created
