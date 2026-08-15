@@ -68,7 +68,12 @@ def _unit_allowed_for_self_register(student, cu, spe) -> tuple[bool, str]:
     )
 
 
-def register_student_for_course_units(student: AdmittedStudent, course_unit_ids: list) -> dict:
+def register_student_for_course_units(
+    student: AdmittedStudent,
+    course_unit_ids: list,
+    *,
+    source: str = "self_registered",
+) -> dict:
     from Programs.models import CourseUnit, StudentCourseUnitEnrollment, StudentProgrammeEnrollment
     from examinations.models import ExamRetakeRegistration
     from examinations.services.outstanding_papers import offering_meta_by_course_unit_id
@@ -127,7 +132,7 @@ def register_student_for_course_units(student: AdmittedStudent, course_unit_ids:
                         student=student,
                         course_unit=cu,
                         status="enrolled",
-                        source="self_registered",
+                        source=source,
                         registration_kind=kind,
                     )
                 else:
@@ -139,7 +144,7 @@ def register_student_for_course_units(student: AdmittedStudent, course_unit_ids:
                         student=student,
                         course_unit=cu,
                         status="enrolled",
-                        source="self_registered",
+                        source=source,
                     )
             if en.registration_date:
                 errors.append(f"Already registered for {cu.code}")

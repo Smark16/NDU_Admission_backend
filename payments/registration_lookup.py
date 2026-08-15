@@ -65,6 +65,7 @@ def _course_rows_for_student(student: AdmittedStudent) -> list[dict]:
             rows.append(
                 {
                     "enrollment_id": enrollment.id,
+                    "course_unit_id": cu.id if cu else None,
                     "course_code": cu.code if cu else "—",
                     "course_name": cu.name if cu else "—",
                     "credit_units": float(cu.credit_units) if cu and cu.credit_units else None,

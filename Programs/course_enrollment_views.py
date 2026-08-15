@@ -1204,145 +1204,131 @@ class GetLecturerCourses(APIView):
             'assigned_courses': assigned_courses
         }, status=status.HTTP_200_OK)
 
+def _pending_course_rows_for_student(student):
+    from .models import StudentCourseUnitEnrollment
+
+    rows = (
+        StudentCourseUnitEnrollment.objects.filter(
+            student=student,
+            registration_date__isnull=True,
+            status="enrolled",
+        )
+        .exclude(source__in=("exempted", "transferred"))
+        .select_related("course_unit", "course_unit__semester")
+        .order_by("course_unit__code")
+    )
+    pending = []
+    for en in rows:
+        cu = en.course_unit
+        pending.append(
+            {
+                "course_unit_id": cu.id,
+                "course_code": cu.code,
+                "course_name": cu.name,
+                "credit_units": float(cu.credit_units) if cu.credit_units is not None else None,
+                "semester_name": cu.semester.name if cu.semester_id else None,
+                "registration_kind": en.registration_kind,
+                "status": en.status,
+            }
+        )
+    return pending
+
+
 class AdminRegisterStudentForCourses(APIView):
-    """Admin endpoint to register a student for courses"""
+    """Staff register a cleared student for pending enrolled courses (on their behalf)."""
+
     permission_classes = [AcademicEnrollmentAdminPermission]
-    
-    def post(self, request, student_id):
-        from .models import CourseUnit, StudentCourseUnitEnrollment
+
+    def _student(self, request, student_id):
+        from admissions.faculty_scope import assert_admitted_student_access
         from admissions.models import AdmittedStudent
-        from django.utils import timezone
-        
-        course_unit_ids = request.data.get('course_unit_ids', [])
-        if not course_unit_ids:
-            return Response({'detail': 'No course unit IDs provided'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         try:
             student = AdmittedStudent.objects.get(id=student_id, is_admitted=True)
         except AdmittedStudent.DoesNotExist:
-            return Response({'detail': 'Student not found'}, status=status.HTTP_404_NOT_FOUND)
-        
-        registered = []
-        errors = []
-        registration_time = timezone.now()
-        
-        with transaction.atomic():
-            for course_unit_id in course_unit_ids:
-                try:
-                    course_unit = CourseUnit.objects.get(id=course_unit_id)
-                    
-                    # Check if student has been enrolled (by admin) in this course
-                    enrollment = StudentCourseUnitEnrollment.objects.filter(
-                        student=student, 
-                        course_unit=course_unit
-                    ).first()
-                    
-                    if not enrollment:
-                        errors.append(f"Student has not been enrolled in {course_unit.code}. Please enroll first.")
-                        continue
-                    
-                    # Check if already registered
-                    if enrollment.registration_date:
-                        errors.append(f"Student already registered for {course_unit.code}")
-                        continue
-                    
-                    # Mark as registered
-                    enrollment.registration_date = registration_time
-                    enrollment.save()
-                    
-                    registered.append({
-                        'id': enrollment.id,
-                        'course_code': course_unit.code,
-                        'course_name': course_unit.name,
-                    })
-                except CourseUnit.DoesNotExist:
-                    errors.append(f"Course unit {course_unit_id} not found")
-                except Exception as e:
-                    errors.append(f"Error registering student for course {course_unit_id}: {str(e)}")
-        
-        # Update student registration status
-        if registered:
-            student.is_registered = True
-            if not student.registration_date:
-                student.registration_date = registration_time
-            student.save()
-        
-        return Response({
-            'message': f'Successfully registered student for {len(registered)} course(s)',
-            'registered': registered,
-            'errors': errors,
-        }, status=status.HTTP_201_CREATED)
+            return None, Response({"detail": "Student not found"}, status=status.HTTP_404_NOT_FOUND)
+        assert_admitted_student_access(request.user, student)
+        return student, None
+
+    def get(self, request, student_id):
+        student, err = self._student(request, student_id)
+        if err:
+            return err
+        accounts_cleared = bool(getattr(student, "accounts_registration_cleared", False))
+        pending = _pending_course_rows_for_student(student)
+        return Response(
+            {
+                "accounts_registration_cleared": accounts_cleared,
+                "can_register": accounts_cleared,
+                "block_reason": (
+                    None
+                    if accounts_cleared
+                    else "Accounts has not cleared this student. Staff can register only after Accounts clearance."
+                ),
+                "pending_courses": pending,
+                "pending_count": len(pending),
+            }
+        )
+
+    def post(self, request, student_id):
+        from payments.course_registration_actions import register_student_for_course_units
+
+        student, err = self._student(request, student_id)
+        if err:
+            return err
+        if not getattr(student, "accounts_registration_cleared", False):
+            return Response(
+                {
+                    "detail": "Accounts has not cleared this student. Complete Accounts clearance before registering courses."
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        pending = _pending_course_rows_for_student(student)
+        pending_ids = [row["course_unit_id"] for row in pending]
+        if request.data.get("register_all"):
+            course_unit_ids = pending_ids
+        else:
+            course_unit_ids = request.data.get("course_unit_ids") or []
+        if not course_unit_ids:
+            return Response(
+                {"detail": "No pending courses to register. Enrol the student on units first."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        result = register_student_for_course_units(
+            student, course_unit_ids, source="admin_assigned"
+        )
+        if not result["registered"] and result["errors"]:
+            return Response(
+                {
+                    "detail": "; ".join(result["errors"]),
+                    "registered": result["registered"],
+                    "errors": result["errors"],
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response(
+            {
+                "message": f"Registered {len(result['registered'])} course(s) for this student.",
+                "registered": result["registered"],
+                "errors": result["errors"],
+            },
+            status=status.HTTP_201_CREATED,
+        )
 
 class AdminDeregisterStudentFromCourses(APIView):
-    """Admin endpoint to deregister a student from courses"""
+    """Course registration cannot be revoked once it is recorded."""
+
     permission_classes = [AcademicEnrollmentAdminPermission]
-    
+
     def post(self, request, student_id):
-        from .models import CourseUnit, StudentCourseUnitEnrollment
-        from admissions.models import AdmittedStudent
-        
-        course_unit_ids = request.data.get('course_unit_ids', [])
-        if not course_unit_ids:
-            return Response({'detail': 'No course unit IDs provided'}, status=status.HTTP_400_BAD_REQUEST)
-        
-        try:
-            student = AdmittedStudent.objects.get(id=student_id, is_admitted=True)
-        except AdmittedStudent.DoesNotExist:
-            return Response({'detail': 'Student not found'}, status=status.HTTP_404_NOT_FOUND)
-        
-        deregistered = []
-        errors = []
-        
-        with transaction.atomic():
-            for course_unit_id in course_unit_ids:
-                try:
-                    course_unit = CourseUnit.objects.get(id=course_unit_id)
-                    
-                    # Get enrollment
-                    enrollment = StudentCourseUnitEnrollment.objects.filter(
-                        student=student, 
-                        course_unit=course_unit
-                    ).first()
-                    
-                    if not enrollment:
-                        errors.append(f"Student is not enrolled in {course_unit.code}")
-                        continue
-                    
-                    # Check if registered
-                    if not enrollment.registration_date:
-                        errors.append(f"Student is not registered for {course_unit.code}")
-                        continue
-                    
-                    # Deregister by clearing registration_date
-                    enrollment.registration_date = None
-                    enrollment.save()
-                    
-                    deregistered.append({
-                        'id': enrollment.id,
-                        'course_code': course_unit.code,
-                        'course_name': course_unit.name,
-                    })
-                except CourseUnit.DoesNotExist:
-                    errors.append(f"Course unit {course_unit_id} not found")
-                except Exception as e:
-                    errors.append(f"Error deregistering student from course {course_unit_id}: {str(e)}")
-        
-        # Update student registration status if no registered courses remain
-        if deregistered:
-            remaining_registered = StudentCourseUnitEnrollment.objects.filter(
-                student=student,
-                registration_date__isnull=False
-            ).exists()
-            
-            if not remaining_registered:
-                student.is_registered = False
-                student.save()
-        
-        return Response({
-            'message': f'Successfully deregistered student from {len(deregistered)} course(s)',
-            'deregistered': deregistered,
-            'errors': errors,
-        }, status=status.HTTP_200_OK)
+        return Response(
+            {
+                "detail": "Registered courses cannot be revoked. Once a student is registered for a unit, that registration stays."
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
 
 class RemoveStudentFromCourseUnit(APIView):
     """Remove a student from a course unit"""
@@ -1356,6 +1342,13 @@ class RemoveStudentFromCourseUnit(APIView):
                 "course_unit__program_batch__program"
             ).get(id=enrollment_id)
             assert_course_unit_enrollment_access(request.user, enrollment)
+            if enrollment.registration_date:
+                return Response(
+                    {
+                        "detail": "This student is already registered for this course. Registered units cannot be removed or revoked."
+                    },
+                    status=status.HTTP_403_FORBIDDEN,
+                )
             student_id = enrollment.student.student_id
             enrollment.delete()
             return Response({
