@@ -30,13 +30,15 @@ def user_is_bursar(user) -> bool:
     if not user or not getattr(user, "is_authenticated", False):
         return False
     try:
-        return user.groups.filter(name__iexact=BURSAR_GROUP).exists()
+        return user.groups.filter(name__icontains="bursar").exists()
     except Exception:
         return False
 
 
 def user_can_approve_manual_bank(user) -> bool:
     if user_is_super_admin(user):
+        return True
+    if user_is_bursar(user) or user_is_finance_manager(user):
         return True
     if not user or not getattr(user, "is_authenticated", False):
         return False
@@ -46,12 +48,25 @@ def user_can_approve_manual_bank(user) -> bool:
         return False
 
 
+def user_can_post_manual_bank(user) -> bool:
+    """Record a bank payment — Bursar / finance staff who can see student finances."""
+    if user_can_approve_manual_bank(user):
+        return True
+    if not user or not getattr(user, "is_authenticated", False):
+        return False
+    from accounts.erp_drf_permissions import user_has_any_erp_perm
+
+    return user_has_any_erp_perm(user, "post_manual_bank_payment", "access_finance")
+
+
 def can_approve_change_request(user, change_request: ManualBankPaymentChangeRequest) -> bool:
     if not user_can_approve_manual_bank(user):
         return False
     if change_request.requested_by_id and change_request.requested_by_id == getattr(user, "pk", None):
-        # Break-glass: only Super Admin may approve their own request.
-        return user_is_super_admin(user)
+        if user_is_super_admin(user):
+            return True
+        # Bursar / Finance Manager posting a bank credit may apply their own POST.
+        return change_request.request_type == ManualBankPaymentChangeRequest.RequestType.POST
     return True
 
 
@@ -145,15 +160,16 @@ def submit_change_request(
     """
     Create a bank-payment change request.
 
-    Super Admin never waits on dual-control — the request is applied immediately.
+    Super Admin / Bursar / Finance Manager POST applies immediately.
     Returns (change_request, ledger_result_or_None, applied_immediately).
     """
     payload = dict(payload or {})
+    apply_now = user_can_approve_manual_bank(requested_by)
 
-    # Super Admin: if an earlier attempt left a pending POST with the same bank
+    # Approvers: if an earlier attempt left a pending POST with the same bank
     # reference, finish that request instead of blocking with a 400.
     if (
-        user_is_super_admin(requested_by)
+        apply_now
         and request_type == ManualBankPaymentChangeRequest.RequestType.POST
         and student is not None
     ):
@@ -181,8 +197,8 @@ def submit_change_request(
                         row,
                         reviewed_by=requested_by,
                         review_notes=(
-                            "Auto-applied stuck pending request — Super Admin "
-                            "does not require dual approval."
+                            "Auto-applied stuck pending request — Bursar / "
+                            "Finance Manager / Super Admin does not require dual approval for POST."
                         ),
                     )
                     return change, result, True
@@ -197,15 +213,21 @@ def submit_change_request(
             reason=reason,
         )
     except ValueError as exc:
-        # Super Admin re-post after a successful credit: surface a clear message.
         msg = str(exc)
-        if user_is_super_admin(requested_by) and "already" in msg.lower():
+        if apply_now and "already" in msg.lower():
             raise ValueError(
                 f"{msg} Open Finance → Manual bank payments to review it, "
                 "or use a different bank reference."
             ) from exc
         raise
 
+    if apply_now and request_type == ManualBankPaymentChangeRequest.RequestType.POST:
+        change, result = apply_change_request(
+            change,
+            reviewed_by=requested_by,
+            review_notes="Auto-applied — Bursar / Finance Manager / Super Admin POST.",
+        )
+        return change, result, True
     if user_is_super_admin(requested_by):
         change, result = apply_change_request(
             change,

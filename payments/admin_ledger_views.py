@@ -15,7 +15,6 @@ from django.utils.dateparse import parse_date
 from accounts.erp_drf_permissions import (
     AccountsClearedReportPermission,
     FinanceModuleAdminPermission,
-    IsSuperAdminOnly,
 )
 from accounts.super_admin import user_is_super_admin
 from rest_framework import status
@@ -689,14 +688,27 @@ class CanApproveManualBankPayment(BasePermission):
         )
 
 
+class CanPostManualBankPayment(BasePermission):
+    message = "Only Bursar, Finance Manager, or Super Admin can post a bank payment."
+
+    def has_permission(self, request, view):
+        from payments.manual_bank_approval import user_can_post_manual_bank
+
+        return bool(
+            request.user
+            and request.user.is_authenticated
+            and user_can_post_manual_bank(request.user)
+        )
+
+
 class AdminPostManualBankPaymentView(APIView):
     """
-    POST — record a bank payment (Super Admin).
+    POST — record a bank payment (Bursar / Finance Manager / Super Admin).
 
-    Super Admin actions apply immediately (no Bursar dual-control wait).
+    Approver posts apply immediately (no dual-control wait).
     """
 
-    permission_classes = [IsSuperAdminOnly]
+    permission_classes = [CanPostManualBankPayment]
 
     def post(self, request, student_id):
         from audit.utils import log_audit_event
@@ -765,7 +777,7 @@ class AdminManualBankPaymentDetailView(APIView):
     PATCH / DELETE — submit edit/delete for Finance Manager approval (reason required).
     """
 
-    permission_classes = [IsSuperAdminOnly]
+    permission_classes = [CanPostManualBankPayment]
 
     def patch(self, request, ledger_id):
         from audit.utils import log_audit_event
