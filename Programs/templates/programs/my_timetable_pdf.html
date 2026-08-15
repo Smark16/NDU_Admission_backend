@@ -342,7 +342,7 @@
 
             {% if s.lecturers %}
 
-              {% for lec in s.lecturers %}{{ lec.name }}{% if not forloop.last %}, {% endif %}{% endfor %}
+              {% for lec in s.lecturers %}{{ lec.name }}{% if lec.phone %} ({{ lec.phone }}){% endif %}{% if not forloop.last %}, {% endif %}{% endfor %}
 
             {% else %}
 

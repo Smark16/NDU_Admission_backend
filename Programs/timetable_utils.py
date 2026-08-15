@@ -152,9 +152,16 @@ def semester_period_label(name: str, start: date | None, end: date | None) -> st
 
 
 def serialize_lecturer_brief(lec) -> dict:
+    phone = (getattr(lec, "phone", None) or "").strip()
+    if not phone:
+        try:
+            phone = (lec.profile.phone or "").strip()
+        except Exception:
+            phone = ""
     return {
         "id": lec.id,
         "name": lec.get_full_name() or lec.username,
+        "phone": phone,
         "email": lec.email,
         "primary_campus_id": getattr(lec, "primary_campus_id", None),
     }
