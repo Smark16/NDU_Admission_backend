@@ -30,7 +30,9 @@ from payments.billing_visibility import (
     adhoc_charge_billing_date,
     billing_date_iso,
     billing_date_reached,
+    fee_head_code,
     is_exemption_adhoc_charge,
+    is_exemption_form_fee_charge,
 )
 from payments.student_fee_pricing import effective_amount_currency, is_international_student
 from payments.utils.tuition_ledger_linking import tuition_ledger_queryset_for_student
@@ -146,6 +148,9 @@ def payment_credits_by_currency(
 
         if is_credit_reallocation_payment(p):
             out[ccy] -= amt
+            continue
+        # Dedicated exemption-form-fee receipts are not tuition credit.
+        if is_exemption_form_fee_charge(p):
             continue
         out[ccy] += amt
 
@@ -515,7 +520,13 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
         sem = charge.semester
         billable = True
         payable_year = payable_term = None
-        extra: dict[str, Any] = {"charge_status": charge.status, "fee_head_id": charge.fee_head_id}
+        extra: dict[str, Any] = {
+            "charge_status": charge.status,
+            "fee_head_id": charge.fee_head_id,
+            "fee_head_code": fee_head_code(charge),
+        }
+        if is_exemption_form_fee_charge(charge):
+            extra["exclude_from_tuition"] = True
         if sem is not None:
             payable_year, payable_term = sem.year_of_study, sem.term_number
             eff_date = adhoc_charge_billing_date(charge)
@@ -630,6 +641,8 @@ def _allocate_pools_to_lines(
         ]
 
     for line in ordered:
+        if line.extra.get("exclude_from_tuition"):
+            continue
         need = line.amount
         # When open allocation runs after prior, keep any amount already applied.
         already = line.paid_amount if target == "open" else Decimal("0")
@@ -672,6 +685,13 @@ def build_finance_allocation(student: AdmittedStudent) -> FinanceAllocation:
         credits_open = credits_all
         leftover_open = _allocate_pools_to_lines(lines, credits_all, target="all")
 
+    for line in lines:
+        if not line.extra.get("exclude_from_tuition"):
+            continue
+        line.paid_amount = Decimal("0")
+        line.balance = line.amount
+        line.status = "due" if _line_is_billable(line) else "not_due"
+
     # Required/paid/balance carry forward: include prior-term lines (unpaid history)
     # alongside current billable demand, matching the same predicate already used by
     # student_billing_lines() / full_outstanding_balance_status() (exam card gate), so
@@ -681,6 +701,8 @@ def build_finance_allocation(student: AdmittedStudent) -> FinanceAllocation:
     paid_by_all: defaultdict[str, Decimal] = defaultdict(Decimal)
     for line in lines:
         is_prior = bool(line.extra.get("prior_period_settled"))
+        if line.extra.get("exclude_from_tuition"):
+            continue
         if not is_prior and not _line_is_billable(line):
             continue
         if line.kind == "ad_hoc" and line.extra.get("charge_status") not in (
@@ -821,6 +843,8 @@ def tuition_registration_totals(
 
     lines: list[DemandLine] = []
     for ln in alloc.demand_lines:
+        if ln.extra.get("exclude_from_tuition"):
+            continue
         if not _line_is_billable(ln):
             continue
         if ln.kind == "ad_hoc" and ln.extra.get("charge_status") not in (

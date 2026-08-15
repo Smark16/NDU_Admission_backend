@@ -55,6 +55,9 @@ def evaluate_exam_eligibility(
     if student.application and student.application.is_revoked:
         blockers.append("Student admission has been revoked.")
 
+    if enrollment.registration_date is None:
+        blockers.append("Student has not registered for this course.")
+
     ca_mark = result.ca_mark if result else None
     min_ca = policy.min_ca_to_sit_exam if policy else Decimal("17.5")
     ca_max = policy.ca_max if policy else Decimal("40")

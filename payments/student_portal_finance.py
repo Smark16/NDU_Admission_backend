@@ -672,10 +672,12 @@ def _billing_lines_from_alloc(alloc) -> list[dict[str, Any]]:
         elif line.kind == "ad_hoc":
             if is_prior:
                 continue
+            is_form = (line.extra.get("fee_head_code") or "") == "EXEMPTION_FORM"
             row = {
-                "kind": "ad_hoc",
+                "kind": "exemption_form" if is_form else "ad_hoc",
                 "charge_id": line.charge_id,
                 "fee_head": line.fee_head,
+                "fee_head_code": line.extra.get("fee_head_code") or "",
                 "description": line.description,
                 "amount": float(line.amount),
                 "paid_amount": float(line.paid_amount),
@@ -683,9 +685,9 @@ def _billing_lines_from_alloc(alloc) -> list[dict[str, Any]]:
                 "currency": line.currency,
                 "status": line.extra.get("charge_status", line.status),
                 "prior_term": False,
-                "year_of_study": yi,
-                "term_number": ti,
-                "semester_label": "Ad-hoc charges",
+                "year_of_study": None if is_form else yi,
+                "term_number": None if is_form else ti,
+                "semester_label": "Exemption form fee" if is_form else "Ad-hoc charges",
             }
         else:
             continue

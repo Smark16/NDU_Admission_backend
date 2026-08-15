@@ -331,6 +331,16 @@ urlpatterns = [
         views.ExemptionFormFeeReportView.as_view(),
         name='exemption_form_fee_report',
     ),
+    path(
+        'change_requests/exemption/draft',
+        views.StudentExemptionDraftView.as_view(),
+        name='exemption_form_draft',
+    ),
+    path(
+        'change_requests/exemption/application/<int:student_pk>',
+        views.AdminExemptionApplicationView.as_view(),
+        name='exemption_application_for_student',
+    ),
 
     # Direct entry (admin / manual / legacy migration)
     path('direct_application_entry', views.DirectApplicationEntryView.as_view(), name='direct_application_entry'),

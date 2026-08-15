@@ -140,6 +140,7 @@ def build_marks_entry_csv(course_unit) -> tuple[str, str]:
         StudentCourseUnitEnrollment.objects.filter(
             course_unit=course_unit,
             status="enrolled",
+            registration_date__isnull=False,
         )
         .select_related("student", "student__application", "course_result")
         .order_by("student__reg_no")
@@ -208,6 +209,12 @@ def import_marks_for_course(course_unit, rows: list[dict], *, user) -> dict:
 
         if enrollment.student.application and enrollment.student.application.is_revoked:
             errors.append({"reg_no": reg, "detail": "Admission revoked."})
+            continue
+
+        if enrollment.registration_date is None:
+            errors.append(
+                {"reg_no": reg, "detail": "Student has not registered for this course."}
+            )
             continue
 
         policy = resolve_assessment_policy(enrollment=enrollment)

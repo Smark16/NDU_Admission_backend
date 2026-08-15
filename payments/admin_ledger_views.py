@@ -15,6 +15,7 @@ from django.utils.dateparse import parse_date
 from accounts.erp_drf_permissions import (
     AccountsClearedReportPermission,
     FinanceModuleAdminPermission,
+    IsSuperAdminOnly,
 )
 from accounts.super_admin import user_is_super_admin
 from rest_framework import status
@@ -774,10 +775,10 @@ class AdminPostManualBankPaymentView(APIView):
 
 class AdminManualBankPaymentDetailView(APIView):
     """
-    PATCH / DELETE — submit edit/delete for Finance Manager approval (reason required).
+    PATCH / DELETE — System Admin only (accountability). Bursar may post, not alter.
     """
 
-    permission_classes = [CanPostManualBankPayment]
+    permission_classes = [IsSuperAdminOnly]
 
     def patch(self, request, ledger_id):
         from audit.utils import log_audit_event

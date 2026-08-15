@@ -166,6 +166,7 @@ class LecturerCourseMarksView(APIView):
                 course_unit=course_unit,
                 # Include completed/failed so published students stay visible on Marks.
                 status__in=["enrolled", "completed", "failed"],
+                registration_date__isnull=False,
             )
             .select_related("student", "student__application", "course_result")
             .order_by("student__reg_no")
@@ -262,6 +263,15 @@ class LecturerCourseMarksView(APIView):
 
                 if enrollment.student.application and enrollment.student.application.is_revoked:
                     errors.append({"enrollment_id": eid, "detail": "Student admission revoked."})
+                    continue
+
+                if enrollment.registration_date is None:
+                    errors.append(
+                        {
+                            "enrollment_id": eid,
+                            "detail": "Student has not registered for this course.",
+                        }
+                    )
                     continue
 
                 policy = resolve_assessment_policy(enrollment=enrollment)

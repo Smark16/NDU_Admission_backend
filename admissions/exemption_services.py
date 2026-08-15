@@ -28,6 +28,51 @@ EXEMPTION_TERM_CAP_MESSAGE = (
     "Students may be exempted for at most 2 academic years (4 terms). "
     "Remove papers that fall in extra years or terms."
 )
+# One original application + one resubmit if HOD rejects. Form fee is not voided.
+MAX_EXEMPTION_APPLICATION_ATTEMPTS = 2
+
+
+def exemption_application_attempt_state(student: AdmittedStudent) -> dict:
+    """Students get one application, plus one more if HOD rejects. Fee stays paid."""
+    qs = AdmissionChangeRequest.objects.filter(
+        admitted_student=student, change_type="exemption"
+    )
+    pending = qs.filter(status="pending").exists()
+    approved = qs.filter(status="approved").exists()
+    total = qs.count()
+    rejected_n = qs.filter(status="rejected").count()
+    can_submit = (not pending) and (not approved) and total < MAX_EXEMPTION_APPLICATION_ATTEMPTS
+    if pending:
+        detail = "You already have a pending exemption application awaiting HOD review."
+    elif approved:
+        detail = "An exemption application was already approved for this student."
+    elif total >= MAX_EXEMPTION_APPLICATION_ATTEMPTS:
+        detail = (
+            "Both exemption applications have been used (including one after a rejection). "
+            "The form fee remains paid."
+        )
+    elif rejected_n:
+        detail = (
+            "The previous application was rejected. You may submit once more. "
+            "The UGX 50,000 form fee is still valid — do not pay again."
+        )
+    else:
+        detail = ""
+    return {
+        "can_submit": can_submit,
+        "attempts_used": total,
+        "attempts_max": MAX_EXEMPTION_APPLICATION_ATTEMPTS,
+        "has_pending": pending,
+        "has_approved": approved,
+        "rejected_count": rejected_n,
+        "detail": detail,
+    }
+
+
+def assert_exemption_resubmit_allowed(student: AdmittedStudent) -> None:
+    state = exemption_application_attempt_state(student)
+    if not state["can_submit"]:
+        raise ValueError(state["detail"] or "You cannot submit another exemption application.")
 
 
 def _term_key(year, term) -> tuple[int, int] | None:
@@ -386,24 +431,10 @@ def _open_form_fee_charge(student: AdmittedStudent) -> StudentTuitionPayment | N
 
 
 def form_fee_paid_for_charge(student: AdmittedStudent, charge: StudentTuitionPayment) -> bool:
-    """Unlock after STK payment or staff applying existing tuition/SchoolPay credit."""
-    if charge.is_waived:
+    """Unlock after any completed form-fee payment (STK, bank, or tuition allocation)."""
+    if charge is None or charge.is_waived:
         return False
-    if charge.status != "completed":
-        return False
-    from payments.credit_allocation import is_credit_reallocation_payment
-
-    tid = (charge.transaction_id or "").strip()
-    notes = charge.notes or ""
-    method = (charge.payment_method or "").strip().lower()
-    return (
-        tid.startswith("EXF-")
-        or tid.startswith("CREDIT-")
-        or method == "internal_credit"
-        or is_credit_reallocation_payment(charge)
-        or "Exemption form fee STK" in notes
-        or "Applied from existing tuition" in notes
-    )
+    return charge.status == "completed"
 
 
 def _ensure_form_fee_charge(student: AdmittedStudent, *, charged_by=None) -> StudentTuitionPayment:
@@ -474,6 +505,7 @@ def _form_fee_status_dict(
                 + (f" code {payment_code}" if payment_code else "")
                 + "). Submit is blocked until the form fee is paid."
             ),
+            "attempts": exemption_application_attempt_state(student),
         }
 
     paid = form_fee_paid_for_charge(student, charge)
@@ -525,6 +557,7 @@ def _form_fee_status_dict(
                 else ""
             )
         ),
+        "attempts": exemption_application_attempt_state(student),
     }
 
 
@@ -575,7 +608,9 @@ def exemption_form_fee_report(status_filter: str | None = None) -> list[dict]:
         for r in AdmissionChangeRequest.objects.filter(
             change_type="exemption",
             form_fee_charge_id__in=charge_ids,
-        ).only("id", "form_fee_charge_id", "status", "created_at")
+        )
+        .only("id", "form_fee_charge_id", "status", "created_at")
+        .order_by("created_at")
     }
 
     now = timezone.now()
@@ -607,9 +642,223 @@ def exemption_form_fee_report(status_filter: str | None = None) -> list[dict]:
                 ),
                 "change_request_id": req.id if req else None,
                 "change_request_status": req.status if req else None,
+                "has_draft": False,
+                "draft_paper_count": 0,
+                "draft_updated_at": None,
+                "form_ready": False,
             }
         )
+
+    student_ids = [r["student_pk"] for r in rows if r.get("student_pk")]
+    drafts = {
+        s.pk: s
+        for s in AdmittedStudent.objects.filter(pk__in=student_ids).only(
+            "id", "exemption_form_draft", "exemption_form_draft_updated_at"
+        )
+    }
+    for row in rows:
+        student = drafts.get(row.get("student_pk"))
+        summary = exemption_draft_summary(student.exemption_form_draft if student else None)
+        row["has_draft"] = summary["has_draft"]
+        row["draft_paper_count"] = summary["paper_count"]
+        row["draft_updated_at"] = (
+            student.exemption_form_draft_updated_at.isoformat()
+            if student and student.exemption_form_draft_updated_at
+            else None
+        )
+        row["form_ready"] = bool(
+            summary["ready"]
+            and row.get("status") == "completed"
+            and not row.get("change_request_id")
+        )
     return rows
+
+
+def _compose_draft_score(paper: dict) -> str:
+    grade = str(paper.get("grade_letter") or "").strip()
+    mark = str(paper.get("mark_percent") or "").strip()
+    if grade and mark:
+        return f"{grade} ({mark})"
+    return grade or mark or str(paper.get("score_obtained") or "").strip()
+
+
+def sanitize_exemption_draft(payload: dict | None) -> dict:
+    data = payload if isinstance(payload, dict) else {}
+    papers_in = data.get("papers") if isinstance(data.get("papers"), list) else []
+    papers = []
+    for raw in papers_in[:40]:
+        if not isinstance(raw, dict):
+            continue
+        clid = raw.get("curriculum_line_id")
+        try:
+            clid_int = int(clid) if clid not in (None, "", 0, "0") else None
+        except (TypeError, ValueError):
+            clid_int = None
+        papers.append(
+            {
+                "course_code": str(raw.get("course_code") or "")[:40],
+                "course_name": str(raw.get("course_name") or "")[:255],
+                "year_of_study": str(raw.get("year_of_study") or "")[:8],
+                "term_number": str(raw.get("term_number") or "")[:8],
+                "curriculum_line_id": clid_int,
+                "grade_letter": str(raw.get("grade_letter") or "")[:12],
+                "mark_percent": str(raw.get("mark_percent") or "")[:20],
+                "prior_unit_note": str(raw.get("prior_unit_note") or "")[:255],
+                "score_obtained": _compose_draft_score(raw)[:40],
+            }
+        )
+    return {
+        "attainedAt": str(data.get("attainedAt") or data.get("exemption_attained_at") or "")[:255],
+        "academicYears": str(data.get("academicYears") or data.get("exemption_academic_years") or "")[:50],
+        "reason": str(data.get("reason") or "")[:4000],
+        "phoneNumber": str(data.get("phoneNumber") or "")[:30],
+        "papers": papers,
+        "savedAt": timezone.now().isoformat(),
+    }
+
+
+def exemption_draft_summary(draft: dict | None) -> dict:
+    data = sanitize_exemption_draft(draft) if draft else {"papers": [], "attainedAt": "", "reason": ""}
+    selected = [p for p in data.get("papers") or [] if p.get("curriculum_line_id")]
+    ready = bool(
+        selected
+        and all(str(p.get("grade_letter") or "").strip() for p in selected)
+        and str(data.get("attainedAt") or "").strip()
+        and str(data.get("reason") or "").strip()
+    )
+    return {
+        "has_draft": bool(selected or str(data.get("reason") or "").strip() or str(data.get("attainedAt") or "").strip()),
+        "paper_count": len(selected),
+        "ready": ready,
+        "draft": data if draft else None,
+    }
+
+
+def save_exemption_draft(student: AdmittedStudent, payload: dict | None) -> dict:
+    cleaned = sanitize_exemption_draft(payload)
+    student.exemption_form_draft = cleaned
+    student.exemption_form_draft_updated_at = timezone.now()
+    student.save(update_fields=["exemption_form_draft", "exemption_form_draft_updated_at", "updated_at"])
+    return exemption_draft_summary(cleaned)
+
+
+def clear_exemption_draft(student: AdmittedStudent) -> None:
+    if not student.exemption_form_draft and not student.exemption_form_draft_updated_at:
+        return
+    student.exemption_form_draft = None
+    student.exemption_form_draft_updated_at = None
+    student.save(update_fields=["exemption_form_draft", "exemption_form_draft_updated_at", "updated_at"])
+
+
+def submit_exemption_from_draft(student: AdmittedStudent, *, requested_by, staff_submit: bool = False):
+    """
+    Create a pending exemption change request from the saved draft.
+    Staff submit is allowed without uploaded files (desk help after the 50k is paid).
+    """
+    from admissions.models import ExemptionRequestLine
+    from Programs.models import ProgramCurriculumLine
+
+    if AdmissionChangeRequest.objects.filter(
+        admitted_student=student, change_type="exemption", status="pending"
+    ).exists():
+        raise ValueError("This student already has a pending exemption application.")
+
+    assert_exemption_resubmit_allowed(student)
+
+    access = ensure_exemption_form_fee_access(student, charged_by=None)
+    if not access.get("paid"):
+        raise ValueError("The UGX 50,000 exemption form fee is not paid yet.")
+
+    summary = exemption_draft_summary(student.exemption_form_draft)
+    draft = summary.get("draft") or {}
+    if not summary.get("ready"):
+        raise ValueError(
+            "The form is not complete yet. The student needs papers with grades, "
+            "the prior institution, and a reason."
+        )
+
+    papers = [p for p in (draft.get("papers") or []) if p.get("curriculum_line_id")]
+    eligible = {c["id"]: c for c in list_eligible_exemption_courses(student)}
+    extra_terms = set()
+    exemption_papers = []
+    for paper in papers:
+        clid = int(paper["curriculum_line_id"])
+        if clid not in eligible:
+            raise ValueError(
+                f"Paper {paper.get('course_code') or clid} is not eligible for exemption."
+            )
+        row = eligible[clid]
+        key = _term_key(row.get("year_of_study"), row.get("term_number"))
+        if key:
+            extra_terms.add(key)
+        score = _compose_draft_score(paper)
+        check_paper = {
+            "course_code": paper.get("course_code"),
+            "score_obtained": score,
+            "min_mark": paper.get("mark_percent"),
+        }
+        ok, msg = exemption_paper_meets_min_mark(check_paper)
+        if not ok:
+            raise ValueError(msg)
+        exemption_papers.append({**paper, "score_obtained": score, "curriculum_line_id": clid})
+
+    assert_exemption_term_cap(student, extra_terms)
+
+    prior_notes = [
+        f"{p.get('course_code')}: {p.get('prior_unit_note')}".strip()
+        for p in exemption_papers
+        if str(p.get("prior_unit_note") or "").strip()
+    ]
+    reason = str(draft.get("reason") or "").strip()
+    if prior_notes:
+        reason = (
+            reason
+            + "\n\nEquivalent units at previous institution:\n"
+            + "\n".join(f"- {n}" for n in prior_notes)
+        )
+    if staff_submit:
+        who = getattr(requested_by, "get_full_name", lambda: "")() or getattr(requested_by, "username", "")
+        reason = (
+            reason
+            + f"\n\n[Submitted by staff ({who}) from the saved form. "
+            "No files were attached on the draft — ask the student for transcript/certificate if missing.]"
+        )
+
+    with transaction.atomic():
+        obj = AdmissionChangeRequest.objects.create(
+            admitted_student=student,
+            requested_by=requested_by,
+            current_program=student.admitted_program,
+            current_campus=student.admitted_campus,
+            current_study_mode=student.study_mode,
+            change_type="exemption",
+            reason=reason[:8000],
+            form_fee_charge_id=access.get("charge_id"),
+            form_fee_paid_at=timezone.now() if access.get("paid") else None,
+            exemption_attained_at=str(draft.get("attainedAt") or "")[:255],
+            exemption_academic_years=str(draft.get("academicYears") or "")[:50],
+        )
+        for paper in exemption_papers:
+            clid = int(paper["curriculum_line_id"])
+            linked = (
+                ProgramCurriculumLine.objects.filter(pk=clid, is_active=True)
+                .select_related("catalog_course")
+                .first()
+            )
+            if linked is None:
+                continue
+            course = linked.catalog_course
+            ExemptionRequestLine.objects.create(
+                change_request=obj,
+                curriculum_line=linked,
+                course_code=(course.code if course else "")[:40],
+                course_name=((course.title if course else "") or "")[:255],
+                year_of_study=linked.year_of_study,
+                term_number=linked.term_number,
+                score_obtained=str(paper.get("score_obtained") or "")[:20],
+            )
+        clear_exemption_draft(student)
+    return obj, access
 
 
 def _norm_course_code(code: str) -> str:

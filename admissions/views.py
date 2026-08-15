@@ -4674,6 +4674,7 @@ class StudentChangeRequestListCreate(APIView):
 
         if change_type == 'exemption':
             from admissions.exemption_services import (
+                assert_exemption_resubmit_allowed,
                 assert_exemption_term_cap,
                 ensure_exemption_form_fee_access,
                 list_eligible_exemption_courses,
@@ -4702,6 +4703,11 @@ class StudentChangeRequestListCreate(APIView):
                     },
                     status=400,
                 )
+
+            try:
+                assert_exemption_resubmit_allowed(admission)
+            except ValueError as exc:
+                return Response({"detail": str(exc), "form_fee": access}, status=400)
 
             # Papers must target this university's curriculum (eligible lines).
             eligible = {
@@ -4912,6 +4918,8 @@ class StudentChangeRequestListCreate(APIView):
                 obj, context={"request": request}
             ).data
             payload["form_fee"] = access
+            from admissions.exemption_services import clear_exemption_draft
+            clear_exemption_draft(admission)
             return Response(payload, status=201)
 
         obj = AdmissionChangeRequest.objects.create(
@@ -4982,6 +4990,162 @@ class ExemptionFormFeeReportView(APIView):
                 "pending_count": sum(1 for r in rows if r["status"] == "pending" and not r["is_waived"]),
             }
         )
+
+
+class StudentExemptionDraftView(APIView):
+    """Student: autosave / load the in-progress Course Exemption form."""
+
+    permission_classes = [IsAuthenticated]
+
+    def _get_admission(self, user):
+        try:
+            return AdmittedStudent.objects.filter(
+                Q(application__applicant=user) | Q(student_user=user) | Q(reg_no=user.username),
+                is_admitted=True,
+            ).first()
+        except Exception:
+            return None
+
+    def get(self, request):
+        from admissions.exemption_services import exemption_draft_summary
+
+        admission = self._get_admission(request.user)
+        if not admission:
+            return Response({"detail": "No active admission found."}, status=404)
+        summary = exemption_draft_summary(admission.exemption_form_draft)
+        return Response(
+            {
+                **summary,
+                "updated_at": (
+                    admission.exemption_form_draft_updated_at.isoformat()
+                    if admission.exemption_form_draft_updated_at
+                    else None
+                ),
+            }
+        )
+
+    def put(self, request):
+        from admissions.exemption_services import save_exemption_draft
+
+        admission = self._get_admission(request.user)
+        if not admission:
+            return Response({"detail": "No active admission found."}, status=404)
+        summary = save_exemption_draft(admission, request.data if isinstance(request.data, dict) else {})
+        return Response(
+            {
+                **summary,
+                "updated_at": (
+                    admission.exemption_form_draft_updated_at.isoformat()
+                    if admission.exemption_form_draft_updated_at
+                    else None
+                ),
+            }
+        )
+
+    def delete(self, request):
+        from admissions.exemption_services import clear_exemption_draft, exemption_draft_summary
+
+        admission = self._get_admission(request.user)
+        if not admission:
+            return Response({"detail": "No active admission found."}, status=404)
+        clear_exemption_draft(admission)
+        return Response(exemption_draft_summary(None))
+
+
+class AdminExemptionApplicationView(APIView):
+    """Finance / HOD: view a student's exemption draft or submitted request."""
+
+    permission_classes = [IsAuthenticated, CanViewAdmissionChangeRequests]
+
+    def _can_help(self, user) -> bool:
+        from accounts.finance_access import user_can_view_student_finance
+
+        return user_can_view_student_finance(user) or user_can_approve_exemption_requests(user)
+
+    def get(self, request, student_pk):
+        from admissions.exemption_services import (
+            exemption_draft_summary,
+            exemption_form_fee_status,
+        )
+
+        if not self._can_help(request.user):
+            return Response({"detail": "Not allowed to view exemption applications."}, status=403)
+
+        student = get_object_or_404(AdmittedStudent, pk=student_pk)
+        assert_admitted_student_access(request.user, student)
+        access = exemption_form_fee_status(student)
+        pending = (
+            AdmissionChangeRequest.objects.filter(
+                admitted_student=student, change_type="exemption"
+            )
+            .select_related("new_program", "new_campus", "reviewed_by")
+            .prefetch_related("exemption_lines", "supporting_documents")
+            .order_by("-created_at")
+            .first()
+        )
+        summary = exemption_draft_summary(student.exemption_form_draft)
+        paid = bool(access.get("paid"))
+        can_submit = bool(paid and summary.get("ready") and (pending is None or pending.status == "rejected"))
+        block = None
+        if pending and pending.status == "pending":
+            block = "This student already submitted. Open the request to review."
+            can_submit = False
+        elif not paid:
+            block = "Form fee is not paid yet."
+        elif not summary.get("ready"):
+            block = "The saved form is incomplete (papers, grades, institution, and reason are required)."
+        return Response(
+            {
+                "student_pk": student.pk,
+                "student_name": student.full_name,
+                "student_id": student.student_id,
+                "reg_no": student.reg_no,
+                "form_fee": access,
+                "draft": summary.get("draft"),
+                "has_draft": summary.get("has_draft"),
+                "form_ready": summary.get("ready"),
+                "draft_updated_at": (
+                    student.exemption_form_draft_updated_at.isoformat()
+                    if student.exemption_form_draft_updated_at
+                    else None
+                ),
+                "can_submit": can_submit,
+                "submit_block": block,
+                "change_request": (
+                    AdmissionChangeRequestSerializer(pending, context={"request": request}).data
+                    if pending
+                    else None
+                ),
+            }
+        )
+
+    def post(self, request, student_pk):
+        from admissions.exemption_services import submit_exemption_from_draft
+
+        if not self._can_help(request.user):
+            return Response({"detail": "Not allowed to submit exemption applications."}, status=403)
+
+        student = get_object_or_404(
+            AdmittedStudent.objects.select_related("admitted_program", "admitted_campus"),
+            pk=student_pk,
+        )
+        assert_admitted_student_access(request.user, student)
+        try:
+            obj, access = submit_exemption_from_draft(
+                student, requested_by=request.user, staff_submit=True
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
+        obj = (
+            AdmissionChangeRequest.objects.select_related(
+                "new_program", "new_campus", "reviewed_by"
+            )
+            .prefetch_related("exemption_lines", "supporting_documents")
+            .get(pk=obj.pk)
+        )
+        payload = AdmissionChangeRequestSerializer(obj, context={"request": request}).data
+        payload["form_fee"] = access
+        return Response(payload, status=201)
 
 
 class ExemptionEligibleCoursesView(APIView):
@@ -5145,7 +5309,11 @@ class AdminChangeRequestList(APIView):
             'current_program', 'current_campus',
             'new_program', 'new_campus',
             'reviewed_by',
-        ).prefetch_related('exemption_lines', 'supporting_documents').order_by('-created_at')
+        ).prefetch_related(
+            'exemption_lines',
+            'supporting_documents',
+            'admitted_student__application__documents',
+        ).order_by('-created_at')
 
         status_filter = request.query_params.get('status')
         if status_filter:

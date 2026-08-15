@@ -1368,6 +1368,43 @@ class ExemptionSupportingDocumentSerializer(serializers.ModelSerializer):
         return request.build_absolute_uri(url) if request else url
 
 
+def _application_doc_is_academic(doc) -> bool:
+    raw = (getattr(doc, "document_type", None) or "").strip().lower()
+    compact = raw.replace(" ", "").replace("_", "").replace("-", "")
+    if compact in {
+        "passport",
+        "passportphoto",
+        "photo",
+        "profilephoto",
+        "refugee",
+        "refugeeproof",
+        "refugeeid",
+        "nin",
+        "nationalid",
+    }:
+        return False
+    return True
+
+
+def _application_doc_label(doc) -> str:
+    raw = (getattr(doc, "document_type", None) or "").strip()
+    compact = raw.lower().replace(" ", "").replace("_", "").replace("-", "")
+    labels = {
+        "olevel": "O-Level",
+        "alevel": "A-Level",
+        "otherqualifications": "Other qualifications",
+        "otherqualification": "Other qualifications",
+        "others": "Other application document",
+        "other": "Other application document",
+        "diploma": "Diploma",
+        "certificate": "Certificate",
+        "transcript": "Transcript (application)",
+    }
+    if compact in labels:
+        return labels[compact]
+    return raw or "Application document"
+
+
 class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
     """Read serializer — expands FK names for display."""
     change_type_display = serializers.CharField(source='get_change_type_display', read_only=True)
@@ -1382,6 +1419,7 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
     reviewed_by_name = serializers.SerializerMethodField()
     exemption_lines = ExemptionRequestLineSerializer(many=True, read_only=True)
     supporting_documents = serializers.SerializerMethodField()
+    application_documents = serializers.SerializerMethodField()
     form_fee_paid = serializers.SerializerMethodField()
     exemption_course_fee_rate = serializers.SerializerMethodField()
     exemption_course_fee_total = serializers.SerializerMethodField()
@@ -1398,7 +1436,7 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
             'new_program_name', 'new_campus_name', 'new_study_mode',
             'requested_year', 'requested_semester',
             'reason', 'review_notes', 'reviewed_by_name', 'reviewed_at', 'created_at',
-            'exemption_lines', 'supporting_documents',
+            'exemption_lines', 'supporting_documents', 'application_documents',
             'form_fee_charge_id', 'form_fee_paid_at', 'form_fee_paid',
             'exemption_attained_at', 'exemption_academic_years', 'exemption_is_alumnus',
             'exemption_course_fee_rate', 'exemption_course_fee_total',
@@ -1410,6 +1448,39 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
         return ExemptionSupportingDocumentSerializer(
             obj.supporting_documents.all(), many=True, context=self.context
         ).data
+
+    def get_application_documents(self, obj):
+        if obj.change_type != "exemption":
+            return []
+        try:
+            application = obj.admitted_student.application
+        except Exception:
+            return []
+        if application is None:
+            return []
+        request = self.context.get("request")
+        rows = []
+        for doc in application.documents.all():
+            if not _application_doc_is_academic(doc) or not doc.file:
+                continue
+            url = doc.file.url
+            if request:
+                url = request.build_absolute_uri(url)
+            filename = (doc.name or "").strip()
+            if not filename:
+                filename = (getattr(doc.file, "name", "") or "").split("/")[-1]
+            rows.append(
+                {
+                    "id": doc.id,
+                    "document_type": doc.document_type or "application",
+                    "document_type_display": _application_doc_label(doc),
+                    "original_filename": filename,
+                    "file_url": url,
+                    "uploaded_at": doc.uploaded_at.isoformat() if doc.uploaded_at else None,
+                    "source": "application",
+                }
+            )
+        return rows
 
     def get_student_name(self, obj):
         try:

@@ -250,11 +250,19 @@ def adhoc_charge_billing_date(charge) -> date | None:
     return default_billing_date_for_semester(sem, program_batch, program)
 
 
+def fee_head_code(obj) -> str:
+    fee_head = getattr(obj, "fee_head", None)
+    return (getattr(fee_head, "code", None) or "").upper()
+
+
+def is_exemption_form_fee_charge(charge) -> bool:
+    """UGX 50k course-exemption application form fee — not programme tuition."""
+    return fee_head_code(charge) == "EXEMPTION_FORM"
+
+
 def is_exemption_adhoc_charge(charge) -> bool:
     """Course / form exemption fees — always visible on student balances."""
-    fee_head = getattr(charge, "fee_head", None)
-    code = (getattr(fee_head, "code", None) or "").upper()
-    return code in {"EXEMPTION_COURSE", "EXEMPTION_FORM"}
+    return fee_head_code(charge) in {"EXEMPTION_COURSE", "EXEMPTION_FORM"}
 
 
 def adhoc_charge_billing_reached(charge) -> bool:

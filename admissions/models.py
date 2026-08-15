@@ -541,6 +541,14 @@ class AdmittedStudent(models.Model):
         help_text="When registration_tuition_pct_met was last computed.",
     )
 
+    # Course exemption application draft (autosaved before the student submits).
+    exemption_form_draft = models.JSONField(
+        null=True,
+        blank=True,
+        help_text="In-progress Course Exemption form so staff can view/submit after the 50k fee is paid.",
+    )
+    exemption_form_draft_updated_at = models.DateTimeField(null=True, blank=True)
+
     # Notes
     admission_notes = models.TextField(blank=True, help_text="Notes about the admission")
     admitted_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='admitted_students')
