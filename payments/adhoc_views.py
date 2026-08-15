@@ -10,6 +10,7 @@ POST   /api/payments/admin/student/<student_id>/charges        — create a new 
 GET    /api/payments/admin/charge/<pk>                         — retrieve one charge
 PATCH  /api/payments/admin/charge/<pk>                         — update label/amount/notes
 POST   /api/payments/admin/charge/<pk>/waive                   — soft-cancel (is_waived=True)
+POST   /api/payments/admin/charge/<pk>/apply_credit            — settle from existing tuition/SchoolPay credit
 DELETE /api/payments/admin/charge/<pk>                         — hard delete (pending only)
 
 FeeHead list (for dropdown)
@@ -538,6 +539,10 @@ class StudentAdHocChargeDetailView(APIView):
         charge.delete()
         return Response({"detail": f"Charge '{label}' deleted."}, status=status.HTTP_204_NO_CONTENT)
 
+    def post(self, request, pk):
+        """Settle from existing tuition/SchoolPay credit (Bonafide Finance)."""
+        return _apply_existing_credit(request, self._get(pk))
+
 
 class StudentAdHocChargeWaiveView(APIView):
     """POST /api/payments/admin/charge/<pk>/waive"""
@@ -561,6 +566,99 @@ class StudentAdHocChargeWaiveView(APIView):
             "detail": f"Charge '{charge.label}' has been waived.",
             **_charge_to_dict(charge),
         })
+
+
+def _apply_existing_credit(request, charge: StudentTuitionPayment):
+    import uuid
+    from decimal import Decimal
+
+    from payments.credit_allocation import CREDIT_ALLOCATION_TX_PREFIX
+    from payments.student_payment_allocation import payment_credits_by_currency
+    from payments.utils.tuition_payment_status import mark_tuition_payment_completed
+
+    if charge.is_waived:
+        return Response({"detail": "Charge is waived."}, status=status.HTTP_400_BAD_REQUEST)
+    if charge.status == "completed":
+        return Response({"detail": "Charge is already paid."}, status=status.HTTP_400_BAD_REQUEST)
+    if charge.status != "pending":
+        return Response(
+            {"detail": "Only pending charges can be settled from existing credit."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    reason = str(request.data.get("reason") or "").strip()
+    if not reason:
+        return Response(
+            {"detail": "Reason is required (e.g. student already paid tuition)."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    amount = charge.amount or Decimal("0")
+    if amount <= 0:
+        return Response({"detail": "Charge amount must be positive."}, status=400)
+
+    student = charge.student
+    credits = payment_credits_by_currency(student)
+    ccy = (charge.currency or "UGX").strip().upper() or "UGX"
+    available = Decimal(str(credits.get(ccy, 0)))
+    if available < amount:
+        return Response(
+            {
+                "detail": (
+                    f"Not enough {ccy} on the student's SchoolPay/tuition ledger to move "
+                    f"{amount:,.0f}. Available credit: {available:,.0f}."
+                )
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    actor = request.user.get_full_name() or request.user.username
+    note_line = (
+        f"Applied from existing tuition/SchoolPay credit by {actor}. {reason}"
+    ).strip()
+    existing = (charge.notes or "").strip()
+    charge.notes = f"{existing}\n{note_line}".strip() if existing else note_line
+    charge.payment_method = "internal_credit"
+    fee_code = (getattr(charge.fee_head, "code", None) or "FEE").upper()
+    charge.transaction_id = (
+        f"{CREDIT_ALLOCATION_TX_PREFIX}{fee_code[:8]}-{charge.pk}-{uuid.uuid4().hex[:8]}"
+    )
+    charge.save(update_fields=["notes", "payment_method", "transaction_id", "updated_at"])
+    mark_tuition_payment_completed(charge)
+
+    try:
+        from admissions.exemption_form_fee_payment import (
+            is_exemption_form_fee_charge,
+            sync_exemption_form_fee_paid_at,
+        )
+
+        if is_exemption_form_fee_charge(charge):
+            sync_exemption_form_fee_paid_at(charge)
+    except Exception:
+        pass
+
+    charge.refresh_from_db()
+    return Response(
+        {
+            "detail": (
+                f"UGX {amount:,.0f} applied from existing tuition/SchoolPay credit to "
+                f"'{charge.label}'. Tuition coverage is reduced by the same amount."
+                if ccy == "UGX"
+                else f"{ccy} {amount} applied from existing credit to '{charge.label}'."
+            ),
+            **_charge_to_dict(charge),
+        }
+    )
+
+
+class StudentAdHocChargeApplyCreditView(APIView):
+    """POST /api/payments/admin/charge/<pk>/apply_credit"""
+
+    permission_classes = [StudentChargesPermission]
+
+    def post(self, request, pk):
+        charge = get_object_or_404(StudentTuitionPayment, pk=pk, source="ad_hoc")
+        return _apply_existing_credit(request, charge)
 
 
 def _semesters_for_split(student: AdmittedStudent, semester_ids: list[int]) -> list[Semester]:

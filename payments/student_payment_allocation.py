@@ -139,7 +139,15 @@ def payment_credits_by_currency(
             continue
         seen.add(key)
         ccy = _norm_ccy(p.currency)
-        out[ccy] += p.amount or Decimal("0")
+        amt = p.amount or Decimal("0")
+        # Internal reallocation: do not treat as a new receipt; earmark against the pool
+        # so tuition coverage drops by this amount and the other charge can be settled.
+        from payments.credit_allocation import is_credit_reallocation_payment
+
+        if is_credit_reallocation_payment(p):
+            out[ccy] -= amt
+            continue
+        out[ccy] += amt
 
     for row in tuition_ledger_queryset_for_student(student).filter(
         transaction_completion_status="Completed"

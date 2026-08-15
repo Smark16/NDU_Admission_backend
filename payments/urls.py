@@ -8,6 +8,7 @@ from .adhoc_views import (
     StudentAdHocChargeDetailView,
     StudentAdHocChargeListCreate,
     StudentAdHocChargeWaiveView,
+    StudentAdHocChargeApplyCreditView,
     StudentBulkChargesCreateView,
     StudentExemptionChargesCreateView,
 )
@@ -268,9 +269,24 @@ urlpatterns = [
         name='adhoc_charge_detail',
     ),
     path(
+        'admin/charge/<int:pk>/',
+        StudentAdHocChargeDetailView.as_view(),
+        name='adhoc_charge_detail_slash',
+    ),
+    path(
         'admin/charge/<int:pk>/waive',
         StudentAdHocChargeWaiveView.as_view(),
         name='adhoc_charge_waive',
+    ),
+    path(
+        'admin/charge/<int:pk>/apply_credit',
+        StudentAdHocChargeApplyCreditView.as_view(),
+        name='adhoc_charge_apply_credit',
+    ),
+    path(
+        'admin/charge/<int:pk>/apply_credit/',
+        StudentAdHocChargeApplyCreditView.as_view(),
+        name='adhoc_charge_apply_credit_slash',
     ),
 
     path('other_fee_schedule/clone', OtherFeeScheduleCloneView.as_view()),

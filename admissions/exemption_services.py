@@ -304,7 +304,12 @@ def form_fee_paid_for_charge(student: AdmittedStudent, charge: StudentTuitionPay
         return False
     tid = (charge.transaction_id or "").strip()
     notes = charge.notes or ""
-    return tid.startswith("EXF-") or "Exemption form fee STK" in notes
+    return (
+        tid.startswith("EXF-")
+        or tid.startswith("CREDIT-EXF-")
+        or "Exemption form fee STK" in notes
+        or "Applied from existing tuition" in notes
+    )
 
 
 def _ensure_form_fee_charge(student: AdmittedStudent, *, charged_by=None) -> StudentTuitionPayment:
