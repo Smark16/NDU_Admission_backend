@@ -339,6 +339,93 @@ def _semester_label_for_paid_at(paid_at, student: AdmittedStudent, windows: list
     return best
 
 
+def _is_internal_reallocation(payment: StudentTuitionPayment) -> bool:
+    from payments.credit_allocation import is_credit_reallocation_payment
+
+    method = (payment.payment_method or "").strip().lower()
+    return method == "internal_credit" or is_credit_reallocation_payment(payment)
+
+
+def _allocation_target_label(payment: StudentTuitionPayment) -> str:
+    return (
+        (payment.label or "").strip()
+        or (payment.fee_head.name if payment.fee_head_id else "")
+        or "another fee"
+    )
+
+
+def _apply_reallocation_notes_to_history(
+    student: AdmittedStudent, rows: list[dict[str, Any]]
+) -> None:
+    """
+    'Apply tuition to another fee' is not a second cash receipt.
+
+    Keep the original SchoolPay/bank row and mark it as allocated to the charge
+    (e.g. exemption form). Drop the Internal Credit duplicate.
+    """
+    reallocs = list(
+        StudentTuitionPayment.objects.filter(
+            student=student,
+            source="ad_hoc",
+            status="completed",
+            is_waived=False,
+        )
+        .select_related("fee_head")
+        .order_by("paid_at", "id")
+    )
+    used: set[int] = set()
+    for charge in reallocs:
+        if not _is_internal_reallocation(charge):
+            continue
+        amt = float(charge.amount or 0)
+        if amt <= 0:
+            continue
+        label = _allocation_target_label(charge)
+        best_i = None
+        best_score = None
+        charge_day = ""
+        if charge.paid_at:
+            charge_day = charge.paid_at.date().isoformat()
+        for i, row in enumerate(rows):
+            if i in used:
+                continue
+            if abs(float(row.get("amount") or 0) - amt) > 0.51:
+                continue
+            channel = (
+                (row.get("channel") or row.get("payment_method") or "")
+            ).strip().lower()
+            if "internal" in channel and "credit" in channel:
+                continue
+            row_day = (row.get("paid_at") or "")[:10]
+            score = 0
+            if row.get("receipt"):
+                score += 2
+            if row_day and charge_day and row_day == charge_day:
+                score += 3
+            elif row_day and charge_day:
+                score += 1
+            if best_score is None or score > best_score:
+                best_score = score
+                best_i = i
+        if best_i is None:
+            continue
+        used.add(best_i)
+        row = rows[best_i]
+        original = (
+            (row.get("description") or row.get("label") or row.get("fee_head") or "")
+        ).strip()
+        note = (
+            f"Allocated to {label} · {original}"
+            if original and original.lower() not in label.lower()
+            else f"Allocated to {label}"
+        )
+        row["allocated_to"] = label
+        row["is_allocation"] = True
+        row["description"] = note
+        row["label"] = note
+        row["fee_head"] = note
+
+
 def _payment_history_semester_label(
     payment: StudentTuitionPayment,
     student: AdmittedStudent,
@@ -677,6 +764,8 @@ def registration_card_payment_history(
         .select_related("fee_plan_rule__fee_head", "fee_plan_rule__semester", "fee_head", "semester")
         .order_by("-paid_at", "-created_at")[:80]
     ):
+        if _is_internal_reallocation(p):
+            continue
         paid_at = p.paid_at or p.created_at
         channel = (p.payment_method or "").replace("_", " ").strip() or "Portal"
         if p.source == "ad_hoc":
@@ -696,6 +785,8 @@ def registration_card_payment_history(
                 "semester": _payment_history_semester_label(p, student, windows),
             }
         )
+
+    _apply_reallocation_notes_to_history(student, rows)
 
     # Deduplicate by receipt+amount+date when SchoolPay also mirrored as portal row
     seen: set[str] = set()
@@ -753,6 +844,8 @@ def payment_status_dict(student: AdmittedStudent, request=None) -> dict:
         "semester",
         "charged_by",
     ).order_by("-created_at")[:100]:
+        if p.status == "completed" and _is_internal_reallocation(p):
+            continue
         if p.source == 'ad_hoc':
             fh = p.fee_head.name if p.fee_head_id else "Ad-hoc charge"
             lbl = p.label or fh
@@ -778,6 +871,7 @@ def payment_status_dict(student: AdmittedStudent, request=None) -> dict:
             }
         )
 
+    _apply_reallocation_notes_to_history(student, history)
     history.sort(key=lambda h: h.get("paid_at") or "", reverse=True)
 
     # Separate ad-hoc outstanding charges for the student's charges section. A pending
