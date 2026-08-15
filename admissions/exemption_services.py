@@ -538,6 +538,14 @@ def _form_fee_status_dict(
         }
 
     paid = form_fee_paid_for_charge(student, charge)
+    if not paid:
+        try:
+            build_finance_allocation(student)
+            charge.refresh_from_db()
+            paid = form_fee_paid_for_charge(student, charge)
+        except Exception:
+            pass
+
     paid_at = None
     if paid:
         paid_at = charge.paid_at
@@ -550,7 +558,6 @@ def _form_fee_status_dict(
 
     balance = Decimal("0") if paid else Decimal(str(charge.amount))
     if not paid:
-        # Informational only — unlock still requires charge.status == completed.
         try:
             alloc = build_finance_allocation(student)
             for line in alloc.demand_lines:
