@@ -417,21 +417,50 @@ def ensure_exemption_fee_heads() -> tuple[FeeHead, FeeHead]:
 
 def _open_form_fee_charge(student: AdmittedStudent) -> StudentTuitionPayment | None:
     form_head, _ = ensure_exemption_fee_heads()
-    return (
-        StudentTuitionPayment.objects.filter(
-            student=student,
-            source="ad_hoc",
-            fee_head=form_head,
-            is_waived=False,
-            status__in=("pending", "completed"),
-        )
-        .order_by("-created_at")
-        .first()
+    qs = StudentTuitionPayment.objects.filter(
+        student=student,
+        source="ad_hoc",
+        fee_head=form_head,
+        is_waived=False,
+        status__in=("pending", "completed"),
     )
+    completed = qs.filter(status="completed").order_by("-paid_at", "-created_at").first()
+    if completed:
+        extras = qs.filter(status="pending").exclude(pk=completed.pk)
+        if extras.exists():
+            extras.update(
+                status="cancelled",
+                notes=(
+                    "Cancelled: exemption form fee already paid on an earlier charge."
+                ),
+            )
+        return completed
+
+    pending = qs.filter(status="pending").order_by("-created_at").first()
+    if pending and (pending.payment_reference or "").strip():
+        try:
+            from payments.utils.tuition_payment_status import reconcile_pending_tuition_payment
+
+            reconcile_pending_tuition_payment(pending)
+            pending.refresh_from_db()
+        except Exception:
+            pass
+        if pending.status == "completed":
+            return pending
+    return pending
 
 
-def form_fee_paid_for_charge(student: AdmittedStudent, charge: StudentTuitionPayment) -> bool:
+def form_fee_paid_for_charge(student: AdmittedStudent, charge: StudentTuitionPayment | None) -> bool:
     """Unlock after any completed form-fee payment (STK, bank, or tuition allocation)."""
+    form_head, _ = ensure_exemption_fee_heads()
+    if StudentTuitionPayment.objects.filter(
+        student=student,
+        source="ad_hoc",
+        fee_head=form_head,
+        is_waived=False,
+        status="completed",
+    ).exists():
+        return True
     if charge is None or charge.is_waived:
         return False
     return charge.status == "completed"
