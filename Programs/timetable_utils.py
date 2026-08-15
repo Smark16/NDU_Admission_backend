@@ -8,6 +8,7 @@ from collections import defaultdict
 from django.db.models import Q
 
 from Programs.models import TimetableSession
+from Programs.section_lecturers import timetable_lecturer_prefetch
 
 
 DAY_LABELS = dict(TimetableSession.DAY_CHOICES)
@@ -160,7 +161,9 @@ def serialize_lecturer_brief(lec) -> dict:
 
 
 def serialize_session(session: TimetableSession) -> dict:
-    lecturers = [serialize_lecturer_brief(lec) for lec in session.course_unit.lecturers.all()]
+    from Programs.section_lecturers import lecturers_for_timetable_session
+
+    lecturers = lecturers_for_timetable_session(session)
     venue = session.venue
     cu = session.course_unit
     cat = cu.catalog_unit if cu and cu.catalog_unit_id else None
@@ -229,6 +232,9 @@ def serialize_session(session: TimetableSession) -> dict:
         "is_published": session.is_published,
         "is_active": session.is_active,
         "lecturers": lecturers,
+        "lecturer_names": ", ".join(
+            (lec.get("name") or "").strip() for lec in lecturers if (lec.get("name") or "").strip()
+        ),
     }
 
 
@@ -253,7 +259,7 @@ def _active_sessions_qs(exclude_pk: int | None = None):
             "venue__campus",
             "teaching_section",
         )
-        .prefetch_related("course_unit__lecturers")
+        .prefetch_related(*timetable_lecturer_prefetch())
     )
     if exclude_pk:
         qs = qs.exclude(pk=exclude_pk)
@@ -424,7 +430,7 @@ def sessions_for_semester(semester_id: int, *, published_only: bool = False) -> 
             "venue__campus",
             "teaching_section",
         )
-        .prefetch_related("course_unit__lecturers")
+        .prefetch_related(*timetable_lecturer_prefetch())
         .order_by("day_of_week", "start_time", "course_unit__code")
     )
     if published_only:

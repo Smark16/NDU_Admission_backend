@@ -1,8 +1,28 @@
 """Section-scoped lecturer assignment on course units."""
 from __future__ import annotations
 
-from django.db import transaction
+from django.db import connection, transaction
 from django.db.models import Q
+
+_SECTION_LECTURER_TABLE = "Programs_courseunitsectionlecturer"
+_section_lecturer_table_ready = False
+
+
+def section_lecturer_table_exists() -> bool:
+    """False until `migrate Programs` has created CourseUnitSectionLecturer."""
+    global _section_lecturer_table_ready
+    if _section_lecturer_table_ready:
+        return True
+    if _SECTION_LECTURER_TABLE in connection.introspection.table_names():
+        _section_lecturer_table_ready = True
+        return True
+    return False
+
+
+def timetable_lecturer_prefetch() -> tuple[str, ...]:
+    if section_lecturer_table_exists():
+        return ("course_unit__lecturers", "course_unit__section_lecturers__lecturer")
+    return ("course_unit__lecturers",)
 
 
 def sync_course_unit_lecturers_m2m(course_unit) -> None:
@@ -264,3 +284,49 @@ def user_teaches_timetable_session(user, session) -> bool:
 
     # Legacy M2M only
     return cu.lecturers.filter(pk=user.pk).exists()
+
+
+def lecturers_for_timetable_session(session) -> list:
+    """
+    Lecturers who teach this slot. Cohort-wide sessions list everyone assigned
+    on the unit (multiple lecturers). Section slots list ALL-scope lecturers
+    plus that section's lecturers.
+    """
+    from Programs.models import CourseUnitSectionLecturer
+    from Programs.timetable_utils import serialize_lecturer_brief
+
+    cu = session.course_unit
+    rows = []
+    if section_lecturer_table_exists():
+        cache = getattr(cu, "_prefetched_objects_cache", {}) or {}
+        if "section_lecturers" in cache:
+            rows = list(cu.section_lecturers.all())
+        else:
+            rows = list(
+                CourseUnitSectionLecturer.objects.filter(course_unit_id=cu.pk).select_related(
+                    "lecturer"
+                )
+            )
+
+    seen: dict[int, object] = {}
+    sid = getattr(session, "teaching_section_id", None)
+    if rows:
+        for row in rows:
+            lec = getattr(row, "lecturer", None)
+            if lec is None:
+                continue
+            if sid is None or row.teaching_section_id in (None, sid):
+                seen[row.lecturer_id] = lec
+    else:
+        for lec in cu.lecturers.all():
+            seen[lec.id] = lec
+
+    lecturers = list(seen.values())
+    lecturers.sort(
+        key=lambda lec: (
+            (getattr(lec, "last_name", None) or "").lower(),
+            (getattr(lec, "first_name", None) or "").lower(),
+            lec.id,
+        )
+    )
+    return [serialize_lecturer_brief(lec) for lec in lecturers]

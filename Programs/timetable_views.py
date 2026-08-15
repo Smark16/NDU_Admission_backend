@@ -15,6 +15,7 @@ from rest_framework.views import APIView
 
 from accounts.models import Campus
 from Programs.models import CourseUnit, RoomType, Semester, TeachingSection, TimetableSession, Venue
+from Programs.section_lecturers import timetable_lecturer_prefetch
 from Programs.permissions import ProgramSchedulingAPIPermission
 from admissions.faculty_scope import assert_semester_access, assert_timetable_session_access
 from Programs.teaching_sections import list_sections_for_batch
@@ -729,7 +730,7 @@ class SemesterTimetableView(APIView):
                             "venue__campus",
                             "teaching_section",
                         )
-                        .prefetch_related("course_unit__lecturers")
+                        .prefetch_related(*timetable_lecturer_prefetch())
                         .get(pk=session.pk)
                     )
                 except (TypeError, ValueError) as exc:
@@ -951,7 +952,7 @@ class SemesterTimetableBulkPublishView(APIView):
                 course_unit__is_active=True,
             )
             .select_related("course_unit", "course_unit__catalog_unit", "venue", "venue__campus")
-            .prefetch_related("course_unit__lecturers")
+            .prefetch_related(*timetable_lecturer_prefetch())
         )
 
         if action == "unpublish_all":
@@ -1145,7 +1146,7 @@ def _student_timetable_sessions(user, semester_id=None):
             "venue__campus",
             "teaching_section",
         )
-        .prefetch_related("course_unit__lecturers")
+        .prefetch_related(*timetable_lecturer_prefetch())
         .order_by("day_of_week", "start_time")
     )
 
@@ -1191,7 +1192,7 @@ def _lecturer_timetable_sessions(user, semester_id=None):
         qs = qs.filter(course_unit__semester_id=semester_id)
 
     sessions = list(
-        qs.prefetch_related("course_unit__lecturers", "course_unit__section_lecturers")
+        qs.prefetch_related(*timetable_lecturer_prefetch())
         .distinct()
         .order_by("day_of_week", "start_time")
     )
