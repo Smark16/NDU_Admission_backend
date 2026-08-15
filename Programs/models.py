@@ -1818,12 +1818,14 @@ class LectureAttendanceRecord(models.Model):
     SOURCE_ADMIN = "admin"
     SOURCE_PAPER = "paper"
     SOURCE_QR = "qr"
+    SOURCE_LMS = "lms"
     SOURCE_CHOICES = [
         (SOURCE_LECTURER, "Lecturer"),
         (SOURCE_STUDENT, "Student self-check-in"),
         (SOURCE_ADMIN, "Faculty / admin"),
         (SOURCE_PAPER, "Paper register"),
         (SOURCE_QR, "Attendance code"),
+        (SOURCE_LMS, "LMS / Moodle"),
     ]
 
     attendance_session = models.ForeignKey(

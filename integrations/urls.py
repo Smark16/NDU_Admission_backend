@@ -1,6 +1,6 @@
 from django.urls import path
 
-from . import admin_views, moodle_views
+from . import admin_views, moodle_attendance_views, moodle_views
 
 urlpatterns = [
     # Super Admin (JWT)
@@ -35,5 +35,25 @@ urlpatterns = [
         "moodle/course-units/<int:course_unit_id>/enrolled-students",
         moodle_views.MoodleEnrolledStudentsView.as_view(),
         name="moodle_enrolled_students",
+    ),
+    path(
+        "moodle/course-units/<int:course_unit_id>/attendance/sessions",
+        moodle_attendance_views.MoodleAttendanceSessionsView.as_view(),
+        name="moodle_attendance_sessions",
+    ),
+    path(
+        "moodle/attendance/sessions/<int:session_id>",
+        moodle_attendance_views.MoodleAttendanceSessionDetailView.as_view(),
+        name="moodle_attendance_session_detail",
+    ),
+    path(
+        "moodle/attendance/sessions/<int:session_id>/records",
+        moodle_attendance_views.MoodleAttendanceRecordsView.as_view(),
+        name="moodle_attendance_records",
+    ),
+    path(
+        "moodle/students/<str:reg_no>/attendance",
+        moodle_attendance_views.MoodleStudentAttendanceView.as_view(),
+        name="moodle_student_attendance",
     ),
 ]
