@@ -33,7 +33,7 @@ from .faculty_scope import (
     user_is_admissions_view_only,
 )
 from audit.utils import log_audit_event
-from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework.parsers import JSONParser, MultiPartParser, FormParser
 from django.utils import timezone
 from rest_framework.decorators import api_view, permission_classes
 from django.conf import settings
@@ -4600,6 +4600,7 @@ class DownloadAdmissionPDF(APIView):
 
 class StudentChangeRequestListCreate(APIView):
     permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def _get_admission(self, user):
         try:
