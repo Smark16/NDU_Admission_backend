@@ -40,7 +40,15 @@ def resolve_student_by_lookup(lookup: str) -> AdmittedStudent | None:
     return (
         AdmittedStudent.objects.filter(is_admitted=True)
         .filter(Q(reg_no__iexact=key) | Q(student_id__iexact=key))
-        .select_related("admitted_program", "admitted_campus", "student_user", "application")
+        .select_related(
+            "admitted_program",
+            "admitted_campus",
+            "student_user",
+            "application",
+            "intended_program_batch",
+            "programme_enrollment",
+            "programme_enrollment__program_batch",
+        )
         .first()
     )
 
@@ -69,7 +77,14 @@ def verify_student_credentials(username: str, password: str) -> tuple[User | Non
     if student is None:
         student = (
             AdmittedStudent.objects.filter(is_admitted=True, student_user=user)
-            .select_related("admitted_program", "admitted_campus", "application")
+            .select_related(
+                "admitted_program",
+                "admitted_campus",
+                "application",
+                "intended_program_batch",
+                "programme_enrollment",
+                "programme_enrollment__program_batch",
+            )
             .first()
         )
         if student is None:
@@ -78,9 +93,30 @@ def verify_student_credentials(username: str, password: str) -> tuple[User | Non
     return user, student
 
 
+def academic_batch_payload(student: AdmittedStudent) -> dict:
+    """Enrollment cohort first, then intended batch. Additive LMS fields only."""
+    from Programs.program_batch_resolution import format_program_batch_display
+
+    batch = None
+    try:
+        enrollment = student.programme_enrollment
+    except Exception:
+        enrollment = None
+    if enrollment is not None and enrollment.program_batch_id:
+        batch = enrollment.program_batch
+    if batch is None:
+        batch = getattr(student, "intended_program_batch", None)
+    if batch is None or not getattr(batch, "pk", None):
+        return {"academic_batch_id": None, "academic_batch": None}
+    return {
+        "academic_batch_id": batch.pk,
+        "academic_batch": format_program_batch_display(batch),
+    }
+
+
 def student_profile_payload(student: AdmittedStudent, user: User | None = None) -> dict:
     app = getattr(student, "application", None)
-    return {
+    payload = {
         "reg_no": student.reg_no or "",
         "student_id": student.student_id or "",
         "username": (user.username if user else "") or (student.reg_no or ""),
@@ -92,6 +128,8 @@ def student_profile_payload(student: AdmittedStudent, user: User | None = None) 
             getattr(student, "accounts_registration_cleared", False)
         ),
     }
+    payload.update(academic_batch_payload(student))
+    return payload
 
 
 def finance_status_for_student(student: AdmittedStudent) -> dict:
@@ -106,6 +144,7 @@ def finance_status_for_student(student: AdmittedStudent) -> dict:
             "total_required": 0,
             "display_currency": "UGX",
             "commitment_met": False,
+            "prepaid_credit": 0,
         }
 
     percent = Decimal(str(finance.get("percentage_paid") or 0))
@@ -120,12 +159,13 @@ def finance_status_for_student(student: AdmittedStudent) -> dict:
     else:
         status = "BLOCKED"
 
-    return {
+    payload = {
         "reg_no": student.reg_no or "",
         "student_id": student.student_id or "",
         "status": status,
         "percent_paid": float(percent),
         "balance": float(balance),
+        "prepaid_credit": float(finance.get("prepaid_credit") or 0),
         "total_paid": float(finance.get("total_paid") or 0),
         "total_required": float(finance.get("total_required") or 0),
         "display_currency": finance.get("display_currency") or "UGX",
@@ -135,6 +175,8 @@ def finance_status_for_student(student: AdmittedStudent) -> dict:
         "partial_min_percent": float(partial_min),
         "as_of": datetime.now(timezone.utc).isoformat(),
     }
+    payload.update(academic_batch_payload(student))
+    return payload
 
 
 def lecturer_payload(user) -> dict:

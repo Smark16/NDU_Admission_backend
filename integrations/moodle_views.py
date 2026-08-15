@@ -10,6 +10,7 @@ from Programs.models import CourseUnit, Semester, StudentCourseUnitEnrollment
 
 from .permissions import HasMoodleApiKey
 from .services import (
+    academic_batch_payload,
     finance_status_for_student,
     lecturer_payload,
     log_moodle_access,
@@ -78,6 +79,7 @@ class MoodleAuthVerifyView(APIView):
             {
                 "ok": True,
                 "student": student_profile_payload(student, user),
+                "finance_status": finance_status_for_student(student),
             }
         )
 
@@ -242,24 +244,30 @@ class MoodleEnrolledStudentsView(APIView):
                 status="enrolled",
                 registration_date__isnull=False,
             )
-            .select_related("student", "student__admitted_program")
+            .select_related(
+                "student",
+                "student__admitted_program",
+                "student__intended_program_batch",
+                "student__programme_enrollment",
+                "student__programme_enrollment__program_batch",
+            )
             .order_by("student__reg_no")
         )
         students = []
         for enr in enrollments:
             st = enr.student
-            students.append(
-                {
-                    "reg_no": st.reg_no or "",
-                    "student_id": st.student_id or "",
-                    "full_name": st.full_name or "",
-                    "programme": st.admitted_program.name if st.admitted_program_id else None,
-                    "registration_kind": enr.registration_kind,
-                    "registration_date": enr.registration_date.isoformat()
-                    if enr.registration_date
-                    else None,
-                }
-            )
+            row = {
+                "reg_no": st.reg_no or "",
+                "student_id": st.student_id or "",
+                "full_name": st.full_name or "",
+                "programme": st.admitted_program.name if st.admitted_program_id else None,
+                "registration_kind": enr.registration_kind,
+                "registration_date": enr.registration_date.isoformat()
+                if enr.registration_date
+                else None,
+            }
+            row.update(academic_batch_payload(st))
+            students.append(row)
         log_moodle_access(
             endpoint=endpoint,
             http_status=200,
