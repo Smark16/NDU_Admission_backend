@@ -9,12 +9,10 @@ import os
 import platform
 from datetime import date, timedelta
 from pathlib import Path
-from urllib.parse import quote
 
 import fitz
 
 from accounts.models import SystemSettings
-from accounts.portal_branding import get_erp_frontend_url
 
 from .models import IdCardPdfTemplate, StudentIdCard
 
@@ -155,25 +153,30 @@ def _passport_photo_path(card: StudentIdCard) -> str | None:
 
 def build_id_card_qr_payload(card: StudentIdCard) -> str:
     """
-    Staff-gated verify URL (same path as registration-card QR).
-    Details load only after university staff login — no PII in the QR itself.
+    Short paycode / student number only — dense URLs on a CR80 QR fail laptop cameras.
+    The scan desk accepts this value and still resolves the student.
     """
     st = card.admitted_student
     lookup = (st.student_id or st.reg_no or "").strip()
     if not lookup:
         lookup = str(st.pk)
-    base = get_erp_frontend_url().rstrip("/")
-    return f"{base}/verify-registration/{quote(lookup, safe='')}"
+    return lookup
 
 
 def _qr_png_bytes(payload: str) -> bytes | None:
     try:
         import qrcode
+        from qrcode.constants import ERROR_CORRECT_M
     except ImportError:
         logger.warning("qrcode package not installed; skipping ID card QR")
         return None
     try:
-        qr = qrcode.QRCode(version=None, box_size=6, border=1)
+        qr = qrcode.QRCode(
+            version=None,
+            error_correction=ERROR_CORRECT_M,
+            box_size=8,
+            border=3,
+        )
         qr.add_data(payload)
         qr.make(fit=True)
         img = qr.make_image(fill_color="black", back_color="white")
@@ -234,13 +237,29 @@ def fill_id_card_pdf_template(
         y = float(pos.get("y", 0))
         font_size = float(pos.get("font_size", 11))
         font_kwargs = _resolve_font(pos)
-        page.insert_text(
-            fitz.Point(x, y),
-            value,
-            fontsize=font_size,
-            color=(0, 0, 0),
-            **font_kwargs,
-        )
+        max_w = float(pos.get("width") or 0)
+        if max_w <= 0:
+            max_w = max(40.0, page.rect.width - x - 8)
+        # insert_text uses a baseline point and overflows long programmes;
+        # a box wraps / shrinks to the mapped width.
+        rect = fitz.Rect(x, max(0, y - font_size), x + max_w, y + font_size * 2.8)
+        try:
+            page.insert_textbox(
+                rect,
+                value,
+                fontsize=font_size,
+                color=(0, 0, 0),
+                align=fitz.TEXT_ALIGN_LEFT,
+                **font_kwargs,
+            )
+        except Exception:
+            page.insert_text(
+                fitz.Point(x, y),
+                value,
+                fontsize=font_size,
+                color=(0, 0, 0),
+                **font_kwargs,
+            )
 
     pdf_bytes = doc.write()
     doc.close()
@@ -285,11 +304,18 @@ def render_id_card_pdf(card: StudentIdCard) -> bytes | None:
     )
 
 
-def pdf_first_page_png_base64(pdf_bytes: bytes, *, scale: float = 2.0) -> str:
+def pdf_pages_png_base64(pdf_bytes: bytes, *, scale: float = 2.0) -> list[str]:
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     try:
-        page = doc[0]
-        pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale))
-        return base64.b64encode(pix.tobytes("png")).decode()
+        pages = []
+        for page in doc:
+            pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale))
+            pages.append(base64.b64encode(pix.tobytes("png")).decode())
+        return pages
     finally:
         doc.close()
+
+
+def pdf_first_page_png_base64(pdf_bytes: bytes, *, scale: float = 2.0) -> str:
+    pages = pdf_pages_png_base64(pdf_bytes, scale=scale)
+    return pages[0] if pages else ""

@@ -260,7 +260,7 @@ def _resolve_template_dict() -> dict | None:
 
 
 def _preview_payload(request, card: StudentIdCard) -> dict:
-    from .id_card_pdf_render import explain_pdf_render_blocker, pdf_first_page_png_base64, render_id_card_pdf
+    from .id_card_pdf_render import explain_pdf_render_blocker, pdf_pages_png_base64, render_id_card_pdf
 
     st = card.admitted_student
     app = st.application
@@ -309,8 +309,10 @@ def _preview_payload(request, card: StudentIdCard) -> dict:
     try:
         pdf_bytes = render_id_card_pdf(card)
         if pdf_bytes:
+            pages = pdf_pages_png_base64(pdf_bytes)
             payload["render_mode"] = "pdf_template"
-            payload["rendered_image"] = pdf_first_page_png_base64(pdf_bytes)
+            payload["rendered_image"] = pages[0] if pages else ""
+            payload["rendered_pages"] = pages
             payload["print_pdf_url"] = request.build_absolute_uri(
                 f"/api/admissions/id_cards/{card.pk}/print.pdf"
             )
@@ -643,6 +645,8 @@ class IdCardPrintPdfView(APIView):
             )
 
         filename = f"id-card-{card.card_number or card_id}.pdf"
+        if card.print_count is not None:
+            StudentIdCard.objects.filter(pk=card.pk).update(print_count=card.print_count + 1)
         response = HttpResponse(pdf_bytes, content_type="application/pdf")
         response["Content-Disposition"] = f'inline; filename="{filename}"'
         return response

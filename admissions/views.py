@@ -1472,6 +1472,7 @@ class ChangeApplicationProgramme(APIView):
                 staff=True,
                 campus_id=effective_campus_id,
                 grandfather_ids=grandfather_ids,
+                require_on_intake=False,
             )
             level_changed, new_level_name = sync_application_academic_level_from_programs(
                 application, program_ids
@@ -2706,7 +2707,7 @@ class ListFaculties(generics.ListAPIView):
 
     def get_queryset(self):
         return filter_faculties_for_user(
-            Faculty.objects.prefetch_related("campuses"),
+            Faculty.objects.prefetch_related("campuses", "departments"),
             self.request.user,
         )
 
@@ -2778,7 +2779,132 @@ class ChangeFacultyStatus(APIView):
             return Response(serializer.data, status=200)
         except Exception as e:
             return Response({"detail":str(e)}, status=400)
-        
+
+def _can_view_academic_departments(user) -> bool:
+    return bool(
+        getattr(user, "is_superuser", False)
+        or user.has_perm("admissions.view_faculty")
+        or user.has_perm("admissions.view_academicdepartment")
+    )
+
+
+def _can_edit_academic_departments(user) -> bool:
+    return bool(
+        getattr(user, "is_superuser", False)
+        or user.has_perm("admissions.add_faculty")
+        or user.has_perm("admissions.change_faculty")
+        or user.has_perm("admissions.add_academicdepartment")
+        or user.has_perm("admissions.change_academicdepartment")
+    )
+
+
+class ListAcademicDepartments(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if not _can_view_academic_departments(request.user):
+            return Response({"detail": "You do not have permission to view departments."}, status=403)
+        qs = AcademicDepartment.objects.select_related("faculty", "head_of_department").order_by(
+            "faculty__name", "sort_order", "name"
+        )
+        fac_ids = filter_faculties_for_user(Faculty.objects.all(), request.user).values_list("id", flat=True)
+        qs = qs.filter(faculty_id__in=fac_ids)
+        faculty = request.query_params.get("faculty")
+        if faculty:
+            qs = qs.filter(faculty_id=faculty)
+        return Response(AcademicDepartmentSerializer(qs, many=True).data)
+
+
+class ListAcademicDepartmentHeadCandidates(APIView):
+    """Staff / lecturers who can be assigned as Head of Department."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if not _can_view_academic_departments(request.user):
+            return Response({"detail": "You do not have permission to view departments."}, status=403)
+        from accounts.models import User
+        from admissions.hod_role_setup import HOD_GROUP
+
+        qs = (
+            User.objects.filter(is_active=True, is_student=False, is_applicant=False)
+            .filter(Q(is_staff=True) | Q(is_lecturer=True) | Q(groups__name=HOD_GROUP))
+            .distinct()
+            .order_by("first_name", "last_name", "email")
+        )
+        search = (request.query_params.get("search") or "").strip()
+        if search:
+            qs = qs.filter(
+                Q(first_name__icontains=search)
+                | Q(last_name__icontains=search)
+                | Q(email__icontains=search)
+                | Q(username__icontains=search)
+                | Q(staff_id__icontains=search)
+            )
+        qs = qs[:80]
+        return Response(
+            [
+                {
+                    "id": u.id,
+                    "first_name": u.first_name,
+                    "last_name": u.last_name,
+                    "email": u.email,
+                    "staff_id": u.staff_id,
+                    "username": u.username,
+                }
+                for u in qs
+            ]
+        )
+
+
+class CreateAcademicDepartment(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        if not _can_edit_academic_departments(request.user):
+            return Response({"detail": "You do not have permission to create departments."}, status=403)
+        assert_admissions_modify_access(request.user)
+        ser = AcademicDepartmentSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        ser.save()
+        return Response(ser.data, status=201)
+
+
+class UpdateAcademicDepartment(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def put(self, request, pk):
+        return self._save(request, pk)
+
+    def patch(self, request, pk):
+        return self._save(request, pk)
+
+    def _save(self, request, pk):
+        if not _can_edit_academic_departments(request.user):
+            return Response({"detail": "You do not have permission to edit departments."}, status=403)
+        assert_admissions_modify_access(request.user)
+        dept = get_object_or_404(AcademicDepartment, pk=pk)
+        ser = AcademicDepartmentSerializer(dept, data=request.data, partial=True)
+        ser.is_valid(raise_exception=True)
+        ser.save()
+        return Response(ser.data)
+
+
+class DeleteAcademicDepartment(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, pk):
+        if not (
+            getattr(request.user, "is_superuser", False)
+            or request.user.has_perm("admissions.delete_faculty")
+            or request.user.has_perm("admissions.delete_academicdepartment")
+        ):
+            return Response({"detail": "You do not have permission to delete departments."}, status=403)
+        assert_admissions_modify_access(request.user)
+        dept = get_object_or_404(AcademicDepartment, pk=pk)
+        dept.delete()
+        return Response(status=204)
+
 # ===========================================================Admissions=======================================================
 
 class ListProgramBatchOptionsForAdmission(APIView):

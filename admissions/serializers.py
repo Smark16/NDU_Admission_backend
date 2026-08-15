@@ -347,14 +347,64 @@ class DocumentSerializer(serializers.ModelSerializer):
 
 # ========================================faculty========================================== 
 # list faculty serializer
+class AcademicDepartmentSerializer(serializers.ModelSerializer):
+    head_of_department_name = serializers.SerializerMethodField()
+    head_of_department_email = serializers.SerializerMethodField()
+
+    class Meta:
+        model = AcademicDepartment
+        fields = [
+            "id",
+            "faculty",
+            "name",
+            "code",
+            "is_active",
+            "sort_order",
+            "head_of_department",
+            "head_of_department_name",
+            "head_of_department_email",
+        ]
+        extra_kwargs = {
+            "head_of_department": {"allow_null": True, "required": False},
+        }
+
+    def get_head_of_department_name(self, obj):
+        user = obj.head_of_department
+        if not user:
+            return None
+        name = f"{user.first_name} {user.last_name}".strip()
+        return name or user.username
+
+    def get_head_of_department_email(self, obj):
+        user = obj.head_of_department
+        return user.email if user else None
+
+    def create(self, validated_data):
+        head = validated_data.pop("head_of_department", None)
+        dept = super().create(validated_data)
+        if head:
+            dept.assign_head(head)
+        return dept
+
+    def update(self, instance, validated_data):
+        if "head_of_department" in validated_data:
+            head = validated_data.pop("head_of_department")
+            instance = super().update(instance, validated_data)
+            instance.assign_head(head)
+            return instance
+        return super().update(instance, validated_data)
+
+
 class FacultySerializer(serializers.ModelSerializer):
+    departments = AcademicDepartmentSerializer(many=True, read_only=True)
+
     class Meta:
         model = Faculty
-        fields = '__all__'
+        fields = "__all__"
 
     def to_representation(self, instance):
         response = super().to_representation(instance)
-        response['campuses'] = CampusSerializer(instance.campuses.all(), many=True).data
+        response["campuses"] = CampusSerializer(instance.campuses.all(), many=True).data
         return response
     
 # admissions

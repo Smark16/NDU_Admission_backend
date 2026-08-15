@@ -162,21 +162,48 @@ def validate_staff_direct_entry_program_selection(
     campus_id=None,
     level_id=None,
     grandfather_ids: set[int] | None = None,
+    require_on_intake: bool = True,
 ) -> list[str]:
-    """Return errors when programme ids are not on the intake for direct entry."""
+    """Return errors when programme ids are not allowed for staff selection.
+
+    Direct entry keeps ``require_on_intake=True`` (must be on the intake).
+    Change of course on an existing application uses ``require_on_intake=False``
+    so staff can move a student to another active programme at the campus.
+    """
     if not program_ids:
         return ["Select at least one programme."]
-    if batch is None:
-        return ["No admission intake is configured."]
 
     grandfather = set(grandfather_ids or ())
-    selectable = set(
-        staff_direct_entry_programs_qs(
-            batch,
-            campus_id=campus_id,
-            level_id=level_id,
-        ).values_list("id", flat=True)
-    )
+    if require_on_intake:
+        if batch is None:
+            return ["No admission intake is configured."]
+        selectable = set(
+            staff_direct_entry_programs_qs(
+                batch,
+                campus_id=campus_id,
+                level_id=level_id,
+            ).values_list("id", flat=True)
+        )
+        msg_one = (
+            "{name} is not offered on this intake for the selected campus and academic level."
+        )
+        msg_many = (
+            "The following programmes are not on this intake for the selected campus/level: {preview}{suffix}."
+        )
+    else:
+        qs = Program.objects.filter(is_active=True)
+        if campus_id:
+            from django.db.models import Count, Q
+
+            qs = qs.annotate(_campus_n=Count("campuses")).filter(
+                Q(campuses__id=campus_id) | Q(_campus_n=0)
+            )
+        selectable = set(qs.values_list("id", flat=True).distinct())
+        msg_one = "{name} is not offered at the selected campus (or is inactive)."
+        msg_many = (
+            "The following programmes are not offered at the selected campus: {preview}{suffix}."
+        )
+
     blocked = [
         pid for pid in program_ids if pid not in selectable and pid not in grandfather
     ]
@@ -189,11 +216,7 @@ def validate_staff_direct_entry_program_selection(
         .values_list("name", flat=True)
     )
     if len(names) == 1:
-        return [
-            f"{names[0]} is not offered on this intake for the selected campus and academic level."
-        ]
+        return [msg_one.format(name=names[0])]
     preview = ", ".join(names[:5])
     suffix = f" (+{len(names) - 5} more)" if len(names) > 5 else ""
-    return [
-        f"The following programmes are not on this intake for the selected campus/level: {preview}{suffix}."
-    ]
+    return [msg_many.format(preview=preview, suffix=suffix)]

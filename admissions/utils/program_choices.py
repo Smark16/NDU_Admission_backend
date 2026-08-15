@@ -51,6 +51,7 @@ def sync_application_program_choices(
     staff: bool = False,
     campus_id=None,
     grandfather_ids: set[int] | None = None,
+    require_on_intake: bool = True,
 ) -> None:
     """Replace ordered programme choices and keep legacy M2M in sync."""
     if not program_ids:
@@ -63,6 +64,7 @@ def sync_application_program_choices(
             campus_id=campus_id,
             level_id=None,
             grandfather_ids=grandfather_ids,
+            require_on_intake=require_on_intake,
         )
     else:
         assert_applicant_may_select_programs(application, program_ids)
@@ -214,8 +216,9 @@ def assert_staff_may_select_programs_for_direct_entry(
     campus_id=None,
     level_id=_UNSET,
     grandfather_ids: set[int] | None = None,
+    require_on_intake: bool = True,
 ) -> None:
-    """Raise ValueError when programme ids are invalid for staff direct entry."""
+    """Raise ValueError when programme ids are invalid for staff selection."""
     from admissions.intake_program_eligibility import validate_staff_direct_entry_program_selection
 
     batch = getattr(application, "batch", None)
@@ -235,6 +238,7 @@ def assert_staff_may_select_programs_for_direct_entry(
         campus_id=effective_campus,
         level_id=effective_level,
         grandfather_ids=grandfather_ids,
+        require_on_intake=require_on_intake,
     )
     if messages:
         raise ValueError(messages[0])

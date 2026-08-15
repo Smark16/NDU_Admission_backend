@@ -9,6 +9,13 @@ class FacultyAdmin(admin.ModelAdmin):
     list_display = ['name', 'code', 'is_active']
     search_fields = ['name', 'code']
 
+
+@admin.register(AcademicDepartment)
+class AcademicDepartmentAdmin(admin.ModelAdmin):
+    list_display = ["name", "code", "faculty", "head_of_department", "is_active", "sort_order"]
+    list_filter = ["faculty", "is_active"]
+    search_fields = ["name", "code", "faculty__name"]
+
 @admin.register(AdmittedStudent)
 class AdmittedStudentAdmin(admin.ModelAdmin):
     list_display = [

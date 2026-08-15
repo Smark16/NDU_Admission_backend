@@ -391,7 +391,7 @@ def verify_registration_card_public(request, student_id: str):
 
     student = (
         AdmittedStudent.objects.filter(
-            Q(student_id=lookup) | Q(reg_no=lookup),
+            Q(student_id=lookup) | Q(reg_no=lookup) | Q(schoolpay_code=lookup),
             is_admitted=True,
         )
         .select_related("admitted_program", "admitted_campus", "application")

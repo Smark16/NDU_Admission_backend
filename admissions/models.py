@@ -24,6 +24,55 @@ class Faculty(models.Model):
     def __str__(self):
         return f"{self.name} ({self.code})"
 
+
+class AcademicDepartment(models.Model):
+    """Teaching department under a faculty (official Ndejje academic structure)."""
+
+    faculty = models.ForeignKey(
+        Faculty,
+        on_delete=models.CASCADE,
+        related_name="departments",
+    )
+    name = models.CharField(max_length=200)
+    code = models.CharField(max_length=40)
+    head_of_department = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="headed_academic_departments",
+    )
+    is_active = models.BooleanField(default=True)
+    sort_order = models.PositiveSmallIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def assign_head(self, user):
+        """Set HOD on this department, grant HOD group, and attach the faculty."""
+        from django.contrib.auth.models import Group
+        from admissions.hod_role_setup import HOD_GROUP
+
+        self.head_of_department = user
+        self.save(update_fields=["head_of_department", "updated_at"])
+        if not user:
+            return
+        user.faculties.add(self.faculty)
+        group, _ = Group.objects.get_or_create(name=HOD_GROUP)
+        user.groups.add(group)
+        if not user.is_staff:
+            user.is_staff = True
+            user.save(update_fields=["is_staff"])
+
+    class Meta:
+        ordering = ["faculty__name", "sort_order", "name"]
+        unique_together = [("faculty", "name"), ("faculty", "code")]
+        verbose_name = "Academic department"
+        verbose_name_plural = "Academic departments"
+
+    def __str__(self):
+        return f"{self.faculty.code} / {self.name}"
+
+
 class AcademicLevel(models.Model):
     name = models.CharField(max_length=50, unique=True)
     created_at = models.DateField(auto_now_add=True)

@@ -148,6 +148,11 @@ urlpatterns = [
     path('edit_faculties/<int:pk>', views.UpdateFaculty.as_view()),
     path('delete_faculty/<int:pk>', views.DeleteFaculty.as_view()),
     path('change_status/<int:pk>', views.ChangeFacultyStatus.as_view()),
+    path('academic_departments', views.ListAcademicDepartments.as_view()),
+    path('academic_departments/head_candidates', views.ListAcademicDepartmentHeadCandidates.as_view()),
+    path('academic_departments/create', views.CreateAcademicDepartment.as_view()),
+    path('academic_departments/<int:pk>', views.UpdateAcademicDepartment.as_view()),
+    path('academic_departments/<int:pk>/delete', views.DeleteAcademicDepartment.as_view()),
     
     # Admission Management URLs
     path('create_admissions', views.AdmitStudent.as_view()),
