@@ -6,6 +6,7 @@ from decimal import Decimal
 
 from django.conf import settings
 from django.db import OperationalError, transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from admissions.models import AdmittedStudent, AdmissionChangeRequest
@@ -616,7 +617,8 @@ def exemption_form_fee_report(status_filter: str | None = None) -> list[dict]:
     """
     Accounts follow-up report: every exemption-form-fee charge ever raised, newest first.
 
-    status_filter: 'pending' (unpaid), 'completed' (paid), or None for all.
+    status_filter: 'pending' (unpaid), 'completed' (paid),
+    'paid_unsubmitted' (paid, no exemption request yet), or None for all.
     """
     form_head, _ = ensure_exemption_fee_heads()
     qs = (
@@ -631,23 +633,37 @@ def exemption_form_fee_report(status_filter: str | None = None) -> list[dict]:
         qs = qs.filter(status="pending", is_waived=False)
     elif status_filter == "completed":
         qs = qs.filter(status="completed")
+    elif status_filter == "paid_unsubmitted":
+        qs = qs.filter(status="completed", is_waived=False)
 
-    charge_ids = [c.id for c in qs]
-    requests_by_charge = {
-        r.form_fee_charge_id: r
-        for r in AdmissionChangeRequest.objects.filter(
-            change_type="exemption",
-            form_fee_charge_id__in=charge_ids,
+    charges = list(qs)
+    charge_ids = [c.id for c in charges]
+    student_pks = [c.student_id for c in charges if c.student_id]
+
+    requests_by_charge = {}
+    latest_req_by_student: dict[int, AdmissionChangeRequest] = {}
+    if charge_ids or student_pks:
+        req_filter = Q()
+        if charge_ids:
+            req_filter |= Q(form_fee_charge_id__in=charge_ids)
+        if student_pks:
+            req_filter |= Q(admitted_student_id__in=student_pks)
+        req_qs = AdmissionChangeRequest.objects.filter(change_type="exemption").filter(req_filter).order_by(
+            "created_at"
         )
-        .only("id", "form_fee_charge_id", "status", "created_at")
-        .order_by("created_at")
-    }
+        for r in req_qs:
+            if r.form_fee_charge_id:
+                requests_by_charge[r.form_fee_charge_id] = r
+            if r.admitted_student_id:
+                latest_req_by_student[r.admitted_student_id] = r
 
     now = timezone.now()
     rows = []
-    for charge in qs:
+    for charge in charges:
         student = charge.student
         req = requests_by_charge.get(charge.id)
+        if req is None and student:
+            req = latest_req_by_student.get(student.pk)
         rows.append(
             {
                 "charge_id": charge.id,
@@ -701,6 +717,14 @@ def exemption_form_fee_report(status_filter: str | None = None) -> list[dict]:
             and row.get("status") == "completed"
             and not row.get("change_request_id")
         )
+    if status_filter == "paid_unsubmitted":
+        rows = [
+            r
+            for r in rows
+            if r.get("status") == "completed"
+            and not r.get("is_waived")
+            and not r.get("change_request_id")
+        ]
     return rows
 
 

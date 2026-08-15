@@ -4978,16 +4978,34 @@ class ExemptionFormFeeReportView(APIView):
             )
 
         status_filter = request.query_params.get("status")
-        if status_filter not in ("pending", "completed", None, ""):
+        if status_filter not in ("pending", "completed", "paid_unsubmitted", None, ""):
             return Response(
-                {"detail": "status must be 'pending' or 'completed'."}, status=400
+                {"detail": "status must be 'pending', 'completed', or 'paid_unsubmitted'."},
+                status=400,
             )
         rows = exemption_form_fee_report(status_filter or None)
+        if status_filter == "paid_unsubmitted":
+            paid_unsubmitted_count = len(rows)
+            pending_count = 0
+        else:
+            pending_count = sum(
+                1 for r in rows if r["status"] == "pending" and not r["is_waived"]
+            )
+            paid_unsubmitted_count = sum(
+                1
+                for r in rows
+                if r["status"] == "completed"
+                and not r.get("is_waived")
+                and not r.get("change_request_id")
+            )
+            if status_filter == "pending":
+                paid_unsubmitted_count = len(exemption_form_fee_report("paid_unsubmitted"))
         return Response(
             {
                 "results": rows,
                 "total": len(rows),
-                "pending_count": sum(1 for r in rows if r["status"] == "pending" and not r["is_waived"]),
+                "pending_count": pending_count,
+                "paid_unsubmitted_count": paid_unsubmitted_count,
             }
         )
 
