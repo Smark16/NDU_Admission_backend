@@ -1,12 +1,14 @@
 """
-Re-open EXEMPTION_FORM bills that were marked completed without a SchoolPay
-phone-prompt (payment_reference). Those were often auto-completed via general
-ledger allocation and blocked the MoMo pay UI.
+Re-open EXEMPTION_FORM bills that were auto-completed from SchoolPay/tuition
+credit (no MoMo payment_reference) and never submitted to HOD.
+
+50k goes back onto the pending form-fee bill; SchoolPay credit returns to tuition
+on the next finance load.
 
 Usage:
-  python manage.py reopen_exemption_form_fees
-  python manage.py reopen_exemption_form_fees --reg-no 26/2/328/W/1331
   python manage.py reopen_exemption_form_fees --dry-run
+  python manage.py reopen_exemption_form_fees
+  python manage.py reopen_exemption_form_fees --include-submitted
 """
 from __future__ import annotations
 
@@ -19,11 +21,19 @@ from payments.models import FeeHead, StudentTuitionPayment
 
 
 class Command(BaseCommand):
-    help = "Reopen exemption form-fee charges that were completed without STK payment_reference."
+    help = (
+        "Reopen auto-settled exemption form-fee charges (no SchoolPay prompt). "
+        "Default: only students who never submitted to HOD."
+    )
 
     def add_arguments(self, parser):
         parser.add_argument("--reg-no", type=str, default="", help="Limit to one student reg no")
         parser.add_argument("--dry-run", action="store_true")
+        parser.add_argument(
+            "--include-submitted",
+            action="store_true",
+            help="Also reopen fees for students who already submitted to HOD.",
+        )
 
     def handle(self, *args, **options):
         fh = FeeHead.objects.filter(code=EXEMPTION_FORM_FEE_CODE).first()
@@ -36,6 +46,7 @@ class Command(BaseCommand):
             fee_head=fh,
             status="completed",
         ).filter(Q(payment_reference="") | Q(payment_reference__isnull=True))
+        qs = qs.exclude(payment_method="mobile_money")
 
         reg = (options.get("reg_no") or "").strip()
         if reg:
@@ -45,14 +56,22 @@ class Command(BaseCommand):
                 return
             qs = qs.filter(student=student)
 
+        if not options.get("include_submitted"):
+            submitted_ids = set(
+                AdmissionChangeRequest.objects.filter(change_type="exemption").values_list(
+                    "admitted_student_id", flat=True
+                )
+            )
+            qs = qs.exclude(student_id__in=submitted_ids)
+
         rows = list(
             qs.select_related("student").values_list(
-                "id", "student__reg_no", "student__full_name", "amount"
+                "id", "student__reg_no", "student__full_name", "amount", "payment_method"
             )
         )
         self.stdout.write(f"Matches: {len(rows)}")
-        for rid, rno, name, amt in rows:
-            self.stdout.write(f"  charge={rid} {rno} {name} {amt}")
+        for rid, rno, name, amt, method in rows:
+            self.stdout.write(f"  charge={rid} {rno} {name} {amt} method={method or '-'}")
 
         if options["dry_run"]:
             self.stdout.write("Dry run — no changes.")
@@ -71,3 +90,7 @@ class Command(BaseCommand):
             form_fee_charge_id__in=ids,
         ).update(form_fee_paid_at=None)
         self.stdout.write(self.style.SUCCESS(f"Reopened {n} exemption form-fee charge(s)."))
+        self.stdout.write(
+            "SchoolPay credit will sit on tuition again the next time finance loads. "
+            "Students must pay the 50k with Submit and Pay on Course Exemption."
+        )

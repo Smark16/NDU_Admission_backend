@@ -644,11 +644,13 @@ def _allocate_pools_to_lines(
             if not ln.extra.get("prior_period_settled") and _line_is_billable(ln)
         ]
 
-    form_first = [ln for ln in ordered if ln.extra.get("exclude_from_tuition")]
-    rest = [ln for ln in ordered if not ln.extra.get("exclude_from_tuition")]
-    ordered = form_first + rest
-
+    # Exemption form fee is MoMo-prompt only. Do not spend SchoolPay / tuition credit on it.
     for line in ordered:
+        if line.extra.get("exclude_from_tuition"):
+            line.paid_amount = Decimal("0")
+            line.balance = line.amount
+            line.status = "due"
+            continue
         need = line.amount
         # When open allocation runs after prior, keep any amount already applied.
         already = line.paid_amount if target == "open" else Decimal("0")
@@ -668,28 +670,8 @@ def _allocate_pools_to_lines(
 
 
 def _persist_settled_exemption_form_charges(lines: list[DemandLine]) -> None:
-    """Mark covered exemption form-fee bills completed so Accounts sees the payment."""
-    from admissions.exemption_form_fee_payment import sync_exemption_form_fee_paid_at
-
-    for line in lines:
-        if not line.extra.get("exclude_from_tuition") or not line.charge_id:
-            continue
-        if line.balance > 0:
-            continue
-        charge = StudentTuitionPayment.objects.filter(pk=line.charge_id, status="pending").first()
-        if charge is None:
-            continue
-        charge.status = "completed"
-        charge.paid_at = timezone.now()
-        note = "Settled from SchoolPay / existing payment credit against the exemption form fee."
-        existing = (charge.notes or "").strip()
-        charge.notes = f"{existing}\n{note}".strip() if existing else note
-        charge.save(update_fields=["status", "paid_at", "notes", "updated_at"])
-        line.extra["charge_status"] = "completed"
-        try:
-            sync_exemption_form_fee_paid_at(charge)
-        except Exception:
-            pass
+    """No-op: form fee is completed only by the exemption MoMo prompt / webhook."""
+    return
 
 
 def build_finance_allocation(student: AdmittedStudent) -> FinanceAllocation:
