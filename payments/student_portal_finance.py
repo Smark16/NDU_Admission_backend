@@ -16,7 +16,11 @@ from payments.student_payment_allocation import (
     _line_is_billable,
     build_finance_allocation,
 )
-from payments.utils.tuition_ledger_linking import tuition_ledger_queryset_for_student
+from payments.utils.tuition_ledger_linking import (
+    completed_ledger_status_q,
+    relink_tuition_ledgers_for_student,
+    tuition_ledger_queryset_for_student,
+)
 
 
 def get_admitted_student_for_user(user):
@@ -730,7 +734,7 @@ def registration_card_payment_history(
 
     for row in (
         tuition_ledger_queryset_for_student(student)
-        .filter(transaction_completion_status="Completed")
+        .filter(completed_ledger_status_q())
         .order_by("-payment_date_time")[:80]
     ):
         paid_at = row.payment_date_time
@@ -813,7 +817,7 @@ def payment_status_dict(student: AdmittedStudent, request=None) -> dict:
     windows = _semester_windows_for_student(student)
     history = []
     for row in tuition_ledger_queryset_for_student(student).filter(
-        transaction_completion_status="Completed"
+        completed_ledger_status_q()
     ).order_by("-payment_date_time")[:100]:
         paid_at = row.payment_date_time
         history.append(

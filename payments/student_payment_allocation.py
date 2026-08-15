@@ -35,7 +35,11 @@ from payments.billing_visibility import (
     is_exemption_form_fee_charge,
 )
 from payments.student_fee_pricing import effective_amount_currency, is_international_student
-from payments.utils.tuition_ledger_linking import tuition_ledger_queryset_for_student
+from payments.utils.tuition_ledger_linking import (
+    completed_ledger_status_q,
+    relink_tuition_ledgers_for_student,
+    tuition_ledger_queryset_for_student,
+)
 
 COMMITMENT_FEE_THRESHOLD = Decimal("150000")
 
@@ -155,7 +159,7 @@ def payment_credits_by_currency(
         out[ccy] += amt
 
     for row in tuition_ledger_queryset_for_student(student).filter(
-        transaction_completion_status="Completed"
+        completed_ledger_status_q()
     ):
         paid_d = _as_date(row.payment_date_time)
         if not _in_window(paid_d):
@@ -689,6 +693,10 @@ def _persist_settled_exemption_form_charges(lines: list[DemandLine]) -> None:
 
 
 def build_finance_allocation(student: AdmittedStudent) -> FinanceAllocation:
+    try:
+        relink_tuition_ledgers_for_student(student)
+    except Exception:
+        pass
     international = is_international_student(student)
     credits_all = payment_credits_by_currency(student)
     lines = _build_demand_lines(student, international)

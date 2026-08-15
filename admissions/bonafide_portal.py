@@ -146,7 +146,7 @@ def build_bonafide_portal_snapshot(student: AdmittedStudent, request=None) -> di
         history = _safe(
             "payment_history",
             errors,
-            lambda: registration_card_payment_history(student, limit=25),
+            lambda: registration_card_payment_history(student, limit=80),
             [],
         )
     else:

@@ -12,6 +12,10 @@ from payments.models import TuitionLedger
 ADMISSION_FEE_AMOUNT = Decimal("150000")
 
 
+def completed_ledger_status_q() -> Q:
+    return Q(transaction_completion_status__iexact="completed")
+
+
 def wallet_payment_codes_for_student(student: AdmittedStudent) -> set[str]:
     """SchoolPay wallet identifiers only (reg. no. may change)."""
     codes: set[str] = set()
@@ -26,10 +30,10 @@ def completed_ledger_total_ugx(codes: set[str]) -> Decimal:
     if not codes:
         return Decimal("0")
     total = Decimal("0")
-    for row in TuitionLedger.objects.filter(
-        student_payment_code__in=codes,
-        transaction_completion_status="Completed",
-    ).only("amount"):
+    q = Q()
+    for code in codes:
+        q |= Q(student_payment_code__iexact=code)
+    for row in TuitionLedger.objects.filter(q).filter(completed_ledger_status_q()).only("amount"):
         total += row.amount or Decimal("0")
     return total
 
@@ -80,7 +84,24 @@ def payment_codes_for_student(student: AdmittedStudent) -> set[str]:
         value = (raw or "").strip()
         if value:
             codes.add(value)
+            compact = value.replace(" ", "").replace("/", "")
+            if compact and compact != value:
+                codes.add(compact)
     return codes
+
+
+def tuition_ledger_queryset_for_student(student: AdmittedStudent):
+    """Ledger rows that belong to this student (linked or by payment code)."""
+    codes = payment_codes_for_student(student)
+    q = Q(student=student)
+    for code in codes:
+        q |= Q(student_payment_code__iexact=code)
+    reg = (student.reg_no or "").strip()
+    if reg:
+        q |= Q(student_registration_number__iexact=reg)
+    if getattr(student, "student_user_id", None):
+        q |= Q(user_id=student.student_user_id)
+    return TuitionLedger.objects.filter(q)
 
 
 def find_admitted_student_by_payment_code(code: str) -> AdmittedStudent | None:
@@ -97,16 +118,6 @@ def find_admitted_student_by_payment_code(code: str) -> AdmittedStudent | None:
         .select_related("student_user", "application")
         .order_by("-updated_at")
         .first()
-    )
-
-
-def tuition_ledger_queryset_for_student(student: AdmittedStudent):
-    """Ledger rows that belong to this student (linked or by payment code)."""
-    codes = payment_codes_for_student(student)
-    if not codes:
-        return TuitionLedger.objects.filter(student=student)
-    return TuitionLedger.objects.filter(
-        Q(student=student) | Q(student_payment_code__in=codes)
     )
 
 
@@ -167,8 +178,8 @@ def relink_tuition_ledgers_for_student(student: AdmittedStudent) -> int:
     codes = payment_codes_for_student(student)
     reg = (student.reg_no or "").strip()
     match = Q()
-    if codes:
-        match |= Q(student_payment_code__in=codes)
+    for code in codes:
+        match |= Q(student_payment_code__iexact=code)
     if reg:
         # Orphan rows often keep the reg no even when student_id/code never matched.
         match |= Q(student_registration_number__iexact=reg)
@@ -219,9 +230,7 @@ def sync_admission_fee_paid_from_ledger(student: AdmittedStudent) -> bool:
         return False
 
     total = Decimal("0")
-    for row in tuition_ledger_queryset_for_student(student).filter(
-        transaction_completion_status="Completed"
-    ):
+    for row in tuition_ledger_queryset_for_student(student).filter(completed_ledger_status_q()):
         total += row.amount or Decimal("0")
         if total >= ADMISSION_FEE_AMOUNT:
             student.admission_fee_paid = True
