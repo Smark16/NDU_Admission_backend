@@ -292,21 +292,21 @@ def _open_form_fee_charge(student: AdmittedStudent) -> StudentTuitionPayment | N
 
 
 def form_fee_paid_for_charge(student: AdmittedStudent, charge: StudentTuitionPayment) -> bool:
-    """
-    Unlock only after this portal sent a SchoolPay phone prompt (STK).
-
-    A random payment_reference on the bill is not enough — tuition / ledger
-    sync can copy SchoolPay refs without the student paying the form fee.
-    """
+    """Unlock after STK payment or staff applying existing tuition/SchoolPay credit."""
     if charge.is_waived:
         return False
     if charge.status != "completed":
         return False
+    from payments.credit_allocation import is_credit_reallocation_payment
+
     tid = (charge.transaction_id or "").strip()
     notes = charge.notes or ""
+    method = (charge.payment_method or "").strip().lower()
     return (
         tid.startswith("EXF-")
-        or tid.startswith("CREDIT-EXF-")
+        or tid.startswith("CREDIT-")
+        or method == "internal_credit"
+        or is_credit_reallocation_payment(charge)
         or "Exemption form fee STK" in notes
         or "Applied from existing tuition" in notes
     )
