@@ -20,8 +20,11 @@ from rest_framework.views import APIView
 from admissions.exemption_services import (
     EXEMPTION_FORM_FEE_CODE,
     EXEMPTION_FORM_FEE_UGX,
+    EXEMPTION_NOT_REGISTERED_MESSAGE,
     ensure_exemption_form_fee_access,
+    exemption_form_fee_status,
     form_fee_paid_for_charge,
+    student_may_apply_course_exemption,
     _ensure_form_fee_charge,
     _form_fee_status_dict,
 )
@@ -117,6 +120,16 @@ class InitiateExemptionFormFeePaymentView(APIView):
                         "Valid Uganda mobile money number required "
                         "(e.g. 0771234567)."
                     )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not student_may_apply_course_exemption(student):
+            return Response(
+                {
+                    "detail": EXEMPTION_NOT_REGISTERED_MESSAGE,
+                    "code": "not_registered",
+                    "form_fee": exemption_form_fee_status(student),
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )

@@ -31,6 +31,30 @@ EXEMPTION_TERM_CAP_MESSAGE = (
 )
 # One original application + one resubmit if HOD rejects. Form fee is not voided.
 MAX_EXEMPTION_APPLICATION_ATTEMPTS = 2
+# Hostel-only / temp-pass students are not registered and cannot apply.
+EXEMPTION_NOT_REGISTERED_CODE = "not_registered"
+EXEMPTION_NOT_REGISTERED_MESSAGE = (
+    "Course exemption is only for students who have been cleared for registration. "
+    "Hostel-only clearance is not enough."
+)
+
+
+def student_may_apply_course_exemption(student: AdmittedStudent) -> bool:
+    """Exemptions are only for students Accounts-cleared for registration."""
+    return bool(getattr(student, "accounts_registration_cleared", False))
+
+
+def assert_exemption_registration_required(student: AdmittedStudent) -> None:
+    if not student_may_apply_course_exemption(student):
+        raise ValueError(EXEMPTION_NOT_REGISTERED_MESSAGE)
+
+
+def attach_exemption_eligibility(student: AdmittedStudent, payload: dict) -> dict:
+    ok = student_may_apply_course_exemption(student)
+    payload["eligible"] = ok
+    payload["ineligible_code"] = None if ok else EXEMPTION_NOT_REGISTERED_CODE
+    payload["ineligible_detail"] = "" if ok else EXEMPTION_NOT_REGISTERED_MESSAGE
+    return payload
 
 
 def exemption_application_attempt_state(student: AdmittedStudent) -> dict:
@@ -516,26 +540,29 @@ def _form_fee_status_dict(
     """Serialize form-fee state. charge=None means bill not yet generated."""
     payment_code = _payment_code_for_student(student)
     if charge is None:
-        return {
-            "paid": False,
-            "amount": float(EXEMPTION_FORM_FEE_UGX),
-            "currency": "UGX",
-            "balance": float(EXEMPTION_FORM_FEE_UGX),
-            "charge_id": None,
-            "charge_status": None,
-            "paid_at": None,
-            "fee_head_code": EXEMPTION_FORM_FEE_CODE,
-            "bill_generated": False,
-            "payment_code": payment_code,
-            "payment_reference": None,
-            "stk_pending": False,
-            "schoolpay_hint": (
-                f"Pay UGX {int(EXEMPTION_FORM_FEE_UGX):,} with the mobile money prompt on "
-                "the Course Exemption page. Paying your SchoolPay student code in the app "
-                "does not unlock submit."
-            ),
-            "attempts": exemption_application_attempt_state(student),
-        }
+        return attach_exemption_eligibility(
+            student,
+            {
+                "paid": False,
+                "amount": float(EXEMPTION_FORM_FEE_UGX),
+                "currency": "UGX",
+                "balance": float(EXEMPTION_FORM_FEE_UGX),
+                "charge_id": None,
+                "charge_status": None,
+                "paid_at": None,
+                "fee_head_code": EXEMPTION_FORM_FEE_CODE,
+                "bill_generated": False,
+                "payment_code": payment_code,
+                "payment_reference": None,
+                "stk_pending": False,
+                "schoolpay_hint": (
+                    f"Pay UGX {int(EXEMPTION_FORM_FEE_UGX):,} with the mobile money prompt on "
+                    "the Course Exemption page. Paying your SchoolPay student code in the app "
+                    "does not unlock submit."
+                ),
+                "attempts": exemption_application_attempt_state(student),
+            },
+        )
 
     paid = form_fee_paid_for_charge(student, charge)
     if not paid:
@@ -567,29 +594,32 @@ def _form_fee_status_dict(
         except Exception:
             pass
 
-    return {
-        "paid": paid,
-        "amount": float(EXEMPTION_FORM_FEE_UGX),
-        "currency": "UGX",
-        "balance": float(balance),
-        "charge_id": charge.id,
-        "charge_status": charge.status,
-        "paid_at": paid_at.isoformat() if paid_at else None,
-        "fee_head_code": EXEMPTION_FORM_FEE_CODE,
-        "bill_generated": True,
-        "payment_code": payment_code,
-        "payment_reference": (charge.payment_reference or "").strip() or None,
-        "stk_pending": bool(
-            not paid
-            and charge.status == "pending"
-            and (charge.payment_reference or "").strip()
-        ),
-        "schoolpay_hint": (
-            f"Enter your MoMo number below to receive a UGX {int(EXEMPTION_FORM_FEE_UGX):,} "
-            "payment prompt on your phone. Do not pay this fee with a SchoolPay student code."
-        ),
-        "attempts": exemption_application_attempt_state(student),
-    }
+    return attach_exemption_eligibility(
+        student,
+        {
+            "paid": paid,
+            "amount": float(EXEMPTION_FORM_FEE_UGX),
+            "currency": "UGX",
+            "balance": float(balance),
+            "charge_id": charge.id,
+            "charge_status": charge.status,
+            "paid_at": paid_at.isoformat() if paid_at else None,
+            "fee_head_code": EXEMPTION_FORM_FEE_CODE,
+            "bill_generated": True,
+            "payment_code": payment_code,
+            "payment_reference": (charge.payment_reference or "").strip() or None,
+            "stk_pending": bool(
+                not paid
+                and charge.status == "pending"
+                and (charge.payment_reference or "").strip()
+            ),
+            "schoolpay_hint": (
+                f"Enter your MoMo number below to receive a UGX {int(EXEMPTION_FORM_FEE_UGX):,} "
+                "payment prompt on your phone. Do not pay this fee with a SchoolPay student code."
+            ),
+            "attempts": exemption_application_attempt_state(student),
+        },
+    )
 
 
 def exemption_form_fee_status(student: AdmittedStudent) -> dict:
@@ -601,7 +631,11 @@ def ensure_exemption_form_fee_access(student: AdmittedStudent, *, charged_by=Non
     """
     Ensure a 50k form-fee charge exists (creates on first call) and report status.
     Called when the student opens the exemption form so they can pay before submit.
+
+    Unregistered (hostel-only) students never get a bill created.
     """
+    if not student_may_apply_course_exemption(student):
+        return _form_fee_status_dict(student, _open_form_fee_charge(student))
     charge = _ensure_form_fee_charge(student, charged_by=charged_by)
     return _form_fee_status_dict(student, charge)
 
@@ -817,6 +851,7 @@ def submit_exemption_from_draft(student: AdmittedStudent, *, requested_by, staff
     ).exists():
         raise ValueError("This student already has a pending exemption application.")
 
+    assert_exemption_registration_required(student)
     assert_exemption_resubmit_allowed(student)
 
     access = ensure_exemption_form_fee_access(student, charged_by=None)

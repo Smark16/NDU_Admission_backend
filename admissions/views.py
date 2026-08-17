@@ -4817,13 +4817,27 @@ class StudentChangeRequestListCreate(APIView):
 
         if change_type == 'exemption':
             from admissions.exemption_services import (
+                assert_exemption_registration_required,
                 assert_exemption_resubmit_allowed,
                 assert_exemption_term_cap,
                 ensure_exemption_form_fee_access,
+                exemption_form_fee_status,
                 list_eligible_exemption_courses,
                 _term_key,
             )
             from Programs.models import ProgramCurriculumLine
+
+            try:
+                assert_exemption_registration_required(admission)
+            except ValueError as exc:
+                return Response(
+                    {
+                        "detail": str(exc),
+                        "code": "not_registered",
+                        "form_fee": exemption_form_fee_status(admission),
+                    },
+                    status=400,
+                )
 
             # Form fee (UGX 50k) must be paid before the request is accepted.
             access = ensure_exemption_form_fee_access(admission, charged_by=None)
@@ -5185,11 +5199,17 @@ class StudentExemptionDraftView(APIView):
         )
 
     def put(self, request):
-        from admissions.exemption_services import save_exemption_draft
+        from admissions.exemption_services import (
+            EXEMPTION_NOT_REGISTERED_MESSAGE,
+            save_exemption_draft,
+            student_may_apply_course_exemption,
+        )
 
         admission = self._get_admission(request.user)
         if not admission:
             return Response({"detail": "No active admission found."}, status=404)
+        if not student_may_apply_course_exemption(admission):
+            return Response({"detail": EXEMPTION_NOT_REGISTERED_MESSAGE}, status=403)
         summary = save_exemption_draft(admission, request.data if isinstance(request.data, dict) else {})
         return Response(
             {
@@ -5247,7 +5267,12 @@ class AdminExemptionApplicationView(APIView):
         paid = bool(access.get("paid"))
         can_submit = bool(paid and summary.get("ready") and (pending is None or pending.status == "rejected"))
         block = None
-        if pending and pending.status == "pending":
+        if not access.get("eligible", True):
+            block = access.get("ineligible_detail") or (
+                "Course exemption is only for students cleared for registration."
+            )
+            can_submit = False
+        elif pending and pending.status == "pending":
             block = "This student already submitted. Open the request to review."
             can_submit = False
         elif not paid:
@@ -5334,8 +5359,8 @@ class ExemptionEligibleCoursesView(APIView):
         admission = self._get_admission(request.user)
         if not admission:
             return Response({"detail": "No active admission found."}, status=404)
-        # Raise / reuse the UGX 50k form fee so the student can pay before submit.
-        # Courses list powers the Ndejje curriculum unit picker on the student form.
+        # Raises the UGX 50k bill only if Accounts has cleared the student for
+        # registration. Hostel-only students get eligible=false and no new bill.
         access = ensure_exemption_form_fee_access(admission, charged_by=None)
         try:
             courses = list_eligible_exemption_courses(admission)
