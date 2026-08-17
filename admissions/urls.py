@@ -222,6 +222,14 @@ urlpatterns = [
         views.ClearAccountsRegistrationClearance.as_view(),
     ),
     path(
+        'admitted_students/<int:pk>/clear_accounts_hostel/',
+        views.MarkAccountsHostelCleared.as_view(),
+    ),
+    path(
+        'admitted_students/<int:pk>/revoke_accounts_hostel/',
+        views.ClearAccountsHostelClearance.as_view(),
+    ),
+    path(
         'student/temporary_access',
         StudentTemporaryAccessView.as_view(),
         name='student_temporary_access',

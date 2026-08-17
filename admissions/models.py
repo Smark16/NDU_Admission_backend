@@ -523,6 +523,26 @@ class AdmittedStudent(models.Model):
     )
     accounts_registration_clearance_notes = models.TextField(blank=True)
 
+    # Hostel-only Accounts clearance — does NOT unlock course registration or
+    # appear on Accounts-cleared-for-registration reports.
+    accounts_hostel_cleared = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text=(
+            "Accounts cleared this student for hostel assignment only. "
+            "Does not unlock course registration or the registration card."
+        ),
+    )
+    accounts_hostel_cleared_at = models.DateTimeField(null=True, blank=True)
+    accounts_hostel_cleared_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="accounts_hostel_clearances",
+    )
+    accounts_hostel_clearance_notes = models.TextField(blank=True)
+
     # Cached registration tuition-% gate (Bonafide / Accounts filters). Refreshed on
     # payment/ledger changes; list endpoints filter this boolean instead of running
     # per-student finance allocation.

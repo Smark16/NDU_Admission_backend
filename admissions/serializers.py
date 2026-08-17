@@ -906,6 +906,7 @@ class BonafideStudentSerializer(serializers.ModelSerializer):
     registration_stage_label = serializers.SerializerMethodField()
     requires_document_verification = serializers.SerializerMethodField()
     accounts_registration_cleared_by_name = serializers.SerializerMethodField()
+    accounts_hostel_cleared_by_name = serializers.SerializerMethodField()
     physical_documents_verified_by_name = serializers.SerializerMethodField()
     balance = serializers.SerializerMethodField()
     total_required = serializers.SerializerMethodField()
@@ -951,6 +952,9 @@ class BonafideStudentSerializer(serializers.ModelSerializer):
             "accounts_registration_cleared",
             "accounts_registration_cleared_at",
             "accounts_registration_cleared_by_name",
+            "accounts_hostel_cleared",
+            "accounts_hostel_cleared_at",
+            "accounts_hostel_cleared_by_name",
             "physical_documents_verified",
             "physical_documents_verified_at",
             "physical_documents_verified_by_name",
@@ -1205,6 +1209,13 @@ class BonafideStudentSerializer(serializers.ModelSerializer):
         full = (getattr(u, "get_full_name", lambda: "")() or "").strip()
         return full or getattr(u, "username", None) or getattr(u, "email", None)
 
+    def get_accounts_hostel_cleared_by_name(self, obj):
+        u = getattr(obj, "accounts_hostel_cleared_by", None)
+        if not u:
+            return None
+        full = (getattr(u, "get_full_name", lambda: "")() or "").strip()
+        return full or getattr(u, "username", None) or getattr(u, "email", None)
+
     def get_physical_documents_verified_by_name(self, obj):
         u = getattr(obj, "physical_documents_verified_by", None)
         if not u:
@@ -1252,6 +1263,7 @@ class BonafideStudentProfileSerializer(BonafideStudentSerializer):
             "next_of_kin_relationship",
             "passport_photo",
             "accounts_registration_clearance_notes",
+            "accounts_hostel_clearance_notes",
             "physical_documents_notes",
         ]
 

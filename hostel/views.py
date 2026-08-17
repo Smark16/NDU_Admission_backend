@@ -887,9 +887,11 @@ class ReadyQueueView(APIView):
         qs = (
             AdmittedStudent.objects.filter(
                 is_admitted=True,
-                accounts_registration_cleared=True,
-                physical_documents_verified=True,
                 admitted_campus__in=main_campuses,
+            )
+            .filter(
+                Q(accounts_registration_cleared=True, physical_documents_verified=True)
+                | Q(accounts_hostel_cleared=True)
             )
             .exclude(hostel_allocations__status=HostelAllocation.STATUS_ACTIVE)
             .select_related("application", "admitted_campus", "admitted_program")

@@ -3480,6 +3480,7 @@ class ListBonafideStudents(generics.ListAPIView):
         "intended_program_batch",
         "application",
         "accounts_registration_cleared_by",
+        "accounts_hostel_cleared_by",
         "physical_documents_verified_by",
     )
 
@@ -3824,6 +3825,7 @@ class BonafideStudentDetail(generics.RetrieveAPIView):
         "intended_program_batch",
         "application",
         "accounts_registration_cleared_by",
+        "accounts_hostel_cleared_by",
         "physical_documents_verified_by",
     )
     serializer_class = BonafideStudentProfileSerializer
@@ -4261,6 +4263,110 @@ class MarkAccountsRegistrationCleared(APIView):
             )
         student = AdmittedStudent.objects.select_related(
             "accounts_registration_cleared_by",
+            "accounts_hostel_cleared_by",
+            "physical_documents_verified_by",
+            "admitted_program__faculty",
+            "admitted_batch",
+            "admitted_campus",
+            "application",
+            "programme_enrollment__program_batch",
+            "intended_program_batch",
+        ).get(pk=student.pk)
+        return Response(BonafideStudentProfileSerializer(student).data, status=200)
+
+
+class MarkAccountsHostelCleared(APIView):
+    """Accounts clears hostel assignment only — does not unlock registration."""
+
+    permission_classes = [IsAuthenticated, ClearAccountsRegistrationPermission]
+
+    def post(self, request, pk):
+        notes = (request.data.get("notes") or "").strip()
+        student = get_object_or_404(
+            AdmittedStudent.objects.select_related("application"),
+            pk=pk,
+            is_admitted=True,
+        )
+        assert_admitted_student_access(request.user, student)
+        if student.accounts_hostel_cleared:
+            return Response(
+                {"detail": "Student is already cleared by Accounts for hostel only."},
+                status=400,
+            )
+        student.accounts_hostel_cleared = True
+        student.accounts_hostel_cleared_at = timezone.now()
+        student.accounts_hostel_cleared_by = request.user
+        if notes:
+            student.accounts_hostel_clearance_notes = notes[:4000]
+        student.save(
+            update_fields=[
+                "accounts_hostel_cleared",
+                "accounts_hostel_cleared_at",
+                "accounts_hostel_cleared_by",
+                "accounts_hostel_clearance_notes",
+                "updated_at",
+            ]
+        )
+        log_audit_event(
+            request.user,
+            "accounts_hostel_clear",
+            student,
+            f"Accounts cleared for hostel only id={student.pk} "
+            f"student_id={student.student_id}. Notes: {notes[:500]}",
+            request,
+        )
+        student = AdmittedStudent.objects.select_related(
+            "accounts_registration_cleared_by",
+            "accounts_hostel_cleared_by",
+            "physical_documents_verified_by",
+            "admitted_program__faculty",
+            "admitted_batch",
+            "admitted_campus",
+            "application",
+            "programme_enrollment__program_batch",
+            "intended_program_batch",
+        ).get(pk=student.pk)
+        return Response(BonafideStudentProfileSerializer(student).data, status=200)
+
+
+class ClearAccountsHostelClearance(APIView):
+    permission_classes = [IsAuthenticated, ClearAccountsRegistrationPermission]
+
+    def post(self, request, pk):
+        confirm = request.data.get("confirm")
+        if confirm is not True and str(confirm).lower() not in ("true", "1", "yes"):
+            return Response(
+                {"detail": 'Send JSON body {"confirm": true} to revoke hostel-only clearance.'},
+                status=400,
+            )
+        student = get_object_or_404(AdmittedStudent, pk=pk, is_admitted=True)
+        assert_admitted_student_access(request.user, student)
+        if not student.accounts_hostel_cleared:
+            return Response({"detail": "Student is not hostel-only cleared."}, status=400)
+        student.accounts_hostel_cleared = False
+        student.accounts_hostel_cleared_at = None
+        student.accounts_hostel_cleared_by = None
+        student.accounts_hostel_clearance_notes = ""
+        student.save(
+            update_fields=[
+                "accounts_hostel_cleared",
+                "accounts_hostel_cleared_at",
+                "accounts_hostel_cleared_by",
+                "accounts_hostel_clearance_notes",
+                "updated_at",
+            ]
+        )
+        log_audit_event(
+            request.user,
+            "accounts_hostel_revoke",
+            student,
+            f"Hostel-only Accounts clearance revoked id={student.pk} "
+            f"student_id={student.student_id}",
+            request,
+        )
+        student = AdmittedStudent.objects.select_related(
+            "accounts_registration_cleared_by",
+            "accounts_hostel_cleared_by",
             "physical_documents_verified_by",
             "admitted_program__faculty",
             "admitted_batch",

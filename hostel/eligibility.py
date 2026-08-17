@@ -49,13 +49,15 @@ def student_hostel_eligibility(student: AdmittedStudent) -> dict:
     FY Main Campus (Y1T1): require Accounts clearance AND AR document verification.
     Continuing / other: require Accounts registration clearance.
 
-    Temporary Access Pass with allow_hostel can unlock hostel (and meals flag in meta)
-    without full registration clearance or AR docs — for a dated window only.
+    Hostel-only Accounts clearance or a Temporary Access Pass with allow_hostel
+    unlocks hostel without full registration clearance — and does not mark the
+    student as registered on Accounts reports.
     """
     from admissions.temporary_access import student_temporary_access
 
     reasons: list[str] = []
     accounts_ok = bool(getattr(student, "accounts_registration_cleared", False))
+    hostel_only = bool(getattr(student, "accounts_hostel_cleared", False))
     docs_ok = bool(getattr(student, "physical_documents_verified", False))
     temp = student_temporary_access(student)
     temp_hostel = bool(temp.get("allow_hostel"))
@@ -67,14 +69,15 @@ def student_hostel_eligibility(student: AdmittedStudent) -> dict:
     if not gender:
         reasons.append("Student gender is missing on the application.")
 
-    if not accounts_ok and not temp_hostel:
+    if not accounts_ok and not temp_hostel and not hostel_only:
         reasons.append(
-            "Accounts registration clearance (or an active temporary hostel pass) "
-            "is required before hostel assignment."
+            "Accounts registration clearance, hostel-only Accounts clearance, "
+            "or an active temporary hostel pass is required before hostel assignment."
         )
 
-    # Temp hostel pass intentionally bypasses AR docs for sponsored interim access.
-    if main and fy and needs_docs and not docs_ok and not temp_hostel:
+    # Temp hostel pass or hostel-only Accounts clearance bypasses AR docs
+    # for sponsored / unpaid interim access. Registration clearance does not.
+    if main and fy and needs_docs and not docs_ok and not temp_hostel and not hostel_only:
         reasons.append(
             "AR document verification is required for first-year Main Campus hostel assignment."
         )
@@ -84,13 +87,16 @@ def student_hostel_eligibility(student: AdmittedStudent) -> dict:
         "reasons": reasons,
         "meta": {
             "accounts_registration_cleared": accounts_ok,
+            "accounts_hostel_cleared": hostel_only,
             "physical_documents_verified": docs_ok,
             "temporary_hostel_pass": temp_hostel,
             "temporary_meals_pass": bool(temp.get("allow_meals")),
             "temporary_access": temp if temp.get("has_active_pass") else None,
             "is_main_campus": main,
             "is_first_year_first_term": fy,
-            "requires_ar_docs": bool(main and fy and needs_docs and not temp_hostel),
+            "requires_ar_docs": bool(
+                main and fy and needs_docs and not temp_hostel and not hostel_only
+            ),
             "gender": gender,
             "year_term": list(student_curriculum_year_term(student)),
         },
