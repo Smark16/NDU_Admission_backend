@@ -149,7 +149,9 @@ def build_registration_eligibility_payload(student: AdmittedStudent) -> dict:
     requires_docs = requires_physical_document_verification(student)
     docs_verified = bool(getattr(student, "physical_documents_verified", False))
 
-    if not tuition["tuition_eligible"]:
+    # Accounts clearance is the registration gate. Scholarship / temp-pass
+    # students are cleared without meeting the tuition %; do not re-block them.
+    if not tuition["tuition_eligible"] and not accounts_cleared:
         block_messages.append(tuition["tuition_message"])
 
     is_eligible = len(block_messages) == 0

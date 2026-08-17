@@ -137,6 +137,22 @@ def get_active_pass(student: AdmittedStudent) -> TemporaryAccessPass | None:
     return active_passes_qs(student).first()
 
 
+def accounts_clearance_waives_fee_threshold(student: AdmittedStudent) -> bool:
+    """Scholarship / issued temp-pass students may be Accounts-cleared without the fee % gate.
+
+    The temp card itself still does not grant registration. Staff must still click
+    Accounts clear; this only removes the commitment / tuition-threshold block.
+    """
+    if student_is_sponsored(student):
+        return True
+    if get_active_pass(student) is not None:
+        return True
+    return TemporaryAccessPass.objects.filter(
+        student=student,
+        status=TemporaryAccessPass.STATUS_PENDING,
+    ).exists()
+
+
 def expire_stale_passes(student: AdmittedStudent | None = None) -> int:
     """Mark active passes past valid_until as expired. Returns count updated."""
     today = _today()

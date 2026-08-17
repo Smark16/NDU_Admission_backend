@@ -35,9 +35,11 @@ def registration_stage_for_student(student: AdmittedStudent) -> str:
     accounts_ok = bool(getattr(student, "accounts_registration_cleared", False))
     docs_ok = bool(getattr(student, "physical_documents_verified", False))
     paid = bool(getattr(student, "admission_fee_paid", False))
-
     if not paid:
-        return "unpaid"
+        from admissions.temporary_access import accounts_clearance_waives_fee_threshold
+
+        if not accounts_clearance_waives_fee_threshold(student):
+            return "unpaid"
     if not accounts_ok:
         return "awaiting_accounts"
     # Accounts cleared → ready to register (all students).

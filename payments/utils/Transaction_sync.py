@@ -238,35 +238,14 @@ def pull_schoolpay_range(from_date: str, to_date: str) -> int:
 
 def ingest_schoolpay_for_student_if_missing(student) -> int:
     """
-    If this student has no completed SchoolPay ledger rows, pull the last 90
-    days from SchoolPay (including supplementary / other fees) and ingest them.
+    Relink existing ledger rows for this student.
+
+    Do not pull SchoolRangeTransactions on this path. A 90-day school-wide
+    fetch (3×60s HTTP plus ingest of every payment) blocked gunicorn workers
+    and made Admit Student spin forever. Celery already syncs the last 3 days
+    every minute via celery_sync_schoolpay_transactions.
     """
-    from datetime import timedelta
-
-    from django.core.cache import cache
-
-    from payments.utils.tuition_ledger_linking import (
-        completed_ledger_status_q,
-        relink_tuition_ledgers_for_student,
-        tuition_ledger_queryset_for_student,
-    )
+    from payments.utils.tuition_ledger_linking import relink_tuition_ledgers_for_student
 
     relink_tuition_ledgers_for_student(student)
-    if tuition_ledger_queryset_for_student(student).filter(completed_ledger_status_q()).exists():
-        return 0
-
-    cache_key = f"schoolpay_backfill:{student.pk}"
-    if cache.get(cache_key):
-        return 0
-    cache.set(cache_key, 1, 600)
-
-    created = 0
-    today = timezone.now().date()
-    cursor = today
-    for _ in range(3):
-        start = cursor - timedelta(days=30)
-        created += pull_schoolpay_range(start.strftime("%Y-%m-%d"), cursor.strftime("%Y-%m-%d"))
-        cursor = start - timedelta(days=1)
-
-    relink_tuition_ledgers_for_student(student)
-    return created
+    return 0

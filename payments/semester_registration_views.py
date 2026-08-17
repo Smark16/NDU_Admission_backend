@@ -213,7 +213,11 @@ class RegisterForCourses(APIView):
                 },
                 status=status.HTTP_403_FORBIDDEN,
             )
-        if not payload.get("tuition_check_skipped") and not payload.get("tuition_eligible"):
+        if (
+            not payload.get("accounts_registration_cleared")
+            and not payload.get("tuition_check_skipped")
+            and not payload.get("tuition_eligible")
+        ):
             return Response(
                 {
                     "detail": payload.get("message")

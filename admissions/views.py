@@ -3052,7 +3052,10 @@ class AdmitStudent(generics.CreateAPIView):
                     
                 except Application.DoesNotExist:
                     logger.warning(f"Application {admission.application_id} not found")
-                    return
+                    return Response(
+                        {"detail": "Application not found after admission."},
+                        status=400,
+                    )
 
                 # CRITICAL: Update status immediately
                 Application.objects.filter(id=application.id).update(
@@ -3062,45 +3065,46 @@ class AdmitStudent(generics.CreateAPIView):
                     revoked_by_id=None,
                     revocation_reason="",
                 )
+                admission_pk = admission.id
+                application_pk = application.id
 
-                from payments.utils.tuition_ledger_linking import (
-                    relink_tuition_ledgers_for_student,
-                    should_register_student_with_schoolpay,
-                )
+            # SchoolPay HTTP + portal provision must not hold the admit lock.
+            admission = AdmittedStudent.objects.get(pk=admission_pk)
 
-                try:
-                    if should_register_student_with_schoolpay(admission):
-                        result = register_student_with_schoolpay(admission)
+            from payments.utils.tuition_ledger_linking import (
+                relink_tuition_ledgers_for_student,
+                should_register_student_with_schoolpay,
+            )
 
-                        logger.info(
-                            "SchoolPay registration for admitted student %s: %s",
+            try:
+                if should_register_student_with_schoolpay(admission):
+                    result = register_student_with_schoolpay(admission)
+
+                    logger.info(
+                        "SchoolPay registration for admitted student %s: %s",
+                        admission.id,
+                        result.get("success")
+                    )
+
+                    if not result["success"]:
+                        logger.error(
+                            "SchoolPay registration failed for student %s: %s",
                             admission.id,
-                            result.get("success")
+                            result.get("error") or result.get("data")
                         )
 
-                        if not result["success"]:
-                            logger.error(
-                                "SchoolPay registration failed for student %s: %s",
-                                admission.id,
-                                result.get("error") or result.get("data")
-                            )
-
-                except Exception:
-                    logger.exception(
-                        "SchoolPay registration failed during admission"
-                    )
-
-                relink_tuition_ledgers_for_student(admission)
-
-                provision_student_portal_on_admission(admission.id, send_credentials_email=True)
-                admission.refresh_from_db()
-                transaction.on_commit(
-                    lambda app_id=application.id, adm_id=admission.id: queue_admission_notification_emails(
-                        adm_id, app_id
-                    )
+            except Exception:
+                logger.exception(
+                    "SchoolPay registration failed during admission"
                 )
 
-                return Response(self.serializer_class(admission).data, status=201)
+            relink_tuition_ledgers_for_student(admission)
+
+            provision_student_portal_on_admission(admission.id, send_credentials_email=True)
+            admission.refresh_from_db()
+            queue_admission_notification_emails(admission.id, application_pk)
+
+            return Response(self.serializer_class(admission).data, status=201)
 
         except StudentPortalProvisioningError as e:
             return Response({"detail": str(e)}, status=400)
@@ -3679,8 +3683,34 @@ class ListBonafideStudents(generics.ListAPIView):
                     "yes",
                 )
                 if raw in ("1", "true", "yes", "bonafide", ""):
-                    # "" (param absent entirely) == default == bonafide-only.
-                    queryset = filter_by_commitment_met(queryset, True, strict=strict)
+                    # "" (param absent entirely) == default == bonafide-only,
+                    # plus scholarship / issued temp-pass students (fee threshold waived).
+                    from django.db.models import Exists, OuterRef
+
+                    from admissions.models import TemporaryAccessPass
+                    from admissions.temporary_access import active_temporary_access_subquery
+                    from payments.models import ScholarshipAward
+
+                    paid = filter_by_commitment_met(queryset, True, strict=strict)
+                    scholarship_or_pass = (
+                        Exists(
+                            ScholarshipAward.objects.filter(
+                                student_id=OuterRef("pk"),
+                                status=ScholarshipAward.STATUS_ACTIVE,
+                                programme__is_active=True,
+                            )
+                        )
+                        | Exists(active_temporary_access_subquery())
+                        | Exists(
+                            TemporaryAccessPass.objects.filter(
+                                student_id=OuterRef("pk"),
+                                status=TemporaryAccessPass.STATUS_PENDING,
+                            )
+                        )
+                    )
+                    queryset = (
+                        queryset.filter(scholarship_or_pass) | paid
+                    ).distinct()
                 elif raw in ("0", "false", "no", "not_bonafide"):
                     queryset = filter_by_commitment_met(queryset, False, strict=strict)
 
@@ -4153,42 +4183,46 @@ class MarkAccountsRegistrationCleared(APIView):
             is_admitted=True,
         )
         assert_admitted_student_access(request.user, student)
-        if not student.admission_fee_paid:
-            return Response(
-                {
-                    "detail": (
-                        "Commitment / admission fee is not marked paid yet. "
-                        "Confirm payment before clearing for registration."
-                    )
-                },
-                status=400,
-            )
+        from admissions.temporary_access import accounts_clearance_waives_fee_threshold
 
-        # Enforce the configured semester fee threshold — same gate as course registration.
-        from payments.models import RegistrationSettings
-        from payments.registration_eligibility import _compute_tuition_eligibility
-
-        reg_settings = RegistrationSettings.get_settings()
-        tuition = _compute_tuition_eligibility(student, reg_settings)
-        if not tuition.get("tuition_eligible"):
-            return Response(
-                {
-                    "detail": (
-                        tuition.get("tuition_message")
-                        or (
-                            f"Student has not met the minimum semester fee payment "
-                            f"({tuition.get('minimum_required', 0):.0f}%). "
-                            "Accounts cannot clear until the threshold is met."
+        fee_waived = accounts_clearance_waives_fee_threshold(student)
+        if not fee_waived:
+            if not student.admission_fee_paid:
+                return Response(
+                    {
+                        "detail": (
+                            "Commitment / admission fee is not marked paid yet. "
+                            "Confirm payment before clearing for registration."
                         )
-                    ),
-                    "percentage_paid": tuition.get("percentage_paid"),
-                    "minimum_required": tuition.get("minimum_required"),
-                    "total_paid": tuition.get("total_paid"),
-                    "total_required": tuition.get("total_required"),
-                    "balance": tuition.get("balance"),
-                },
-                status=400,
-            )
+                    },
+                    status=400,
+                )
+
+            # Enforce the configured semester fee threshold — same gate as course registration.
+            from payments.models import RegistrationSettings
+            from payments.registration_eligibility import _compute_tuition_eligibility
+
+            reg_settings = RegistrationSettings.get_settings()
+            tuition = _compute_tuition_eligibility(student, reg_settings)
+            if not tuition.get("tuition_eligible"):
+                return Response(
+                    {
+                        "detail": (
+                            tuition.get("tuition_message")
+                            or (
+                                f"Student has not met the minimum semester fee payment "
+                                f"({tuition.get('minimum_required', 0):.0f}%). "
+                                "Accounts cannot clear until the threshold is met."
+                            )
+                        ),
+                        "percentage_paid": tuition.get("percentage_paid"),
+                        "minimum_required": tuition.get("minimum_required"),
+                        "total_paid": tuition.get("total_paid"),
+                        "total_required": tuition.get("total_required"),
+                        "balance": tuition.get("balance"),
+                    },
+                    status=400,
+                )
 
         if student.accounts_registration_cleared:
             return Response(
@@ -4198,6 +4232,8 @@ class MarkAccountsRegistrationCleared(APIView):
         student.accounts_registration_cleared = True
         student.accounts_registration_cleared_at = timezone.now()
         student.accounts_registration_cleared_by = request.user
+        if fee_waived and not notes:
+            notes = "Scholarship / temporary access pass — fee threshold waived."
         if notes:
             student.accounts_registration_clearance_notes = notes[:4000]
         student.save(
@@ -6063,46 +6099,46 @@ class DirectAdmissionEntryView(APIView):
                         return Response({"detail": str(message), "errors": detail}, status=status.HTTP_400_BAD_REQUEST)
                     return Response({"detail": str(detail)}, status=status.HTTP_400_BAD_REQUEST)
                 admitted_student = adm_serializer.save()
+                admitted_pk = admitted_student.id
+                application_pk = application.id
 
-                try:
-                    if not admitted_student.is_registered_with_schoolpay:
+            admitted_student = AdmittedStudent.objects.get(pk=admitted_pk)
 
-                        result = register_student_with_schoolpay(admitted_student)
+            try:
+                if not admitted_student.is_registered_with_schoolpay:
 
-                        logger.info(
-                            "SchoolPay registration for admitted student %s: %s",
+                    result = register_student_with_schoolpay(admitted_student)
+
+                    logger.info(
+                        "SchoolPay registration for admitted student %s: %s",
+                        admitted_student.id,
+                        result.get("success")
+                    )
+
+                    if not result["success"]:
+                        logger.error(
+                            "SchoolPay registration failed for student %s: %s",
                             admitted_student.id,
-                            result.get("success")
+                            result.get("error") or result.get("data")
                         )
 
-                        if not result["success"]:
-                            logger.error(
-                                "SchoolPay registration failed for student %s: %s",
-                                admitted_student.id,
-                                result.get("error") or result.get("data")
-                            )
-
-                except Exception:
-                    logger.exception(
-                        "SchoolPay registration failed during admission"
-                    )
-
-                provision_student_portal_on_admission(admitted_student.id, send_credentials_email=True)
-                admitted_student.refresh_from_db()
-                transaction.on_commit(
-                    lambda app_id=application.id, adm_id=admitted_student.id: queue_admission_notification_emails(
-                        adm_id, app_id
-                    )
+            except Exception:
+                logger.exception(
+                    "SchoolPay registration failed during admission"
                 )
 
-                return Response({
-                    'message': 'Direct admission completed successfully.',
-                    'application_id': application.id,
-                    'admitted_student_id': admitted_student.id,
-                    'reg_no': admitted_student.reg_no,
-                    'student_id': admitted_student.student_id,
-                    'schoolpay_code': admitted_student.schoolpay_code,
-                }, status=status.HTTP_201_CREATED)
+            provision_student_portal_on_admission(admitted_student.id, send_credentials_email=True)
+            admitted_student.refresh_from_db()
+            queue_admission_notification_emails(admitted_student.id, application_pk)
+
+            return Response({
+                'message': 'Direct admission completed successfully.',
+                'application_id': application_pk,
+                'admitted_student_id': admitted_student.id,
+                'reg_no': admitted_student.reg_no,
+                'student_id': admitted_student.student_id,
+                'schoolpay_code': admitted_student.schoolpay_code,
+            }, status=status.HTTP_201_CREATED)
 
         except StudentPortalProvisioningError as e:
             return Response({'detail': str(e)}, status=400)

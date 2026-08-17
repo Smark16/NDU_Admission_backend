@@ -675,15 +675,12 @@ def _persist_settled_exemption_form_charges(lines: list[DemandLine]) -> None:
 
 
 def build_finance_allocation(student: AdmittedStudent) -> FinanceAllocation:
+    # Relink existing ledger rows only. Never pull SchoolPay ranges here —
+    # a 90-day school-wide ingest blocked gunicorn and made Admit hang.
     try:
-        from payments.utils.Transaction_sync import ingest_schoolpay_for_student_if_missing
-
-        ingest_schoolpay_for_student_if_missing(student)
+        relink_tuition_ledgers_for_student(student)
     except Exception:
-        try:
-            relink_tuition_ledgers_for_student(student)
-        except Exception:
-            pass
+        pass
     international = is_international_student(student)
     credits_all = payment_credits_by_currency(student)
     lines = _build_demand_lines(student, international)
