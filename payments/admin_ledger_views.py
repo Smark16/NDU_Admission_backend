@@ -9,7 +9,7 @@ from decimal import Decimal
 
 from django.db.models import Count, DecimalField, F, Max, Q, Sum, Value
 from django.db.models.functions import Coalesce
-from django.http import StreamingHttpResponse
+from django.http import HttpResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils.dateparse import parse_date
 from accounts.erp_drf_permissions import (
@@ -1145,14 +1145,12 @@ class AdminManualBankPaymentsReportView(APIView):
 class AdminAccountsClearedRegistrationReportView(APIView):
     """
     GET students cleared by Accounts for registration.
-    Finance / Super Admin can view.
+    Finance / Super Admin can view. Add export=xlsx for a full Excel download.
     """
 
     permission_classes = [AccountsClearedReportPermission]
 
-    def get(self, request):
-        page = _parse_page(request.query_params.get("page"))
-        page_size = _parse_page_size(request.query_params.get("page_size"), default=50)
+    def _queryset(self, request):
         search = (request.query_params.get("search") or "").strip()
         from_date = parse_date(request.query_params.get("from_date") or "")
         to_date = parse_date(request.query_params.get("to_date") or "")
@@ -1189,37 +1187,44 @@ class AdminAccountsClearedRegistrationReportView(APIView):
                 qs = qs.filter(accounts_registration_cleared_by_id=int(cleared_by_id))
             except (TypeError, ValueError):
                 pass
+        return qs
 
+    def _row(self, s: AdmittedStudent) -> dict:
+        app = s.application
+        name = ""
+        if app:
+            name = f"{app.first_name or ''} {app.last_name or ''}".strip()
+        clearer = s.accounts_registration_cleared_by
+        clearer_name = ""
+        if clearer:
+            clearer_name = clearer.get_full_name() or clearer.email or str(clearer.pk)
+        return {
+            "id": s.id,
+            "student_id": s.student_id or "",
+            "reg_no": s.reg_no or "",
+            "student_name": name or "—",
+            "programme": s.admitted_program.name if s.admitted_program_id else "",
+            "campus": s.admitted_campus.name if s.admitted_campus_id else "",
+            "intake": s.admitted_batch.name if s.admitted_batch_id else "",
+            "cleared_at": s.accounts_registration_cleared_at.isoformat()
+            if s.accounts_registration_cleared_at
+            else None,
+            "cleared_by": clearer_name,
+            "cleared_by_id": s.accounts_registration_cleared_by_id,
+            "notes": (s.accounts_registration_clearance_notes or "")[:500],
+        }
+
+    def get(self, request):
+        qs = self._queryset(request)
+        export = (request.query_params.get("export") or "").strip().lower()
+        if export in ("xlsx", "excel", "1", "true"):
+            return self._excel(qs)
+
+        page = _parse_page(request.query_params.get("page"))
+        page_size = _parse_page_size(request.query_params.get("page_size"), default=50)
         total = qs.count()
         offset = (page - 1) * page_size
-        rows = []
-        for s in qs[offset : offset + page_size]:
-            app = s.application
-            name = ""
-            if app:
-                name = f"{app.first_name or ''} {app.last_name or ''}".strip()
-            clearer = s.accounts_registration_cleared_by
-            clearer_name = ""
-            if clearer:
-                clearer_name = clearer.get_full_name() or clearer.email or str(clearer.pk)
-            rows.append(
-                {
-                    "id": s.id,
-                    "student_id": s.student_id or "",
-                    "reg_no": s.reg_no or "",
-                    "student_name": name or "—",
-                    "programme": s.admitted_program.name if s.admitted_program_id else "",
-                    "campus": s.admitted_campus.name if s.admitted_campus_id else "",
-                    "intake": s.admitted_batch.name if s.admitted_batch_id else "",
-                    "cleared_at": s.accounts_registration_cleared_at.isoformat()
-                    if s.accounts_registration_cleared_at
-                    else None,
-                    "cleared_by": clearer_name,
-                    "cleared_by_id": s.accounts_registration_cleared_by_id,
-                    "notes": (s.accounts_registration_clearance_notes or "")[:500],
-                }
-            )
-
+        rows = [self._row(s) for s in qs[offset : offset + page_size]]
         return Response(
             {
                 "count": total,
@@ -1228,6 +1233,70 @@ class AdminAccountsClearedRegistrationReportView(APIView):
                 "results": rows,
             }
         )
+
+    def _excel(self, qs):
+        from io import BytesIO
+
+        from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+        from openpyxl.utils import get_column_letter
+
+        headers = [
+            "Cleared at",
+            "Student",
+            "Student ID",
+            "Reg no",
+            "Programme",
+            "Campus",
+            "Intake",
+            "Cleared by",
+            "Notes",
+        ]
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Accounts cleared"
+        header_font = Font(bold=True, color="FFFFFF")
+        header_fill = PatternFill(start_color="1e1b4b", fill_type="solid")
+        thin = Border(
+            left=Side(style="thin", color="CBD5E1"),
+            right=Side(style="thin", color="CBD5E1"),
+            top=Side(style="thin", color="CBD5E1"),
+            bottom=Side(style="thin", color="CBD5E1"),
+        )
+        for col, header in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col, value=header)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal="center", wrap_text=True)
+            cell.border = thin
+            ws.column_dimensions[get_column_letter(col)].width = max(14, min(36, len(header) + 4))
+        for r_i, s in enumerate(qs.iterator(chunk_size=500), 2):
+            row = self._row(s)
+            values = [
+                (row["cleared_at"] or "")[:19].replace("T", " "),
+                row["student_name"],
+                row["student_id"],
+                row["reg_no"],
+                row["programme"],
+                row["campus"],
+                row["intake"],
+                row["cleared_by"],
+                row["notes"],
+            ]
+            for c_i, value in enumerate(values, 1):
+                cell = ws.cell(row=r_i, column=c_i, value=value)
+                cell.border = thin
+        ws.freeze_panes = "A2"
+        ws.auto_filter.ref = ws.dimensions
+        buf = BytesIO()
+        wb.save(buf)
+        filename = f"accounts_cleared_registration_{datetime.now().strftime('%Y-%m-%d')}.xlsx"
+        response = HttpResponse(
+            buf.getvalue(),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return response
 
 
 class AdminTuitionLedgerTransactionsView(APIView):

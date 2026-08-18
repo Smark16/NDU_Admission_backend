@@ -14,6 +14,10 @@ from admissions.temporary_access_views import (
     TemporaryAccessPassVerifyPublicView,
 )
 from admissions.headcount_views import UniversityHeadcountView
+from admissions.registration_report_views import (
+    RegistrationReportExcelView,
+    RegistrationReportView,
+)
 from admissions.analytics_views import AnalyticsDashboardView
 from admissions.email_template_views import (
     EmailTemplateDetailView,
@@ -171,6 +175,16 @@ urlpatterns = [
         'university_headcount/',
         UniversityHeadcountView.as_view(),
         name='university_headcount',
+    ),
+    path(
+        'reports/registration/',
+        RegistrationReportView.as_view(),
+        name='registration_report',
+    ),
+    path(
+        'reports/registration/export/',
+        RegistrationReportExcelView.as_view(),
+        name='registration_report_export',
     ),
     path('list_bonafide_students/<int:pk>/', views.BonafideStudentDetail.as_view()),
     path(
