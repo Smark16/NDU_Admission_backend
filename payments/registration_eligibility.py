@@ -1,7 +1,7 @@
 """Course registration eligibility: tuition payment threshold + settings gates."""
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from admissions.models import AdmittedStudent
 
@@ -13,6 +13,19 @@ from .registration_gates import (
 )
 from .student_fee_pricing import is_international_student, paid_by_currency
 from .student_payment_allocation import tuition_registration_totals
+
+
+def _rounded_payment_pct(paid: Decimal, required: Decimal) -> Decimal:
+    if required <= 0:
+        return Decimal("0")
+    return (paid / required * Decimal("100")).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+
+
+def _bucket_meets_threshold(paid: Decimal, required: Decimal, min_required_pct: float) -> bool:
+    """Same 1-decimal % the Bonafide UI shows (so 60.0% displayed is eligible)."""
+    if required <= 0:
+        return True
+    return _rounded_payment_pct(paid, required) >= Decimal(str(min_required_pct))
 
 
 def _compute_tuition_eligibility(student: AdmittedStudent, settings: RegistrationSettings) -> dict:
@@ -32,17 +45,49 @@ def _compute_tuition_eligibility(student: AdmittedStudent, settings: Registratio
             "balance": 0.0,
             "display_currency": "USD" if international else "UGX",
             "tuition_check_skipped": True,
+            "fees_not_configured": False,
             "tuition_message": "Tuition payment threshold is currently disabled. You may register.",
         }
 
     min_pct = Decimal(str(min_required_pct)) / Decimal("100")
     totals = tuition_registration_totals(student, current_term_only=True)
 
-    # No current-term tuition schedule (or zero required) ⇒ cannot meet a positive %.
-    # Avoids vacuous "eligible" when there are no billable tuition lines.
+    # No current-term tuition schedule (or zero required) ⇒ cannot compute a %.
+    # If the student already paid beyond commitment, that money is prepaid credit.
+    # Do not treat them as "0% of 60%" — Accounts may clear; fees apply when set.
     if min_required_pct > 0 and (
         not totals["has_tuition_rules"] or totals["total_required"] <= 0
     ):
+        from payments.student_payment_allocation import build_finance_allocation
+
+        alloc = build_finance_allocation(student)
+        prepaid = Decimal(str(getattr(alloc, "prepaid_credit", 0) or 0))
+        lifetime = Decimal("0")
+        for amt in (getattr(alloc, "lifetime_paid_by_currency", None) or {}).values():
+            lifetime += Decimal(str(amt or 0))
+        commitment_paid = Decimal(str(getattr(alloc, "commitment_paid_ugx", 0) or 0))
+        extra_paid = max(lifetime - commitment_paid, prepaid - commitment_paid, Decimal("0"))
+        year = totals["current_year_of_study"]
+        term = totals["current_term_number"]
+        if extra_paid > Decimal("0.01"):
+            return {
+                "tuition_eligible": True,
+                "percentage_paid": 0.0,
+                "minimum_required": min_required_pct,
+                "total_required": 0.0,
+                "total_paid": float(extra_paid),
+                "balance": 0.0,
+                "display_currency": totals["primary_currency"],
+                "tuition_check_skipped": False,
+                "fees_not_configured": True,
+                "tuition_message": (
+                    "Semester fees are not configured for this programme batch "
+                    f"(Year {year}, Term {term}). Prepaid credit "
+                    f"{totals['primary_currency']} {float(prepaid):,.0f} is on the account "
+                    "and will apply when Fees → Semester tuition is set. "
+                    "Accounts may clear for registration."
+                ),
+            }
         return {
             "tuition_eligible": False,
             "percentage_paid": 0.0,
@@ -52,9 +97,10 @@ def _compute_tuition_eligibility(student: AdmittedStudent, settings: Registratio
             "balance": 0.0,
             "display_currency": totals["primary_currency"],
             "tuition_check_skipped": False,
+            "fees_not_configured": True,
             "tuition_message": (
                 "Semester fees are not configured for your current term "
-                f"(Year {totals['current_year_of_study']}, Term {totals['current_term_number']}). "
+                f"(Year {year}, Term {term}). "
                 "You cannot register until fees are set up for your programme batch."
             ),
         }
@@ -72,9 +118,9 @@ def _compute_tuition_eligibility(student: AdmittedStudent, settings: Registratio
         if req <= 0:
             continue
         paid = bucket["paid"]
-        need = req * min_pct
-        if paid < need:
+        if not _bucket_meets_threshold(paid, req, min_required_pct):
             payment_ok = False
+            need = req * min_pct
             short_parts.append(f"{ccy} {float(need - paid):,.2f}")
 
     # No positive required buckets ⇒ not eligible when a minimum % is configured.
@@ -104,6 +150,7 @@ def _compute_tuition_eligibility(student: AdmittedStudent, settings: Registratio
         "balance": float(balance),
         "display_currency": primary_ccy,
         "tuition_check_skipped": False,
+        "fees_not_configured": False,
         "tuition_message": pay_msg,
     }
 

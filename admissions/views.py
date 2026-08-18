@@ -4189,16 +4189,31 @@ class MarkAccountsRegistrationCleared(APIView):
 
         fee_waived = accounts_clearance_waives_fee_threshold(student)
         if not fee_waived:
+            from payments.student_payment_allocation import build_finance_allocation
+
+            alloc = build_finance_allocation(student)
             if not student.admission_fee_paid:
-                return Response(
-                    {
-                        "detail": (
-                            "Commitment / admission fee is not marked paid yet. "
-                            "Confirm payment before clearing for registration."
-                        )
-                    },
-                    status=400,
-                )
+                if alloc.commitment_met:
+                    student.admission_fee_paid = True
+                    if not student.admission_fee_paid_at:
+                        student.admission_fee_paid_at = timezone.now()
+                    student.save(
+                        update_fields=[
+                            "admission_fee_paid",
+                            "admission_fee_paid_at",
+                            "updated_at",
+                        ]
+                    )
+                else:
+                    return Response(
+                        {
+                            "detail": (
+                                "Commitment / admission fee is not marked paid yet. "
+                                "Confirm payment before clearing for registration."
+                            )
+                        },
+                        status=400,
+                    )
 
             # Enforce the configured semester fee threshold — same gate as course registration.
             from payments.models import RegistrationSettings
@@ -4207,15 +4222,22 @@ class MarkAccountsRegistrationCleared(APIView):
             reg_settings = RegistrationSettings.get_settings()
             tuition = _compute_tuition_eligibility(student, reg_settings)
             if not tuition.get("tuition_eligible"):
+                shown = tuition.get("percentage_paid")
+                need = tuition.get("minimum_required")
                 return Response(
                     {
                         "detail": (
                             tuition.get("tuition_message")
                             or (
                                 f"Student has not met the minimum semester fee payment "
-                                f"({tuition.get('minimum_required', 0):.0f}%). "
+                                f"({need:.0f}%). "
                                 "Accounts cannot clear until the threshold is met."
                             )
+                        )
+                        + (
+                            f" Currently {shown:.1f}% of billed current-term fees."
+                            if shown is not None and need is not None
+                            else ""
                         ),
                         "percentage_paid": tuition.get("percentage_paid"),
                         "minimum_required": tuition.get("minimum_required"),

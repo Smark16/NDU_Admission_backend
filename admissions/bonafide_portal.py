@@ -227,6 +227,7 @@ def build_bonafide_portal_snapshot(student: AdmittedStudent, request=None) -> di
             "tuition_eligible": bool(tuition_gate.get("tuition_eligible")),
             "minimum_required": tuition_gate.get("minimum_required"),
             "tuition_check_skipped": bool(tuition_gate.get("tuition_check_skipped")),
+            "fees_not_configured": bool(tuition_gate.get("fees_not_configured")),
             "tuition_message": tuition_gate.get("tuition_message"),
             "lifetime_paid": finance.get("lifetime_paid"),
             "lifetime_paid_by_currency": finance.get("lifetime_paid_by_currency"),

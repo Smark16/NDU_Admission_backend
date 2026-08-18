@@ -349,13 +349,23 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
         is_functional_head = fee_code == "FUNCTIONAL_FEE" or "FUNCTIONAL" in fee_code
         proration_meta: dict[str, Any] | None = None
 
+        sem_year = int(sem.year_of_study) if sem is not None and sem.year_of_study else None
+        sem_term = int(sem.term_number) if sem is not None and sem.term_number else None
+
         if pick_structure_despite_billing_date and (is_tuition_head or is_functional_head):
+            billable = True
+        elif (
+            (is_tuition_head or is_functional_head)
+            and sem_year is not None
+            and sem_term is not None
+            and sem_year == cy
+            and sem_term == ct
+        ):
+            # Enrolled current term: apply SchoolPay already received even if the
+            # scheduled billing date is still in the future.
             billable = True
         else:
             billable = billing_date_reached(rule)
-
-        sem_year = int(sem.year_of_study) if sem is not None and sem.year_of_study else None
-        sem_term = int(sem.term_number) if sem is not None and sem.term_number else None
 
         if (
             (is_tuition_head or is_functional_head)
