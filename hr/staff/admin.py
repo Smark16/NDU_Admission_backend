@@ -4,6 +4,12 @@ Admin configuration for staff app.
 from django.contrib import admin
 from .models import *
 
+@admin.register(StaffIdCard)
+class StaffIdCardAdmin(admin.ModelAdmin):
+    list_display = ["card_number", "staff_profile", "status", "is_active", "issue_date"]
+    list_filter = ["status", "is_active"]
+    search_fields = ["card_number", "staff_profile__staff_no", "staff_profile__first_name", "staff_profile__last_name"]
+
 @admin.register(SupervisionAssignment)
 class SupervisionAssignmentAdmin(admin.ModelAdmin):
     list_display = ['supervisor', 'team', 'staff_member']

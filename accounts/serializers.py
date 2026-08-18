@@ -478,6 +478,7 @@ class SystemSettingsSerializer(serializers.ModelSerializer):
             'admin_session_timeout',
             'id_card_templates',
             'active_id_card_template',
+            'active_staff_id_card_template',
             'university_name',
             'portal_logo',
             'login_cover_image',

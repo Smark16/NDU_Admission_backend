@@ -68,15 +68,20 @@ def _pdf_template_row_for_key(key: str) -> IdCardPdfTemplate | None:
     return row
 
 
-def resolve_active_pdf_template() -> IdCardPdfTemplate | None:
+def resolve_active_pdf_template(audience: str = "student") -> IdCardPdfTemplate | None:
     """Active IdCardPdfTemplate with PDF file and at least one mapped field."""
     settings_obj = SystemSettings.get_settings()
-    active_key = (getattr(settings_obj, "active_id_card_template", None) or "").strip()
+    if audience == "staff":
+        active_key = (getattr(settings_obj, "active_staff_id_card_template", None) or "").strip()
+    else:
+        active_key = (getattr(settings_obj, "active_id_card_template", None) or "").strip()
     if not active_key:
         return None
 
     row = _pdf_template_row_for_key(active_key)
     if row is None or not row.field_positions:
+        return None
+    if (getattr(row, "audience", "student") or "student") != audience:
         return None
     return row
 
@@ -84,10 +89,20 @@ def resolve_active_pdf_template() -> IdCardPdfTemplate | None:
 def maybe_auto_activate_id_card_template(key: str) -> bool:
     """Set active template when none is configured or the current key is invalid."""
     key = (key or "").strip()
-    if not key or _pdf_template_row_for_key(key) is None:
+    row = _pdf_template_row_for_key(key)
+    if not key or row is None:
         return False
 
+    audience = getattr(row, "audience", "student") or "student"
     settings_obj = SystemSettings.get_settings()
+    if audience == "staff":
+        active_key = (getattr(settings_obj, "active_staff_id_card_template", None) or "").strip()
+        if active_key and _pdf_template_row_for_key(active_key) is not None:
+            return False
+        settings_obj.active_staff_id_card_template = key
+        settings_obj.save(update_fields=["active_staff_id_card_template", "updated_at"])
+        return True
+
     active_key = (getattr(settings_obj, "active_id_card_template", None) or "").strip()
     if active_key and _pdf_template_row_for_key(active_key) is not None:
         return False
@@ -97,23 +112,31 @@ def maybe_auto_activate_id_card_template(key: str) -> bool:
     return True
 
 
-def explain_pdf_render_blocker() -> str | None:
+def explain_pdf_render_blocker(audience: str = "student") -> str | None:
     """Human-readable reason preview/print still uses the built-in layout."""
-    if not IdCardPdfTemplate.objects.filter(template_pdf__isnull=False).exclude(template_pdf="").exists():
+    qs = IdCardPdfTemplate.objects.filter(template_pdf__isnull=False).exclude(template_pdf="")
+    if audience in ("student", "staff"):
+        qs = qs.filter(audience=audience)
+    if not qs.exists():
         return None
 
     settings_obj = SystemSettings.get_settings()
-    active_key = (getattr(settings_obj, "active_id_card_template", None) or "").strip()
+    if audience == "staff":
+        active_key = (getattr(settings_obj, "active_staff_id_card_template", None) or "").strip()
+        kind = "staff"
+    else:
+        active_key = (getattr(settings_obj, "active_id_card_template", None) or "").strip()
+        kind = "student"
     if not active_key:
         return (
-            "A PDF template is uploaded but none is set as active. "
+            f"A {kind} PDF template is uploaded but none is set as active. "
             "Open ID card templates and click the star on your template."
         )
 
     row = _pdf_template_row_for_key(active_key)
     if row is None:
         return (
-            f"The active template key “{active_key}” does not match any uploaded PDF. "
+            f"The active {kind} template key “{active_key}” does not match any uploaded PDF. "
             "Click the star on the template you want to use."
         )
     if not row.field_positions:
@@ -269,7 +292,7 @@ def fill_id_card_pdf_template(
 
 def render_id_card_pdf(card: StudentIdCard) -> bytes | None:
     """Return merged PDF bytes, or None when no usable active template is configured."""
-    template = resolve_active_pdf_template()
+    template = resolve_active_pdf_template("student")
     if template is None:
         return None
 
@@ -293,6 +316,82 @@ def render_id_card_pdf(card: StudentIdCard) -> bytes | None:
         image_paths["passport_photo"] = photo_path
     if "qr_code" in positions:
         qr_bytes = _qr_png_bytes(build_id_card_qr_payload(card))
+        if qr_bytes:
+            image_streams["qr_code"] = qr_bytes
+
+    return fill_id_card_pdf_template(
+        pdf_path,
+        context,
+        positions,
+        image_paths=image_paths,
+        image_streams=image_streams,
+    )
+
+
+def _staff_photo_path(profile) -> str | None:
+    photo = getattr(profile, "passport_photo", None)
+    if not photo:
+        return None
+    try:
+        path = photo.path
+    except (ValueError, AttributeError):
+        return None
+    if path and os.path.isfile(path):
+        return path
+    return None
+
+
+def build_staff_id_card_field_context(card) -> dict[str, str]:
+    st = card.staff_profile
+    issue = card.issue_date or date.today()
+    expiry = card.expiry_date or _default_expiry(issue)
+    campus_names = list(st.campus.order_by("name").values_list("name", flat=True)[:3])
+    return {
+        "name": st.get_full_name or "",
+        "staff_no": (st.staff_no or "").strip(),
+        "job_title": (st.job_title or "").strip(),
+        "department": st.org_unit.name if st.org_unit_id else "",
+        "campus": ", ".join(campus_names),
+        "staff_type": st.staff_type.name if st.staff_type_id else "",
+        "expiry_date": expiry.isoformat(),
+        "card_number": card.card_number or "",
+    }
+
+
+def build_staff_id_card_qr_payload(card) -> str:
+    st = card.staff_profile
+    lookup = (st.staff_no or "").strip()
+    if not lookup:
+        lookup = str(st.pk)
+    return lookup
+
+
+def render_staff_id_card_pdf(card) -> bytes | None:
+    """Merged staff ID PDF, or None when no usable staff template is configured."""
+    template = resolve_active_pdf_template("staff")
+    if template is None:
+        return None
+
+    ext = os.path.splitext(template.template_pdf.name or "")[1].lower()
+    if ext != ".pdf":
+        return None
+
+    try:
+        pdf_path = template.template_pdf.path
+    except ValueError:
+        return None
+    if not os.path.isfile(pdf_path):
+        return None
+
+    context = build_staff_id_card_field_context(card)
+    image_paths: dict[str, str] = {}
+    image_streams: dict[str, bytes] = {}
+    photo_path = _staff_photo_path(card.staff_profile)
+    positions = template.field_positions or {}
+    if photo_path and "passport_photo" in positions:
+        image_paths["passport_photo"] = photo_path
+    if "qr_code" in positions:
+        qr_bytes = _qr_png_bytes(build_staff_id_card_qr_payload(card))
         if qr_bytes:
             image_streams["qr_code"] = qr_bytes
 

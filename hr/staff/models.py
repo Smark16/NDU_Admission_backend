@@ -216,7 +216,7 @@ class StaffProfile(models.Model):
     
     # Organization
     job_title = models.CharField(
-        max_length=20,
+        max_length=120,
         null=True,
         blank=True,
     )
@@ -270,6 +270,73 @@ class StaffProfile(models.Model):
                 number = generate_number()
             self.staff_no = number
         super().save(*args, **kwargs)
+
+
+class StaffIdCard(models.Model):
+    """Physical staff identity card issued from the ID desk."""
+
+    STATUS_GENERATED = "generated"
+    STATUS_PRINTED = "printed"
+    STATUS_ACTIVE = "active"
+    STATUS_REVOKED = "revoked"
+    STATUS_REISSUED = "reissued"
+    STATUS_CHOICES = [
+        (STATUS_GENERATED, "Generated"),
+        (STATUS_PRINTED, "Printed"),
+        (STATUS_ACTIVE, "Active"),
+        (STATUS_REVOKED, "Revoked"),
+        (STATUS_REISSUED, "Reissued"),
+    ]
+
+    staff_profile = models.ForeignKey(
+        StaffProfile,
+        on_delete=models.CASCADE,
+        related_name="id_cards",
+    )
+    card_number = models.CharField(max_length=48, unique=True, db_index=True)
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_GENERATED,
+    )
+    is_active = models.BooleanField(
+        default=True,
+        help_text="False when revoked or superseded by a reissue.",
+    )
+    issue_date = models.DateField()
+    expiry_date = models.DateField(null=True, blank=True)
+    print_count = models.PositiveIntegerField(default=0)
+    revoke_reason = models.TextField(blank=True, default="")
+    reissue_reason = models.TextField(blank=True, default="")
+    replaced_by = models.ForeignKey(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="supersedes",
+    )
+    issued_by = models.ForeignKey(
+        "accounts.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="issued_staff_id_cards",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "Staff ID card"
+        verbose_name_plural = "Staff ID cards"
+        indexes = [
+            models.Index(fields=["staff_profile", "is_active"]),
+            models.Index(fields=["status"]),
+        ]
+
+    def __str__(self):
+        return f"{self.card_number} ({self.staff_profile_id})"
+
     
 class SupervisionAssignment(models.Model):
     supervisor = models.ForeignKey(
