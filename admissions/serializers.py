@@ -1528,9 +1528,12 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
     def get_form_fee_paid(self, obj):
         if obj.change_type != "exemption":
             return None
-        if not self._request_user_can_view_finance():
-            return None
-        return bool(obj.form_fee_paid_at)
+        from admissions.exemption_services import student_has_paid_exemption_form_fee
+
+        try:
+            return student_has_paid_exemption_form_fee(obj.admitted_student)
+        except Exception:
+            return bool(obj.form_fee_paid_at)
 
     def get_exemption_course_fee_rate(self, obj):
         """Flat rate retired — always None; use exemption_billing_lines amounts."""

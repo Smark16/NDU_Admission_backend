@@ -17,6 +17,7 @@ from decimal import Decimal
 
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from accounts.models import User, Campus
@@ -160,8 +161,11 @@ class Command(BaseCommand):
         self.stdout.write("Test path:")
         self.stdout.write("  1. Log in as a YES student (reg no / NDU@1234).")
         self.stdout.write("  2. Dashboard → Exemptions → pick EXMQA papers, grade A/B, submit and pay.")
+        self._print_exmqa_logins()
 
     def _attach_curriculum_only(self, program_id):
+        from Programs.curriculum_inheritance import curriculum_owner_program
+
         programs = []
         if program_id:
             program = (
@@ -174,10 +178,7 @@ class Command(BaseCommand):
             qs = AdmittedStudent.objects.filter(
                 is_admitted=True,
             ).filter(
-                reg_no__startswith=PREFIX + "-"
-            ) | AdmittedStudent.objects.filter(
-                is_admitted=True,
-                reg_no__startswith="LISTQA-",
+                Q(reg_no__startswith=PREFIX + "-") | Q(reg_no__startswith="LISTQA-")
             )
             seen = set()
             for student in qs.select_related("admitted_program", "programme_enrollment"):
@@ -185,6 +186,29 @@ class Command(BaseCommand):
                 if prog and prog.pk not in seen:
                     seen.add(prog.pk)
                     programs.append(prog)
+            # Also seed papers onto programmes that have students but no units,
+            # so a non-EXMQA login is not stuck with an empty picker.
+            for prog in Program.objects.filter(is_active=True):
+                if prog.pk in seen:
+                    continue
+                if not AdmittedStudent.objects.filter(
+                    is_admitted=True, admitted_program=prog
+                ).exists():
+                    continue
+                owner = curriculum_owner_program(prog) or prog
+                has_lines = ProgramCurriculumLine.objects.filter(
+                    is_active=True,
+                ).filter(
+                    Q(curriculum_version__program=owner) | Q(program=owner)
+                ).exists()
+                if not has_lines:
+                    seen.add(prog.pk)
+                    programs.append(prog)
+                    self.stdout.write(
+                        self.style.WARNING(
+                            f"Empty curriculum — attaching EXMQA papers to {prog.code} ({prog.name})."
+                        )
+                    )
             if not programs:
                 program = Program.objects.filter(is_active=True).order_by("id").first()
                 if not program:
@@ -208,11 +232,7 @@ class Command(BaseCommand):
                 is_admitted=True,
                 admitted_program=program,
             ).filter(
-                reg_no__startswith=PREFIX + "-"
-            ) | AdmittedStudent.objects.filter(
-                is_admitted=True,
-                admitted_program=program,
-                reg_no__startswith="LISTQA-",
+                Q(reg_no__startswith=PREFIX + "-") | Q(reg_no__startswith="LISTQA-")
             )
             n = 0
             for student in students.select_related("programme_enrollment"):
@@ -246,7 +266,48 @@ class Command(BaseCommand):
                     f"pinned on {n} EXMQA/LISTQA enrollment(s)."
                 )
             )
+        self._print_exmqa_logins()
         self.stdout.write("Reload Course Exemption — units and grade letters should appear.")
+
+    def _print_exmqa_logins(self):
+        from admissions.exemption_services import (
+            list_eligible_exemption_courses,
+            student_may_apply_course_exemption,
+        )
+
+        rows = (
+            AdmittedStudent.objects.filter(
+                is_admitted=True, reg_no__startswith=f"{PREFIX}-"
+            )
+            .select_related(
+                "admitted_program",
+                "student_user",
+                "programme_enrollment",
+                "programme_enrollment__curriculum_version",
+            )
+            .order_by("id")
+        )
+        if not rows:
+            return
+        self.stdout.write("")
+        self.stdout.write(f"Portal password for all EXMQA students: {DEFAULT_STUDENT_PASSWORD}")
+        self.stdout.write(f"{'Username (reg no)':<36} {'units':<8} apply")
+        for student in rows:
+            user = student.student_user
+            if user is not None:
+                user.set_password(DEFAULT_STUDENT_PASSWORD)
+                user.must_change_password = False
+                user.is_active = True
+                user.is_student = True
+                user.save(update_fields=["password", "must_change_password", "is_active", "is_student"])
+            try:
+                n = len(list_eligible_exemption_courses(student))
+            except Exception as exc:
+                n = f"ERR:{exc}"
+            can = student_may_apply_course_exemption(student)
+            self.stdout.write(
+                f"{student.reg_no:<36} {str(n):<8} {'YES' if can else 'no'}"
+            )
 
     def _ensure_grade_scale(self) -> int:
         from examinations.models import GradeBand, GradeScale
@@ -290,40 +351,49 @@ class Command(BaseCommand):
         from Programs.curriculum_inheritance import curriculum_owner_program
 
         owner = curriculum_owner_program(program) or program
-        version = ensure_program_default_curriculum_version(owner)
-        if version is None:
+        versions = list(owner.curriculum_versions.filter(is_active=True))
+        default = ensure_program_default_curriculum_version(owner)
+        if default is None:
             raise CommandError(f"Could not create a curriculum version for {owner.code}.")
-        if not version.is_active or not version.is_default:
-            version.is_active = True
-            version.is_default = True
-            version.save(update_fields=["is_active", "is_default", "updated_at"])
-
-        for sort, (code, title, year, term) in enumerate(EXEMPTION_PAPERS, start=1):
-            cat, _ = CourseCatalogUnit.objects.get_or_create(
-                code=code,
-                defaults={
-                    "title": title,
-                    "credit_units": Decimal("3.00"),
-                    "lecture_hours": 45,
-                    "is_active": True,
-                },
-            )
-            if not cat.is_active:
-                cat.is_active = True
-                cat.save(update_fields=["is_active", "updated_at"])
-            ProgramCurriculumLine.objects.get_or_create(
-                curriculum_version=version,
-                catalog_course=cat,
-                year_of_study=year,
-                term_number=term,
-                defaults={
-                    "program": owner,
-                    "course_type": "mandatory",
-                    "sort_order": sort,
-                    "is_active": True,
-                },
-            )
-        return version
+        if default not in versions:
+            versions.append(default)
+        for version in versions:
+            if not version.is_active:
+                version.is_active = True
+                version.save(update_fields=["is_active", "updated_at"])
+            for sort, (code, title, year, term) in enumerate(EXEMPTION_PAPERS, start=1):
+                cat, _ = CourseCatalogUnit.objects.get_or_create(
+                    code=code,
+                    defaults={
+                        "title": title,
+                        "credit_units": Decimal("3.00"),
+                        "lecture_hours": 45,
+                        "is_active": True,
+                    },
+                )
+                if not cat.is_active:
+                    cat.is_active = True
+                    cat.save(update_fields=["is_active", "updated_at"])
+                line, _ = ProgramCurriculumLine.objects.get_or_create(
+                    curriculum_version=version,
+                    catalog_course=cat,
+                    year_of_study=year,
+                    term_number=term,
+                    defaults={
+                        "program": owner,
+                        "course_type": "mandatory",
+                        "sort_order": sort,
+                        "is_active": True,
+                    },
+                )
+                if not line.is_active or line.program_id != owner.pk:
+                    line.is_active = True
+                    line.program = owner
+                    line.sort_order = sort
+                    line.save(
+                        update_fields=["is_active", "program", "sort_order", "updated_at"]
+                    )
+        return default
 
     def _ensure_program_batch(self, program: Program, version):
         ipb = (
@@ -515,6 +585,10 @@ class Command(BaseCommand):
 
         if not skip_portal:
             ensure_student_portal_account(admission)
+            user = admission.student_user
+            if user is not None:
+                user.must_change_password = False
+                user.save(update_fields=["must_change_password"])
 
         y1t1 = year == 1 and term == 1
         can_apply = accounts_cleared and (docs_ok if y1t1 else True)

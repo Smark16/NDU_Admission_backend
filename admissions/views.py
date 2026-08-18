@@ -4797,6 +4797,39 @@ class StudentChangeRequestListCreate(APIView):
         return Response(
             AdmissionChangeRequestSerializer(qs, many=True, context={'request': request}).data
         )
+
+    def delete(self, request, pk=None):
+        """Student withdraws a pending/rejected exemption (not approved)."""
+        admission = self._get_admission(request.user)
+        if not admission:
+            return Response({'detail': 'No active admission found.'}, status=404)
+        pk = pk or request.query_params.get("id")
+        if not pk:
+            return Response({"detail": "Missing request id."}, status=400)
+        req = AdmissionChangeRequest.objects.filter(
+            pk=pk, admitted_student=admission
+        ).first()
+        if not req:
+            return Response({"detail": "Request not found."}, status=404)
+        if req.change_type != "exemption":
+            return Response(
+                {"detail": "Only course exemption applications can be deleted here."},
+                status=400,
+            )
+        if req.status == "approved":
+            return Response(
+                {
+                    "detail": (
+                        "An approved exemption cannot be deleted. "
+                        "Contact Academic Registrar if it was submitted in error."
+                    )
+                },
+                status=400,
+            )
+        req_id = req.id
+        req.delete()
+        return Response({"detail": "Exemption application deleted.", "id": req_id}, status=200)
+
     def post(self, request):
         admission = self._get_admission(request.user)
         if not admission:
@@ -5155,7 +5188,11 @@ class ExemptionFormFeeReportView(APIView):
 
     def get(self, request):
         from accounts.finance_access import user_can_view_student_finance
-        from admissions.exemption_services import exemption_form_fee_report
+        from admissions.exemption_services import (
+            EXEMPTION_FORM_FEE_UGX,
+            exemption_form_fee_report,
+            unpaid_exemption_submissions_qs,
+        )
 
         if not user_can_view_student_finance(request.user):
             return Response(
@@ -5164,10 +5201,64 @@ class ExemptionFormFeeReportView(APIView):
             )
 
         status_filter = request.query_params.get("status")
-        if status_filter not in ("pending", "completed", "paid_unsubmitted", None, ""):
+        if status_filter not in (
+            "pending",
+            "completed",
+            "paid_unsubmitted",
+            "submitted_unpaid",
+            None,
+            "",
+        ):
             return Response(
-                {"detail": "status must be 'pending', 'completed', or 'paid_unsubmitted'."},
+                {
+                    "detail": (
+                        "status must be 'pending', 'completed', "
+                        "'paid_unsubmitted', or 'submitted_unpaid'."
+                    )
+                },
                 status=400,
+            )
+        if status_filter == "submitted_unpaid":
+            from admissions.exemption_services import unpaid_exemption_submissions_qs
+
+            unpaid = unpaid_exemption_submissions_qs()
+            rows = [
+                {
+                    "charge_id": r.form_fee_charge_id,
+                    "student_pk": r.admitted_student_id,
+                    "student_id": r.admitted_student.student_id if r.admitted_student_id else "",
+                    "reg_no": r.admitted_student.reg_no if r.admitted_student_id else "",
+                    "student_name": r.admitted_student.full_name if r.admitted_student_id else "",
+                    "programme": (
+                        r.admitted_student.admitted_program.name
+                        if r.admitted_student_id and r.admitted_student.admitted_program_id
+                        else None
+                    ),
+                    "amount": float(EXEMPTION_FORM_FEE_UGX),
+                    "currency": "UGX",
+                    "status": "unpaid_submitted",
+                    "is_waived": False,
+                    "charged_at": r.created_at.isoformat() if r.created_at else None,
+                    "days_pending": None,
+                    "change_request_id": r.id,
+                    "change_request_status": r.status,
+                    "has_draft": False,
+                    "draft_paper_count": len(r.exemption_lines.all()),
+                    "draft_updated_at": None,
+                    "form_ready": True,
+                }
+                for r in unpaid
+            ]
+            pending_count = len(exemption_form_fee_report("pending"))
+            paid_unsubmitted_count = len(exemption_form_fee_report("paid_unsubmitted"))
+            return Response(
+                {
+                    "results": rows,
+                    "total": len(rows),
+                    "pending_count": pending_count,
+                    "paid_unsubmitted_count": paid_unsubmitted_count,
+                    "submitted_unpaid_count": len(rows),
+                }
             )
         rows = exemption_form_fee_report(status_filter or None)
         if status_filter == "paid_unsubmitted":
@@ -5192,8 +5283,54 @@ class ExemptionFormFeeReportView(APIView):
                 "total": len(rows),
                 "pending_count": pending_count,
                 "paid_unsubmitted_count": paid_unsubmitted_count,
+                "submitted_unpaid_count": unpaid_exemption_submissions_qs().count()
+                if status_filter != "submitted_unpaid"
+                else len(rows),
             }
         )
+
+
+class AdminReturnUnpaidExemptionView(APIView):
+    """Finance / HOD: return an exemption that was submitted without the form fee."""
+
+    permission_classes = [IsAuthenticated, CanViewAdmissionChangeRequests]
+
+    def post(self, request, pk):
+        from accounts.finance_access import user_can_view_student_finance
+        from admissions.exemption_services import return_unpaid_exemption_submission
+
+        if not (
+            user_can_view_student_finance(request.user)
+            or user_can_approve_exemption_requests(request.user)
+        ):
+            return Response(
+                {"detail": "Not allowed to return unpaid exemption submissions."},
+                status=403,
+            )
+
+        req_obj = get_object_or_404(
+            AdmissionChangeRequest.objects.select_related("admitted_student"),
+            pk=pk,
+            change_type="exemption",
+        )
+        assert_admitted_student_access(request.user, req_obj.admitted_student)
+        undo_approved = bool(request.data.get("undo_approved"))
+        try:
+            result = return_unpaid_exemption_submission(
+                req_obj,
+                actor=request.user,
+                undo_approved=undo_approved,
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
+        req_obj = (
+            AdmissionChangeRequest.objects.select_related("reviewed_by")
+            .prefetch_related("exemption_lines", "supporting_documents")
+            .get(pk=pk)
+        )
+        payload = AdmissionChangeRequestSerializer(req_obj, context={"request": request}).data
+        payload["return_result"] = result
+        return Response(payload)
 
 
 class StudentExemptionDraftView(APIView):
@@ -5400,6 +5537,10 @@ class ExemptionEligibleCoursesView(APIView):
         try:
             courses = list_eligible_exemption_courses(admission)
         except Exception:
+            logger.exception(
+                "Exemption eligible courses failed for student %s",
+                getattr(admission, "reg_no", admission.pk),
+            )
             courses = []
 
         grade_bands = []
@@ -5638,6 +5779,20 @@ class AdminChangeRequestReview(APIView):
                 return Response(
                     {"detail": "You do not have permission to review exemption requests."},
                     status=403,
+                )
+            from admissions.exemption_services import exemption_submission_is_unpaid
+
+            if action == "approve" and exemption_submission_is_unpaid(req_obj):
+                return Response(
+                    {
+                        "detail": (
+                            "This student has not paid the exemption form fee. "
+                            "Return the unpaid request, or wait until they pay, "
+                            "before approving papers."
+                        ),
+                        "code": "exemption_form_fee_required",
+                    },
+                    status=400,
                 )
             # Alumni flag is metadata for Finance; course fees are billed as
             # semester tuition ÷ curriculum papers. HOD may still confirm it.
