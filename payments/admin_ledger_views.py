@@ -1197,7 +1197,13 @@ class AdminAccountsClearedRegistrationReportView(APIView):
         clearer = s.accounts_registration_cleared_by
         clearer_name = ""
         if clearer:
-            clearer_name = clearer.get_full_name() or clearer.email or str(clearer.pk)
+            clearer_name = (
+                (getattr(clearer, "full_name", None) or "").strip()
+                or (clearer.get_full_name() or "").strip()
+                or clearer.username
+                or clearer.email
+                or str(clearer.pk)
+            )
         return {
             "id": s.id,
             "student_id": s.student_id or "",
