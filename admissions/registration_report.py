@@ -25,34 +25,43 @@ def _student_name(student: AdmittedStudent) -> str:
     return name or "—"
 
 
-def _accounts_officer_counts(qs) -> list[dict[str, Any]]:
-    rows = (
-        qs.filter(accounts_registration_cleared=True)
-        .exclude(accounts_registration_cleared_by_id=None)
-        .values(
-            "accounts_registration_cleared_by_id",
-            "accounts_registration_cleared_by__first_name",
-            "accounts_registration_cleared_by__last_name",
-            "accounts_registration_cleared_by__username",
-            "accounts_registration_cleared_by__email",
-        )
-        .annotate(count=Count("id"))
-        .order_by("-count", "accounts_registration_cleared_by__last_name")
+def _officer_name(user) -> str:
+    if not user:
+        return ""
+    return (
+        (getattr(user, "full_name", None) or "").strip()
+        or (user.get_full_name() or "").strip()
+        or user.username
+        or user.email
+        or ""
     )
-    out = []
-    for item in rows:
-        first = (item.get("accounts_registration_cleared_by__first_name") or "").strip()
-        last = (item.get("accounts_registration_cleared_by__last_name") or "").strip()
-        username = (item.get("accounts_registration_cleared_by__username") or "").strip()
-        email = (item.get("accounts_registration_cleared_by__email") or "").strip()
-        out.append(
+
+
+def _cleared_student_rows(qs) -> list[dict[str, Any]]:
+    students = (
+        qs.filter(accounts_registration_cleared=True)
+        .select_related(
+            "application",
+            "admitted_program",
+            "admitted_campus",
+            "accounts_registration_cleared_by",
+        )
+        .order_by("application__last_name", "application__first_name", "id")
+    )
+    rows = []
+    for s in students.iterator(chunk_size=500):
+        rows.append(
             {
-                "name": f"{first} {last}".strip() or username or email or "—",
-                "username": username,
-                "count": int(item["count"] or 0),
+                "student_pk": s.pk,
+                "name": _student_name(s),
+                "student_id": s.student_id or "",
+                "reg_no": s.reg_no or "",
+                "campus": s.admitted_campus.name if s.admitted_campus_id else "—",
+                "program": s.admitted_program.name if s.admitted_program_id else "—",
+                "cleared_by": _officer_name(s.accounts_registration_cleared_by),
             }
         )
-    return out
+    return rows
 
 
 DATE_FIELD_MAP = {
@@ -323,6 +332,6 @@ def build_registration_report(user, params: dict[str, Any], *, include_finance: 
         ),
         "temporary_passes": temp_rows,
         "scholarships": scholarship_rows,
-        "accounts_officers": _accounts_officer_counts(base),
+        "cleared_students": _cleared_student_rows(base),
         "can_view_finance": include_finance,
     }

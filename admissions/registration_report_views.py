@@ -152,6 +152,29 @@ class RegistrationReportExcelView(APIView):
             ],
         )
 
+        write_sheet(
+            wb.create_sheet("Students"),
+            [
+                "Student",
+                "Student ID",
+                "Reg No",
+                "Campus",
+                "Programme",
+                "Accounts cleared by",
+            ],
+            [
+                [
+                    r.get("name") or "—",
+                    r.get("student_id") or "",
+                    r.get("reg_no") or "",
+                    r.get("campus") or "—",
+                    r.get("program") or "—",
+                    r.get("cleared_by") or "",
+                ]
+                for r in (data.get("cleared_students") or [])
+            ],
+        )
+
         campus_ws = wb.create_sheet("By campus")
         write_sheet(
             campus_ws,
@@ -241,15 +264,6 @@ class RegistrationReportExcelView(APIView):
         if include_finance:
             sch_headers.append("Tuition paid (UGX)")
         write_sheet(wb.create_sheet("Scholarships"), sch_headers, sch_rows)
-
-        write_sheet(
-            wb.create_sheet("Accounts officers"),
-            ["Accounts officer", "Username", "Students cleared"],
-            [
-                [r.get("name") or "—", r.get("username") or "", r.get("count") or 0]
-                for r in (data.get("accounts_officers") or [])
-            ],
-        )
 
         buf = BytesIO()
         wb.save(buf)
