@@ -25,6 +25,85 @@ def _student_name(student: AdmittedStudent) -> str:
     return name or "—"
 
 
+def _staff_name(user) -> str:
+    if not user:
+        return ""
+    name = (getattr(user, "full_name", None) or "").strip()
+    if name:
+        return name
+    return (user.get_full_name() or "").strip() or user.username or user.email or ""
+
+
+def _when(dt) -> str | None:
+    if not dt:
+        return None
+    return dt.isoformat()
+
+
+def _staff_counts(qs, fk_field: str) -> list[dict[str, Any]]:
+    rows = (
+        qs.exclude(**{f"{fk_field}_id": None})
+        .values(
+            f"{fk_field}_id",
+            f"{fk_field}__first_name",
+            f"{fk_field}__last_name",
+            f"{fk_field}__username",
+            f"{fk_field}__email",
+        )
+        .annotate(count=Count("id"))
+        .order_by("-count", f"{fk_field}__last_name")
+    )
+    out = []
+    for item in rows:
+        first = (item.get(f"{fk_field}__first_name") or "").strip()
+        last = (item.get(f"{fk_field}__last_name") or "").strip()
+        username = (item.get(f"{fk_field}__username") or "").strip()
+        email = (item.get(f"{fk_field}__email") or "").strip()
+        out.append(
+            {
+                "name": f"{first} {last}".strip() or username or email or "—",
+                "username": username,
+                "count": int(item["count"] or 0),
+            }
+        )
+    return out
+
+
+def iter_registration_action_rows(qs):
+    """Student-level who-did-what rows for Excel."""
+    students = (
+        qs.select_related(
+            "application",
+            "admitted_program",
+            "admitted_campus",
+            "admitted_batch",
+            "admitted_by",
+            "accounts_registration_cleared_by",
+            "physical_documents_verified_by",
+        )
+        .order_by("application__last_name", "application__first_name", "id")
+    )
+    for s in students.iterator(chunk_size=500):
+        yield {
+            "name": _student_name(s),
+            "student_id": s.student_id or "",
+            "reg_no": s.reg_no or "",
+            "campus": s.admitted_campus.name if s.admitted_campus_id else "—",
+            "program": s.admitted_program.name if s.admitted_program_id else "—",
+            "intake": s.admitted_batch.name if s.admitted_batch_id else "—",
+            "admitted_by": _staff_name(s.admitted_by),
+            "admission_date": _when(s.admission_date),
+            "cleared": bool(s.accounts_registration_cleared),
+            "cleared_at": _when(s.accounts_registration_cleared_at),
+            "cleared_by": _staff_name(s.accounts_registration_cleared_by),
+            "verified": bool(s.physical_documents_verified),
+            "verified_at": _when(s.physical_documents_verified_at),
+            "verified_by": _staff_name(s.physical_documents_verified_by),
+            "registered": bool(s.is_registered),
+            "registered_at": _when(s.registration_date),
+        }
+
+
 DATE_FIELD_MAP = {
     "admission": "admission_date",
     "registered": "registration_date",
@@ -155,16 +234,20 @@ def registration_report_filter_options(user) -> dict[str, Any]:
     }
 
 
-def build_registration_report(user, params: dict[str, Any], *, include_finance: bool) -> dict[str, Any]:
-    from payments.models import ScholarshipAward
-
-    base = filter_admitted_students_for_user(
+def registration_report_queryset(user, params: dict[str, Any]):
+    qs = filter_admitted_students_for_user(
         AdmittedStudent.objects.filter(is_admitted=True).exclude(
             application__is_revoked=True
         ),
         user,
     )
-    base = _apply_report_filters(base, params).order_by()
+    return _apply_report_filters(qs, params).order_by()
+
+
+def build_registration_report(user, params: dict[str, Any], *, include_finance: bool) -> dict[str, Any]:
+    from payments.models import ScholarshipAward
+
+    base = registration_report_queryset(user, params)
 
     totals_row = base.aggregate(
         admitted=Count("id"),
@@ -193,6 +276,8 @@ def build_registration_report(user, params: dict[str, Any], *, include_finance: 
             "student__admitted_campus",
             "student__admitted_batch",
             "scholarship_award__programme",
+            "issued_by",
+            "approved_by",
         )
         .order_by("-issued_at", "-id")
     )
@@ -210,6 +295,7 @@ def build_registration_report(user, params: dict[str, Any], *, include_finance: 
         )
         .select_related(
             "programme",
+            "awarded_by",
             "student__application",
             "student__admitted_program",
             "student__admitted_campus",
@@ -246,6 +332,8 @@ def build_registration_report(user, params: dict[str, Any], *, include_finance: 
                 "intake": s.admitted_batch.name if s.admitted_batch_id else "—",
                 "sponsor": p.sponsor_label or (programme.name if programme else "") or "—",
                 "valid_until": p.valid_until.isoformat() if p.valid_until else None,
+                "issued_by": _staff_name(p.issued_by),
+                "approved_by": _staff_name(p.approved_by),
                 "tuition_paid_ugx": paid_ugx(s.pk),
             }
         )
@@ -266,6 +354,7 @@ def build_registration_report(user, params: dict[str, Any], *, include_finance: 
                 "scholarship_name": a.programme.name if a.programme_id else "—",
                 "sponsor": (a.programme.sponsor if a.programme_id else "") or "—",
                 "award_amount": float(a.award_amount or 0),
+                "awarded_by": _staff_name(a.awarded_by),
                 "tuition_paid_ugx": paid_ugx(s.pk),
             }
         )
@@ -289,5 +378,10 @@ def build_registration_report(user, params: dict[str, Any], *, include_finance: 
         ),
         "temporary_passes": temp_rows,
         "scholarships": scholarship_rows,
+        "staff": {
+            "cleared_by": _staff_counts(base.filter(accounts_registration_cleared=True), "accounts_registration_cleared_by"),
+            "verified_by": _staff_counts(base.filter(physical_documents_verified=True), "physical_documents_verified_by"),
+            "admitted_by": _staff_counts(base, "admitted_by"),
+        },
         "can_view_finance": include_finance,
     }

@@ -13,7 +13,9 @@ from accounts.erp_drf_permissions import user_has_any_erp_perm
 from accounts.super_admin import user_is_super_admin
 from admissions.registration_report import (
     build_registration_report,
+    iter_registration_action_rows,
     registration_report_filter_options,
+    registration_report_queryset,
 )
 
 
@@ -191,7 +193,18 @@ class RegistrationReportExcelView(APIView):
             ],
         )
 
-        pass_headers = ["Name", "Student ID", "Reg No", "Campus", "Programme", "Intake", "Sponsor", "Valid until"]
+        pass_headers = [
+            "Name",
+            "Student ID",
+            "Reg No",
+            "Campus",
+            "Programme",
+            "Intake",
+            "Sponsor",
+            "Valid until",
+            "Issued by",
+            "Approved by",
+        ]
         pass_rows = []
         for r in data["temporary_passes"]:
             row = [
@@ -203,6 +216,8 @@ class RegistrationReportExcelView(APIView):
                 r["intake"],
                 r["sponsor"],
                 r["valid_until"] or "Open",
+                r.get("issued_by") or "",
+                r.get("approved_by") or "",
             ]
             if include_finance:
                 row.append(_ugx(r.get("tuition_paid_ugx")))
@@ -221,6 +236,7 @@ class RegistrationReportExcelView(APIView):
             "Scholarship",
             "Sponsor",
             "Award amount",
+            "Awarded by",
         ]
         sch_rows = []
         for r in data["scholarships"]:
@@ -234,6 +250,7 @@ class RegistrationReportExcelView(APIView):
                 r["scholarship_name"],
                 r["sponsor"],
                 r.get("award_amount"),
+                r.get("awarded_by") or "",
             ]
             if include_finance:
                 row.append(_ugx(r.get("tuition_paid_ugx")))
@@ -241,6 +258,77 @@ class RegistrationReportExcelView(APIView):
         if include_finance:
             sch_headers.append("Tuition paid (UGX)")
         write_sheet(wb.create_sheet("Scholarships"), sch_headers, sch_rows)
+
+        staff = data.get("staff") or {}
+        staff_rows = []
+        for action, key in (
+            ("Accounts cleared", "cleared_by"),
+            ("Documents verified", "verified_by"),
+            ("Admitted", "admitted_by"),
+        ):
+            items = staff.get(key) or []
+            if not items:
+                staff_rows.append([action, "—", "", 0])
+                continue
+            for r in items:
+                staff_rows.append(
+                    [action, r.get("name") or "—", r.get("username") or "", r.get("count") or 0]
+                )
+        write_sheet(
+            wb.create_sheet("Staff"),
+            ["Action", "Staff", "Username", "Count"],
+            staff_rows,
+        )
+
+        def _fmt_dt(iso):
+            if not iso:
+                return ""
+            return str(iso)[:19].replace("T", " ")
+
+        student_rows = []
+        for r in iter_registration_action_rows(registration_report_queryset(request.user, params)):
+            student_rows.append(
+                [
+                    r["name"],
+                    r["student_id"],
+                    r["reg_no"],
+                    r["campus"],
+                    r["program"],
+                    r["intake"],
+                    r["admitted_by"],
+                    _fmt_dt(r["admission_date"]),
+                    "Yes" if r["cleared"] else "No",
+                    _fmt_dt(r["cleared_at"]),
+                    r["cleared_by"],
+                    "Yes" if r["verified"] else "No",
+                    _fmt_dt(r["verified_at"]),
+                    r["verified_by"],
+                    "Yes" if r["registered"] else "No",
+                    _fmt_dt(r["registered_at"]),
+                ]
+            )
+        write_sheet(
+            wb.create_sheet("Students"),
+            [
+                "Name",
+                "Student ID",
+                "Reg No",
+                "Campus",
+                "Programme",
+                "Intake",
+                "Admitted by",
+                "Admission date",
+                "Cleared",
+                "Cleared at",
+                "Cleared by",
+                "Verified",
+                "Verified at",
+                "Verified by",
+                "Registered",
+                "Registered at",
+            ],
+            student_rows,
+        )
 
         buf = BytesIO()
         wb.save(buf)
