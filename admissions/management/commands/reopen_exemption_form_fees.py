@@ -64,20 +64,25 @@ class Command(BaseCommand):
             )
             qs = qs.exclude(student_id__in=submitted_ids)
 
-        rows = list(
-            qs.select_related("student").values_list(
-                "id", "student__reg_no", "student__full_name", "amount", "payment_method"
+        charges = list(qs.select_related("student", "student__application"))
+        self.stdout.write(f"Matches: {len(charges)}")
+        for charge in charges:
+            student = charge.student
+            try:
+                name = student.full_name if student else ""
+            except Exception:
+                name = ""
+            ref = (charge.payment_reference or "").strip() or "-"
+            self.stdout.write(
+                f"  charge={charge.id} {getattr(student, 'reg_no', '')} {name} "
+                f"{charge.amount} method={charge.payment_method or '-'} ref={ref}"
             )
-        )
-        self.stdout.write(f"Matches: {len(rows)}")
-        for rid, rno, name, amt, method in rows:
-            self.stdout.write(f"  charge={rid} {rno} {name} {amt} method={method or '-'}")
 
         if options["dry_run"]:
             self.stdout.write("Dry run — no changes.")
             return
 
-        ids = [r[0] for r in rows]
+        ids = [c.id for c in charges]
         n = StudentTuitionPayment.objects.filter(pk__in=ids).update(
             status="pending",
             paid_at=None,

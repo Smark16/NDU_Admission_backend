@@ -24,6 +24,7 @@ from admissions.exemption_services import (
     exemption_form_fee_status,
     exemption_ineligibility,
     form_fee_paid_for_charge,
+    exemption_form_fee_settled_by_prompt,
     _ensure_form_fee_charge,
     _form_fee_status_dict,
 )
@@ -145,6 +146,20 @@ class InitiateExemptionFormFeePaymentView(APIView):
                     "form_fee": access,
                 }
             )
+        if charge.status == "completed" and not exemption_form_fee_settled_by_prompt(charge):
+            StudentTuitionPayment.objects.filter(pk=charge.pk).update(
+                status="pending",
+                paid_at=None,
+                payment_method="",
+                payment_reference="",
+                transaction_id=None,
+            )
+            charge.refresh_from_db()
+            AdmissionChangeRequest.objects.filter(
+                change_type="exemption",
+                admitted_student=student,
+                form_fee_paid_at__isnull=False,
+            ).update(form_fee_paid_at=None)
 
         # Resume / clear a previous STK attempt on this same bill.
         if (charge.payment_reference or "").strip():
