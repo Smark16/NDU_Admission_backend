@@ -116,6 +116,39 @@ UNPAID_RETURN_MESSAGE = (
 )
 
 
+def exemption_form_fee_settled_by_prompt(payment: StudentTuitionPayment | None) -> bool:
+    """
+    True only when the UGX 50k was collected via the exemption MoMo prompt.
+
+    A completed EXEMPTION_FORM row with no payment_reference is usually tuition /
+    SchoolPay-code credit allocated onto the bill — that is not an exemption payment.
+    """
+    if payment is None or getattr(payment, "is_waived", False):
+        return False
+    if getattr(payment, "status", None) != "completed":
+        return False
+    ref = (getattr(payment, "payment_reference", None) or "").strip()
+    method = (getattr(payment, "payment_method", None) or "").strip()
+    return bool(ref) or method == "mobile_money"
+
+
+def prompt_paid_exemption_form_fee_qs():
+    """Completed EXEMPTION_FORM charges that came from the MoMo / Adhoc prompt."""
+    form_head, _ = ensure_exemption_fee_heads()
+    return (
+        StudentTuitionPayment.objects.filter(
+            source="ad_hoc",
+            fee_head=form_head,
+            is_waived=False,
+            status="completed",
+        )
+        .filter(
+            Q(payment_method="mobile_money")
+            | (~Q(payment_reference="") & ~Q(payment_reference=None))
+        )
+    )
+
+
 def student_has_paid_exemption_form_fee(student: AdmittedStudent) -> bool:
     return form_fee_paid_for_charge(student, _open_form_fee_charge(student))
 
@@ -130,13 +163,7 @@ def exemption_submission_is_unpaid(change_request: AdmissionChangeRequest) -> bo
 
 
 def unpaid_exemption_submissions_qs():
-    form_head, _ = ensure_exemption_fee_heads()
-    paid_ids = StudentTuitionPayment.objects.filter(
-        source="ad_hoc",
-        fee_head=form_head,
-        is_waived=False,
-        status="completed",
-    ).values_list("student_id", flat=True)
+    paid_ids = prompt_paid_exemption_form_fee_qs().values_list("student_id", flat=True)
     return (
         AdmissionChangeRequest.objects.filter(change_type="exemption")
         .exclude(admitted_student_id__in=paid_ids)
@@ -632,7 +659,7 @@ def _open_form_fee_charge(student: AdmittedStudent) -> StudentTuitionPayment | N
         status__in=("pending", "completed"),
     )
     completed = qs.filter(status="completed").order_by("-paid_at", "-created_at").first()
-    if completed:
+    if completed and exemption_form_fee_settled_by_prompt(completed):
         extras = qs.filter(status="pending").exclude(pk=completed.pk)
         if extras.exists():
             extras.update(
@@ -641,6 +668,13 @@ def _open_form_fee_charge(student: AdmittedStudent) -> StudentTuitionPayment | N
                     "Cancelled: exemption form fee already paid on an earlier charge."
                 ),
             )
+        return completed
+    if completed and not exemption_form_fee_settled_by_prompt(completed):
+        # Tuition/SchoolPay-code credit marked this 50k complete. It is not a
+        # real exemption payment — keep using the row as an open bill.
+        pending_existing = qs.filter(status="pending").order_by("-created_at").first()
+        if pending_existing:
+            return pending_existing
         return completed
 
     pending = qs.filter(status="pending").order_by("-created_at").first()
@@ -658,19 +692,10 @@ def _open_form_fee_charge(student: AdmittedStudent) -> StudentTuitionPayment | N
 
 
 def form_fee_paid_for_charge(student: AdmittedStudent, charge: StudentTuitionPayment | None) -> bool:
-    """Unlock after any completed form-fee payment (STK, bank, or tuition allocation)."""
-    form_head, _ = ensure_exemption_fee_heads()
-    if StudentTuitionPayment.objects.filter(
-        student=student,
-        source="ad_hoc",
-        fee_head=form_head,
-        is_waived=False,
-        status="completed",
-    ).exists():
+    """Unlock only after the exemption MoMo prompt (not SchoolPay student-code tuition)."""
+    if prompt_paid_exemption_form_fee_qs().filter(student=student).exists():
         return True
-    if charge is None or charge.is_waived:
-        return False
-    return charge.status == "completed"
+    return exemption_form_fee_settled_by_prompt(charge)
 
 
 def _ensure_form_fee_charge(student: AdmittedStudent, *, charged_by=None) -> StudentTuitionPayment:
