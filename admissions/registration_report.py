@@ -5,7 +5,6 @@ from decimal import Decimal
 from typing import Any
 
 from django.db.models import Count, Q, Sum
-from django.db.models.functions import Coalesce
 
 from admissions.faculty_scope import filter_admitted_students_for_user
 from admissions.models import AdmittedStudent, Batch, TemporaryAccessPass
@@ -52,14 +51,15 @@ def _ledger_paid_by_student(student_ids: list[int]) -> dict[int, Decimal]:
         TuitionLedger.objects.filter(student_id__in=student_ids)
         .filter(completed_ledger_status_q())
         .values("student_id")
-        .annotate(total=Coalesce(Sum("amount"), Decimal("0")))
+        .annotate(total=Sum("amount"))
     )
     return {int(r["student_id"]): r["total"] or Decimal("0") for r in rows}
 
 
 def _breakdown_rows(qs, group_fields: list[str]) -> list[dict[str, Any]]:
     annotated = (
-        qs.values(*group_fields)
+        qs.order_by()
+        .values(*group_fields)
         .annotate(
             admitted=Count("id"),
             registered=Count("id", filter=Q(is_registered=True)),
@@ -115,7 +115,7 @@ def registration_report_filter_options(user) -> dict[str, Any]:
             seen.add(ay)
             academic_years.append(ay)
     campuses = list(
-        Campus.objects.filter(is_active=True).order_by("name").values("id", "name")
+        Campus.objects.order_by("name").values("id", "name")
     )
     faculties = list(
         filter_faculties_for_user(
@@ -148,7 +148,7 @@ def build_registration_report(user, params: dict[str, Any], *, include_finance: 
         ),
         user,
     )
-    base = _apply_report_filters(base, params)
+    base = _apply_report_filters(base, params).order_by()
 
     totals_row = base.aggregate(
         admitted=Count("id"),

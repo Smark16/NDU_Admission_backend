@@ -66,8 +66,17 @@ class RegistrationReportView(APIView):
 
         params = _report_params(request)
         include_finance = user_can_view_student_finance(request.user)
-        data = build_registration_report(request.user, params, include_finance=include_finance)
-        data["filters"] = registration_report_filter_options(request.user)
+        try:
+            data = build_registration_report(request.user, params, include_finance=include_finance)
+            data["filters"] = registration_report_filter_options(request.user)
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).exception("registration report failed")
+            return Response(
+                {"detail": "Could not build the registration report. Check gunicorn logs."},
+                status=500,
+            )
         data["applied"] = {
             "academic_year": params["academic_year"] or None,
             "batch": params["batch_id"],
