@@ -467,7 +467,10 @@ class AdmittedStudentSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         from Programs.program_batch_resolution import resolve_default_program_batch_for_program
-        from admissions.placement_sync import regenerate_reg_no_for_admission
+        from admissions.placement_sync import (
+            bill_programme_change_if_required,
+            regenerate_reg_no_for_admission,
+        )
 
         old_program_id = instance.admitted_program_id
         old_campus_id = instance.admitted_campus_id
@@ -518,6 +521,14 @@ class AdmittedStudentSerializer(serializers.ModelSerializer):
         ):
             regenerate_reg_no_for_admission(admitted, sync_portal=True)
             admitted.refresh_from_db(fields=["reg_no"])
+
+        if admitted.admitted_program_id != old_program_id:
+            bill_programme_change_if_required(
+                admitted,
+                old_program=old_program_id,
+                new_program=admitted.admitted_program,
+                charged_by=getattr(getattr(self, "context", {}).get("request"), "user", None),
+            )
 
         return admitted
 
