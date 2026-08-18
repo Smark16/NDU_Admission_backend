@@ -6,8 +6,12 @@ ledger history is tied to the existing code.
 from __future__ import annotations
 
 import logging
+from decimal import Decimal
 
 logger = logging.getLogger(__name__)
+
+PROGRAMME_CHANGE_FEE_CODE = "PROGRAMME_CHANGE"
+PROGRAMME_CHANGE_FEE_UGX = Decimal("80000")
 
 
 def _intake_batch_for_reg(admission):
@@ -67,6 +71,67 @@ def regenerate_reg_no_for_admission(admission, *, sync_portal: bool = True) -> s
     return new_reg
 
 
+def bill_programme_change_if_required(
+    admission,
+    *,
+    old_program=None,
+    new_program=None,
+    charged_by=None,
+):
+    """
+    Raise the post-document-verification programme-change charge.
+
+    This only applies when the admitted programme actually changes after the
+    student's physical documents have already been verified.
+    """
+    old_program_id = getattr(old_program, "id", old_program)
+    new_program_id = getattr(new_program, "id", new_program)
+    if not old_program_id or not new_program_id or old_program_id == new_program_id:
+        return None
+    if not getattr(admission, "physical_documents_verified", False):
+        return None
+
+    from payments.models import FeeHead, StudentTuitionPayment
+
+    fee_head, _ = FeeHead.objects.get_or_create(
+        code=PROGRAMME_CHANGE_FEE_CODE,
+        defaults={
+            "name": "Programme Change Fee",
+            "category": "service",
+            "description": "Administrative charge for programme/course changes after physical document verification.",
+            "is_active": True,
+        },
+    )
+    marker = f"programme_change:{admission.pk}:{old_program_id}->{new_program_id}"
+    existing = StudentTuitionPayment.objects.filter(
+        student=admission,
+        source="ad_hoc",
+        fee_head=fee_head,
+        is_waived=False,
+        notes__icontains=marker,
+    ).exclude(status="cancelled").first()
+    if existing is not None:
+        return existing
+
+    old_name = getattr(old_program, "name", None) or f"Programme #{old_program_id}"
+    new_name = getattr(new_program, "name", None) or f"Programme #{new_program_id}"
+    return StudentTuitionPayment.objects.create(
+        student=admission,
+        source="ad_hoc",
+        fee_head=fee_head,
+        label="Programme change fee",
+        amount=PROGRAMME_CHANGE_FEE_UGX,
+        currency="UGX",
+        status="pending",
+        notes=(
+            f"{marker}; Charged after physical document verification for programme change "
+            f"from {old_name} to {new_name}."
+        ),
+        charged_by=charged_by,
+        semester=None,
+    )
+
+
 def apply_program_campus_study_mode(
     admission,
     *,
@@ -74,6 +139,7 @@ def apply_program_campus_study_mode(
     campus=None,
     study_mode: str | None = None,
     regenerate_reg_no: bool = True,
+    charged_by=None,
 ):
     """
     Apply placement updates and regenerate the campus/programme-sensitive reg_no.
@@ -81,11 +147,14 @@ def apply_program_campus_study_mode(
     """
     placement_changed = False
     update_fields: list[str] = []
+    old_program = admission.admitted_program
+    program_changed = False
 
     if program is not None and admission.admitted_program_id != getattr(program, "id", program):
         admission.admitted_program = program
         update_fields.append("admitted_program")
         placement_changed = True
+        program_changed = True
 
     if campus is not None and admission.admitted_campus_id != getattr(campus, "id", campus):
         admission.admitted_campus = campus
@@ -102,6 +171,13 @@ def apply_program_campus_study_mode(
     if update_fields:
         update_fields.append("updated_at")
         admission.save(update_fields=update_fields)
+        if program_changed:
+            bill_programme_change_if_required(
+                admission,
+                old_program=old_program,
+                new_program=admission.admitted_program,
+                charged_by=charged_by,
+            )
 
     new_reg = None
     if regenerate_reg_no and placement_changed:

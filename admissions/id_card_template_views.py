@@ -33,6 +33,7 @@ class IdCardPdfTemplateSerializer(serializers.ModelSerializer):
             "name",
             "template_pdf",
             "pdf_url",
+            "audience",
             "field_positions",
             "front_title",
             "institution",

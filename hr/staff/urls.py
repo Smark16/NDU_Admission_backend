@@ -1,5 +1,6 @@
 from django.urls import path
 from . import views
+from . import id_card_views
 
 app_name = 'staff'
 
@@ -51,5 +52,19 @@ urlpatterns = [
      path('supervised/staff/', views.SupervisorStaffListView.as_view(), name='supervisor-staff'),
      path('export/template/', views.ExportSampleCSV.as_view(), name='staff-upload-template'),
      path('upload_template/', views.HandleBulkStaffUpload.as_view(), name='staff-bulk-upload'),
+
+    path('id_cards/eligible', id_card_views.StaffIdCardEligibleListView.as_view(), name='staff_id_cards_eligible'),
+    path('id_cards/filter-options', id_card_views.StaffIdCardFilterOptionsView.as_view(), name='staff_id_cards_filter_options'),
+    path(
+        'id_cards/profile/<int:staff_id>/passport_photo',
+        id_card_views.StaffIdCardPassportPhotoView.as_view(),
+        name='staff_id_cards_passport_photo',
+    ),
+    path('id_cards/generate', id_card_views.StaffIdCardGenerateView.as_view(), name='staff_id_cards_generate'),
+    path('id_cards/<int:card_id>/preview-data', id_card_views.StaffIdCardPreviewDataView.as_view(), name='staff_id_cards_preview'),
+    path('id_cards/<int:card_id>/print.pdf', id_card_views.StaffIdCardPrintPdfView.as_view(), name='staff_id_cards_print_pdf'),
+    path('id_cards/<int:card_id>/revoke', id_card_views.StaffIdCardRevokeView.as_view(), name='staff_id_cards_revoke'),
+    path('id_cards/<int:card_id>/reissue', id_card_views.StaffIdCardReissueView.as_view(), name='staff_id_cards_reissue'),
+    path('id_cards', id_card_views.StaffIdCardListView.as_view(), name='staff_id_cards_list'),
 ]
 

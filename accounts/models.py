@@ -159,6 +159,12 @@ class SystemSettings(models.Model):
         default="",
         help_text="Template key matching id_card_templates[].key",
     )
+    active_staff_id_card_template = models.CharField(
+        max_length=80,
+        blank=True,
+        default="",
+        help_text="Active PDF template key for staff ID cards.",
+    )
     university_name = models.CharField(
         max_length=255,
         blank=True,

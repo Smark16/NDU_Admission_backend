@@ -516,10 +516,20 @@ class IdCardEligibleListView(APIView):
     permission_classes = [IsAuthenticated, ManageIdCardsPermission]
 
     def get(self, request):
+        # Eligible queue can get large; allow a higher cap than the previous hard-limit of 500.
+        # Frontend currently doesn't pass `limit`, so this is mainly used to bump the default.
+        requested_limit = _parse_int_param(request, "limit")
+        if requested_limit is None:
+            requested_limit = 1000
+        # Hard safety cap to avoid accidentally loading huge datasets into the admin UI.
+        requested_limit = max(1, min(requested_limit, 5000))
+
         qs = _eligible_base_qs()
         qs = _apply_scope_to_admitted_qs(qs, request)
         qs = _search_admitted(qs, request.query_params.get("q", ""))
-        qs = qs.select_related("admitted_program", "admitted_program__faculty").order_by("-admission_date")[:500]
+        qs = qs.select_related("admitted_program", "admitted_program__faculty").order_by("-admission_date")[
+            :requested_limit
+        ]
         return Response([_eligible_payload(request, row) for row in qs])
 
 

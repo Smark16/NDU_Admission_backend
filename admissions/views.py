@@ -2488,6 +2488,9 @@ class CheckStudentStatus(APIView):
                         else None,
                         "campus_id": admitted_student.admitted_campus_id,
                         "study_mode": admitted_student.study_mode,
+                        "physical_documents_verified": bool(
+                            admitted_student.physical_documents_verified
+                        ),
                         "passport_photo": (
                             admitted_student_photo_url(admitted_student, request)
                         ),
@@ -5667,6 +5670,7 @@ class AdminChangeRequestReview(APIView):
                             admission,
                             program=req_obj.new_program,
                             regenerate_reg_no=True,
+                            charged_by=request.user,
                         )
                     elif req_obj.change_type == 'campus' and req_obj.new_campus:
                         from admissions.placement_sync import apply_program_campus_study_mode

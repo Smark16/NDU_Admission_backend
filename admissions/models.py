@@ -780,13 +780,27 @@ class StudentIdCard(models.Model):
 class IdCardPdfTemplate(models.Model):
     """PDF ID card blank: map merge fields to coordinates (same idea as offer letter PDF templates)."""
 
+    AUDIENCE_STUDENT = "student"
+    AUDIENCE_STAFF = "staff"
+    AUDIENCE_CHOICES = [
+        (AUDIENCE_STUDENT, "Student ID"),
+        (AUDIENCE_STAFF, "Staff ID"),
+    ]
+
     key = models.SlugField(
         max_length=80,
         unique=True,
         db_index=True,
-        help_text="Stable key; must match SystemSettings.active_id_card_template when this layout is active.",
+        help_text="Stable key; must match SystemSettings.active_id_card_template or active_staff_id_card_template.",
     )
     name = models.CharField(max_length=120)
+    audience = models.CharField(
+        max_length=16,
+        choices=AUDIENCE_CHOICES,
+        default=AUDIENCE_STUDENT,
+        db_index=True,
+        help_text="Whether this blank is used for student or staff cards.",
+    )
     template_pdf = models.FileField(upload_to="id_card_templates/", help_text="PDF artwork (e.g. card front)")
     field_positions = models.JSONField(default=dict, blank=True)
     front_title = models.CharField(max_length=200, blank=True, default="")
