@@ -40,7 +40,7 @@ def _apply_report_filters(qs, params: dict[str, Any]):
     faculty_id = params.get("faculty_id")
     from_date = params.get("from_date")
     to_date = params.get("to_date")
-    date_basis = (params.get("date_basis") or "admission").strip().lower()
+    date_basis = (params.get("date_basis") or "cleared").strip().lower()
     date_field = DATE_FIELD_MAP.get(date_basis, "admission_date")
     if academic_year:
         qs = qs.filter(admitted_batch__academic_year=academic_year)

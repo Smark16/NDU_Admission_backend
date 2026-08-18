@@ -46,7 +46,7 @@ def _parse_int(raw) -> int | None:
 def _report_params(request) -> dict:
     from django.utils.dateparse import parse_date
 
-    basis = (request.query_params.get("date_basis") or "admission").strip().lower()
+    basis = (request.query_params.get("date_basis") or "cleared").strip().lower()
     if basis not in ("admission", "registered", "cleared", "verified"):
         basis = "admission"
     return {
