@@ -25,11 +25,23 @@ def _student_name(student: AdmittedStudent) -> str:
     return name or "—"
 
 
+DATE_FIELD_MAP = {
+    "admission": "admission_date",
+    "registered": "registration_date",
+    "cleared": "accounts_registration_cleared_at",
+    "verified": "physical_documents_verified_at",
+}
+
+
 def _apply_report_filters(qs, params: dict[str, Any]):
     academic_year = (params.get("academic_year") or "").strip()
     batch_id = params.get("batch_id")
     campus_id = params.get("campus_id")
     faculty_id = params.get("faculty_id")
+    from_date = params.get("from_date")
+    to_date = params.get("to_date")
+    date_basis = (params.get("date_basis") or "admission").strip().lower()
+    date_field = DATE_FIELD_MAP.get(date_basis, "admission_date")
     if academic_year:
         qs = qs.filter(admitted_batch__academic_year=academic_year)
     if batch_id:
@@ -38,6 +50,10 @@ def _apply_report_filters(qs, params: dict[str, Any]):
         qs = qs.filter(admitted_campus_id=campus_id)
     if faculty_id:
         qs = qs.filter(admitted_program__faculty_id=faculty_id)
+    if from_date:
+        qs = qs.filter(**{f"{date_field}__date__gte": from_date})
+    if to_date:
+        qs = qs.filter(**{f"{date_field}__date__lte": to_date})
     return qs
 
 

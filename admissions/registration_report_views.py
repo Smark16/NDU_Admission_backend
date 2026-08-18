@@ -44,11 +44,19 @@ def _parse_int(raw) -> int | None:
 
 
 def _report_params(request) -> dict:
+    from django.utils.dateparse import parse_date
+
+    basis = (request.query_params.get("date_basis") or "admission").strip().lower()
+    if basis not in ("admission", "registered", "cleared", "verified"):
+        basis = "admission"
     return {
         "academic_year": (request.query_params.get("academic_year") or "").strip(),
         "batch_id": _parse_int(request.query_params.get("batch")),
         "campus_id": _parse_int(request.query_params.get("campus")),
         "faculty_id": _parse_int(request.query_params.get("faculty")),
+        "date_basis": basis,
+        "from_date": parse_date((request.query_params.get("from_date") or "").strip() or "") or None,
+        "to_date": parse_date((request.query_params.get("to_date") or "").strip() or "") or None,
     }
 
 
@@ -82,6 +90,9 @@ class RegistrationReportView(APIView):
             "batch": params["batch_id"],
             "campus": params["campus_id"],
             "faculty": params["faculty_id"],
+            "date_basis": params["date_basis"],
+            "from_date": params["from_date"].isoformat() if params["from_date"] else None,
+            "to_date": params["to_date"].isoformat() if params["to_date"] else None,
         }
         return Response(data)
 
