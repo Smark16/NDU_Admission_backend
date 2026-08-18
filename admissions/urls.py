@@ -286,6 +286,11 @@ urlpatterns = [
 
     # Admission Change Requests
     path('change_requests/my', views.StudentChangeRequestListCreate.as_view(), name='student_change_requests'),
+    path(
+        'change_requests/my/<int:pk>',
+        views.StudentChangeRequestListCreate.as_view(),
+        name='student_change_request_delete',
+    ),
     path('change_requests/options', views.StudentChangeRequestOptions.as_view(), name='student_change_request_options'),
     path(
         'change_requests/exemption/access',
@@ -319,6 +324,11 @@ urlpatterns = [
     ),
     path('change_requests/all', views.AdminChangeRequestList.as_view(), name='admin_change_requests'),
     path('change_requests/<int:pk>/review', views.AdminChangeRequestReview.as_view(), name='review_change_request'),
+    path(
+        'change_requests/<int:pk>/return_unpaid',
+        views.AdminReturnUnpaidExemptionView.as_view(),
+        name='return_unpaid_exemption',
+    ),
     path(
         'change_requests/<int:pk>/curriculum',
         views.AdminExemptionCurriculumView.as_view(),

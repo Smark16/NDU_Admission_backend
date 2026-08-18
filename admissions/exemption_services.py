@@ -109,11 +109,141 @@ def attach_exemption_eligibility(student: AdmittedStudent, payload: dict) -> dic
     return payload
 
 
+UNPAID_RETURN_MARKER = "Returned unpaid exemption submission."
+UNPAID_RETURN_MESSAGE = (
+    "This exemption was returned because the UGX 50,000 form fee was not paid. "
+    "Pay via the Course Exemption page (Exemption payments), then submit again."
+)
+
+
+def student_has_paid_exemption_form_fee(student: AdmittedStudent) -> bool:
+    return form_fee_paid_for_charge(student, _open_form_fee_charge(student))
+
+
+def exemption_submission_is_unpaid(change_request: AdmissionChangeRequest) -> bool:
+    if getattr(change_request, "change_type", None) != "exemption":
+        return False
+    student = getattr(change_request, "admitted_student", None)
+    if student is None:
+        return True
+    return not student_has_paid_exemption_form_fee(student)
+
+
+def unpaid_exemption_submissions_qs():
+    form_head, _ = ensure_exemption_fee_heads()
+    paid_ids = StudentTuitionPayment.objects.filter(
+        source="ad_hoc",
+        fee_head=form_head,
+        is_waived=False,
+        status="completed",
+    ).values_list("student_id", flat=True)
+    return (
+        AdmissionChangeRequest.objects.filter(change_type="exemption")
+        .exclude(admitted_student_id__in=paid_ids)
+        .select_related(
+            "admitted_student",
+            "admitted_student__admitted_program",
+            "admitted_student__application",
+        )
+        .prefetch_related("exemption_lines")
+        .order_by("-created_at")
+    )
+
+
+def undo_exemption_curriculum_effects(change_request: AdmissionChangeRequest) -> dict:
+    """Remove curriculum overrides and EXEMPTION_COURSE bills for this request."""
+    from Programs.models import StudentCurriculumOverride
+
+    student = change_request.admitted_student
+    line_ids = [
+        lid
+        for lid in change_request.exemption_lines.values_list("curriculum_line_id", flat=True)
+        if lid
+    ]
+    overrides_n = 0
+    try:
+        enrollment = student.programme_enrollment
+    except Exception:
+        enrollment = None
+    if enrollment is not None and line_ids:
+        qs = StudentCurriculumOverride.objects.filter(
+            enrollment=enrollment,
+            override_type="exempted",
+            curriculum_line_id__in=line_ids,
+        )
+        overrides_n, _ = qs.delete()
+
+    _, course_head = ensure_exemption_fee_heads()
+    markers = [
+        f"Exemption change request #{change_request.id}",
+        f"change request #{change_request.id}",
+    ]
+    q = Q()
+    for m in markers:
+        q |= Q(notes__icontains=m)
+    charges = StudentTuitionPayment.objects.filter(
+        student=student,
+        source="ad_hoc",
+    ).filter(Q(fee_head=course_head) | Q(fee_head__code=EXEMPTION_COURSE_FEE_CODE)).filter(q)
+    charges_n, _ = charges.delete()
+    return {"overrides_removed": overrides_n, "course_charges_removed": charges_n}
+
+
+def return_unpaid_exemption_submission(
+    change_request: AdmissionChangeRequest,
+    *,
+    actor=None,
+    undo_approved: bool = False,
+) -> dict:
+    """
+    Take an unpaid exemption out of the HOD/Accounts queue.
+
+    Pending: reject (does not use up a student attempt).
+    Approved: only if undo_approved — reverse curriculum exemptions, then reject.
+    """
+    if change_request.change_type != "exemption":
+        raise ValueError("Not an exemption request.")
+    if not exemption_submission_is_unpaid(change_request):
+        raise ValueError("This student has already paid the exemption form fee.")
+    if change_request.status == "rejected":
+        return {"id": change_request.id, "status": "rejected", "already_returned": True}
+    if change_request.status == "approved" and not undo_approved:
+        raise ValueError(
+            "This exemption was already approved. Pass undo_approved to reverse "
+            "curriculum exemptions and return it."
+        )
+
+    extras = {"overrides_removed": 0, "course_charges_removed": 0}
+    if change_request.status == "approved":
+        extras = undo_exemption_curriculum_effects(change_request)
+
+    from admissions.models import ExemptionRequestLine
+
+    change_request.status = "rejected"
+    change_request.exemption_lines.update(decision=ExemptionRequestLine.DECISION_REJECTED)
+    note = UNPAID_RETURN_MARKER + " " + UNPAID_RETURN_MESSAGE
+    existing = (change_request.review_notes or "").strip()
+    change_request.review_notes = f"{note}\n{existing}".strip() if existing else note
+    change_request.reviewed_by = actor
+    change_request.reviewed_at = timezone.now()
+    change_request.save(
+        update_fields=["status", "review_notes", "reviewed_by", "reviewed_at", "updated_at"]
+        if hasattr(change_request, "updated_at")
+        else ["status", "review_notes", "reviewed_by", "reviewed_at"]
+    )
+    return {
+        "id": change_request.id,
+        "status": "rejected",
+        "already_returned": False,
+        **extras,
+    }
+
+
 def exemption_application_attempt_state(student: AdmittedStudent) -> dict:
     """Students get one application, plus one more if HOD rejects. Fee stays paid."""
     qs = AdmissionChangeRequest.objects.filter(
         admitted_student=student, change_type="exemption"
-    )
+    ).exclude(review_notes__startswith=UNPAID_RETURN_MARKER)
     pending = qs.filter(status="pending").exists()
     approved = qs.filter(status="approved").exists()
     total = qs.count()
@@ -1009,27 +1139,116 @@ def _norm_course_code(code: str) -> str:
     return re.sub(r"[^A-Z0-9]", "", (code or "").upper())
 
 
+def _student_curriculum_program(student: AdmittedStudent):
+    """Programme row to read curriculum from (enrollment first, else admission)."""
+    try:
+        enrollment = student.programme_enrollment
+    except Exception:
+        enrollment = None
+    if enrollment is not None and getattr(enrollment, "program_id", None):
+        return enrollment, enrollment.program
+    return enrollment, getattr(student, "admitted_program", None)
+
+
+def _version_with_active_lines(owner):
+    from django.db.models import Count, Q as DQ
+    from Programs.models import ProgramCurriculumVersion
+
+    if owner is None:
+        return None
+    return (
+        ProgramCurriculumVersion.objects.filter(program=owner, is_active=True)
+        .annotate(n=Count("lines", filter=DQ(lines__is_active=True)))
+        .filter(n__gt=0)
+        .order_by("-is_default", "-n", "-id")
+        .first()
+    )
+
+
 def _resolve_enrollment_curriculum_version(student: AdmittedStudent):
     """
     Return (enrollment, effective_curriculum_version).
 
     Inherited campus programmes often still pin an empty local "Default
     curriculum" version on the enrollment; real lines live on the master
-    programme. Use resolve_effective_curriculum_version so those students
-    see the master's units.
+    programme. Prefer a version that actually has active units so exemption
+    forms are not empty when the cohort version and default version differ.
+
+    Students without a programme enrollment still get the admission
+    programme's curriculum so the picker is not blank during QA.
     """
-    from Programs.curriculum_inheritance import resolve_effective_curriculum_version
+    from Programs.curriculum_inheritance import (
+        curriculum_owner_program,
+        resolve_effective_curriculum_version,
+    )
 
-    try:
-        enrollment = student.programme_enrollment
-    except Exception:
-        enrollment = None
-    if enrollment is None:
-        return None, None
+    enrollment, program = _student_curriculum_program(student)
+    if program is None:
+        return enrollment, None
 
-    batch = enrollment.program_batch if enrollment.program_batch_id else None
-    version = resolve_effective_curriculum_version(enrollment.program, batch=batch)
-    return enrollment, version
+    def _has_lines(version) -> bool:
+        if version is None:
+            return False
+        return version.lines.filter(is_active=True).exists()
+
+    pinned = getattr(enrollment, "curriculum_version", None) if enrollment is not None else None
+    if _has_lines(pinned):
+        return enrollment, pinned
+
+    batch = None
+    if enrollment is not None and enrollment.program_batch_id:
+        batch = enrollment.program_batch
+    version = resolve_effective_curriculum_version(program, batch=batch)
+    if _has_lines(version):
+        return enrollment, version
+
+    owner = curriculum_owner_program(program) or program
+    fallback = _version_with_active_lines(owner)
+    return enrollment, fallback or version
+
+
+def _active_curriculum_lines_qs(student: AdmittedStudent, version):
+    """Active curriculum lines for exemption pickers, with version fallback."""
+    from Programs.curriculum_inheritance import curriculum_owner_program
+    from Programs.models import ProgramCurriculumLine
+
+    enrollment, program = _student_curriculum_program(student)
+    owner = curriculum_owner_program(program) if program else None
+    owner_program_id = owner.pk if owner else (program.pk if program else None)
+
+    def _scoped(qs):
+        if not owner_program_id:
+            return qs
+        scoped = qs.filter(program_id=owner_program_id)
+        return scoped if scoped.exists() else qs
+
+    lines_qs = ProgramCurriculumLine.objects.none()
+    if version is not None:
+        lines_qs = _scoped(
+            ProgramCurriculumLine.objects.filter(
+                curriculum_version=version,
+                is_active=True,
+            )
+        )
+    if lines_qs.exists():
+        return lines_qs.select_related("catalog_course")
+
+    if owner is None and program is None:
+        return lines_qs.select_related("catalog_course")
+
+    owner_or_program = owner or program
+    fallback = _scoped(
+        ProgramCurriculumLine.objects.filter(
+            curriculum_version__program=owner_or_program,
+            is_active=True,
+        )
+    )
+    if not fallback.exists():
+        fallback = ProgramCurriculumLine.objects.filter(
+            program_id=owner_or_program.pk,
+            is_active=True,
+        )
+    return fallback.select_related("catalog_course")
 
 
 def _curriculum_line_program_id(enrollment) -> int | None:
@@ -1042,21 +1261,17 @@ def _curriculum_line_program_id(enrollment) -> int | None:
 
 def list_eligible_exemption_courses(student: AdmittedStudent) -> list[dict]:
     """Curriculum lines for the student's pinned/default version, excluding existing exemptions."""
-    from Programs.models import (
-        ProgramCurriculumLine,
-        StudentCurriculumOverride,
-    )
+    from Programs.models import StudentCurriculumOverride
 
     enrollment, version = _resolve_enrollment_curriculum_version(student)
-    if enrollment is None or version is None:
-        return []
-
-    existing = set(
-        StudentCurriculumOverride.objects.filter(
-            enrollment=enrollment,
-            override_type__in=("exempted", "transferred"),
-        ).values_list("curriculum_line_id", flat=True)
-    )
+    existing = set()
+    if enrollment is not None:
+        existing = set(
+            StudentCurriculumOverride.objects.filter(
+                enrollment=enrollment,
+                override_type__in=("exempted", "transferred"),
+            ).values_list("curriculum_line_id", flat=True)
+        )
     # Also exclude lines already on a pending exemption request
     pending_line_ids = set(
         AdmissionChangeRequest.objects.filter(
@@ -1068,16 +1283,8 @@ def list_eligible_exemption_courses(student: AdmittedStudent) -> list[dict]:
     existing |= {i for i in pending_line_ids if i}
 
     used_terms = exemption_terms_already_committed(student)
-
-    owner_program_id = _curriculum_line_program_id(enrollment)
-    lines = (
-        ProgramCurriculumLine.objects.filter(
-            curriculum_version=version,
-            is_active=True,
-            program_id=owner_program_id,
-        )
-        .select_related("catalog_course")
-        .order_by("year_of_study", "term_number", "sort_order", "catalog_course__code")
+    lines = _active_curriculum_lines_qs(student, version).order_by(
+        "year_of_study", "term_number", "sort_order", "catalog_course__code"
     )
     out = []
     for line in lines:
@@ -1105,28 +1312,20 @@ def list_programme_curriculum_for_review(student: AdmittedStudent) -> list[dict]
     Full active curriculum for HOD/Dean review — includes already-exempted rows
     so reviewers can see the whole programme when matching student papers.
     """
-    from Programs.models import ProgramCurriculumLine, StudentCurriculumOverride
+    from Programs.models import StudentCurriculumOverride
 
     enrollment, version = _resolve_enrollment_curriculum_version(student)
-    if enrollment is None or version is None:
-        return []
-
-    existing = set(
-        StudentCurriculumOverride.objects.filter(
-            enrollment=enrollment,
-            override_type__in=("exempted", "transferred"),
-        ).values_list("curriculum_line_id", flat=True)
-    )
-
-    owner_program_id = _curriculum_line_program_id(enrollment)
-    lines = (
-        ProgramCurriculumLine.objects.filter(
-            curriculum_version=version,
-            is_active=True,
-            program_id=owner_program_id,
+    existing = set()
+    if enrollment is not None:
+        existing = set(
+            StudentCurriculumOverride.objects.filter(
+                enrollment=enrollment,
+                override_type__in=("exempted", "transferred"),
+            ).values_list("curriculum_line_id", flat=True)
         )
-        .select_related("catalog_course")
-        .order_by("year_of_study", "term_number", "sort_order", "catalog_course__code")
+
+    lines = _active_curriculum_lines_qs(student, version).order_by(
+        "year_of_study", "term_number", "sort_order", "catalog_course__code"
     )
     out = []
     for line in lines:
