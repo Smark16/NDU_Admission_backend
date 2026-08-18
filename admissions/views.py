@@ -2463,6 +2463,7 @@ class CheckStudentStatus(APIView):
                     "admitted_campus",
                     "admitted_batch",
                     "application",
+                    "programme_enrollment",
                 )
                 .filter(
                     Q(application__applicant=user) | Q(student_user=user) | Q(reg_no=user.username),
@@ -2471,6 +2472,8 @@ class CheckStudentStatus(APIView):
                 .first()
             )
             if admitted_student:
+                from admissions.exemption_services import exemption_eligibility_payload
+
                 return Response(
                     {
                         "is_admitted_student": True,
@@ -2488,6 +2491,7 @@ class CheckStudentStatus(APIView):
                         "passport_photo": (
                             admitted_student_photo_url(admitted_student, request)
                         ),
+                        "exemption": exemption_eligibility_payload(admitted_student),
                     },
                     status=status.HTTP_200_OK,
                 )
@@ -4839,6 +4843,7 @@ class StudentChangeRequestListCreate(APIView):
 
         if change_type == 'exemption':
             from admissions.exemption_services import (
+                ExemptionNotEligible,
                 assert_exemption_registration_required,
                 assert_exemption_resubmit_allowed,
                 assert_exemption_term_cap,
@@ -4851,11 +4856,11 @@ class StudentChangeRequestListCreate(APIView):
 
             try:
                 assert_exemption_registration_required(admission)
-            except ValueError as exc:
+            except ExemptionNotEligible as exc:
                 return Response(
                     {
                         "detail": str(exc),
-                        "code": "not_registered",
+                        "code": exc.code,
                         "form_fee": exemption_form_fee_status(admission),
                     },
                     status=400,
@@ -5222,16 +5227,21 @@ class StudentExemptionDraftView(APIView):
 
     def put(self, request):
         from admissions.exemption_services import (
-            EXEMPTION_NOT_REGISTERED_MESSAGE,
+            ExemptionNotEligible,
             save_exemption_draft,
-            student_may_apply_course_exemption,
+            assert_exemption_registration_required,
         )
 
         admission = self._get_admission(request.user)
         if not admission:
             return Response({"detail": "No active admission found."}, status=404)
-        if not student_may_apply_course_exemption(admission):
-            return Response({"detail": EXEMPTION_NOT_REGISTERED_MESSAGE}, status=403)
+        try:
+            assert_exemption_registration_required(admission)
+        except ExemptionNotEligible as exc:
+            return Response(
+                {"detail": str(exc), "code": exc.code},
+                status=403,
+            )
         summary = save_exemption_draft(admission, request.data if isinstance(request.data, dict) else {})
         return Response(
             {
@@ -5399,8 +5409,12 @@ class ExemptionEligibleCoursesView(APIView):
             # Prefer any active scale that actually has bands (level-specific scales
             # often leave academic_level__isnull=True empty, so default can miss).
             if scale is None or not scale.bands.exists():
+                from django.db.models import Count
+
                 scale = (
                     GradeScale.objects.filter(is_active=True)
+                    .annotate(band_count=Count("bands"))
+                    .filter(band_count__gt=0)
                     .prefetch_related("bands")
                     .order_by("-id")
                     .first()

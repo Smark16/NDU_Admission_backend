@@ -35,25 +35,77 @@ MAX_EXEMPTION_APPLICATION_ATTEMPTS = 2
 EXEMPTION_NOT_REGISTERED_CODE = "not_registered"
 EXEMPTION_NOT_REGISTERED_MESSAGE = (
     "Course exemption is only for students who have been cleared for registration. "
-    "Hostel-only clearance is not enough."
+    "Hostel-only clearance is not enough. Visit Accounts after paying your fees."
+)
+EXEMPTION_DOCS_NOT_VERIFIED_CODE = "docs_not_verified"
+EXEMPTION_DOCS_NOT_VERIFIED_MESSAGE = (
+    "Year 1 Semester 1 students must have original academic documents verified "
+    "by Academic Registrar before applying for course exemption. "
+    "Take your documents and ID to the AR desk."
 )
 
 
+class ExemptionNotEligible(ValueError):
+    """Student cannot apply / pay / submit a course exemption yet."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+def exemption_ineligibility(student: AdmittedStudent) -> tuple[str | None, str]:
+    """
+    Return (code, message) when the student cannot apply, else (None, "").
+
+    Accounts registration clearance is required for everyone.
+    AR document verification is required only for Year 1 Term 1.
+    """
+    if not getattr(student, "accounts_registration_cleared", False):
+        return EXEMPTION_NOT_REGISTERED_CODE, EXEMPTION_NOT_REGISTERED_MESSAGE
+
+    from admissions.registration_workflow import requires_physical_document_verification
+
+    if requires_physical_document_verification(student) and not getattr(
+        student, "physical_documents_verified", False
+    ):
+        return EXEMPTION_DOCS_NOT_VERIFIED_CODE, EXEMPTION_DOCS_NOT_VERIFIED_MESSAGE
+    return None, ""
+
+
 def student_may_apply_course_exemption(student: AdmittedStudent) -> bool:
-    """Exemptions are only for students Accounts-cleared for registration."""
-    return bool(getattr(student, "accounts_registration_cleared", False))
+    """True when the student may open, pay, and submit a course exemption."""
+    code, _ = exemption_ineligibility(student)
+    return code is None
+
+
+def exemption_eligibility_payload(student: AdmittedStudent) -> dict:
+    """Flags for student portal (Quick Action lock + exemption page checklist)."""
+    from admissions.registration_workflow import requires_physical_document_verification
+
+    code, detail = exemption_ineligibility(student)
+    requires_docs = requires_physical_document_verification(student)
+    return {
+        "eligible": code is None,
+        "ineligible_code": code,
+        "ineligible_detail": detail,
+        "accounts_registration_cleared": bool(
+            getattr(student, "accounts_registration_cleared", False)
+        ),
+        "requires_document_verification": requires_docs,
+        "physical_documents_verified": bool(
+            getattr(student, "physical_documents_verified", False)
+        ),
+    }
 
 
 def assert_exemption_registration_required(student: AdmittedStudent) -> None:
-    if not student_may_apply_course_exemption(student):
-        raise ValueError(EXEMPTION_NOT_REGISTERED_MESSAGE)
+    code, detail = exemption_ineligibility(student)
+    if code:
+        raise ExemptionNotEligible(code, detail)
 
 
 def attach_exemption_eligibility(student: AdmittedStudent, payload: dict) -> dict:
-    ok = student_may_apply_course_exemption(student)
-    payload["eligible"] = ok
-    payload["ineligible_code"] = None if ok else EXEMPTION_NOT_REGISTERED_CODE
-    payload["ineligible_detail"] = "" if ok else EXEMPTION_NOT_REGISTERED_MESSAGE
+    payload.update(exemption_eligibility_payload(student))
     return payload
 
 

@@ -20,14 +20,14 @@ from rest_framework.views import APIView
 from admissions.exemption_services import (
     EXEMPTION_FORM_FEE_CODE,
     EXEMPTION_FORM_FEE_UGX,
-    EXEMPTION_NOT_REGISTERED_MESSAGE,
     ensure_exemption_form_fee_access,
     exemption_form_fee_status,
+    exemption_ineligibility,
     form_fee_paid_for_charge,
-    student_may_apply_course_exemption,
     _ensure_form_fee_charge,
     _form_fee_status_dict,
 )
+from payments.adhoc_payment_reasons import schoolpay_adhoc_reason
 from admissions.models import AdmissionChangeRequest
 from payments.models import StudentTuitionPayment
 from payments.student_portal_finance import get_admitted_student_for_user
@@ -124,11 +124,12 @@ class InitiateExemptionFormFeePaymentView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if not student_may_apply_course_exemption(student):
+        ineligible_code, ineligible_detail = exemption_ineligibility(student)
+        if ineligible_code:
             return Response(
                 {
-                    "detail": EXEMPTION_NOT_REGISTERED_MESSAGE,
-                    "code": "not_registered",
+                    "detail": ineligible_detail,
+                    "code": ineligible_code,
                     "form_fee": exemption_form_fee_status(student),
                 },
                 status=status.HTTP_400_BAD_REQUEST,
@@ -197,7 +198,7 @@ class InitiateExemptionFormFeePaymentView(APIView):
         first_name, last_name = _student_names(student)
         amount = Decimal(str(EXEMPTION_FORM_FEE_UGX))
         ext_ref = f"EXF-{uuid.uuid4().hex.upper()}"
-        reason = f"Exemption form fee — {student.student_id or student.reg_no or student.pk}"
+        reason = schoolpay_adhoc_reason("exemption")
 
         try:
             client = SchoolPayClient()
@@ -248,8 +249,8 @@ class InitiateExemptionFormFeePaymentView(APIView):
             locked.payment_reference = str(payment_reference)
             locked.transaction_id = ext_ref
             locked.notes = (
-                f"Exemption form fee STK. phone={phone} "
-                f"externalReference={ext_ref}."
+                f"{reason}. student={student.student_id or student.reg_no or student.pk} "
+                f"phone={phone} externalReference={ext_ref}."
             )
             locked.status = "pending"
             locked.save(

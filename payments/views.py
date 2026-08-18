@@ -164,11 +164,13 @@ class InitiatePayment(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        from payments.adhoc_payment_reasons import schoolpay_adhoc_reason
+
         phone = request.data.get('phone')
         first_name = request.data.get('first_name')
         last_name = request.data.get('last_name')
         amount = request.data.get('amount')
-        reason = "Application Fee"
+        reason = schoolpay_adhoc_reason("application_fee")
         payer = _application_fee_payer(request)
 
         callBackUrl = schoolpay_application_fee_callback_url(request)
