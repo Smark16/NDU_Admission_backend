@@ -43,7 +43,7 @@ def _compute_tuition_eligibility(student: AdmittedStudent, settings: Registratio
             "total_required": 0.0,
             "total_paid": total_paid,
             "balance": 0.0,
-            "display_currency": "USD" if international else "UGX",
+            "display_currency": "UGX",
             "tuition_check_skipped": True,
             "fees_not_configured": False,
             "tuition_message": "Tuition payment threshold is currently disabled. You may register.",

@@ -740,7 +740,7 @@ def build_finance_allocation(student: AdmittedStudent) -> FinanceAllocation:
     if required_by:
         primary = max(required_by.keys(), key=lambda k: float(required_by[k]))
     else:
-        primary = "USD" if international else "UGX"
+        primary = "UGX"
 
     total_required = required_by.get(primary, Decimal("0"))
     # Paid toward all included (prior + current) demand lines — ties out exactly
@@ -897,7 +897,7 @@ def tuition_registration_totals(
     if by_currency:
         primary = max(by_currency.keys(), key=lambda k: float(by_currency[k]["required"]))
     else:
-        primary = "USD" if is_international_student(student) else "UGX"
+        primary = "UGX"
 
     primary_bucket = by_currency.get(primary, {"required": Decimal("0"), "paid": Decimal("0")})
     req = primary_bucket["required"]

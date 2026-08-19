@@ -32,7 +32,9 @@ def _is_uganda_nationality(nat: str) -> bool:
 def effective_amount_currency(rule, international: bool) -> Tuple[Decimal, str]:
     if international and getattr(rule, "amount_international", None) is not None:
         amt = rule.amount_international or Decimal("0")
-        cur = (getattr(rule, "currency_international", None) or "USD").strip()[:3] or "USD"
+        cur = (getattr(rule, "currency_international", None) or "").strip()[:3]
+        if not cur:
+            cur = (getattr(rule, "currency", None) or "UGX").strip()[:3] or "UGX"
         return amt, cur.upper()
     amt = rule.amount or Decimal("0")
     cur = (rule.currency or "UGX").strip()[:3] or "UGX"
