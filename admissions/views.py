@@ -1340,6 +1340,7 @@ class EditApplicationProfile(APIView):
         application = get_object_or_404(Application, pk=application_id)
         assert_application_access(request.user, application)
         allowed_fields = {
+            "title",
             "first_name",
             "last_name",
             "middle_name",
