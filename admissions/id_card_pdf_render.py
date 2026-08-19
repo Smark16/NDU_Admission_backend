@@ -249,6 +249,72 @@ def _qr_png_bytes(payload: str) -> bytes | None:
         return None
 
 
+def _wrap_text_lines(text: str, width: float, fontsize: float, fontname: str) -> list[str]:
+    text = " ".join((text or "").split())
+    if not text:
+        return []
+    if width <= 8:
+        return [text]
+    words = text.split()
+    lines: list[str] = []
+    current = ""
+    for word in words:
+        trial = f"{current} {word}".strip()
+        if fitz.get_text_length(trial, fontname=fontname, fontsize=fontsize) <= width:
+            current = trial
+            continue
+        if current:
+            lines.append(current)
+        if fitz.get_text_length(word, fontname=fontname, fontsize=fontsize) <= width:
+            current = word
+            continue
+        chunk = ""
+        for char in word:
+            next_chunk = chunk + char
+            if fitz.get_text_length(next_chunk, fontname=fontname, fontsize=fontsize) <= width:
+                chunk = next_chunk
+            else:
+                if chunk:
+                    lines.append(chunk)
+                chunk = char
+        current = chunk
+    if current:
+        lines.append(current)
+    return lines or [text]
+
+
+def _draw_wrapped_text(page, rect: fitz.Rect, text: str, fontsize: float, font_kwargs: dict, color=(0, 0, 0)) -> None:
+    fontname = font_kwargs.get("fontname") or "helv"
+    extra = {key: val for key, val in font_kwargs.items() if key != "fontname"}
+    width = max(8.0, float(rect.width))
+    height = max(fontsize, float(rect.height))
+    size = float(fontsize)
+    lines: list[str] = []
+    while size >= 5.0:
+        lines = _wrap_text_lines(text, width, size, fontname)
+        if not lines:
+            return
+        if len(lines) * size * 1.18 <= height + 0.8:
+            break
+        size -= 0.4
+    y = rect.y0 + size
+    for line in lines:
+        if y > rect.y1 + 1.5:
+            break
+        try:
+            page.insert_text(
+                fitz.Point(rect.x0, y),
+                line,
+                fontsize=size,
+                color=color,
+                fontname=fontname,
+                **extra,
+            )
+        except Exception:
+            page.insert_text(fitz.Point(rect.x0, y), line, fontsize=size, color=color, fontname="helv")
+        y += size * 1.18
+
+
 def fill_id_card_pdf_template(
     template_path: str,
     context: dict[str, str],
@@ -323,7 +389,8 @@ def fill_id_card_pdf_template(
             except Exception:
                 logger.exception("Failed to draw caption %s on ID card PDF", caption)
             label_w = fitz.get_text_length(label + "  ", fontname="helv", fontsize=cap_size)
-            rect = fitz.Rect(x + label_w, y, x + max_w, y + font_size * 2.6)
+            value_height = float(pos.get("height") or font_size * 3.2)
+            rect = fitz.Rect(x + label_w, y, x + max_w, y + value_height)
         elif caption:
             try:
                 page.insert_text(
@@ -335,32 +402,37 @@ def fill_id_card_pdf_template(
                 )
             except Exception:
                 logger.exception("Failed to draw caption %s on ID card PDF", caption)
-            value_top = y + cap_size + 1.5
-            rect = fitz.Rect(x, value_top, x + max_w, value_top + font_size * 2.8)
+            value_top = y + cap_size + 1.2
+            value_height = float(pos.get("height") or font_size * 3.4)
+            rect = fitz.Rect(x, value_top, x + max_w, value_top + value_height)
         else:
             value_top = max(0, y - font_size)
-            rect = fitz.Rect(x, value_top, x + max_w, value_top + font_size * 2.8)
-        try:
-            page.insert_textbox(
-                rect,
-                value,
-                fontsize=font_size,
-                color=(0, 0, 0),
-                align=fitz.TEXT_ALIGN_LEFT,
-                **font_kwargs,
-            )
-        except Exception:
-            page.insert_text(
-                fitz.Point(x, y),
-                value,
-                fontsize=font_size,
-                color=(0, 0, 0),
-                **font_kwargs,
-            )
+            value_height = float(pos.get("height") or font_size * 3.2)
+            rect = fitz.Rect(x, value_top, x + max_w, value_top + value_height)
+        if rect.x1 - rect.x0 < 10:
+            rect = fitz.Rect(x, rect.y0, x + max_w, rect.y1)
+        _draw_wrapped_text(page, rect, value, font_size, font_kwargs)
 
     pdf_bytes = doc.write()
     doc.close()
     return pdf_bytes
+
+
+def _with_cr80_course_box(pdf_path: str, positions: dict) -> dict:
+    """Give Course a wrapping box on the Ndejje CR80 blank so long programme names print."""
+    from .id_card_default_layout import NDEJJE_CR80_STUDENT_FIELD_POSITIONS, pdf_is_cr80_id_card
+
+    merged = dict(positions or {})
+    try:
+        doc = fitz.open(pdf_path)
+        width, height = doc[0].rect.width, doc[0].rect.height
+        doc.close()
+    except Exception:
+        return merged
+    if not pdf_is_cr80_id_card(width, height):
+        return merged
+    merged["course"] = dict(NDEJJE_CR80_STUDENT_FIELD_POSITIONS["course"])
+    return merged
 
 
 def render_id_card_pdf(card: StudentIdCard) -> bytes | None:
@@ -385,7 +457,7 @@ def render_id_card_pdf(card: StudentIdCard) -> bytes | None:
     image_paths: dict[str, str] = {}
     image_streams: dict[str, bytes] = {}
     photo_path = _passport_photo_path(card)
-    positions = template.field_positions or {}
+    positions = _with_cr80_course_box(pdf_path, template.field_positions or {})
     if photo_path and "passport_photo" in positions:
         image_paths["passport_photo"] = photo_path
     if "qr_code" in positions:
