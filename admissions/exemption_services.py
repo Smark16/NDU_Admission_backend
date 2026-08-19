@@ -31,7 +31,7 @@ EXEMPTION_TERM_CAP_MESSAGE = (
 )
 # One original application + one resubmit if HOD rejects. Form fee is not voided.
 MAX_EXEMPTION_APPLICATION_ATTEMPTS = 2
-# Hostel-only / temp-pass students are not registered and cannot apply.
+# Kept for older clients; these gates are no longer enforced.
 EXEMPTION_NOT_REGISTERED_CODE = "not_registered"
 EXEMPTION_NOT_REGISTERED_MESSAGE = (
     "Course exemption is only for students who have been cleared for registration. "
@@ -57,8 +57,9 @@ def exemption_ineligibility(student: AdmittedStudent) -> tuple[str | None, str]:
     """
     Return (code, message) when the student cannot apply, else (None, "").
 
-    Accounts registration clearance and the 60% paper rule are no longer required
-    to open or submit a course exemption.
+    Accounts clearance and AR document verification are not required.
+    Anyone admitted may apply; the UGX 50,000 form fee is still required.
+    The 60% paper rule is no longer required to open or submit.
     """
     _ = student
     return None, ""
@@ -66,20 +67,19 @@ def exemption_ineligibility(student: AdmittedStudent) -> tuple[str | None, str]:
 
 def student_may_apply_course_exemption(student: AdmittedStudent) -> bool:
     """True when the student may open, pay, and submit a course exemption."""
-    code, _ = exemption_ineligibility(student)
-    return code is None
+    _ = student
+    return True
 
 
 def exemption_eligibility_payload(student: AdmittedStudent) -> dict:
-    """Flags for student portal (Quick Action lock + exemption page checklist)."""
+    """Flags for student portal. Eligible is always true; 50k form fee still applies."""
     from admissions.registration_workflow import requires_physical_document_verification
 
-    code, detail = exemption_ineligibility(student)
     requires_docs = requires_physical_document_verification(student)
     return {
-        "eligible": code is None,
-        "ineligible_code": code,
-        "ineligible_detail": detail,
+        "eligible": True,
+        "ineligible_code": None,
+        "ineligible_detail": "",
         "accounts_registration_cleared": bool(
             getattr(student, "accounts_registration_cleared", False)
         ),
@@ -91,9 +91,9 @@ def exemption_eligibility_payload(student: AdmittedStudent) -> dict:
 
 
 def assert_exemption_registration_required(student: AdmittedStudent) -> None:
-    code, detail = exemption_ineligibility(student)
-    if code:
-        raise ExemptionNotEligible(code, detail)
+    """No Accounts / AR gate. Kept so callers do not need to change."""
+    _ = student
+    return
 
 
 def attach_exemption_eligibility(student: AdmittedStudent, payload: dict) -> dict:

@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 from django.test import SimpleTestCase
 
 from admissions.exemption_services import (
+    exemption_eligibility_payload,
     exemption_ineligibility,
     exemption_paper_meets_min_mark,
     student_may_apply_course_exemption,
@@ -22,12 +23,25 @@ def _student(*, accounts=False, docs=False, year=1, term=1):
 
 
 class ExemptionEligibilityTests(SimpleTestCase):
-    def test_registration_no_longer_required(self):
+    def test_accounts_not_required(self):
         student = _student(accounts=False, docs=False, year=1, term=1)
+        self.assertIsNone(exemption_ineligibility(student)[0])
+        self.assertTrue(student_may_apply_course_exemption(student))
+        self.assertTrue(exemption_eligibility_payload(student)["eligible"])
+
+    def test_y1t1_without_ar_docs_may_apply(self):
+        student = _student(accounts=True, docs=False, year=1, term=1)
+        self.assertIsNone(exemption_ineligibility(student)[0])
+        self.assertTrue(student_may_apply_course_exemption(student))
+
+    def test_continuing_without_accounts_may_apply(self):
+        student = _student(accounts=False, docs=False, year=2, term=1)
         self.assertIsNone(exemption_ineligibility(student)[0])
         self.assertTrue(student_may_apply_course_exemption(student))
 
     def test_min_mark_no_longer_required(self):
-        ok, msg = exemption_paper_meets_min_mark({"course_code": "ABC", "score_obtained": "D (45)"})
+        ok, msg = exemption_paper_meets_min_mark(
+            {"course_code": "ABC", "score_obtained": "D (45)"}
+        )
         self.assertTrue(ok)
         self.assertEqual(msg, "")

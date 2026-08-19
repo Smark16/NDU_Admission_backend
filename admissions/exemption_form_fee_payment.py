@@ -88,6 +88,43 @@ def sync_exemption_form_fee_paid_at(payment: StudentTuitionPayment) -> None:
     ).update(form_fee_paid_at=paid_at)
 
 
+def manually_complete_exemption_form_fee(payment: StudentTuitionPayment, *, actor=None):
+    """
+    Mark a pending exemption form-fee charge paid from Django admin.
+
+    Sets a payment_reference so it counts as a real exemption payment (not
+    tuition/SchoolPay-code credit). The student page poll will then treat it
+    as PAID and can auto-submit if they still have the pay dialog open.
+    """
+    if not is_exemption_form_fee_charge(payment):
+        raise ValueError("This is not an exemption form-fee charge.")
+    if payment.status == "completed" and (
+        (payment.payment_reference or "").strip() or payment.payment_method == "mobile_money"
+    ):
+        sync_exemption_form_fee_paid_at(payment)
+        return payment
+
+    now = timezone.now()
+    ref = (payment.payment_reference or "").strip() or f"ADMIN-{payment.pk}"
+    method = (payment.payment_method or "").strip() or "other"
+    note = f"Manually completed in Django admin at {now.isoformat()}."
+    if actor is not None:
+        note = f"{note} By {getattr(actor, 'username', actor)}."
+    notes = ((payment.notes or "").strip() + "\n" + note).strip()
+    StudentTuitionPayment.objects.filter(pk=payment.pk).update(
+        status="completed",
+        paid_at=payment.paid_at or now,
+        payment_reference=ref,
+        payment_method=method,
+        verified_by=actor if getattr(actor, "pk", None) else None,
+        verified_at=now,
+        notes=notes,
+    )
+    payment.refresh_from_db()
+    sync_exemption_form_fee_paid_at(payment)
+    return payment
+
+
 def _api_status(payment: StudentTuitionPayment) -> str:
     if payment.status == "completed":
         return "PAID"
