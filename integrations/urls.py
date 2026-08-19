@@ -22,6 +22,11 @@ urlpatterns = [
         name="moodle_finance_status",
     ),
     path(
+        "moodle/students/<str:reg_no>/registered-courses",
+        moodle_views.MoodleRegisteredCoursesView.as_view(),
+        name="moodle_registered_courses",
+    ),
+    path(
         "moodle/semesters/current",
         moodle_views.MoodleCurrentSemestersView.as_view(),
         name="moodle_semesters_current",

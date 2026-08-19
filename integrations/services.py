@@ -179,6 +179,61 @@ def finance_status_for_student(student: AdmittedStudent) -> dict:
     return payload
 
 
+def registered_courses_for_student(student: AdmittedStudent) -> list[dict]:
+    """Course units this student has registered in Steward (same gate as Moodle rosters)."""
+    from Programs.models import StudentCourseUnitEnrollment
+
+    enrollments = (
+        StudentCourseUnitEnrollment.objects.filter(
+            student=student,
+            status="enrolled",
+            registration_date__isnull=False,
+        )
+        .select_related(
+            "course_unit",
+            "course_unit__semester",
+            "course_unit__program_batch",
+            "course_unit__program_batch__program",
+        )
+        .prefetch_related(
+            "course_unit__lecturers",
+            "course_unit__section_lecturers__lecturer",
+        )
+        .order_by("course_unit__code")
+    )
+    rows = []
+    for enr in enrollments:
+        cu = enr.course_unit
+        if cu is None or not cu.is_active:
+            continue
+        lecturers = {u.pk: lecturer_payload(u) for u in cu.lecturers.all()}
+        for link in cu.section_lecturers.all():
+            if link.lecturer_id and link.lecturer_id not in lecturers:
+                lecturers[link.lecturer_id] = lecturer_payload(link.lecturer)
+        batch = cu.program_batch
+        program = batch.program if batch else None
+        rows.append(
+            {
+                "id": cu.pk,
+                "code": cu.code,
+                "name": cu.name,
+                "credit_units": float(cu.credit_units) if cu.credit_units is not None else None,
+                "semester_id": cu.semester_id,
+                "program_batch_id": cu.program_batch_id,
+                "program_batch_name": batch.name if batch else None,
+                "program_code": getattr(program, "short_form", None) if program else None,
+                "program_name": program.name if program else None,
+                "idnumber": f"{cu.code}-{cu.semester_id}",
+                "registration_kind": enr.registration_kind,
+                "registration_date": enr.registration_date.isoformat()
+                if enr.registration_date
+                else None,
+                "lecturers": list(lecturers.values()),
+            }
+        )
+    return rows
+
+
 def lecturer_payload(user) -> dict:
     return {
         "id": user.pk,

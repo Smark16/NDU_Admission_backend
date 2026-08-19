@@ -43,6 +43,17 @@ class AdmittedStudentAdmin(admin.ModelAdmin):
     search_fields = ['student_id', 'reg_no', 'schoolpay_code', 'application__first_name', 'application__last_name']
     raw_id_fields = ('physical_documents_verified_by',)
 
+    def has_delete_permission(self, request, obj=None):
+        if obj is None:
+            return super().has_delete_permission(request, obj)
+        from admissions.registration_workflow import (
+            admission_revoke_or_delete_blocked_reason,
+        )
+
+        if admission_revoke_or_delete_blocked_reason(obj):
+            return False
+        return super().has_delete_permission(request, obj)
+
 @admin.register(AcademicLevel)
 class AcademicLevelAdmin(admin.ModelAdmin):
     list_display = ['name', 'is_active']

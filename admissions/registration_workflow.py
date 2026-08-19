@@ -61,3 +61,28 @@ REGISTRATION_STAGE_LABELS = {
 
 def registration_stage_label(stage: str) -> str:
     return REGISTRATION_STAGE_LABELS.get(stage, "—")
+
+
+ADMISSION_REVOKE_OR_DELETE_BLOCKED = (
+    "This student is accounts-cleared and registered (verified roster). "
+    "Admission cannot be revoked or deleted."
+)
+
+
+def admission_revoke_or_delete_blocked_reason(
+    student: AdmittedStudent | None,
+) -> str | None:
+    """
+    Official students cannot be withdrawn from the system.
+
+    Locked when they are on the verified roster (physical documents verified)
+    or they are both accounts-cleared and registered.
+    """
+    if student is None:
+        return None
+    verified = bool(getattr(student, "physical_documents_verified", False))
+    cleared = bool(getattr(student, "accounts_registration_cleared", False))
+    registered = bool(getattr(student, "is_registered", False))
+    if verified or (cleared and registered):
+        return ADMISSION_REVOKE_OR_DELETE_BLOCKED
+    return None

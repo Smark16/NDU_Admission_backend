@@ -670,6 +670,8 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
     commitment_paid_ugx = serializers.SerializerMethodField()
     commitment_balance = serializers.SerializerMethodField()
     commitment_threshold = serializers.SerializerMethodField()
+    can_revoke_or_delete = serializers.SerializerMethodField()
+    admission_lock_reason = serializers.SerializerMethodField()
     phone = serializers.CharField(source="application.phone", default="", read_only=True)
     email = serializers.EmailField(source="application.email", default="", read_only=True)
     gender = serializers.CharField(source="application.gender", default="", read_only=True)
@@ -710,6 +712,9 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
             'physical_documents_verified_at',
             'physical_documents_verified_by_name',
             'physical_documents_notes',
+            'accounts_registration_cleared',
+            'can_revoke_or_delete',
+            'admission_lock_reason',
             'is_approved',
             'approved_by_name',
             'approved_at',
@@ -870,6 +875,19 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
     def get_commitment_threshold(self, obj):
         totals = self._commitment_totals(obj)
         return totals["commitment_threshold"] if totals else None
+
+    def _admission_lock_reason(self, obj):
+        from admissions.registration_workflow import (
+            admission_revoke_or_delete_blocked_reason,
+        )
+
+        return admission_revoke_or_delete_blocked_reason(obj)
+
+    def get_admission_lock_reason(self, obj):
+        return self._admission_lock_reason(obj)
+
+    def get_can_revoke_or_delete(self, obj):
+        return self._admission_lock_reason(obj) is None
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
@@ -1303,6 +1321,8 @@ class AdmissionDetailSerializer(serializers.ModelSerializer):
             'application',
             'is_registered',
             'registration_date',
+            'physical_documents_verified',
+            'accounts_registration_cleared',
             'intended_program_batch',
             'admitted_specialization',
         ]
@@ -1337,8 +1357,14 @@ class AdmissionDetailSerializer(serializers.ModelSerializer):
             response['admitted_specialization'] = None
             response['subject_combination'] = None
         from payments.utils.tuition_ledger_linking import schoolpay_wallet_api_fields
+        from admissions.registration_workflow import (
+            admission_revoke_or_delete_blocked_reason,
+        )
 
         response.update(schoolpay_wallet_api_fields(instance))
+        lock_reason = admission_revoke_or_delete_blocked_reason(instance)
+        response["admission_lock_reason"] = lock_reason
+        response["can_revoke_or_delete"] = lock_reason is None
         return response
     
 # notification serializers

@@ -14,6 +14,7 @@ from .services import (
     finance_status_for_student,
     lecturer_payload,
     log_moodle_access,
+    registered_courses_for_student,
     resolve_student_by_lookup,
     student_profile_payload,
     verify_student_credentials,
@@ -110,6 +111,44 @@ class MoodleFinanceStatusView(APIView):
             detail=f"{student.reg_no}:{payload['status']}",
         )
         return Response({"ok": True, **payload})
+
+
+class MoodleRegisteredCoursesView(APIView):
+    """Courses this student registered in Steward — use this for Moodle enrolment, not the catalogue."""
+
+    authentication_classes = []
+    permission_classes = [HasMoodleApiKey]
+
+    def get(self, request, reg_no: str):
+        endpoint = "moodle/registered-courses"
+        student = resolve_student_by_lookup(reg_no)
+        if not student:
+            log_moodle_access(
+                endpoint=endpoint,
+                http_status=404,
+                key_prefix=_key_prefix(request),
+                detail=reg_no,
+            )
+            return Response(
+                {"ok": False, "detail": "Student not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        courses = registered_courses_for_student(student)
+        log_moodle_access(
+            endpoint=endpoint,
+            http_status=200,
+            key_prefix=_key_prefix(request),
+            detail=f"{student.reg_no}:count={len(courses)}",
+        )
+        payload = {
+            "ok": True,
+            "reg_no": student.reg_no or "",
+            "student_id": student.student_id or "",
+            "programme": student.admitted_program.name if student.admitted_program_id else None,
+            "courses": courses,
+        }
+        payload.update(academic_batch_payload(student))
+        return Response(payload)
 
 
 class MoodleCurrentSemestersView(APIView):
