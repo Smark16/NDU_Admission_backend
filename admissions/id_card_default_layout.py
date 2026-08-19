@@ -80,10 +80,10 @@ NDEJJE_CR80_STUDENT_FIELD_POSITIONS = {
     },
     "card_number": {
         **_TEXT,
-        "x": 66,
-        "y": 140,
+        "x": 80,
+        "y": 126,
         "font_size": 8,
-        "width": 118,
+        "width": 100,
         "height": 11,
         "caption": "",
         "single_line": True,
