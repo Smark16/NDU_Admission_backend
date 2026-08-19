@@ -1064,24 +1064,48 @@ class AdminManualBankChangeRequestRejectView(APIView):
         )
 
 
+class CanViewDirectAllocationsReport(BasePermission):
+    """Accounts / Bursar / Finance can list money posted directly onto a student."""
+
+    message = "You do not have permission to view direct allocation reports."
+
+    def has_permission(self, request, view):
+        from accounts.finance_access import user_can_view_student_finance
+        from payments.manual_bank_approval import (
+            user_can_approve_manual_bank,
+            user_can_post_manual_bank,
+        )
+
+        u = request.user
+        if not u or not u.is_authenticated:
+            return False
+        if user_is_super_admin(u):
+            return True
+        if user_can_approve_manual_bank(u) or user_can_post_manual_bank(u):
+            return True
+        return user_can_view_student_finance(u)
+
+
 class AdminManualBankPaymentsReportView(APIView):
-    """GET list of staff-posted bank reconciliation payments."""
+    """Staff-posted bank payments and Student Charges credits (direct allocations)."""
 
-    permission_classes = [CanViewOrApproveManualBankRequests]
+    permission_classes = [CanViewDirectAllocationsReport]
 
-    def get(self, request):
-        page = _parse_page(request.query_params.get("page"))
-        page_size = _parse_page_size(request.query_params.get("page_size"), default=50)
+    def _bank_qs(self, request):
         search = (request.query_params.get("search") or "").strip()
         from_date = parse_date(request.query_params.get("from_date") or "")
         to_date = parse_date(request.query_params.get("to_date") or "")
-
         qs = (
             TuitionLedger.objects.filter(
                 Q(schoolpay_receipt_number__startswith="BANK-")
                 | Q(raw_response__source="manual_bank_reconciliation")
             )
-            .select_related("student", "student__application", "user")
+            .select_related(
+                "student",
+                "student__application",
+                "student__admitted_program",
+                "user",
+            )
             .order_by("-payment_date_time", "-id")
         )
         if search:
@@ -1099,47 +1123,239 @@ class AdminManualBankPaymentsReportView(APIView):
             qs = qs.filter(payment_date_time__date__gte=from_date)
         if to_date:
             qs = qs.filter(payment_date_time__date__lte=to_date)
+        return qs
 
+    def _credit_qs(self, request):
+        from payments.models import StudentTuitionPayment
+
+        search = (request.query_params.get("search") or "").strip()
+        from_date = parse_date(request.query_params.get("from_date") or "")
+        to_date = parse_date(request.query_params.get("to_date") or "")
+        qs = (
+            StudentTuitionPayment.objects.filter(
+                status="completed",
+                transaction_id__startswith="MANUAL-CREDIT",
+            )
+            .select_related(
+                "student",
+                "student__application",
+                "student__admitted_program",
+                "charged_by",
+                "verified_by",
+            )
+            .order_by("-paid_at", "-id")
+        )
+        if search:
+            qs = qs.filter(
+                Q(student__student_id__icontains=search)
+                | Q(student__reg_no__icontains=search)
+                | Q(student__application__first_name__icontains=search)
+                | Q(student__application__last_name__icontains=search)
+                | Q(label__icontains=search)
+                | Q(payment_reference__icontains=search)
+            )
+        if from_date:
+            qs = qs.filter(paid_at__date__gte=from_date)
+        if to_date:
+            qs = qs.filter(paid_at__date__lte=to_date)
+        return qs
+
+    def _bank_row(self, row) -> dict:
+        poster = ""
+        if row.user_id:
+            poster = row.user.get_full_name() or row.user.email or str(row.user_id)
+        raw = row.raw_response if isinstance(row.raw_response, dict) else {}
+        student = row.student
+        return {
+            "id": row.id,
+            "kind": "bank",
+            "student_pk": row.student_id,
+            "student_name": row.student_name,
+            "student_id": row.student_payment_code,
+            "reg_no": row.student_registration_number,
+            "programme": (
+                student.admitted_program.name
+                if student and student.admitted_program_id
+                else ""
+            ),
+            "amount": str(row.amount),
+            "receipt": row.schoolpay_receipt_number,
+            "bank_reference": row.source_channel_transaction_id
+            or raw.get("bank_reference")
+            or "",
+            "bank_name": row.settlement_bank_code or raw.get("bank_name") or "",
+            "channel": row.source_payment_channel,
+            "payment_date_time": row.payment_date_time.isoformat()
+            if row.payment_date_time
+            else None,
+            "posted_by": poster,
+            "posted_by_id": row.user_id,
+            "notes": (raw.get("notes") or row.source_channel_trans_detail or "")[:500],
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        }
+
+    def _credit_row(self, row) -> dict:
+        student = row.student
+        name = ""
+        if student and getattr(student, "application", None):
+            app = student.application
+            name = f"{app.first_name or ''} {app.last_name or ''}".strip()
+        if not name and student:
+            name = student.full_name or ""
+        return {
+            "id": row.id,
+            "kind": "credit",
+            "student_pk": row.student_id,
+            "student_name": name,
+            "student_id": student.student_id if student else "",
+            "reg_no": student.reg_no if student else "",
+            "programme": (
+                student.admitted_program.name
+                if student and student.admitted_program_id
+                else ""
+            ),
+            "amount": str(row.amount),
+            "currency": row.currency,
+            "label": row.label,
+            "reference": row.payment_reference or row.receipt_number or "",
+            "payment_date_time": row.paid_at.isoformat() if row.paid_at else None,
+            "posted_by": _staff_display(row.charged_by or row.verified_by),
+            "posted_by_id": row.charged_by_id or row.verified_by_id,
+            "notes": (row.notes or "")[:500],
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        }
+
+    def get(self, request):
+        kind = (request.query_params.get("kind") or "bank").strip().lower()
+        if kind not in ("bank", "credit"):
+            kind = "bank"
+        qs = self._credit_qs(request) if kind == "credit" else self._bank_qs(request)
+        export = (request.query_params.get("export") or "").strip().lower()
+        if export in ("xlsx", "excel", "1", "true"):
+            return self._excel(kind, qs)
+
+        page = _parse_page(request.query_params.get("page"))
+        page_size = _parse_page_size(request.query_params.get("page_size"), default=50)
         total = qs.count()
         offset = (page - 1) * page_size
-        rows = []
-        for row in qs[offset : offset + page_size]:
-            poster = ""
-            if row.user_id:
-                poster = row.user.get_full_name() or row.user.email or str(row.user_id)
-            raw = row.raw_response if isinstance(row.raw_response, dict) else {}
-            rows.append(
-                {
-                    "id": row.id,
-                    "student_pk": row.student_id,
-                    "student_name": row.student_name,
-                    "student_id": row.student_payment_code,
-                    "reg_no": row.student_registration_number,
-                    "amount": str(row.amount),
-                    "receipt": row.schoolpay_receipt_number,
-                    "bank_reference": row.source_channel_transaction_id
-                    or raw.get("bank_reference")
-                    or "",
-                    "bank_name": row.settlement_bank_code or raw.get("bank_name") or "",
-                    "channel": row.source_payment_channel,
-                    "payment_date_time": row.payment_date_time.isoformat()
-                    if row.payment_date_time
-                    else None,
-                    "posted_by": poster,
-                    "posted_by_id": row.user_id,
-                    "notes": (raw.get("notes") or row.source_channel_trans_detail or "")[:500],
-                    "created_at": row.created_at.isoformat() if row.created_at else None,
-                }
-            )
-
+        serialize = self._credit_row if kind == "credit" else self._bank_row
+        rows = [serialize(row) for row in qs[offset : offset + page_size]]
         return Response(
             {
+                "kind": kind,
                 "count": total,
                 "page": page,
                 "page_size": page_size,
                 "results": rows,
             }
         )
+
+    def _excel(self, kind: str, qs):
+        from datetime import datetime
+        from io import BytesIO
+
+        from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+        from openpyxl.utils import get_column_letter
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Bank payments" if kind == "bank" else "Direct credits"
+        if kind == "credit":
+            headers = [
+                "Paid at",
+                "Student",
+                "Student ID",
+                "Reg no",
+                "Programme",
+                "Amount",
+                "Label",
+                "Reference",
+                "Posted by",
+                "Posted at",
+                "Notes",
+            ]
+        else:
+            headers = [
+                "Payment date",
+                "Student",
+                "Student ID",
+                "Reg no",
+                "Programme",
+                "Amount",
+                "Bank reference",
+                "Bank",
+                "Receipt",
+                "Posted by",
+                "Posted at",
+                "Notes",
+            ]
+        header_font = Font(bold=True, color="FFFFFF")
+        header_fill = PatternFill(start_color="1e1b4b", fill_type="solid")
+        thin = Border(
+            left=Side(style="thin", color="CBD5E1"),
+            right=Side(style="thin", color="CBD5E1"),
+            top=Side(style="thin", color="CBD5E1"),
+            bottom=Side(style="thin", color="CBD5E1"),
+        )
+        for col, header in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col, value=header)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal="center", wrap_text=True)
+            cell.border = thin
+            ws.column_dimensions[get_column_letter(col)].width = max(14, min(36, len(header) + 4))
+        for r_i, row in enumerate(qs[:8000], 2):
+            data = self._credit_row(row) if kind == "credit" else self._bank_row(row)
+            if kind == "credit":
+                values = [
+                    (data.get("payment_date_time") or "")[:19].replace("T", " "),
+                    data.get("student_name") or "",
+                    data.get("student_id") or "",
+                    data.get("reg_no") or "",
+                    data.get("programme") or "",
+                    float(data.get("amount") or 0),
+                    data.get("label") or "",
+                    data.get("reference") or "",
+                    data.get("posted_by") or "",
+                    (data.get("created_at") or "")[:19].replace("T", " "),
+                    data.get("notes") or "",
+                ]
+            else:
+                values = [
+                    (data.get("payment_date_time") or "")[:19].replace("T", " "),
+                    data.get("student_name") or "",
+                    data.get("student_id") or "",
+                    data.get("reg_no") or "",
+                    data.get("programme") or "",
+                    float(data.get("amount") or 0),
+                    data.get("bank_reference") or "",
+                    data.get("bank_name") or "",
+                    data.get("receipt") or "",
+                    data.get("posted_by") or "",
+                    (data.get("created_at") or "")[:19].replace("T", " "),
+                    data.get("notes") or "",
+                ]
+            for c_i, value in enumerate(values, 1):
+                cell = ws.cell(row=r_i, column=c_i, value=value)
+                cell.border = thin
+        ws.freeze_panes = "A2"
+        ws.auto_filter.ref = ws.dimensions
+        buf = BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        from django.http import HttpResponse
+
+        filename = (
+            f"direct_{'credits' if kind == 'credit' else 'bank_payments'}_"
+            f"{datetime.now().strftime('%Y-%m-%d')}.xlsx"
+        )
+        response = HttpResponse(
+            buf.getvalue(),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return response
 
 
 def _staff_display(user) -> str:
