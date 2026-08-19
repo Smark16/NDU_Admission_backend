@@ -283,12 +283,36 @@ def _wrap_text_lines(text: str, width: float, fontsize: float, fontname: str) ->
     return lines or [text]
 
 
-def _draw_wrapped_text(page, rect: fitz.Rect, text: str, fontsize: float, font_kwargs: dict, color=(0, 0, 0)) -> None:
+def _draw_wrapped_text(
+    page,
+    rect: fitz.Rect,
+    text: str,
+    fontsize: float,
+    font_kwargs: dict,
+    color=(0, 0, 0),
+    *,
+    single_line: bool = False,
+) -> None:
     fontname = font_kwargs.get("fontname") or "helv"
     extra = {key: val for key, val in font_kwargs.items() if key != "fontname"}
     width = max(8.0, float(rect.width))
     height = max(fontsize, float(rect.height))
     size = float(fontsize)
+    if single_line:
+        while size >= 5.0 and fitz.get_text_length(text, fontname=fontname, fontsize=size) > width:
+            size -= 0.3
+        try:
+            page.insert_text(
+                fitz.Point(rect.x0, min(rect.y1 - 1, rect.y0 + size)),
+                text,
+                fontsize=size,
+                color=color,
+                fontname=fontname,
+                **extra,
+            )
+        except Exception:
+            page.insert_text(fitz.Point(rect.x0, rect.y0 + size), text, fontsize=size, color=color, fontname="helv")
+        return
     lines: list[str] = []
     while size >= 5.0:
         lines = _wrap_text_lines(text, width, size, fontname)
@@ -389,7 +413,7 @@ def fill_id_card_pdf_template(
             except Exception:
                 logger.exception("Failed to draw caption %s on ID card PDF", caption)
             label_w = fitz.get_text_length(label + "  ", fontname="helv", fontsize=cap_size)
-            value_height = float(pos.get("height") or font_size * 3.2)
+            value_height = float(pos.get("height") or max(font_size, cap_size) * 1.45)
             rect = fitz.Rect(x + label_w, y, x + max_w, y + value_height)
         elif caption:
             try:
@@ -411,7 +435,14 @@ def fill_id_card_pdf_template(
             rect = fitz.Rect(x, value_top, x + max_w, value_top + value_height)
         if rect.x1 - rect.x0 < 10:
             rect = fitz.Rect(x, rect.y0, x + max_w, rect.y1)
-        _draw_wrapped_text(page, rect, value, font_size, font_kwargs)
+        _draw_wrapped_text(
+            page,
+            rect,
+            value,
+            font_size,
+            font_kwargs,
+            single_line=bool(pos.get("single_line", False)),
+        )
 
     pdf_bytes = doc.write()
     doc.close()
@@ -419,20 +450,18 @@ def fill_id_card_pdf_template(
 
 
 def _with_cr80_course_box(pdf_path: str, positions: dict) -> dict:
-    """Give Course a wrapping box on the Ndejje CR80 blank so long programme names print."""
+    """Use the current CR80 field map so name, expiry, and card number stay in place."""
     from .id_card_default_layout import NDEJJE_CR80_STUDENT_FIELD_POSITIONS, pdf_is_cr80_id_card
 
-    merged = dict(positions or {})
     try:
         doc = fitz.open(pdf_path)
         width, height = doc[0].rect.width, doc[0].rect.height
         doc.close()
     except Exception:
-        return merged
+        return dict(positions or {})
     if not pdf_is_cr80_id_card(width, height):
-        return merged
-    merged["course"] = dict(NDEJJE_CR80_STUDENT_FIELD_POSITIONS["course"])
-    return merged
+        return dict(positions or {})
+    return {key: dict(value) for key, value in NDEJJE_CR80_STUDENT_FIELD_POSITIONS.items()}
 
 
 def render_id_card_pdf(card: StudentIdCard) -> bytes | None:
