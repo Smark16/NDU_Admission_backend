@@ -978,6 +978,65 @@ def sanitize_exemption_draft(payload: dict | None) -> dict:
     }
 
 
+def align_exemption_draft_to_curriculum(student: AdmittedStudent, draft: dict | None) -> dict:
+    """Keep only papers that exist on this student's programme.
+
+    Stale browser drafts (and leftover server JSON) can carry another
+    programme's curriculum_line_id / course codes — e.g. engineering units
+    on a non-engineering student.
+    """
+    cleaned = sanitize_exemption_draft(draft)
+    curriculum = list_programme_curriculum_for_review(student)
+    by_id = {int(c["id"]): c for c in curriculum if c.get("id") is not None}
+    by_code = {}
+    for c in curriculum:
+        key = _norm_course_code(c.get("course_code") or "")
+        if key and key not in by_code:
+            by_code[key] = c
+    kept = []
+    seen = set()
+    for paper in cleaned.get("papers") or []:
+        row = None
+        raw_id = paper.get("curriculum_line_id")
+        if raw_id not in (None, "", 0, "0"):
+            try:
+                row = by_id.get(int(raw_id))
+            except (TypeError, ValueError):
+                row = None
+        if row is None:
+            row = by_code.get(_norm_course_code(paper.get("course_code") or ""))
+        if row is None:
+            continue
+        clid = int(row["id"])
+        if clid in seen:
+            continue
+        seen.add(clid)
+        kept.append(
+            {
+                **paper,
+                "curriculum_line_id": clid,
+                "course_code": row.get("course_code") or paper.get("course_code") or "",
+                "course_name": row.get("course_name") or paper.get("course_name") or "",
+                "year_of_study": str(row.get("year_of_study") or paper.get("year_of_study") or ""),
+                "term_number": str(row.get("term_number") or paper.get("term_number") or ""),
+            }
+        )
+    cleaned["papers"] = kept
+    return cleaned
+
+
+def exemption_draft_summary_for_student(student: AdmittedStudent) -> dict:
+    aligned = align_exemption_draft_to_curriculum(student, student.exemption_form_draft)
+    stored = sanitize_exemption_draft(student.exemption_form_draft or {})
+    if aligned.get("papers") != stored.get("papers"):
+        student.exemption_form_draft = aligned
+        student.exemption_form_draft_updated_at = timezone.now()
+        student.save(
+            update_fields=["exemption_form_draft", "exemption_form_draft_updated_at", "updated_at"]
+        )
+    return exemption_draft_summary(aligned)
+
+
 def exemption_draft_summary(draft: dict | None) -> dict:
     data = sanitize_exemption_draft(draft) if draft else {"papers": [], "attainedAt": "", "reason": ""}
     selected = [p for p in data.get("papers") or [] if p.get("curriculum_line_id")]
@@ -996,7 +1055,7 @@ def exemption_draft_summary(draft: dict | None) -> dict:
 
 
 def save_exemption_draft(student: AdmittedStudent, payload: dict | None) -> dict:
-    cleaned = sanitize_exemption_draft(payload)
+    cleaned = align_exemption_draft_to_curriculum(student, payload)
     student.exemption_form_draft = cleaned
     student.exemption_form_draft_updated_at = timezone.now()
     student.save(update_fields=["exemption_form_draft", "exemption_form_draft_updated_at", "updated_at"])
@@ -1031,7 +1090,7 @@ def submit_exemption_from_draft(student: AdmittedStudent, *, requested_by, staff
     if not access.get("paid"):
         raise ValueError("The UGX 50,000 exemption form fee is not paid yet.")
 
-    summary = exemption_draft_summary(student.exemption_form_draft)
+    summary = exemption_draft_summary_for_student(student)
     draft = summary.get("draft") or {}
     if not summary.get("ready"):
         raise ValueError(

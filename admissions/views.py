@@ -5362,15 +5362,19 @@ class StudentExemptionDraftView(APIView):
             return None
 
     def get(self, request):
-        from admissions.exemption_services import exemption_draft_summary
+        from admissions.exemption_services import exemption_draft_summary_for_student
 
         admission = self._get_admission(request.user)
         if not admission:
             return Response({"detail": "No active admission found."}, status=404)
-        summary = exemption_draft_summary(admission.exemption_form_draft)
+        summary = exemption_draft_summary_for_student(admission)
+        programme = admission.admitted_program
         return Response(
             {
                 **summary,
+                "student_pk": admission.pk,
+                "reg_no": admission.reg_no,
+                "programme": programme.name if programme else None,
                 "updated_at": (
                     admission.exemption_form_draft_updated_at.isoformat()
                     if admission.exemption_form_draft_updated_at
@@ -5430,7 +5434,7 @@ class AdminExemptionApplicationView(APIView):
 
     def get(self, request, student_pk):
         from admissions.exemption_services import (
-            exemption_draft_summary,
+            exemption_draft_summary_for_student,
             exemption_form_fee_status,
         )
 
@@ -5449,7 +5453,7 @@ class AdminExemptionApplicationView(APIView):
             .order_by("-created_at")
             .first()
         )
-        summary = exemption_draft_summary(student.exemption_form_draft)
+        summary = exemption_draft_summary_for_student(student)
         paid = bool(access.get("paid"))
         can_submit = bool(paid and summary.get("ready") and (pending is None or pending.status == "rejected"))
         block = None
@@ -5471,6 +5475,7 @@ class AdminExemptionApplicationView(APIView):
                 "student_name": student.full_name,
                 "student_id": student.student_id,
                 "reg_no": student.reg_no,
+                "programme": student.admitted_program.name if student.admitted_program_id else None,
                 "form_fee": access,
                 "draft": summary.get("draft"),
                 "has_draft": summary.get("has_draft"),
@@ -5597,6 +5602,11 @@ class ExemptionEligibleCoursesView(APIView):
             {
                 "form_fee": access,
                 "courses": courses,
+                "student_pk": admission.pk,
+                "reg_no": admission.reg_no,
+                "programme": (
+                    admission.admitted_program.name if admission.admitted_program_id else None
+                ),
                 "grade_scale_name": grade_scale_name,
                 "grade_bands": grade_bands,
             }

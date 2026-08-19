@@ -116,6 +116,10 @@ class ExemptionReportExcelView(APIView):
                 ["Approved", t["approved"]],
                 ["Rejected", t["rejected"]],
                 ["Paid, not submitted", t["paid_unsubmitted"]],
+                ["Form fee billed", t.get("form_fee_billed") or 0],
+                ["Form fee unpaid (no application)", t.get("form_fee_unpaid") or 0],
+                ["Form fee paid", t.get("form_fee_paid") or 0],
+                ["Form fee paid and submitted", t.get("form_fee_paid_submitted") or 0],
             ],
         )
 
@@ -161,6 +165,42 @@ class ExemptionReportExcelView(APIView):
             wb.create_sheet("Paid not submitted"),
             headers,
             [row_values(r) for r in data["paid_unsubmitted"]],
+        )
+        write_sheet(
+            wb.create_sheet("Form fee 50k"),
+            [
+                "Student",
+                "Student ID",
+                "Reg no",
+                "Campus",
+                "Programme",
+                "Amount",
+                "Charge status",
+                "Tracking",
+                "Applied",
+                "Draft papers",
+                "Charged at",
+                "Days pending",
+                "Request status",
+            ],
+            [
+                [
+                    r.get("name") or "—",
+                    r.get("student_id") or "",
+                    r.get("reg_no") or "",
+                    r.get("campus") or "—",
+                    r.get("program") or "—",
+                    r.get("amount") or 0,
+                    r.get("charge_status") or "",
+                    r.get("tracking") or "",
+                    "Yes" if r.get("applied") else "No",
+                    r.get("papers") or 0,
+                    (r.get("charged_at") or "")[:19].replace("T", " "),
+                    r.get("days_pending") if r.get("days_pending") is not None else "",
+                    r.get("change_request_status") or "",
+                ]
+                for r in data.get("form_fees") or []
+            ],
         )
 
         buf = BytesIO()
