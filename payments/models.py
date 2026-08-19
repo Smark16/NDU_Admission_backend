@@ -428,6 +428,15 @@ class StudentTuitionPayment(models.Model):
         return f"{self.student.student_id} - {self.amount} {self.currency} ({self.status})"
 
 
+class ExemptionFormFeePayment(StudentTuitionPayment):
+    """Django admin list of UGX 50k exemption form-fee charges only."""
+
+    class Meta:
+        proxy = True
+        verbose_name = "Exemption form fee payment"
+        verbose_name_plural = "Exemption form fee payments"
+
+
 class RegistrationSettings(models.Model):
     """Singleton-style registration policy (min tuition %, windows, gates)."""
     min_tuition_payment_percentage = models.DecimalField(

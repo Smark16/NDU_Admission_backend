@@ -4,8 +4,7 @@ from unittest.mock import MagicMock
 from django.test import SimpleTestCase
 
 from admissions.exemption_services import (
-    EXEMPTION_DOCS_NOT_VERIFIED_CODE,
-    EXEMPTION_NOT_REGISTERED_CODE,
+    exemption_eligibility_payload,
     exemption_ineligibility,
     student_may_apply_course_exemption,
 )
@@ -23,21 +22,18 @@ def _student(*, accounts=False, docs=False, year=1, term=1):
 
 
 class ExemptionEligibilityTests(SimpleTestCase):
-    def test_accounts_required_for_everyone(self):
-        code, _ = exemption_ineligibility(_student(accounts=False, docs=True, year=2, term=1))
-        self.assertEqual(code, EXEMPTION_NOT_REGISTERED_CODE)
-        self.assertFalse(student_may_apply_course_exemption(_student(accounts=False)))
+    def test_accounts_not_required(self):
+        student = _student(accounts=False, docs=False, year=1, term=1)
+        self.assertIsNone(exemption_ineligibility(student)[0])
+        self.assertTrue(student_may_apply_course_exemption(student))
+        self.assertTrue(exemption_eligibility_payload(student)["eligible"])
 
-    def test_y1t1_requires_ar_docs(self):
-        code, _ = exemption_ineligibility(_student(accounts=True, docs=False, year=1, term=1))
-        self.assertEqual(code, EXEMPTION_DOCS_NOT_VERIFIED_CODE)
-
-    def test_y1t1_ready_when_both_cleared(self):
-        student = _student(accounts=True, docs=True, year=1, term=1)
+    def test_y1t1_without_ar_docs_may_apply(self):
+        student = _student(accounts=True, docs=False, year=1, term=1)
         self.assertIsNone(exemption_ineligibility(student)[0])
         self.assertTrue(student_may_apply_course_exemption(student))
 
-    def test_continuing_accounts_only(self):
-        student = _student(accounts=True, docs=False, year=2, term=1)
+    def test_continuing_without_accounts_may_apply(self):
+        student = _student(accounts=False, docs=False, year=2, term=1)
         self.assertIsNone(exemption_ineligibility(student)[0])
         self.assertTrue(student_may_apply_course_exemption(student))
