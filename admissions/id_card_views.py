@@ -548,7 +548,6 @@ class IdCardListView(APIView):
             "admitted_student__application",
             "admitted_student__admitted_program",
             "admitted_student__admitted_program__faculty",
-            "admitted_student__admitted_program__department",
             "admitted_student__admitted_batch",
             "admitted_student__admitted_campus",
         ).order_by("-created_at")
@@ -629,7 +628,6 @@ class IdCardPreviewDataView(APIView):
             "admitted_student__application",
             "admitted_student__admitted_program",
             "admitted_student__admitted_program__faculty",
-            "admitted_student__admitted_program__department",
             "admitted_student__admitted_batch",
             "admitted_student__admitted_campus",
         ).filter(pk=card_id).first()
@@ -651,7 +649,6 @@ class IdCardPrintPdfView(APIView):
             "admitted_student__application",
             "admitted_student__admitted_program",
             "admitted_student__admitted_program__faculty",
-            "admitted_student__admitted_program__department",
             "admitted_student__admitted_batch",
             "admitted_student__admitted_campus",
         ).filter(pk=card_id).first()
