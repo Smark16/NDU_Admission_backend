@@ -10,7 +10,9 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_SECTION_CODE = "MAIN"
 DEFAULT_SECTION_NAME = "Main"
+# Extra A/B sections may warn at this size. The default MAIN catch-all is unlimited.
 DEFAULT_MAX_CAPACITY = 120
+DEFAULT_SECTION_MAX_CAPACITY = 0
 
 
 def resolve_program_batch_for_course_unit(course_unit):
@@ -108,10 +110,11 @@ def serialize_section(section, *, student_count: int | None = None) -> dict:
     }
 
 
-def ensure_default_teaching_section(program_batch, *, max_capacity: int = DEFAULT_MAX_CAPACITY):
+def ensure_default_teaching_section(program_batch, *, max_capacity: int = DEFAULT_SECTION_MAX_CAPACITY):
     """
     Ensure the cohort has exactly one default teaching section.
-    Creates MAIN / Main when missing.
+    Creates MAIN / Main when missing. Default capacity is 0 (unlimited) so the
+    full cohort is visible; split sections can still use a cap.
     """
     from Programs.models import TeachingSection
 
@@ -124,6 +127,9 @@ def ensure_default_teaching_section(program_batch, *, max_capacity: int = DEFAUL
         .first()
     )
     if existing is not None:
+        if existing.max_capacity != 0:
+            existing.max_capacity = 0
+            existing.save(update_fields=["max_capacity", "updated_at"])
         return existing
 
     section, created = TeachingSection.objects.get_or_create(
@@ -143,6 +149,9 @@ def ensure_default_teaching_section(program_batch, *, max_capacity: int = DEFAUL
         ).exists():
             section.is_default = True
             section.save(update_fields=["is_default", "updated_at"])
+    if section.is_default and section.max_capacity != 0:
+        section.max_capacity = 0
+        section.save(update_fields=["max_capacity", "updated_at"])
     if created:
         logger.info(
             "Created default teaching section %s for ProgramBatch %s",

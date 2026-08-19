@@ -322,7 +322,7 @@ class ListSectionStudentsView(_BatchUnavailableMixin, APIView):
             )
 
         students = []
-        for spe in qs[:800]:
+        for spe in qs:
             app = getattr(spe.student, "application", None)
             name = ""
             if app is not None:

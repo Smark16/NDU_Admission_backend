@@ -621,7 +621,10 @@ class TeachingSection(models.Model):
     )
     max_capacity = models.PositiveIntegerField(
         default=120,
-        help_text="Teaching capacity warning/limit when moving students (0 = unlimited).",
+        help_text=(
+            "Teaching capacity warning/limit when moving students "
+            "(0 = unlimited). The default MAIN section is always unlimited."
+        ),
     )
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
