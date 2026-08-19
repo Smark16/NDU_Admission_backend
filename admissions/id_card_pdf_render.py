@@ -398,7 +398,7 @@ def fill_id_card_pdf_template(
         caption = str(pos.get("caption") or "").strip()
         cap_size = float(pos.get("caption_size") or max(7.0, font_size - 1.0))
         inline = bool(pos.get("inline", False))
-        maroon = (0.486, 0.082, 0.098)
+        label_color = (0, 0, 0.502)  # Ndejje navy #000080
         if caption and inline:
             label = caption if caption.endswith(":") else f"{caption}:"
             baseline = y + cap_size
@@ -407,7 +407,7 @@ def fill_id_card_pdf_template(
                     fitz.Point(x, baseline),
                     label,
                     fontsize=cap_size,
-                    color=maroon,
+                    color=label_color,
                     fontname="helv",
                 )
             except Exception:
@@ -421,7 +421,7 @@ def fill_id_card_pdf_template(
                     fitz.Point(x, y + cap_size),
                     caption,
                     fontsize=cap_size,
-                    color=maroon,
+                    color=label_color,
                     fontname="helv",
                 )
             except Exception:

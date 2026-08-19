@@ -82,7 +82,7 @@ NDEJJE_CR80_STUDENT_FIELD_POSITIONS = {
         **_TEXT,
         "x": 80,
         "y": 134,
-        "font_size": 8,
+        "font_size": 6,
         "width": 100,
         "height": 11,
         "caption": "",
