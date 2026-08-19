@@ -57,18 +57,10 @@ def exemption_ineligibility(student: AdmittedStudent) -> tuple[str | None, str]:
     """
     Return (code, message) when the student cannot apply, else (None, "").
 
-    Accounts registration clearance is required for everyone.
-    AR document verification is required only for Year 1 Term 1.
+    Accounts registration clearance and the 60% paper rule are no longer required
+    to open or submit a course exemption.
     """
-    if not getattr(student, "accounts_registration_cleared", False):
-        return EXEMPTION_NOT_REGISTERED_CODE, EXEMPTION_NOT_REGISTERED_MESSAGE
-
-    from admissions.registration_workflow import requires_physical_document_verification
-
-    if requires_physical_document_verification(student) and not getattr(
-        student, "physical_documents_verified", False
-    ):
-        return EXEMPTION_DOCS_NOT_VERIFIED_CODE, EXEMPTION_DOCS_NOT_VERIFIED_MESSAGE
+    _ = student
     return None, ""
 
 
@@ -428,32 +420,8 @@ def exemption_paper_meets_min_mark(
     *,
     min_percent: Decimal | None = None,
 ) -> tuple[bool, str]:
-    """
-    True when the paper's score/grade band floor is >= EXEMPTION_MIN_MARK_PERCENT.
-    Optionally accepts client-supplied min_mark (from grading scheme band).
-    """
-    threshold = min_percent if min_percent is not None else EXEMPTION_MIN_MARK_PERCENT
-    floor: Decimal | None = None
-    raw_min = paper.get("min_mark")
-    if raw_min not in (None, ""):
-        try:
-            floor = Decimal(str(raw_min))
-        except Exception:
-            floor = None
-    if floor is None:
-        floor = parse_exemption_mark_floor(str(paper.get("score_obtained") or ""))
-    code = (str(paper.get("course_code") or "").strip() or "paper")
-    if floor is None:
-        return (
-            False,
-            f"{code}: enter a grade/score of at least {threshold:g}% "
-            "(papers below 60% cannot be exempted).",
-        )
-    if floor < threshold:
-        return (
-            False,
-            f"{code}: scored {floor:g}% — exemption requires {threshold:g}% and above.",
-        )
+    """Min-mark gate retired — any recorded grade/score may be submitted."""
+    _ = paper, min_percent
     return True, ""
 
 # Legacy flat rates (settings-overridable). Kept for display/migration only —

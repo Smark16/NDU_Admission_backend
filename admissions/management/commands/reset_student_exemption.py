@@ -80,6 +80,11 @@ class Command(BaseCommand):
             action="store_true",
             help="Also delete EXEMPTION_FORM (50k) bills so the student must pay via SchoolPay again.",
         )
+        parser.add_argument(
+            "--clear-draft",
+            action="store_true",
+            help="Clear the saved Course Exemption form draft so the student starts fresh.",
+        )
         parser.add_argument("--dry-run", action="store_true")
 
     def handle(self, *args, **options):
@@ -260,6 +265,13 @@ class Command(BaseCommand):
                     ]
                 )
                 w(self.style.SUCCESS("  SPE reset to Y1T1 (current + entry)."))
+
+            if options.get("clear_draft"):
+                from admissions.exemption_services import clear_exemption_draft
+
+                if student.exemption_form_draft or student.exemption_form_draft_updated_at:
+                    clear_exemption_draft(student)
+                    w(self.style.SUCCESS("  Cleared saved exemption form draft."))
 
             w(self.style.SUCCESS(
                 f"  Removed {deleted_overrides} override(s), "

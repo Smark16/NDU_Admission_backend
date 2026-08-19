@@ -14,6 +14,10 @@ from admissions.temporary_access_views import (
     TemporaryAccessPassVerifyPublicView,
 )
 from admissions.headcount_views import UniversityHeadcountView
+from admissions.exemption_report_views import (
+    ExemptionReportExcelView,
+    ExemptionReportView,
+)
 from admissions.registration_report_views import (
     RegistrationReportExcelView,
     RegistrationReportView,
@@ -185,6 +189,16 @@ urlpatterns = [
         'reports/registration/export/',
         RegistrationReportExcelView.as_view(),
         name='registration_report_export',
+    ),
+    path(
+        'reports/exemptions/',
+        ExemptionReportView.as_view(),
+        name='exemption_report',
+    ),
+    path(
+        'reports/exemptions/export/',
+        ExemptionReportExcelView.as_view(),
+        name='exemption_report_export',
     ),
     path('list_bonafide_students/<int:pk>/', views.BonafideStudentDetail.as_view()),
     path(
