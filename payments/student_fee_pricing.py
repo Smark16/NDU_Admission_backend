@@ -5,28 +5,32 @@ from collections import defaultdict
 from decimal import Decimal
 from typing import Tuple
 
+from admissions.applicant_category import (
+    APPLICANT_CATEGORY_INTERNATIONAL,
+    category_from_nationality,
+    normalize_applicant_category,
+)
 from admissions.models import AdmittedStudent
 
 
 def is_international_student(student: AdmittedStudent) -> bool:
+    """True when this student should be billed the international fee column.
+
+    Applicant type International always wins. Otherwise nationality decides
+    (Uganda / Kenya / Tanzania = local). Default applicant_category is local,
+    so nationality must still be checked or international tuition never applies.
+    """
     app = getattr(student, "application", None)
     if not app:
         return False
-    category = (getattr(app, "applicant_category", None) or "").strip().lower()
-    if category == "international":
+    if normalize_applicant_category(getattr(app, "applicant_category", None)) == (
+        APPLICANT_CATEGORY_INTERNATIONAL
+    ):
         return True
-    if category == "local":
-        return False
-    nat = (getattr(app, "nationality", None) or "").strip().lower()
-    if not nat:
-        return False
-    return not _is_uganda_nationality(nat)
-
-
-def _is_uganda_nationality(nat: str) -> bool:
-    if nat in ("ugandan", "uganda", "ug"):
-        return True
-    return any(x in nat for x in ("ugandan", "uganda"))
+    return (
+        category_from_nationality(getattr(app, "nationality", None))
+        == APPLICANT_CATEGORY_INTERNATIONAL
+    )
 
 
 def effective_amount_currency(rule, international: bool) -> Tuple[Decimal, str]:

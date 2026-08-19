@@ -1347,6 +1347,7 @@ class EditApplicationProfile(APIView):
             "date_of_birth",
             "gender",
             "nationality",
+            "applicant_category",
             "phone",
             "email",
             "address",
@@ -1358,6 +1359,14 @@ class EditApplicationProfile(APIView):
             "passport_number",
         }
         payload = {k: v for k, v in request.data.items() if k in allowed_fields}
+        if "applicant_category" in payload:
+            from admissions.applicant_category import normalize_applicant_category
+
+            cat = normalize_applicant_category(payload.get("applicant_category"))
+            if cat:
+                payload["applicant_category"] = cat
+            else:
+                payload.pop("applicant_category", None)
         required_non_blank_fields = {
             "first_name",
             "last_name",
