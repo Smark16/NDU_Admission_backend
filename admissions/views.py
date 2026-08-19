@@ -3135,6 +3135,14 @@ class RevokeAdmittedStudent(APIView):
         assert_admitted_student_access(request.user, admission)
         application = get_object_or_404(Application, pk=admission.application_id)
 
+        from admissions.registration_workflow import (
+            admission_revoke_or_delete_blocked_reason,
+        )
+
+        blocked = admission_revoke_or_delete_blocked_reason(admission)
+        if blocked:
+            return Response({"detail": blocked}, status=400)
+
         reason = str(request.data.get("reason", "")).strip()
         if not reason:
             return Response({"detail": "Revocation reason is required."}, status=400)
@@ -4538,6 +4546,13 @@ class DeleteAdmittedStudent(generics.DestroyAPIView):
         assert_admissions_modify_access(request.user)
         admission = self.get_object()
         assert_admitted_student_access(request.user, admission)
+        from admissions.registration_workflow import (
+            admission_revoke_or_delete_blocked_reason,
+        )
+
+        blocked = admission_revoke_or_delete_blocked_reason(admission)
+        if blocked:
+            return Response({"detail": blocked}, status=400)
         application_id = admission.application_id
         with transaction.atomic():
             admission.delete()
@@ -4883,7 +4898,6 @@ class StudentChangeRequestListCreate(APIView):
                 assert_exemption_registration_required,
                 assert_exemption_resubmit_allowed,
                 assert_exemption_term_cap,
-                ensure_exemption_form_fee_access,
                 exemption_form_fee_status,
                 list_eligible_exemption_courses,
                 _term_key,
@@ -4903,7 +4917,7 @@ class StudentChangeRequestListCreate(APIView):
                 )
 
             # Form fee (UGX 50k) must be paid before the request is accepted.
-            access = ensure_exemption_form_fee_access(admission, charged_by=None)
+            access = exemption_form_fee_status(admission)
             if not access.get("paid"):
                 amount = int(float(access.get("amount") or 50000))
                 balance = int(float(access.get("balance") or amount))
@@ -5169,13 +5183,13 @@ class ExemptionFormFeeAccessView(APIView):
             return None
 
     def get(self, request):
-        from admissions.exemption_services import ensure_exemption_form_fee_access
+        from admissions.exemption_services import exemption_form_fee_status
 
         admission = self._get_admission(request.user)
         if not admission:
             return Response({"detail": "No active admission found."}, status=404)
-        # Create / reuse the UGX 50k bill so the student can pay before submit.
-        return Response(ensure_exemption_form_fee_access(admission, charged_by=None))
+        # Do not raise the 50k bill on page load — only when they start MoMo pay.
+        return Response(exemption_form_fee_status(admission))
 
     def post(self, request):
         return self.get(request)
@@ -5523,7 +5537,7 @@ class ExemptionEligibleCoursesView(APIView):
 
     def get(self, request):
         from admissions.exemption_services import (
-            ensure_exemption_form_fee_access,
+            exemption_form_fee_status,
             list_eligible_exemption_courses,
         )
         from examinations.services.grade_scale_resolver import resolve_grade_scale
@@ -5531,9 +5545,7 @@ class ExemptionEligibleCoursesView(APIView):
         admission = self._get_admission(request.user)
         if not admission:
             return Response({"detail": "No active admission found."}, status=404)
-        # Raises the UGX 50k bill only if Accounts has cleared the student for
-        # registration. Hostel-only students get eligible=false and no new bill.
-        access = ensure_exemption_form_fee_access(admission, charged_by=None)
+        access = exemption_form_fee_status(admission)
         try:
             courses = list_eligible_exemption_courses(admission)
         except Exception:

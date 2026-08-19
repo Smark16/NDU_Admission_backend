@@ -804,10 +804,8 @@ def exemption_form_fee_status(student: AdmittedStudent) -> dict:
 
 def ensure_exemption_form_fee_access(student: AdmittedStudent, *, charged_by=None) -> dict:
     """
-    Ensure a 50k form-fee charge exists (creates on first call) and report status.
-    Called when the student opens the exemption form so they can pay before submit.
-
-    Unregistered (hostel-only) students never get a bill created.
+    Ensure a 50k form-fee charge exists (creates if missing) and report status.
+    Used when the student starts MoMo pay, not on mere page load.
     """
     if not student_may_apply_course_exemption(student):
         return _form_fee_status_dict(student, _open_form_fee_charge(student))
@@ -1029,7 +1027,7 @@ def submit_exemption_from_draft(student: AdmittedStudent, *, requested_by, staff
     assert_exemption_registration_required(student)
     assert_exemption_resubmit_allowed(student)
 
-    access = ensure_exemption_form_fee_access(student, charged_by=None)
+    access = exemption_form_fee_status(student)
     if not access.get("paid"):
         raise ValueError("The UGX 50,000 exemption form fee is not paid yet.")
 
@@ -1042,16 +1040,33 @@ def submit_exemption_from_draft(student: AdmittedStudent, *, requested_by, staff
         )
 
     papers = [p for p in (draft.get("papers") or []) if p.get("curriculum_line_id")]
-    eligible = {c["id"]: c for c in list_eligible_exemption_courses(student)}
+    eligible_list = list_eligible_exemption_courses(student)
+    eligible = {c["id"]: c for c in eligible_list}
+    eligible_by_code = {}
+    for c in eligible_list:
+        key = _norm_course_code(c.get("course_code") or "")
+        if key and key not in eligible_by_code:
+            eligible_by_code[key] = c
     extra_terms = set()
     exemption_papers = []
+    seen_lines = set()
     for paper in papers:
-        clid = int(paper["curriculum_line_id"])
-        if clid not in eligible:
-            raise ValueError(
-                f"Paper {paper.get('course_code') or clid} is not eligible for exemption."
-            )
-        row = eligible[clid]
+        try:
+            clid = int(paper["curriculum_line_id"])
+        except (TypeError, ValueError):
+            continue
+        row = eligible.get(clid)
+        if row is None:
+            row = eligible_by_code.get(_norm_course_code(paper.get("course_code") or ""))
+            if row is None:
+                raise ValueError(
+                    f"Paper {paper.get('course_code') or clid} is not eligible for exemption."
+                )
+            clid = int(row["id"])
+            paper = {**paper, "curriculum_line_id": clid}
+        if clid in seen_lines:
+            continue
+        seen_lines.add(clid)
         key = _term_key(row.get("year_of_study"), row.get("term_number"))
         if key:
             extra_terms.add(key)
