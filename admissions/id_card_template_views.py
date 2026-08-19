@@ -15,6 +15,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .id_card_default_layout import default_field_positions_for_pdf
 from .id_card_pdf_render import maybe_auto_activate_id_card_template
 from .models import IdCardPdfTemplate
 from .permissions import ManageIdCardsPermission
@@ -55,6 +56,35 @@ class IdCardPdfTemplateSerializer(serializers.ModelSerializer):
             return request.build_absolute_uri(obj.template_pdf.url)
         except ValueError:
             return None
+
+    def _apply_default_positions_if_empty(self, obj: IdCardPdfTemplate) -> None:
+        if obj.field_positions:
+            return
+        try:
+            path = obj.template_pdf.path
+        except (ValueError, AttributeError):
+            return
+        if not path or not os.path.isfile(path):
+            return
+        try:
+            positions = default_field_positions_for_pdf(path)
+        except Exception:
+            logger.exception("Could not detect default ID card field positions for %s", obj.key)
+            return
+        if not positions:
+            return
+        obj.field_positions = positions
+        obj.save(update_fields=["field_positions", "updated_at"])
+
+    def create(self, validated_data):
+        obj = super().create(validated_data)
+        self._apply_default_positions_if_empty(obj)
+        return obj
+
+    def update(self, instance, validated_data):
+        obj = super().update(instance, validated_data)
+        self._apply_default_positions_if_empty(obj)
+        return obj
 
 
 class IdCardPdfTemplateListCreateView(ListCreateAPIView):

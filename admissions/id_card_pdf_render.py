@@ -12,6 +12,8 @@ from pathlib import Path
 
 import fitz
 
+from django.db.utils import OperationalError, ProgrammingError
+
 from accounts.models import SystemSettings
 
 from .models import IdCardPdfTemplate, StudentIdCard
@@ -61,6 +63,28 @@ def _resolve_font(pos: dict) -> dict:
     return {"fontname": "hebo" if bold else "helv"}
 
 
+def _active_id_card_template_key(audience: str = "student") -> str:
+    """Read the active template key without loading every SystemSettings column."""
+    field = "active_staff_id_card_template" if audience == "staff" else "active_id_card_template"
+    from django.db import connection
+
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(f"SELECT {field} FROM accounts_systemsettings WHERE id = 1")
+            row = cursor.fetchone()
+        return (str(row[0]).strip() if row and row[0] else "")
+    except (OperationalError, ProgrammingError):
+        if audience == "staff":
+            return ""
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT active_id_card_template FROM accounts_systemsettings WHERE id = 1")
+                row = cursor.fetchone()
+            return (str(row[0]).strip() if row and row[0] else "")
+        except (OperationalError, ProgrammingError):
+            return ""
+
+
 def _pdf_template_row_for_key(key: str) -> IdCardPdfTemplate | None:
     row = IdCardPdfTemplate.objects.filter(key=key).first()
     if row is None or not row.template_pdf or not (row.template_pdf.name or "").strip():
@@ -70,11 +94,7 @@ def _pdf_template_row_for_key(key: str) -> IdCardPdfTemplate | None:
 
 def resolve_active_pdf_template(audience: str = "student") -> IdCardPdfTemplate | None:
     """Active IdCardPdfTemplate with PDF file and at least one mapped field."""
-    settings_obj = SystemSettings.get_settings()
-    if audience == "staff":
-        active_key = (getattr(settings_obj, "active_staff_id_card_template", None) or "").strip()
-    else:
-        active_key = (getattr(settings_obj, "active_id_card_template", None) or "").strip()
+    active_key = _active_id_card_template_key(audience)
     if not active_key:
         return None
 
@@ -94,22 +114,21 @@ def maybe_auto_activate_id_card_template(key: str) -> bool:
         return False
 
     audience = getattr(row, "audience", "student") or "student"
-    settings_obj = SystemSettings.get_settings()
     if audience == "staff":
-        active_key = (getattr(settings_obj, "active_staff_id_card_template", None) or "").strip()
+        active_key = _active_id_card_template_key("staff")
         if active_key and _pdf_template_row_for_key(active_key) is not None:
             return False
-        settings_obj.active_staff_id_card_template = key
-        settings_obj.save(update_fields=["active_staff_id_card_template", "updated_at"])
-        return True
+        try:
+            return bool(
+                SystemSettings.objects.filter(pk=1).update(active_staff_id_card_template=key)
+            )
+        except (OperationalError, ProgrammingError):
+            return False
 
-    active_key = (getattr(settings_obj, "active_id_card_template", None) or "").strip()
+    active_key = _active_id_card_template_key("student")
     if active_key and _pdf_template_row_for_key(active_key) is not None:
         return False
-
-    settings_obj.active_id_card_template = key
-    settings_obj.save(update_fields=["active_id_card_template", "updated_at"])
-    return True
+    return bool(SystemSettings.objects.filter(pk=1).update(active_id_card_template=key))
 
 
 def explain_pdf_render_blocker(audience: str = "student") -> str | None:
@@ -120,13 +139,8 @@ def explain_pdf_render_blocker(audience: str = "student") -> str | None:
     if not qs.exists():
         return None
 
-    settings_obj = SystemSettings.get_settings()
-    if audience == "staff":
-        active_key = (getattr(settings_obj, "active_staff_id_card_template", None) or "").strip()
-        kind = "staff"
-    else:
-        active_key = (getattr(settings_obj, "active_id_card_template", None) or "").strip()
-        kind = "student"
+    active_key = _active_id_card_template_key(audience)
+    kind = "staff" if audience == "staff" else "student"
     if not active_key:
         return (
             f"A {kind} PDF template is uploaded but none is set as active. "
@@ -144,18 +158,41 @@ def explain_pdf_render_blocker(audience: str = "student") -> str | None:
     return None
 
 
+def _card_date(value: date | None) -> str:
+    if not value:
+        return ""
+    return value.strftime("%d/%m/%Y")
+
+
 def build_id_card_field_context(card: StudentIdCard) -> dict[str, str]:
     st = card.admitted_student
     app = st.application
     issue = card.issue_date or date.today()
     expiry = card.expiry_date or _default_expiry(issue)
+    program = st.admitted_program
+    faculty = getattr(program, "faculty", None) if program else None
+    department = getattr(program, "department", None) if program else None
+    batch = st.admitted_batch
     return {
         "name": st.full_name or "",
+        "title": ((getattr(app, "title", None) or "").strip() if app else ""),
         "student_no": (st.student_id or "").strip(),
+        "student_id": (st.student_id or "").strip(),
         "reg_no": (st.reg_no or "").strip(),
-        "course": st.admitted_program.name if st.admitted_program_id else "",
+        "course": program.name if program else "",
+        "course_code": (program.code or "").strip() if program else "",
+        "faculty": faculty.name if faculty else "",
+        "department": department.name if department else "",
+        "campus": st.admitted_campus.name if st.admitted_campus_id else "",
+        "academic_batch": batch.name if batch else "",
+        "academic_year": (getattr(batch, "academic_year", None) or "").strip() if batch else "",
+        "study_mode": (st.study_mode or "").strip(),
         "gender": (app.gender or "").strip() if app else "",
-        "expiry_date": expiry.isoformat(),
+        "nationality": (app.nationality or "").strip() if app else "",
+        "date_of_birth": _card_date(getattr(app, "date_of_birth", None) if app else None),
+        "phone": (app.phone or "").strip() if app else "",
+        "issue_date": _card_date(issue),
+        "expiry_date": _card_date(expiry),
         "card_number": card.card_number or "",
     }
 
@@ -198,8 +235,8 @@ def _qr_png_bytes(payload: str) -> bytes | None:
         qr = qrcode.QRCode(
             version=None,
             error_correction=ERROR_CORRECT_M,
-            box_size=8,
-            border=3,
+            box_size=10,
+            border=2,
         )
         qr.add_data(payload)
         qr.make(fit=True)
@@ -255,6 +292,10 @@ def fill_id_card_pdf_template(
             continue
 
         value = str(context.get(field_name, "") or "")
+        if field_name == "name":
+            title = str(context.get("title") or "").strip()
+            if title and value and not value.lower().startswith(title.lower()):
+                value = f"{title} {value}".strip()
         if not value:
             continue
         x = float(pos.get("x", 0))
@@ -264,9 +305,41 @@ def fill_id_card_pdf_template(
         max_w = float(pos.get("width") or 0)
         if max_w <= 0:
             max_w = max(40.0, page.rect.width - x - 8)
-        # insert_text uses a baseline point and overflows long programmes;
-        # a box wraps / shrinks to the mapped width.
-        rect = fitz.Rect(x, max(0, y - font_size), x + max_w, y + font_size * 2.8)
+        caption = str(pos.get("caption") or "").strip()
+        cap_size = float(pos.get("caption_size") or max(7.0, font_size - 1.0))
+        inline = bool(pos.get("inline", False))
+        maroon = (0.486, 0.082, 0.098)
+        if caption and inline:
+            label = caption if caption.endswith(":") else f"{caption}:"
+            baseline = y + cap_size
+            try:
+                page.insert_text(
+                    fitz.Point(x, baseline),
+                    label,
+                    fontsize=cap_size,
+                    color=maroon,
+                    fontname="helv",
+                )
+            except Exception:
+                logger.exception("Failed to draw caption %s on ID card PDF", caption)
+            label_w = fitz.get_text_length(label + "  ", fontname="helv", fontsize=cap_size)
+            rect = fitz.Rect(x + label_w, y, x + max_w, y + font_size * 2.6)
+        elif caption:
+            try:
+                page.insert_text(
+                    fitz.Point(x, y + cap_size),
+                    caption,
+                    fontsize=cap_size,
+                    color=maroon,
+                    fontname="helv",
+                )
+            except Exception:
+                logger.exception("Failed to draw caption %s on ID card PDF", caption)
+            value_top = y + cap_size + 1.5
+            rect = fitz.Rect(x, value_top, x + max_w, value_top + font_size * 2.8)
+        else:
+            value_top = max(0, y - font_size)
+            rect = fitz.Rect(x, value_top, x + max_w, value_top + font_size * 2.8)
         try:
             page.insert_textbox(
                 rect,
@@ -307,6 +380,7 @@ def render_id_card_pdf(card: StudentIdCard) -> bytes | None:
     if not os.path.isfile(pdf_path):
         return None
 
+    card.ensure_card_number()
     context = build_id_card_field_context(card)
     image_paths: dict[str, str] = {}
     image_streams: dict[str, bytes] = {}
@@ -353,7 +427,7 @@ def build_staff_id_card_field_context(card) -> dict[str, str]:
         "department": st.org_unit.name if st.org_unit_id else "",
         "campus": ", ".join(campus_names),
         "staff_type": st.staff_type.name if st.staff_type_id else "",
-        "expiry_date": expiry.isoformat(),
+        "expiry_date": _card_date(expiry),
         "card_number": card.card_number or "",
     }
 

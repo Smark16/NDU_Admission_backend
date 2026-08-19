@@ -52,6 +52,15 @@ class Command(BaseCommand):
                 cursor.execute(sql)
             added.append("login_cover_image")
 
+        if "active_staff_id_card_template" not in existing:
+            sql = (
+                f"ALTER TABLE {table} "
+                "ADD COLUMN active_staff_id_card_template varchar(80) NOT NULL DEFAULT ''"
+            )
+            with connection.cursor() as cursor:
+                cursor.execute(sql)
+            added.append("active_staff_id_card_template")
+
         if added:
             self.stdout.write(self.style.SUCCESS(f"Added columns: {', '.join(added)}"))
         else:

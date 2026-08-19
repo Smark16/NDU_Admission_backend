@@ -776,6 +776,34 @@ class StudentIdCard(models.Model):
     def __str__(self):
         return f"{self.card_number} ({self.admitted_student_id})"
 
+    @classmethod
+    def next_card_number(cls) -> str:
+        """Sequential portal number, e.g. NDU-2026-000041."""
+        import re
+
+        year = timezone.now().year
+        prefix = f"NDU-{year}-"
+        pattern = re.compile(rf"^{re.escape(prefix)}(\d{{1,8}})$")
+        max_n = 0
+        for value in cls.objects.filter(card_number__startswith=prefix).values_list("card_number", flat=True):
+            match = pattern.match(value or "")
+            if match:
+                max_n = max(max_n, int(match.group(1)))
+        n = max_n + 1
+        for _ in range(10000):
+            candidate = f"{prefix}{n:06d}"
+            if not cls.objects.filter(card_number=candidate).exists():
+                return candidate
+            n += 1
+        raise RuntimeError("Could not allocate a unique card number")
+
+    def ensure_card_number(self) -> str:
+        if (self.card_number or "").strip():
+            return self.card_number
+        self.card_number = self.next_card_number()
+        self.save(update_fields=["card_number", "updated_at"])
+        return self.card_number
+
 
 class IdCardPdfTemplate(models.Model):
     """PDF ID card blank: map merge fields to coordinates (same idea as offer letter PDF templates)."""

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import secrets
 import logging
 from datetime import date, timedelta
 
@@ -21,6 +20,8 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.http import FileResponse
+
+from django.db.utils import OperationalError, ProgrammingError
 
 from accounts.models import Campus, SystemSettings
 from audit.utils import log_audit_event
@@ -59,13 +60,7 @@ def _default_id_card_return_address() -> str:
 
 
 def _allocate_card_number() -> str:
-    year = timezone.now().year
-    for _ in range(32):
-        tail = secrets.token_hex(3).upper()
-        candidate = f"NDU-{year}-{tail}"
-        if not StudentIdCard.objects.filter(card_number=candidate).exists():
-            return candidate
-    raise RuntimeError("Could not allocate a unique card number")
+    return StudentIdCard.next_card_number()
 
 
 def _passport_absolute_url(request, admitted) -> str | None:
@@ -220,11 +215,17 @@ def _card_payload(card: StudentIdCard) -> dict:
 
 
 def _resolve_template_dict() -> dict | None:
-    settings_obj = SystemSettings.get_settings()
-    active_key = (getattr(settings_obj, "active_id_card_template", None) or "").strip()
-    if active_key:
-        from .models import IdCardPdfTemplate
+    from .id_card_pdf_render import _active_id_card_template_key
+    from .models import IdCardPdfTemplate
 
+    try:
+        settings_obj = SystemSettings.get_settings()
+        active_key = (getattr(settings_obj, "active_id_card_template", None) or "").strip()
+    except (OperationalError, ProgrammingError):
+        settings_obj = None
+        active_key = _active_id_card_template_key("student")
+
+    if active_key:
         pdf_row = IdCardPdfTemplate.objects.filter(key=active_key).first()
         if pdf_row:
             return {
@@ -240,6 +241,9 @@ def _resolve_template_dict() -> dict | None:
                 "email": pdf_row.email or "",
                 "field_positions": pdf_row.field_positions or {},
             }
+
+    if settings_obj is None:
+        return None
 
     templates = getattr(settings_obj, "id_card_templates", None) or []
     if not isinstance(templates, list):
@@ -258,6 +262,8 @@ def _resolve_template_dict() -> dict | None:
 
 def _preview_payload(request, card: StudentIdCard) -> dict:
     from .id_card_pdf_render import explain_pdf_render_blocker, pdf_pages_png_base64, render_id_card_pdf
+
+    card.ensure_card_number()
 
     st = card.admitted_student
     app = st.application
@@ -541,6 +547,8 @@ class IdCardListView(APIView):
             "admitted_student",
             "admitted_student__application",
             "admitted_student__admitted_program",
+            "admitted_student__admitted_program__faculty",
+            "admitted_student__admitted_program__department",
             "admitted_student__admitted_batch",
             "admitted_student__admitted_campus",
         ).order_by("-created_at")
@@ -617,7 +625,13 @@ class IdCardPreviewDataView(APIView):
 
     def get(self, request, card_id: int):
         card = StudentIdCard.objects.select_related(
-            "admitted_student", "admitted_student__application", "admitted_student__admitted_program"
+            "admitted_student",
+            "admitted_student__application",
+            "admitted_student__admitted_program",
+            "admitted_student__admitted_program__faculty",
+            "admitted_student__admitted_program__department",
+            "admitted_student__admitted_batch",
+            "admitted_student__admitted_campus",
         ).filter(pk=card_id).first()
         if not card:
             return Response({"detail": "ID card not found."}, status=status.HTTP_404_NOT_FOUND)
@@ -636,6 +650,10 @@ class IdCardPrintPdfView(APIView):
             "admitted_student",
             "admitted_student__application",
             "admitted_student__admitted_program",
+            "admitted_student__admitted_program__faculty",
+            "admitted_student__admitted_program__department",
+            "admitted_student__admitted_batch",
+            "admitted_student__admitted_campus",
         ).filter(pk=card_id).first()
         if not card:
             return Response({"detail": "ID card not found."}, status=status.HTTP_404_NOT_FOUND)
