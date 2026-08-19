@@ -53,7 +53,7 @@ NDEJJE_CR80_STUDENT_FIELD_POSITIONS = {
         "y": 78,
         "font_size": 7.5,
         "caption_size": 7.5,
-        "bold": False,
+        "bold": True,
         "width": 120,
         "height": 20,
         "caption": "Course",
