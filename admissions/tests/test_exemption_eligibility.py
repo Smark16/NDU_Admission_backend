@@ -6,6 +6,7 @@ from django.test import SimpleTestCase
 from admissions.exemption_services import (
     exemption_eligibility_payload,
     exemption_ineligibility,
+    exemption_paper_meets_min_mark,
     student_may_apply_course_exemption,
 )
 
@@ -37,3 +38,10 @@ class ExemptionEligibilityTests(SimpleTestCase):
         student = _student(accounts=False, docs=False, year=2, term=1)
         self.assertIsNone(exemption_ineligibility(student)[0])
         self.assertTrue(student_may_apply_course_exemption(student))
+
+    def test_min_mark_no_longer_required(self):
+        ok, msg = exemption_paper_meets_min_mark(
+            {"course_code": "ABC", "score_obtained": "D (45)"}
+        )
+        self.assertTrue(ok)
+        self.assertEqual(msg, "")

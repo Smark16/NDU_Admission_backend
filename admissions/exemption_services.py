@@ -59,6 +59,7 @@ def exemption_ineligibility(student: AdmittedStudent) -> tuple[str | None, str]:
 
     Accounts clearance and AR document verification are not required.
     Anyone admitted may apply; the UGX 50,000 form fee is still required.
+    The 60% paper rule is no longer required to open or submit.
     """
     _ = student
     return None, ""
@@ -419,32 +420,8 @@ def exemption_paper_meets_min_mark(
     *,
     min_percent: Decimal | None = None,
 ) -> tuple[bool, str]:
-    """
-    True when the paper's score/grade band floor is >= EXEMPTION_MIN_MARK_PERCENT.
-    Optionally accepts client-supplied min_mark (from grading scheme band).
-    """
-    threshold = min_percent if min_percent is not None else EXEMPTION_MIN_MARK_PERCENT
-    floor: Decimal | None = None
-    raw_min = paper.get("min_mark")
-    if raw_min not in (None, ""):
-        try:
-            floor = Decimal(str(raw_min))
-        except Exception:
-            floor = None
-    if floor is None:
-        floor = parse_exemption_mark_floor(str(paper.get("score_obtained") or ""))
-    code = (str(paper.get("course_code") or "").strip() or "paper")
-    if floor is None:
-        return (
-            False,
-            f"{code}: enter a grade/score of at least {threshold:g}% "
-            "(papers below 60% cannot be exempted).",
-        )
-    if floor < threshold:
-        return (
-            False,
-            f"{code}: scored {floor:g}% — exemption requires {threshold:g}% and above.",
-        )
+    """Min-mark gate retired — any recorded grade/score may be submitted."""
+    _ = paper, min_percent
     return True, ""
 
 # Legacy flat rates (settings-overridable). Kept for display/migration only —

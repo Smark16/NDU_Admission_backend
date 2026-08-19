@@ -1142,6 +1142,18 @@ class AdminManualBankPaymentsReportView(APIView):
         )
 
 
+def _staff_display(user) -> str:
+    if not user:
+        return ""
+    return (
+        (getattr(user, "full_name", None) or "").strip()
+        or (user.get_full_name() or "").strip()
+        or getattr(user, "username", "")
+        or getattr(user, "email", "")
+        or ""
+    )
+
+
 class AdminAccountsClearedRegistrationReportView(APIView):
     """
     GET students cleared by Accounts for registration.
@@ -1167,6 +1179,7 @@ class AdminAccountsClearedRegistrationReportView(APIView):
                 "admitted_campus",
                 "admitted_batch",
                 "accounts_registration_cleared_by",
+                "programme_enrollment__enrolled_by",
             )
             .order_by("-accounts_registration_cleared_at", "-id")
         )
@@ -1195,15 +1208,9 @@ class AdminAccountsClearedRegistrationReportView(APIView):
         if app:
             name = f"{app.first_name or ''} {app.last_name or ''}".strip()
         clearer = s.accounts_registration_cleared_by
-        clearer_name = ""
-        if clearer:
-            clearer_name = (
-                (getattr(clearer, "full_name", None) or "").strip()
-                or (clearer.get_full_name() or "").strip()
-                or clearer.username
-                or clearer.email
-                or str(clearer.pk)
-            )
+        clearer_name = _staff_display(clearer)
+        enrollment = getattr(s, "programme_enrollment", None)
+        registered_by = _staff_display(getattr(enrollment, "enrolled_by", None) if enrollment else None)
         return {
             "id": s.id,
             "student_id": s.student_id or "",
@@ -1217,6 +1224,7 @@ class AdminAccountsClearedRegistrationReportView(APIView):
             else None,
             "cleared_by": clearer_name,
             "cleared_by_id": s.accounts_registration_cleared_by_id,
+            "registered_by": registered_by,
             "notes": (s.accounts_registration_clearance_notes or "")[:500],
         }
 
@@ -1255,7 +1263,8 @@ class AdminAccountsClearedRegistrationReportView(APIView):
             "Programme",
             "Campus",
             "Intake",
-            "Cleared by",
+            "Accounts cleared by",
+            "Registered by",
             "Notes",
         ]
         wb = Workbook()
@@ -1287,6 +1296,7 @@ class AdminAccountsClearedRegistrationReportView(APIView):
                 row["campus"],
                 row["intake"],
                 row["cleared_by"],
+                row["registered_by"],
                 row["notes"],
             ]
             for c_i, value in enumerate(values, 1):
