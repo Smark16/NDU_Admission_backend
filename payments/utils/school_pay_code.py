@@ -19,7 +19,13 @@ def _schoolpay_gender(value: str) -> str:
     return ""
 
 def _schoolpay_phone(value: str) -> str:
-    """Normalize applicant phone for SchoolPay guardianPhone (local 0XXXXXXXXX)."""
+    """
+    Normalize a phone for SchoolPay guardianPhone.
+
+    SchoolPay Uganda expects a local mobile: 0XXXXXXXXX (10 digits).
+    International numbers (e.g. +211 …) are rejected by the gateway — return "" so
+    callers can fall back or ask staff for a Uganda contact.
+    """
     phone = re.sub(r"\s+", "", str(value or "").strip())
     if not phone:
         return ""
@@ -36,11 +42,25 @@ def _schoolpay_phone(value: str) -> str:
     digits = re.sub(r"\D", "", phone)
     if digits.startswith("256") and len(digits) >= 12:
         digits = "0" + digits[3:]
-    if len(digits) == 9 and digits.startswith("7"):
+    if len(digits) == 9 and digits.startswith(("7", "3")):
         return "0" + digits
-    if digits.startswith("0") and len(digits) == 10:
+    if digits.startswith("0") and len(digits) == 10 and digits[1] in "37":
         return digits
-    return phone
+    return ""
+
+
+def resolve_schoolpay_guardian_phone(application, override: str | None = None) -> str:
+    """Pick a SchoolPay-safe Uganda mobile from override, applicant phone, or next of kin."""
+    candidates = [
+        override,
+        getattr(application, "phone", None),
+        getattr(application, "next_of_kin_contact", None),
+    ]
+    for raw in candidates:
+        normalized = _schoolpay_phone(raw or "")
+        if normalized:
+            return normalized
+    return ""
 
 def _extract_gateway_paycode(data: dict) -> str:
     for key in ("paymentCode", "studentCode", "studentPaymentCode"):
@@ -67,7 +87,7 @@ def _schoolpay_student_matches(application, gateway_name: str) -> bool:
     return gateway in {full_name, short_name}
 
 
-def register_student_with_schoolpay(admitted_student):
+def register_student_with_schoolpay(admitted_student, *, guardian_phone: str | None = None):
     school_code = settings.SCHOOL_PAY_CODE
     password = settings.SCHOOL_PAY_PASSWORD
     registration_number = str(admitted_student.reg_no).strip()
@@ -81,13 +101,29 @@ def register_student_with_schoolpay(admitted_student):
     url = f"{schoolpay_api_root()}/SyncSchoolStudent/{school_code}/{request_hash}"
 
     app = admitted_student.application
+    phone = resolve_schoolpay_guardian_phone(app, guardian_phone)
+    if not phone:
+        raw = (guardian_phone or app.phone or app.next_of_kin_contact or "").strip()
+        return {
+            "success": False,
+            "error": (
+                "SchoolPay needs a Uganda mobile number (07XXXXXXXX or 03XXXXXXXX). "
+                f"Current contact “{raw or 'missing'}” is not accepted "
+                "(international numbers such as +211 are rejected). "
+                "Enter a Uganda guardian phone when generating the code, or update the "
+                "student / next-of-kin phone on the profile."
+            ),
+            "needs_uganda_phone": True,
+            "current_phone": raw,
+        }
+
     payload = {
         "firstName": app.first_name,
         "middleName": app.middle_name or "",
         "lastName": app.last_name,
         "registrationNumber": registration_number,
         "classCode": admitted_student.admitted_batch.name if admitted_student.admitted_batch else "Y1",
-        "guardianPhone": _schoolpay_phone(app.phone),
+        "guardianPhone": phone,
         "gender": _schoolpay_gender(app.gender),
         "dateOfBirth": str(app.date_of_birth) if app.date_of_birth else "",
     }

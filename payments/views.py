@@ -440,7 +440,15 @@ def generate_paycode(request, student_id):
             "student_name": student.full_name,
         })
 
-    result = register_student_with_schoolpay(student)
+    override_phone = (
+        request.data.get("guardian_phone")
+        or request.data.get("phone")
+        or ""
+    )
+    result = register_student_with_schoolpay(
+        student,
+        guardian_phone=str(override_phone).strip() or None,
+    )
     logger.info("SchoolPay registration for admitted student %s: %s", student_id, result.get("success"))
 
     if not result["success"]:
@@ -450,6 +458,8 @@ def generate_paycode(request, student_id):
             "expected_name": result.get("expected_name"),
             "gateway_name": result.get("gateway_name"),
             "payment_code": result.get("payment_code"),
+            "needs_uganda_phone": bool(result.get("needs_uganda_phone")),
+            "current_phone": result.get("current_phone") or "",
         }, status=400)
 
     student.refresh_from_db()
