@@ -350,6 +350,12 @@ class DocumentSerializer(serializers.ModelSerializer):
 class AcademicDepartmentSerializer(serializers.ModelSerializer):
     head_of_department_name = serializers.SerializerMethodField()
     head_of_department_email = serializers.SerializerMethodField()
+    programs = serializers.SerializerMethodField()
+    program_ids = serializers.ListField(
+        child=serializers.IntegerField(),
+        write_only=True,
+        required=False,
+    )
 
     class Meta:
         model = AcademicDepartment
@@ -363,6 +369,8 @@ class AcademicDepartmentSerializer(serializers.ModelSerializer):
             "head_of_department",
             "head_of_department_name",
             "head_of_department_email",
+            "programs",
+            "program_ids",
         ]
         extra_kwargs = {
             "head_of_department": {"allow_null": True, "required": False},
@@ -379,20 +387,49 @@ class AcademicDepartmentSerializer(serializers.ModelSerializer):
         user = obj.head_of_department
         return user.email if user else None
 
+    def get_programs(self, obj):
+        rows = getattr(obj, "programs", None)
+        if rows is None:
+            return []
+        return [
+            {"id": p.id, "name": p.name, "code": p.code}
+            for p in rows.all().order_by("name")
+        ]
+
+    def _assign_programs(self, department, program_ids):
+        from Programs.models import Program
+
+        ids = [int(pk) for pk in (program_ids or [])]
+        Program.objects.filter(department=department).exclude(pk__in=ids).update(
+            department=None
+        )
+        if ids:
+            Program.objects.filter(pk__in=ids).update(
+                department=department,
+                faculty_id=department.faculty_id,
+            )
+
     def create(self, validated_data):
+        program_ids = validated_data.pop("program_ids", None)
         head = validated_data.pop("head_of_department", None)
         dept = super().create(validated_data)
         if head:
             dept.assign_head(head)
+        if program_ids is not None:
+            self._assign_programs(dept, program_ids)
         return dept
 
     def update(self, instance, validated_data):
+        program_ids = validated_data.pop("program_ids", None)
         if "head_of_department" in validated_data:
             head = validated_data.pop("head_of_department")
             instance = super().update(instance, validated_data)
             instance.assign_head(head)
-            return instance
-        return super().update(instance, validated_data)
+        else:
+            instance = super().update(instance, validated_data)
+        if program_ids is not None:
+            self._assign_programs(instance, program_ids)
+        return instance
 
 
 class FacultySerializer(serializers.ModelSerializer):

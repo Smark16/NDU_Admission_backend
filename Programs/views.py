@@ -29,7 +29,7 @@ class CreatePrograms(generics.CreateAPIView):
 
 # list programs
 class ListPrograms(generics.ListAPIView):
-    queryset = Program.objects.select_related('faculty', 'academic_level').prefetch_related('campuses')
+    queryset = Program.objects.select_related('faculty', 'department', 'academic_level').prefetch_related('campuses')
     serializer_class = ListProgramsSerializer
     permission_classes = [IsAuthenticated, DjangoModelPermissions]
 

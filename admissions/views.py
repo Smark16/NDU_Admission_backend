@@ -2823,7 +2823,7 @@ class ListAcademicDepartments(APIView):
     def get(self, request):
         if not _can_view_academic_departments(request.user):
             return Response({"detail": "You do not have permission to view departments."}, status=403)
-        qs = AcademicDepartment.objects.select_related("faculty", "head_of_department").order_by(
+        qs = AcademicDepartment.objects.select_related("faculty", "head_of_department").prefetch_related("programs").order_by(
             "faculty__name", "sort_order", "name"
         )
         fac_ids = filter_faculties_for_user(Faculty.objects.all(), request.user).values_list("id", flat=True)

@@ -128,22 +128,23 @@ class ProgramSerializer(serializers.ModelSerializer):
         has_spec = attrs.get('has_specialization')
         if has_spec is None and self.instance:
             has_spec = getattr(self.instance, 'has_specialization', False)
-        if not has_spec:
-            return attrs
-
-        try:
-            from .specialization_rules import MSG_PROGRAM_ENTRY_FIELDS
-            ey = attrs.get('specialization_entry_year')
-            et = attrs.get('specialization_entry_term')
-            if self.instance:
-                if ey is None:
-                    ey = getattr(self.instance, 'specialization_entry_year', None)
-                if et is None:
-                    et = getattr(self.instance, 'specialization_entry_term', None)
-            if ey is None or et is None:
-                raise serializers.ValidationError(MSG_PROGRAM_ENTRY_FIELDS)
-        except ImportError:
-            pass
+        if has_spec:
+            try:
+                from .specialization_rules import MSG_PROGRAM_ENTRY_FIELDS
+                ey = attrs.get('specialization_entry_year')
+                et = attrs.get('specialization_entry_term')
+                if self.instance:
+                    if ey is None:
+                        ey = getattr(self.instance, 'specialization_entry_year', None)
+                    if et is None:
+                        et = getattr(self.instance, 'specialization_entry_term', None)
+                if ey is None or et is None:
+                    raise serializers.ValidationError(MSG_PROGRAM_ENTRY_FIELDS)
+            except ImportError:
+                pass
+        department = attrs.get("department")
+        if department is not None:
+            attrs["faculty"] = department.faculty
         return attrs
 
     def to_representation(self, instance):
@@ -155,6 +156,8 @@ class ProgramSerializer(serializers.ModelSerializer):
 class ListProgramsSerializer(serializers.ModelSerializer):
     faculty = serializers.CharField(source='faculty.name', read_only=True, allow_null=True)
     faculty_id = serializers.IntegerField(source='faculty.id', read_only=True, allow_null=True)
+    department = serializers.CharField(source='department.name', read_only=True, allow_null=True)
+    department_id = serializers.IntegerField(source='department.id', read_only=True, allow_null=True)
     academic_level = serializers.CharField(source='academic_level.name', read_only=True)
     academic_level_id = serializers.IntegerField(
         source='academic_level.id', read_only=True, allow_null=True
@@ -163,7 +166,9 @@ class ListProgramsSerializer(serializers.ModelSerializer):
     class Meta:
         model = Program
         fields = [
-            'id', 'name', 'code', 'short_form', 'faculty', 'faculty_id', 'academic_level', 'academic_level_id',
+            'id', 'name', 'code', 'short_form', 'faculty', 'faculty_id',
+            'department', 'department_id',
+            'academic_level', 'academic_level_id',
             'campuses', 'min_years', 'max_years',
             'calendar_type', 'minimum_graduation_load',
             'has_specialization', 'specialization_entry_year', 'specialization_entry_term',

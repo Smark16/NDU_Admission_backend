@@ -17,6 +17,14 @@ class Program(models.Model):
     short_form = models.CharField(max_length=200)
     code = models.CharField(max_length=40)
     faculty = models.ForeignKey('admissions.Faculty', on_delete=models.CASCADE, related_name='programs', null=True, blank=True)
+    department = models.ForeignKey(
+        'admissions.AcademicDepartment',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='programs',
+        help_text="Teaching department that owns this programme.",
+    )
     academic_level = models.ForeignKey('admissions.AcademicLevel', on_delete=models.CASCADE)
     campuses = models.ManyToManyField(Campus, related_name='programs', blank=True)
     min_years = models.PositiveIntegerField()
