@@ -58,6 +58,7 @@ from .registration_lookup_views import (
     AdminRegistrationLookupDetailView,
     AdminRegistrationLookupSearchView,
 )
+from .scan_desk_views import StudentCardScanDeskView
 from .semester_registration_views import (
     CheckRegistrationEligibility,
     DownloadStudentOfferLetterPdf,
@@ -211,6 +212,11 @@ urlpatterns = [
         'verify_registration/<str:student_id>',
         verify_registration_card_public,
         name='verify_registration_card',
+    ),
+    path(
+        'scan_desk',
+        StudentCardScanDeskView.as_view(),
+        name='student_card_scan_desk',
     ),
     path('registration_settings', GetRegistrationSettings.as_view(), name='get_registration_settings'),
     path('registration_settings/update', UpdateRegistrationSettings.as_view(), name='update_registration_settings'),
