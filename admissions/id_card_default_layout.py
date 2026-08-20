@@ -78,7 +78,7 @@ NDEJJE_CR80_STUDENT_FIELD_POSITIONS = {
         "caption": "Expiry",
         "single_line": True,
     },
-    "qr_code": {"x": 190, "y": 88, "page": 0, "width": 50, "height": 50},
+    "qr_code": {"x": 182, "y": 82, "page": 0, "width": 58, "height": 58},
 }
 
 NDEJJE_STUDENT_ID_TEMPLATE_KEY = "ndu-student-id-cr80"
