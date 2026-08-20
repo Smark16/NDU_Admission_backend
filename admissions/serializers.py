@@ -1536,6 +1536,8 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
         ).data
 
     def get_application_documents(self, obj):
+        if self.context.get("list_view"):
+            return []
         if obj.change_type != "exemption":
             return []
         try:
@@ -1591,6 +1593,14 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
     def get_form_fee_paid(self, obj):
         if obj.change_type != "exemption":
             return None
+        # List view: avoid per-row payment lookups — stamp is enough for the queue.
+        if self.context.get("list_view"):
+            if obj.form_fee_paid_at:
+                return True
+            charge = getattr(obj, "form_fee_charge", None)
+            if charge is not None and getattr(charge, "status", None) == "completed":
+                return True
+            return False
         from admissions.exemption_services import student_has_paid_exemption_form_fee
 
         try:
@@ -1609,6 +1619,8 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
     def get_exemption_course_fee_total(self, obj):
         if obj.change_type != "exemption":
             return None
+        if self.context.get("list_view"):
+            return None
         if not self._request_user_can_view_finance():
             return None
         from admissions.exemption_services import exemption_course_fee_total
@@ -1620,6 +1632,8 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
 
     def get_exemption_billing_lines(self, obj):
         if obj.change_type != "exemption":
+            return None
+        if self.context.get("list_view"):
             return None
         if not self._request_user_can_view_finance():
             return None
@@ -1633,6 +1647,8 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
     def get_suggested_promotion(self, obj):
         if obj.change_type != "exemption" or obj.status != "approved":
             return None
+        if self.context.get("list_view"):
+            return None
         from admissions.exemption_services import suggest_promotion_after_exemption
 
         try:
@@ -1642,6 +1658,8 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
 
     def get_promotion_context(self, obj):
         if obj.change_type != "exemption" or obj.status != "approved":
+            return None
+        if self.context.get("list_view"):
             return None
         from admissions.exemption_services import enrollment_promotion_context
 

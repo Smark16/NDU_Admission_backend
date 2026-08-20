@@ -5699,6 +5699,7 @@ class AdminChangeRequestList(APIView):
     permission_classes = [IsAuthenticated, CanViewAdmissionChangeRequests]
 
     def get(self, request):
+        # List must stay fast — skip per-row tuition÷papers billing (loaded on detail).
         qs = AdmissionChangeRequest.objects.select_related(
             'admitted_student__application__applicant',
             'admitted_student__admitted_program',
@@ -5706,10 +5707,10 @@ class AdminChangeRequestList(APIView):
             'current_program', 'current_campus',
             'new_program', 'new_campus',
             'reviewed_by',
+            'form_fee_charge',
         ).prefetch_related(
             'exemption_lines',
             'supporting_documents',
-            'admitted_student__application__documents',
         ).order_by('-created_at')
 
         status_filter = request.query_params.get('status')
@@ -5722,7 +5723,41 @@ class AdminChangeRequestList(APIView):
 
         qs = filter_admission_change_requests_for_user(qs, request.user)
         return Response(
-            AdmissionChangeRequestSerializer(qs, many=True, context={'request': request}).data
+            AdmissionChangeRequestSerializer(
+                qs,
+                many=True,
+                context={'request': request, 'list_view': True},
+            ).data
+        )
+
+
+class AdminChangeRequestDetail(APIView):
+    """Full exemption / change-request payload for the review dialog (includes fee lines)."""
+
+    permission_classes = [IsAuthenticated, CanViewAdmissionChangeRequests]
+
+    def get(self, request, pk):
+        qs = AdmissionChangeRequest.objects.select_related(
+            'admitted_student__application__applicant',
+            'admitted_student__admitted_program',
+            'admitted_student__admitted_campus',
+            'current_program', 'current_campus',
+            'new_program', 'new_campus',
+            'reviewed_by',
+            'form_fee_charge',
+        ).prefetch_related(
+            'exemption_lines',
+            'supporting_documents',
+            'admitted_student__application__documents',
+        )
+        qs = filter_admission_change_requests_for_user(qs, request.user)
+        req_obj = qs.filter(pk=pk).first()
+        if req_obj is None:
+            return Response({"detail": "Not found."}, status=404)
+        return Response(
+            AdmissionChangeRequestSerializer(
+                req_obj, context={'request': request, 'list_view': False}
+            ).data
         )
 
 

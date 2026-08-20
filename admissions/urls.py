@@ -351,6 +351,11 @@ urlpatterns = [
         name='exemption_lookup_paper',
     ),
     path('change_requests/all', views.AdminChangeRequestList.as_view(), name='admin_change_requests'),
+    path(
+        'change_requests/<int:pk>',
+        views.AdminChangeRequestDetail.as_view(),
+        name='admin_change_request_detail',
+    ),
     path('change_requests/<int:pk>/review', views.AdminChangeRequestReview.as_view(), name='review_change_request'),
     path(
         'change_requests/<int:pk>/return_unpaid',
