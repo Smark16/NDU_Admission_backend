@@ -753,7 +753,12 @@ def build_finance_allocation(student: AdmittedStudent) -> FinanceAllocation:
     commitment_paid = min(ugx_credit, COMMITMENT_FEE_THRESHOLD)
     admission_paid = bool(getattr(student, "admission_fee_paid", False))
     commitment_met = commitment_paid >= COMMITMENT_FEE_THRESHOLD or admission_paid
-    commitment_balance = max(COMMITMENT_FEE_THRESHOLD - commitment_paid, Decimal("0"))
+    # Continuing / legacy: prior tuition already covered commitment — show as fully met.
+    if admission_paid:
+        commitment_paid = max(commitment_paid, COMMITMENT_FEE_THRESHOLD)
+        commitment_balance = Decimal("0")
+    else:
+        commitment_balance = max(COMMITMENT_FEE_THRESHOLD - commitment_paid, Decimal("0"))
 
     scheduled_due = sum(
         line.balance
