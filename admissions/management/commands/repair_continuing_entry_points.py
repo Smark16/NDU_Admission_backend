@@ -6,18 +6,19 @@ so prior FeePlanRule terms were re-billed as unpaid carry-forward with no paymen
 
 Also marks admission_fee_paid for continuing migrants — the 150k commitment is
 already covered by prior tuition in the old system.
+
+Uses QuerySet.update() (not model.save) so missing teaching-section schema /
+easyaudit FK loads cannot block the repair. Enrollment activation is optional.
 """
 from __future__ import annotations
 
 from django.core.management.base import BaseCommand
 from django.db.models import Q
+from django.db.utils import ProgrammingError
 from django.utils import timezone
 
 from Programs.models import StudentProgrammeEnrollment
 from admissions.models import AdmittedStudent, Application
-from payments.programme_enrollment_activation import (
-    activate_programme_enrollment_after_commitment_payment,
-)
 
 
 class Command(BaseCommand):
@@ -44,9 +45,18 @@ class Command(BaseCommand):
             action="store_true",
             help="Repair every SPE / student tagged as Continuing / Legacy.",
         )
+        parser.add_argument(
+            "--activate",
+            action="store_true",
+            help=(
+                "Also try programme-enrollment activation (needs full DB schema: "
+                "teaching sections, registration_kind, etc.). Off by default."
+            ),
+        )
 
     def handle(self, *args, **options):
         dry_run = bool(options["dry_run"])
+        do_activate = bool(options["activate"])
         reg_nos = [r.strip() for r in (options["reg_nos"] or []) if (r or "").strip()]
         all_legacy = bool(options["all_legacy"])
 
@@ -75,6 +85,7 @@ class Command(BaseCommand):
         commitment_updated = 0
         activated = 0
         skipped = 0
+        activate_errors = 0
 
         for enr in qs.iterator():
             student = enr.student
@@ -94,11 +105,11 @@ class Command(BaseCommand):
             if not student.admission_fee_paid:
                 changes.append("commitment=covered (prior tuition)")
 
-            if not changes:
+            if not changes and not do_activate:
                 skipped += 1
                 continue
 
-            msg = f"{reg}: " + "; ".join(changes)
+            msg = f"{reg}: " + ("; ".join(changes) if changes else "no field changes")
             if dry_run:
                 self.stdout.write(f"[dry-run] {msg}")
                 if (ey, et) != (cy, ct):
@@ -107,41 +118,45 @@ class Command(BaseCommand):
                     commitment_updated += 1
                 continue
 
+            # Bypass Model.save() / easyaudit teaching_section loads.
             if (ey, et) != (cy, ct):
-                enr.entry_year_of_study = cy
-                enr.entry_term_number = ct
-                enr.save(
-                    update_fields=[
-                        "entry_year_of_study",
-                        "entry_term_number",
-                        "updated_at",
-                    ]
+                StudentProgrammeEnrollment.objects.filter(pk=enr.pk).update(
+                    entry_year_of_study=cy,
+                    entry_term_number=ct,
                 )
                 entry_updated += 1
 
             if not student.admission_fee_paid:
-                student.admission_fee_paid = True
-                student.admission_fee_paid_at = timezone.now()
-                student.save(
-                    update_fields=[
-                        "admission_fee_paid",
-                        "admission_fee_paid_at",
-                        "updated_at",
-                    ]
+                AdmittedStudent.objects.filter(pk=student.pk).update(
+                    admission_fee_paid=True,
+                    admission_fee_paid_at=timezone.now(),
                 )
                 commitment_updated += 1
 
-            activation = activate_programme_enrollment_after_commitment_payment(
-                AdmittedStudent.objects.get(pk=student.pk)
-            )
-            if activation.get("activated") or activation.get("reason") == "already_enrolled":
-                activated += 1
+            if do_activate:
+                try:
+                    from payments.programme_enrollment_activation import (
+                        activate_programme_enrollment_after_commitment_payment,
+                    )
+
+                    activation = activate_programme_enrollment_after_commitment_payment(
+                        AdmittedStudent.objects.get(pk=student.pk)
+                    )
+                    if activation.get("activated") or activation.get("reason") == "already_enrolled":
+                        activated += 1
+                except ProgrammingError as exc:
+                    activate_errors += 1
+                    self.stderr.write(
+                        self.style.WARNING(
+                            f"{reg}: activation skipped (schema): {exc}"
+                        )
+                    )
 
             self.stdout.write(self.style.SUCCESS(msg))
 
         self.stdout.write(
             f"{'Would update' if dry_run else 'Updated'} entry={entry_updated}, "
             f"commitment={commitment_updated}"
-            + ("" if dry_run else f", activated/enrolled checks={activated}")
+            + (f", activated={activated}, activate_errors={activate_errors}" if do_activate else "")
             + f"; skipped {skipped}."
         )
