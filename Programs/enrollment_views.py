@@ -36,7 +36,10 @@ from admissions.faculty_scope import (
     filter_programme_enrollments_for_user,
 )
 
-from .curriculum_inheritance import curriculum_owner_program
+from .curriculum_inheritance import (
+    curriculum_owner_program,
+    ensure_enrollment_curriculum_version,
+)
 from .models import (
     CourseUnit,
     Program,
@@ -665,15 +668,7 @@ class MyExpectedCoursesView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        if enrollment.curriculum_version_id is None:
-            fallback_version = (
-                enrollment.program_batch.curriculum_version
-                if enrollment.program_batch_id and enrollment.program_batch.curriculum_version_id
-                else resolve_program_default_curriculum_version(enrollment.program)
-            )
-            if fallback_version:
-                enrollment.curriculum_version = fallback_version
-                enrollment.save(update_fields=['curriculum_version', 'updated_at'])
+        ensure_enrollment_curriculum_version(enrollment)
 
         gate = compute_specialization_course_gate(
             enrollment.program,

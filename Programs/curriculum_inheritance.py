@@ -51,6 +51,86 @@ def resolve_effective_curriculum_version(program: Program, batch=None):
     return version
 
 
+def version_has_active_lines(version) -> bool:
+    """True when the curriculum version has at least one active line."""
+    if version is None:
+        return False
+    return version.lines.filter(is_active=True).exists()
+
+
+def version_with_active_lines(owner: Program | None):
+    """Prefer default active version that actually has curriculum lines."""
+    from django.db.models import Count, Q as DQ
+
+    if owner is None:
+        return None
+    return (
+        ProgramCurriculumVersion.objects.filter(program=owner, is_active=True)
+        .annotate(n=Count("lines", filter=DQ(lines__is_active=True)))
+        .filter(n__gt=0)
+        .order_by("-is_default", "-n", "-id")
+        .first()
+    )
+
+
+def resolve_curriculum_version_with_lines(program: Program | None, *, batch=None, pinned=None):
+    """
+    Curriculum version for student-facing course lists.
+
+    Prefer a pinned SPE version only when it belongs to the curriculum owner
+    and has active lines. Empty local pins on inherited campus programmes fall
+    through to the master/batch effective version, then any owner version with
+    lines — so expected courses, registration, and exemptions stay aligned.
+    """
+    if program is None:
+        return None
+
+    owner = curriculum_owner_program(program)
+    if not owner:
+        return None
+
+    def _usable(version) -> bool:
+        if version is None:
+            return False
+        if getattr(version, "program_id", None) != owner.id:
+            return False
+        return version_has_active_lines(version)
+
+    if _usable(pinned):
+        return pinned
+
+    version = resolve_effective_curriculum_version(program, batch=batch)
+    if _usable(version):
+        return version
+
+    return version_with_active_lines(owner) or version
+
+
+def ensure_enrollment_curriculum_version(enrollment):
+    """
+    Resolve a version with active lines for this SPE and persist it when the
+    pinned version was empty or pointed at the wrong programme.
+    """
+    if enrollment is None:
+        return None
+
+    program = getattr(enrollment, "program", None)
+    batch = enrollment.program_batch if getattr(enrollment, "program_batch_id", None) else None
+    pinned = getattr(enrollment, "curriculum_version", None)
+    version = resolve_curriculum_version_with_lines(
+        program,
+        batch=batch,
+        pinned=pinned,
+    )
+    if version is None:
+        return None
+
+    if enrollment.curriculum_version_id != version.id:
+        enrollment.curriculum_version = version
+        enrollment.save(update_fields=["curriculum_version", "updated_at"])
+    return version
+
+
 def curriculum_version_matches_program(program: Program, version: ProgramCurriculumVersion) -> bool:
     if not program or not version:
         return False

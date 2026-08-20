@@ -556,22 +556,12 @@ class GetAvailableCoursesForRegistration(APIView):
         if using_spe:
             from .specialization_rules import compute_specialization_course_gate, normalize_specialization
 
+            from .curriculum_inheritance import ensure_enrollment_curriculum_version
+
             curr_year = spe.current_year_of_study
             curr_term = spe.current_term_number
             selected_specialization = normalize_specialization(spe.specialization)
-            curriculum_version = spe.curriculum_version
-            if curriculum_version is None:
-                curriculum_version = (
-                    spe.program_batch.curriculum_version
-                    if spe.program_batch_id and spe.program_batch.curriculum_version_id
-                    else None
-                )
-                if curriculum_version is None:
-                    from .models import resolve_program_default_curriculum_version
-                    curriculum_version = resolve_program_default_curriculum_version(spe.program)
-                if curriculum_version is not None:
-                    spe.curriculum_version = curriculum_version
-                    spe.save(update_fields=['curriculum_version', 'updated_at'])
+            curriculum_version = ensure_enrollment_curriculum_version(spe)
 
             # ── Step 1: Load all overrides for this enrollment ────────────────
             overrides = {
@@ -683,15 +673,8 @@ class GetAvailableCoursesForRegistration(APIView):
                         if cu:
                             available_course_unit_ids.add(cu.id)
 
-            # ── Step 4: If no semester found, fall back to whole batch ─────────
-            if not available_course_unit_ids and not current_semester:
-                available_course_unit_ids = set(
-                    CourseUnit.objects.filter(
-                        program_batch=spe.program_batch,
-                        is_active=True,
-                    ).exclude(id__in=registered_course_ids)
-                    .values_list('id', flat=True)
-                )
+            # No whole-batch dump when the current semester is missing — that
+            # leaked Year 3+ / other-term units. Sync offerings instead.
 
         else:
             # ── Legacy fallback (no SPE): use old StudentSemesterProgression ──

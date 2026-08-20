@@ -25,6 +25,8 @@ EXEMPTION_MIN_MARK_PERCENT = Decimal(
 # Senate / Accounts rule: at most two academic years = four terms (semesters).
 MAX_EXEMPTION_YEARS = 2
 MAX_EXEMPTION_TERMS = 4
+# Catalogue shown in the student exemption picker (Year 1 and Year 2 only).
+EXEMPTION_ELIGIBLE_YEARS = (1, 2)
 EXEMPTION_TERM_CAP_MESSAGE = (
     "Students may be exempted for at most 2 academic years (4 terms). "
     "Remove papers that fall in extra years or terms."
@@ -1217,19 +1219,12 @@ def _student_curriculum_program(student: AdmittedStudent):
     return enrollment, getattr(student, "admitted_program", None)
 
 
-def _version_with_active_lines(owner):
-    from django.db.models import Count, Q as DQ
-    from Programs.models import ProgramCurriculumVersion
-
-    if owner is None:
-        return None
-    return (
-        ProgramCurriculumVersion.objects.filter(program=owner, is_active=True)
-        .annotate(n=Count("lines", filter=DQ(lines__is_active=True)))
-        .filter(n__gt=0)
-        .order_by("-is_default", "-n", "-id")
-        .first()
-    )
+def is_exemption_eligible_year(year_of_study) -> bool:
+    """True when a curriculum line may appear on the student exemption picker."""
+    try:
+        return int(year_of_study) in EXEMPTION_ELIGIBLE_YEARS
+    except (TypeError, ValueError):
+        return False
 
 
 def _resolve_enrollment_curriculum_version(student: AdmittedStudent):
@@ -1245,33 +1240,20 @@ def _resolve_enrollment_curriculum_version(student: AdmittedStudent):
     programme's curriculum so the picker is not blank during QA.
     """
     from Programs.curriculum_inheritance import (
-        curriculum_owner_program,
-        resolve_effective_curriculum_version,
+        ensure_enrollment_curriculum_version,
+        resolve_curriculum_version_with_lines,
     )
 
     enrollment, program = _student_curriculum_program(student)
     if program is None:
         return enrollment, None
 
-    def _has_lines(version) -> bool:
-        if version is None:
-            return False
-        return version.lines.filter(is_active=True).exists()
-
-    pinned = getattr(enrollment, "curriculum_version", None) if enrollment is not None else None
-    if _has_lines(pinned):
-        return enrollment, pinned
-
-    batch = None
-    if enrollment is not None and enrollment.program_batch_id:
-        batch = enrollment.program_batch
-    version = resolve_effective_curriculum_version(program, batch=batch)
-    if _has_lines(version):
+    if enrollment is not None:
+        version = ensure_enrollment_curriculum_version(enrollment)
         return enrollment, version
 
-    owner = curriculum_owner_program(program) or program
-    fallback = _version_with_active_lines(owner)
-    return enrollment, fallback or version
+    version = resolve_curriculum_version_with_lines(program, batch=None, pinned=None)
+    return enrollment, version
 
 
 def _active_curriculum_lines_qs(student: AdmittedStudent, version):
@@ -1350,12 +1332,16 @@ def list_eligible_exemption_courses(student: AdmittedStudent) -> list[dict]:
     existing |= {i for i in pending_line_ids if i}
 
     used_terms = exemption_terms_already_committed(student)
-    lines = _active_curriculum_lines_qs(student, version).order_by(
-        "year_of_study", "term_number", "sort_order", "catalog_course__code"
+    lines = (
+        _active_curriculum_lines_qs(student, version)
+        .filter(year_of_study__in=EXEMPTION_ELIGIBLE_YEARS)
+        .order_by("year_of_study", "term_number", "sort_order", "catalog_course__code")
     )
     out = []
     for line in lines:
         if line.id in existing:
+            continue
+        if not is_exemption_eligible_year(line.year_of_study):
             continue
         if not term_open_for_new_exemption(used_terms, line.year_of_study, line.term_number):
             continue
