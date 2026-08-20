@@ -1,6 +1,6 @@
 from django.urls import path
 
-from . import admin_views, moodle_attendance_views, moodle_views
+from . import admin_views, moodle_attendance_views, moodle_launch_views, moodle_views
 
 urlpatterns = [
     # Super Admin (JWT)
@@ -9,6 +9,12 @@ urlpatterns = [
         "moodle/config/rotate-key",
         admin_views.MoodleRotateKeyView.as_view(),
         name="moodle_rotate_key",
+    ),
+    # Student portal (JWT) — signed LMS launch
+    path(
+        "moodle/launch",
+        moodle_launch_views.StudentMoodleLaunchView.as_view(),
+        name="moodle_student_launch",
     ),
     # Moodle service (X-API-Key)
     path(

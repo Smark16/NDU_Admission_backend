@@ -23,6 +23,8 @@ def _config_payload(cfg: MoodleIntegrationConfig, *, plaintext_key: str | None =
         "api_key_configured": bool(cfg.api_key_hash),
         "api_key_prefix": cfg.api_key_prefix or "",
         "api_key_masked": f"{cfg.api_key_prefix}…" if cfg.api_key_prefix else "",
+        "launch_signing_configured": bool((cfg.launch_signing_secret or "").strip()),
+        "sso_path": "/auth/ndu_erp/sso.php",
         "updated_at": cfg.updated_at.isoformat() if cfg.updated_at else None,
     }
     if plaintext_key:
@@ -47,6 +49,12 @@ class MoodleConfigView(APIView):
 
         if "moodle_base_url" in data:
             cfg.moodle_base_url = (data.get("moodle_base_url") or "").strip()
+
+        # Allow pasting the existing Moodle API key as SSO secret without rotating.
+        if "launch_signing_secret" in data:
+            secret = (data.get("launch_signing_secret") or "").strip()
+            if secret:
+                cfg.launch_signing_secret = secret
 
         for field in ("cleared_min_percent", "partial_min_percent"):
             if field not in data:
@@ -84,11 +92,24 @@ class MoodleRotateKeyView(APIView):
         raw = generate_moodle_api_key()
         cfg.api_key_prefix = api_key_prefix(raw)
         cfg.api_key_hash = hash_api_key(raw)
+        # Same plaintext Moodle stores for X-API-Key — also used to verify launch HMAC.
+        cfg.launch_signing_secret = raw
         cfg.updated_by = request.user
-        cfg.save(update_fields=["api_key_prefix", "api_key_hash", "updated_by", "updated_at"])
+        cfg.save(
+            update_fields=[
+                "api_key_prefix",
+                "api_key_hash",
+                "launch_signing_secret",
+                "updated_by",
+                "updated_at",
+            ]
+        )
         return Response(
             {
                 **_config_payload(cfg, plaintext_key=raw),
-                "detail": "New API key generated. Copy it now — it will not be shown again.",
+                "detail": (
+                    "New API key generated. Copy it now — it will not be shown again. "
+                    "Give the same key to Moodle for API calls and SSO signature verification."
+                ),
             }
         )

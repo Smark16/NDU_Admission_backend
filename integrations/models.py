@@ -12,6 +12,15 @@ class MoodleIntegrationConfig(models.Model):
     is_enabled = models.BooleanField(default=False)
     api_key_prefix = models.CharField(max_length=16, blank=True, default="")
     api_key_hash = models.CharField(max_length=64, blank=True, default="")
+    launch_signing_secret = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text=(
+            "Shared secret for STEWARD→Moodle SSO launch HMAC "
+            "(same value Moodle uses to verify sig). Set automatically when rotating the API key."
+        ),
+    )
     moodle_base_url = models.URLField(blank=True, default="")
     cleared_min_percent = models.DecimalField(
         max_digits=5,
