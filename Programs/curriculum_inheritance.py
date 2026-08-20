@@ -110,6 +110,9 @@ def ensure_enrollment_curriculum_version(enrollment):
     """
     Resolve a version with active lines for this SPE and persist it when the
     pinned version was empty or pointed at the wrong programme.
+
+    Uses QuerySet.update() so missing teaching-section columns / easyaudit
+    FK loads cannot 500 student course-registration APIs.
     """
     if enrollment is None:
         return None
@@ -126,8 +129,13 @@ def ensure_enrollment_curriculum_version(enrollment):
         return None
 
     if enrollment.curriculum_version_id != version.id:
+        from Programs.models import StudentProgrammeEnrollment
+
+        StudentProgrammeEnrollment.objects.filter(pk=enrollment.pk).update(
+            curriculum_version_id=version.id,
+        )
         enrollment.curriculum_version = version
-        enrollment.save(update_fields=["curriculum_version", "updated_at"])
+        enrollment.curriculum_version_id = version.id
     return version
 
 
