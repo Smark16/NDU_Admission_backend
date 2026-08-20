@@ -78,16 +78,6 @@ NDEJJE_CR80_STUDENT_FIELD_POSITIONS = {
         "caption": "Expiry",
         "single_line": True,
     },
-    "card_number": {
-        **_TEXT,
-        "x": 80,
-        "y": 134,
-        "font_size": 6,
-        "width": 100,
-        "height": 11,
-        "caption": "",
-        "single_line": True,
-    },
     "qr_code": {"x": 190, "y": 88, "page": 0, "width": 50, "height": 50},
 }
 
