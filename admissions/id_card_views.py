@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from calendar import monthrange
 from datetime import date, timedelta
 
 import mimetypes
@@ -33,6 +34,14 @@ from .permissions import ManageIdCardsPermission
 logger = logging.getLogger(__name__)
 
 
+def _add_years_and_months(start: date, *, years: int = 0, months: int = 0) -> date:
+    total_months = start.month - 1 + (years * 12) + months
+    year = start.year + total_months // 12
+    month = total_months % 12 + 1
+    day = min(start.day, monthrange(year, month)[1])
+    return date(year, month, day)
+
+
 def _programme_min_years(admitted) -> int:
     """Programme length in years for ID validity; fall back to 4 if unset."""
     program = getattr(admitted, "admitted_program", None) if admitted else None
@@ -45,10 +54,11 @@ def _programme_min_years(admitted) -> int:
 
 
 def _default_expiry(issue: date, *, years: int | None = None) -> date:
+    """Issue date + programme min years + 6 months grace."""
     n = int(years) if years is not None else 4
     if n < 1:
         n = 4
-    return issue + timedelta(days=365 * n)
+    return _add_years_and_months(issue, years=n, months=6)
 
 
 def _ordinal_day(day: int) -> str:

@@ -7,6 +7,7 @@ import io
 import logging
 import os
 import platform
+from calendar import monthrange
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -26,11 +27,20 @@ DEFAULT_PHOTO_HEIGHT = 105.0
 DEFAULT_QR_SIZE = 70.0
 
 
+def _add_years_and_months(start: date, *, years: int = 0, months: int = 0) -> date:
+    total_months = start.month - 1 + (years * 12) + months
+    year = start.year + total_months // 12
+    month = total_months % 12 + 1
+    day = min(start.day, monthrange(year, month)[1])
+    return date(year, month, day)
+
+
 def _default_expiry(issue: date, *, years: int | None = None) -> date:
+    """Issue date + programme min years + 6 months grace."""
     n = int(years) if years is not None else 4
     if n < 1:
         n = 4
-    return issue + timedelta(days=365 * n)
+    return _add_years_and_months(issue, years=n, months=6)
 
 
 def _programme_min_years(admitted) -> int:
