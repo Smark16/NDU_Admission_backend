@@ -85,26 +85,117 @@ def _student_program_batch_id(student: AdmittedStudent) -> int | None:
         return int(batch_ids[0])
     return None
 
+
+def _cohort_match_key(name: str) -> str:
+    s = (name or "").upper()
+    for token in (
+        " INTERNATIONAL",
+        " INTL",
+        "-INTERNATIONAL",
+        "-INTL",
+        " MAIN",
+        "-MAIN",
+    ):
+        s = s.replace(token, " ")
+    return " ".join(s.split())
+
+
+def _rule_has_tuition_amount(rule) -> bool:
+    local = rule.amount or Decimal("0")
+    intl = rule.amount_international or Decimal("0")
+    return local > 0 or intl > 0
+
+
+def _tuition_rules_qs(program):
+    fee_plan = get_or_create_tuition_fee_plan(program)
+    return FeePlanRule.objects.filter(
+        fee_plan=fee_plan,
+        program_batch__program_id=program.id,
+    ).select_related("fee_head", "program_batch", "semester")
+
+
+def _rules_with_amounts(qs) -> list:
+    rows = list(qs.order_by("program_batch_id", "semester_id", "order"))
+    if any(_rule_has_tuition_amount(r) for r in rows):
+        return rows
+    return []
+
+
+def _fallback_rules_for_cohort(qs, student_pb) -> list:
+    if student_pb is None:
+        return []
+    year = (student_pb.academic_year or "").strip()
+    if year:
+        year_hit = _rules_with_amounts(qs.filter(program_batch__academic_year=year))
+        if year_hit:
+            return year_hit
+    key = _cohort_match_key(student_pb.name)
+    if key:
+        matched_ids = {
+            r.program_batch_id
+            for r in qs.select_related("program_batch")
+            if r.program_batch_id and _cohort_match_key(r.program_batch.name) == key
+        }
+        if matched_ids:
+            hit = _rules_with_amounts(qs.filter(program_batch_id__in=matched_ids))
+            if hit:
+                return hit
+    batch_ids = {
+        r.program_batch_id
+        for r in qs
+        if r.program_batch_id and _rule_has_tuition_amount(r)
+    }
+    if len(batch_ids) == 1:
+        return _rules_with_amounts(qs.filter(program_batch_id__in=batch_ids))
+    return []
+
+
 def _rules_for_student(student: AdmittedStudent):
     from .feeplanrule_table import ensure_feeplanrule_table
+    from Programs.models import ProgramBatch
 
     ensure_feeplanrule_table()
     program = student.admitted_program
     if program is None:
         return []
-    fee_plan = get_or_create_tuition_fee_plan(program)
-    qs = FeePlanRule.objects.filter(
-        fee_plan=fee_plan,
-        program_batch__program_id=program.id,
-    )
+
     pb_id = _student_program_batch_id(student)
+    student_pb = ProgramBatch.objects.filter(pk=pb_id).first() if pb_id else None
+
+    own = _tuition_rules_qs(program)
     if pb_id:
-        qs = qs.filter(program_batch_id=pb_id)
-    return list(
-        qs.select_related("fee_head", "program_batch", "semester").order_by(
-            "program_batch_id", "semester_id", "order"
-        )
-    )
+        exact = _rules_with_amounts(own.filter(program_batch_id=pb_id))
+        if exact:
+            return exact
+        same_program = _fallback_rules_for_cohort(own, student_pb)
+        if same_program:
+            return same_program
+    else:
+        own_hit = _rules_with_amounts(own)
+        if own_hit:
+            return own_hit
+
+    source = getattr(program, "curriculum_source_program", None)
+    if source is None:
+        from Programs.models import Program
+
+        base_name = (program.name or "")
+        for suffix in (" International", " INTL", " - International"):
+            if base_name.endswith(suffix):
+                base_name = base_name[: -len(suffix)].strip()
+                break
+        if base_name and base_name != (program.name or ""):
+            source = (
+                Program.objects.filter(name__iexact=base_name)
+                .exclude(pk=program.pk)
+                .first()
+            )
+    if source is not None:
+        src_hit = _fallback_rules_for_cohort(_tuition_rules_qs(source), student_pb)
+        if src_hit:
+            return src_hit
+
+    return []
 
 
 def _student_curriculum_year_term(student: AdmittedStudent) -> tuple[int, int]:

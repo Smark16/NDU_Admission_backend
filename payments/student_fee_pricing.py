@@ -13,13 +13,35 @@ from admissions.applicant_category import (
 from admissions.models import AdmittedStudent
 
 
+def _text_marks_international(value: str | None) -> bool:
+    t = (value or "").upper()
+    return "INTL" in t or "INTERNATIONAL" in t
+
+
 def is_international_student(student: AdmittedStudent) -> bool:
     """True when this student should be billed the international fee column.
 
-    Applicant type International always wins. Otherwise nationality decides
-    (Uganda / Kenya / Tanzania = local). Default applicant_category is local,
-    so nationality must still be checked or international tuition never applies.
+    International campus / programme / INTL intake always uses that column.
+    Applicant type International also wins. Otherwise nationality decides
+    (Uganda / Kenya / Tanzania = local).
     """
+    if _text_marks_international(getattr(getattr(student, "admitted_program", None), "name", None)):
+        return True
+    if _text_marks_international(getattr(getattr(student, "admitted_campus", None), "name", None)):
+        return True
+    if _text_marks_international(getattr(getattr(student, "admitted_batch", None), "name", None)):
+        return True
+    intended = getattr(student, "intended_program_batch", None)
+    if _text_marks_international(getattr(intended, "name", None)):
+        return True
+    try:
+        enr = student.programme_enrollment
+        pb = getattr(enr, "program_batch", None) if enr is not None else None
+        if _text_marks_international(getattr(pb, "name", None)):
+            return True
+    except Exception:
+        pass
+
     app = getattr(student, "application", None)
     if not app:
         return False
@@ -34,13 +56,16 @@ def is_international_student(student: AdmittedStudent) -> bool:
 
 
 def effective_amount_currency(rule, international: bool) -> Tuple[Decimal, str]:
-    if international and getattr(rule, "amount_international", None) is not None:
-        amt = rule.amount_international or Decimal("0")
-        cur = (getattr(rule, "currency_international", None) or "").strip()[:3]
-        if not cur:
-            cur = (getattr(rule, "currency", None) or "UGX").strip()[:3] or "UGX"
-        return amt, cur.upper()
-    amt = rule.amount or Decimal("0")
+    intl_amt = getattr(rule, "amount_international", None)
+    local_amt = rule.amount or Decimal("0")
+    if international:
+        has_intl = intl_amt is not None and Decimal(str(intl_amt)) > 0
+        if has_intl:
+            cur = (getattr(rule, "currency_international", None) or "").strip()[:3]
+            if not cur:
+                cur = (getattr(rule, "currency", None) or "UGX").strip()[:3] or "UGX"
+            return Decimal(str(intl_amt)), cur.upper()
+    amt = local_amt
     cur = (rule.currency or "UGX").strip()[:3] or "UGX"
     return amt, cur.upper()
 
