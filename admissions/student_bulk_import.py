@@ -134,6 +134,10 @@ def _upsert_programme_enrollment_from_import(
             "curriculum_version": curriculum_version,
             "current_year_of_study": year_of_study,
             "current_term_number": term_number,
+            # Continuing migrants join mid-programme: entry must match current so
+            # prior FeePlanRule terms are not re-billed as unpaid carry-forward.
+            "entry_year_of_study": year_of_study,
+            "entry_term_number": term_number,
             "specialization": specialization,
             "status": enroll_status,
             "enrolled_by": admitted_by if enroll_status == "enrolled" else None,
@@ -146,6 +150,8 @@ def _upsert_programme_enrollment_from_import(
         enrollment.curriculum_version = curriculum_version
         enrollment.current_year_of_study = year_of_study
         enrollment.current_term_number = term_number
+        enrollment.entry_year_of_study = year_of_study
+        enrollment.entry_term_number = term_number
         if activation_block is None:
             enrollment.status = "enrolled"
             enrollment.enrolled_by = admitted_by
@@ -164,6 +170,8 @@ def _upsert_programme_enrollment_from_import(
         "enrollment_blocked": activation_block,
         "current_year_of_study": year_of_study,
         "current_term_number": term_number,
+        "entry_year_of_study": year_of_study,
+        "entry_term_number": term_number,
     }
 
 
@@ -248,6 +256,19 @@ def _apply_import_extensions(
         )
         result.update(enrollment_info)
         result["extensions_applied"] = True
+
+        # Continuing migrants already paid through the old system; the 150k
+        # commitment is treated as covered by prior tuition (not a new charge).
+        if require_academic_position and not admitted.admission_fee_paid:
+            from django.utils import timezone
+
+            admitted.admission_fee_paid = True
+            admitted.admission_fee_paid_at = timezone.now()
+            admitted.save(
+                update_fields=["admission_fee_paid", "admission_fee_paid_at", "updated_at"]
+            )
+            result["admission_fee_paid_set"] = True
+            result["commitment_covered_by_prior_tuition"] = True
 
     if row_has_legacy_fee_data(row):
         fee_result = apply_legacy_fee_balances(
