@@ -33,8 +33,22 @@ from .permissions import ManageIdCardsPermission
 logger = logging.getLogger(__name__)
 
 
-def _default_expiry(issue: date) -> date:
-    return issue + timedelta(days=365 * 4)
+def _programme_min_years(admitted) -> int:
+    """Programme length in years for ID validity; fall back to 4 if unset."""
+    program = getattr(admitted, "admitted_program", None) if admitted else None
+    raw = getattr(program, "min_years", None) if program else None
+    try:
+        years = int(raw)
+    except (TypeError, ValueError):
+        years = 0
+    return years if years >= 1 else 4
+
+
+def _default_expiry(issue: date, *, years: int | None = None) -> date:
+    n = int(years) if years is not None else 4
+    if n < 1:
+        n = 4
+    return issue + timedelta(days=365 * n)
 
 
 def _ordinal_day(day: int) -> str:
@@ -269,7 +283,7 @@ def _preview_payload(request, card: StudentIdCard) -> dict:
     app = st.application
     tmpl = _resolve_template_dict() or {}
     issue = card.issue_date or timezone.now().date()
-    expiry = card.expiry_date or _default_expiry(issue)
+    expiry = _default_expiry(issue, years=_programme_min_years(st))
     student_no = st.student_id or ""
     return_to = (tmpl.get("return_to") or tmpl.get("back_text") or "").strip()
     if not return_to:
@@ -577,7 +591,9 @@ class IdCardGenerateView(APIView):
         except (TypeError, ValueError):
             return Response({"detail": "admitted_student_id is required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        admitted = AdmittedStudent.objects.select_related("application").filter(pk=admitted_id).first()
+        admitted = AdmittedStudent.objects.select_related(
+            "application", "admitted_program"
+        ).filter(pk=admitted_id).first()
         if not admitted:
             return Response({"detail": "Admitted student not found."}, status=status.HTTP_404_NOT_FOUND)
         if not admitted.is_admitted or admitted.application.is_revoked:
@@ -598,7 +614,7 @@ class IdCardGenerateView(APIView):
             return Response({"detail": "An active ID card already exists for this student."}, status=400)
 
         issue = timezone.now().date()
-        expiry = _default_expiry(issue)
+        expiry = _default_expiry(issue, years=_programme_min_years(admitted))
         with transaction.atomic():
             card = StudentIdCard.objects.create(
                 admitted_student=admitted,
@@ -717,7 +733,12 @@ class IdCardReissueView(APIView):
         if not reason:
             return Response({"detail": "reason is required."}, status=status.HTTP_400_BAD_REQUEST)
         with transaction.atomic():
-            old = StudentIdCard.objects.select_for_update().select_related("admitted_student").filter(pk=card_id).first()
+            old = (
+                StudentIdCard.objects.select_for_update()
+                .select_related("admitted_student", "admitted_student__admitted_program")
+                .filter(pk=card_id)
+                .first()
+            )
             if not old:
                 return Response({"detail": "ID card not found."}, status=status.HTTP_404_NOT_FOUND)
             if not old.is_active or old.status == StudentIdCard.STATUS_REVOKED:
@@ -735,7 +756,7 @@ class IdCardReissueView(APIView):
                 return Response({"detail": "A passport photo is required on the application."}, status=400)
 
             issue = timezone.now().date()
-            expiry = _default_expiry(issue)
+            expiry = _default_expiry(issue, years=_programme_min_years(admitted))
             new_card = StudentIdCard.objects.create(
                 admitted_student=admitted,
                 card_number=_allocate_card_number(),

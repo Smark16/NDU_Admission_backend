@@ -26,8 +26,21 @@ DEFAULT_PHOTO_HEIGHT = 105.0
 DEFAULT_QR_SIZE = 70.0
 
 
-def _default_expiry(issue: date) -> date:
-    return issue + timedelta(days=365 * 4)
+def _default_expiry(issue: date, *, years: int | None = None) -> date:
+    n = int(years) if years is not None else 4
+    if n < 1:
+        n = 4
+    return issue + timedelta(days=365 * n)
+
+
+def _programme_min_years(admitted) -> int:
+    program = getattr(admitted, "admitted_program", None) if admitted else None
+    raw = getattr(program, "min_years", None) if program else None
+    try:
+        years = int(raw)
+    except (TypeError, ValueError):
+        years = 0
+    return years if years >= 1 else 4
 
 
 def _resolve_font(pos: dict) -> dict:
@@ -168,7 +181,7 @@ def build_id_card_field_context(card: StudentIdCard) -> dict[str, str]:
     st = card.admitted_student
     app = st.application
     issue = card.issue_date or date.today()
-    expiry = card.expiry_date or _default_expiry(issue)
+    expiry = _default_expiry(issue, years=_programme_min_years(st))
     program = st.admitted_program
     faculty = getattr(program, "faculty", None) if program else None
     department = getattr(program, "department", None) if program else None
