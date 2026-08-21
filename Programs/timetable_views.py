@@ -547,16 +547,83 @@ class SemesterTimetableView(APIView):
             .prefetch_related("lecturers")
             .order_by("code")
         )
+        # Peer offerings (same code, other programmes) for linking in the timetable UI.
+        codes = [cu.code for cu in units if cu.code]
+        peers_by_code: dict[str, list] = {}
+        if codes:
+            for peer in (
+                CourseUnit.objects.filter(code__in=codes, is_active=True)
+                .exclude(semester_id=semester.id)
+                .select_related(
+                    "program_batch",
+                    "program_batch__program",
+                    "semester",
+                    "shared_teaching_offering",
+                )
+                .order_by("code", "id")[:800]
+            ):
+                peers_by_code.setdefault(peer.code, []).append(peer)
+
         course_units = []
         for cu in units:
             cat = cu.catalog_unit
             sto = cu.shared_teaching_offering
             linked_count = 0
+            linked_peers = []
             if cu.shared_teaching_offering_id:
-                linked_count = CourseUnit.objects.filter(
-                    shared_teaching_offering_id=cu.shared_teaching_offering_id,
-                    is_active=True,
-                ).count()
+                linked_qs = (
+                    CourseUnit.objects.filter(
+                        shared_teaching_offering_id=cu.shared_teaching_offering_id,
+                        is_active=True,
+                    )
+                    .exclude(pk=cu.id)
+                    .select_related("program_batch", "program_batch__program", "semester")
+                )
+                linked_count = linked_qs.count() + 1
+                linked_peers = [
+                    {
+                        "id": p.id,
+                        "code": p.code,
+                        "name": p.name,
+                        "semester_id": p.semester_id,
+                        "semester_name": p.semester.name if p.semester_id else None,
+                        "program_batch_id": p.program_batch_id,
+                        "program_batch_name": p.program_batch.name if p.program_batch_id else None,
+                        "program_name": (
+                            p.program_batch.program.name
+                            if p.program_batch_id and p.program_batch.program_id
+                            else None
+                        ),
+                        "shared_teaching_offering_id": p.shared_teaching_offering_id,
+                        "already_linked": True,
+                    }
+                    for p in linked_qs[:40]
+                ]
+            peer_rows = []
+            for p in peers_by_code.get(cu.code, []):
+                peer_rows.append(
+                    {
+                        "id": p.id,
+                        "code": p.code,
+                        "name": p.name,
+                        "semester_id": p.semester_id,
+                        "semester_name": p.semester.name if p.semester_id else None,
+                        "program_batch_id": p.program_batch_id,
+                        "program_batch_name": (
+                            p.program_batch.name if p.program_batch_id else None
+                        ),
+                        "program_name": (
+                            p.program_batch.program.name
+                            if p.program_batch_id and p.program_batch.program_id
+                            else None
+                        ),
+                        "shared_teaching_offering_id": p.shared_teaching_offering_id,
+                        "already_linked": bool(
+                            cu.shared_teaching_offering_id
+                            and p.shared_teaching_offering_id == cu.shared_teaching_offering_id
+                        ),
+                    }
+                )
             course_units.append(
                 {
                     "id": cu.id,
@@ -568,6 +635,8 @@ class SemesterTimetableView(APIView):
                     "shared_teaching_offering_id": cu.shared_teaching_offering_id,
                     "shared_teaching_code": sto.code if sto else "",
                     "shared_teaching_linked_count": linked_count,
+                    "peer_course_units": peer_rows,
+                    "linked_peer_course_units": linked_peers,
                     "lecturers": [serialize_lecturer_brief(lec) for lec in cu.lecturers.all()],
                     "sessions": by_unit.get(cu.id, []),
                 }
