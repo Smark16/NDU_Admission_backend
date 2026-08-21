@@ -48,9 +48,18 @@ def normalize_course_name(name: str | None) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
+def _stem_token(token: str) -> str:
+    t = token
+    for suffix in ("ing", "tion", "ments", "ment", "ies", "es", "s"):
+        if len(t) > len(suffix) + 3 and t.endswith(suffix):
+            t = t[: -len(suffix)]
+            break
+    return t
+
+
 def name_tokens(name: str | None) -> set[str]:
     return {
-        t
+        _stem_token(t)
         for t in normalize_course_name(name).split()
         if len(t) >= 3 and t not in _NAME_STOPWORDS
     }
@@ -77,7 +86,11 @@ def names_similar(a: str | None, b: str | None) -> bool:
 
 
 def classify_peer_match(source: CourseUnit, peer: CourseUnit) -> str | None:
-    """Return match_kind or None if not a useful peer."""
+    """Return match_kind or None if not a useful peer.
+
+    Priority for ranking (handled by callers):
+      exact_code > similar_name > same_number
+    """
     source_norm = normalize_course_code(source.code)
     peer_norm = normalize_course_code(peer.code)
     source_num = course_code_number(source.code)
@@ -86,14 +99,23 @@ def classify_peer_match(source: CourseUnit, peer: CourseUnit) -> str | None:
 
     if source_norm and peer_norm == source_norm:
         return "exact_code"
-    if source_num and peer_num == source_num and similar:
-        return "same_number"  # strongest cross-prefix case: BEC/BAF 1102 + same title
-    if source_num and peer_num == source_num:
-        return "same_number"
+    # Same title matters more than shared paper number alone
+    # (1102 is Fundamentals of Accounting on BBA but Communication Skills on BCS).
     if similar:
         return "similar_name"
+    if source_num and peer_num == source_num:
+        return "same_number"
     return None
 
+
+def peer_match_rank(match_kind: str | None) -> int:
+    return {
+        "exact_code": 0,
+        "similar_name": 1,
+        "same_number": 2,
+        "linked": 3,
+        "search": 4,
+    }.get(match_kind or "", 9)
 
 def suggested_canonical_code(units: list[CourseUnit]) -> str | None:
     """Prefer shared trailing number when codes differ; else the single shared code."""
@@ -195,13 +217,20 @@ def find_peer_course_units(
         if len(out) >= limit:
             break
 
-    rank = {"exact_code": 0, "same_number": 1, "similar_name": 2}
     out.sort(
         key=lambda r: (
-            rank.get(r.get("match_kind") or "", 9),
+            peer_match_rank(r.get("match_kind")),
+            # Within similar_name, prefer shared paper number too
+            0
+            if (
+                r.get("match_kind") == "similar_name"
+                and number
+                and course_code_number(r.get("code")) == number
+            )
+            else 1,
+            (r.get("name") or "").lower(),
             (r.get("program_name") or ""),
             (r.get("code") or ""),
-            (r.get("name") or ""),
         )
     )
     return out
@@ -238,19 +267,19 @@ def search_course_units_for_share(
         filt |= Q(name__icontains=tok)
 
     rows = []
+    scored: list[tuple[int, dict]] = []
     for cu in qs.filter(filt).order_by("code", "id")[: limit * 4]:
-        if number and course_code_number(cu.code) == number:
-            kind = "same_number"
-        elif normalize_course_code(cu.code) == normalize_course_code(q):
+        if normalize_course_code(cu.code) == normalize_course_code(q):
             kind = "exact_code"
-        elif names_similar(q, cu.name) or names_similar(q, cu.code):
+        elif names_similar(q, cu.name):
             kind = "similar_name"
+        elif number and course_code_number(cu.code) == number:
+            kind = "same_number"
         else:
             kind = "search"
-        rows.append(serialize_peer_course_unit(cu, match_kind=kind))
-        if len(rows) >= limit:
-            break
-    return rows
+        scored.append((peer_match_rank(kind), serialize_peer_course_unit(cu, match_kind=kind)))
+    scored.sort(key=lambda x: (x[0], (x[1].get("name") or "").lower(), x[1].get("code") or ""))
+    return [row for _, row in scored[:limit]]
 
 
 def moodle_idnumber_for_course_unit(cu: CourseUnit) -> str:
