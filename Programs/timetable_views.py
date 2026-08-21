@@ -44,6 +44,11 @@ from Programs.timetable_utils import (
     sessions_for_semester,
     validate_session_scheduling,
 )
+from Programs.shared_teaching import (
+    course_code_number,
+    find_peer_course_units,
+    serialize_peer_course_unit,
+)
 
 
 def _resolve_teaching_section_for_session(course_unit, raw_section_id):
@@ -547,22 +552,6 @@ class SemesterTimetableView(APIView):
             .prefetch_related("lecturers")
             .order_by("code")
         )
-        # Peer offerings (same code, other programmes) for linking in the timetable UI.
-        codes = [cu.code for cu in units if cu.code]
-        peers_by_code: dict[str, list] = {}
-        if codes:
-            for peer in (
-                CourseUnit.objects.filter(code__in=codes, is_active=True)
-                .exclude(semester_id=semester.id)
-                .select_related(
-                    "program_batch",
-                    "program_batch__program",
-                    "semester",
-                    "shared_teaching_offering",
-                )
-                .order_by("code", "id")[:800]
-            ):
-                peers_by_code.setdefault(peer.code, []).append(peer)
 
         course_units = []
         for cu in units:
@@ -582,48 +571,16 @@ class SemesterTimetableView(APIView):
                 linked_count = linked_qs.count() + 1
                 linked_peers = [
                     {
-                        "id": p.id,
-                        "code": p.code,
-                        "name": p.name,
-                        "semester_id": p.semester_id,
-                        "semester_name": p.semester.name if p.semester_id else None,
-                        "program_batch_id": p.program_batch_id,
-                        "program_batch_name": p.program_batch.name if p.program_batch_id else None,
-                        "program_name": (
-                            p.program_batch.program.name
-                            if p.program_batch_id and p.program_batch.program_id
-                            else None
-                        ),
-                        "shared_teaching_offering_id": p.shared_teaching_offering_id,
+                        **serialize_peer_course_unit(p, match_kind="linked"),
                         "already_linked": True,
                     }
                     for p in linked_qs[:40]
                 ]
-            peer_rows = []
-            for p in peers_by_code.get(cu.code, []):
-                peer_rows.append(
-                    {
-                        "id": p.id,
-                        "code": p.code,
-                        "name": p.name,
-                        "semester_id": p.semester_id,
-                        "semester_name": p.semester.name if p.semester_id else None,
-                        "program_batch_id": p.program_batch_id,
-                        "program_batch_name": (
-                            p.program_batch.name if p.program_batch_id else None
-                        ),
-                        "program_name": (
-                            p.program_batch.program.name
-                            if p.program_batch_id and p.program_batch.program_id
-                            else None
-                        ),
-                        "shared_teaching_offering_id": p.shared_teaching_offering_id,
-                        "already_linked": bool(
-                            cu.shared_teaching_offering_id
-                            and p.shared_teaching_offering_id == cu.shared_teaching_offering_id
-                        ),
-                    }
-                )
+            peer_rows = find_peer_course_units(
+                source=cu,
+                exclude_semester_id=semester.id,
+                limit=60,
+            )
             course_units.append(
                 {
                     "id": cu.id,
@@ -632,6 +589,7 @@ class SemesterTimetableView(APIView):
                     "credit_units": float(cu.credit_units) if cu.credit_units else None,
                     "catalog_unit_id": cat.id if cat else None,
                     "catalog_code": cat.code if cat else "",
+                    "code_number": course_code_number(cu.code),
                     "shared_teaching_offering_id": cu.shared_teaching_offering_id,
                     "shared_teaching_code": sto.code if sto else "",
                     "shared_teaching_linked_count": linked_count,

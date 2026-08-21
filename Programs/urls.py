@@ -22,6 +22,7 @@ from .section_views import (
     UpdateTeachingSectionView,
 )
 from .shared_teaching_views import (
+    SearchCourseUnitsForShareView,
     SharedTeachingOfferingDetailView,
     SharedTeachingOfferingListCreateView,
     SuggestCommonCourseUnitsView,
@@ -212,6 +213,11 @@ urlpatterns = [
         'shared_teaching_offerings/suggest',
         SuggestCommonCourseUnitsView.as_view(),
         name='shared_teaching_suggest',
+    ),
+    path(
+        'shared_teaching_offerings/search_units',
+        SearchCourseUnitsForShareView.as_view(),
+        name='shared_teaching_search_units',
     ),
     path(
         'shared_teaching_offerings/<int:offering_id>',

@@ -11,6 +11,7 @@ from .models import CourseUnit, SharedTeachingOffering
 from .permissions import ProgramSchedulingAPIPermission
 from .shared_teaching import (
     create_shared_offering_from_course_units,
+    search_course_units_for_share,
     serialize_shared_offering,
 )
 
@@ -18,7 +19,9 @@ from .shared_teaching import (
 def _parse_int_list(raw) -> list[int]:
     if raw is None:
         return []
-    if not isinstance(raw, list):
+    if isinstance(raw, str):
+        raw = [x.strip() for x in raw.replace(";", ",").split(",") if x.strip()]
+    elif not isinstance(raw, list):
         raw = [raw]
     out = []
     for x in raw:
@@ -244,3 +247,25 @@ class SuggestCommonCourseUnitsView(APIView):
             )
 
         return Response({"count": len(groups), "groups": groups[:100]})
+
+
+class SearchCourseUnitsForShareView(APIView):
+    """Search course units on other programmes to add to a shared / cross-cutting class."""
+
+    permission_classes = [ProgramSchedulingAPIPermission]
+
+    def get(self, request):
+        q = (request.query_params.get("q") or "").strip()
+        exclude_semester = request.query_params.get("exclude_semester_id")
+        try:
+            exclude_semester_id = int(exclude_semester) if exclude_semester not in (None, "") else None
+        except (TypeError, ValueError):
+            exclude_semester_id = None
+        exclude_ids = _parse_int_list(request.query_params.get("exclude_ids"))
+        results = search_course_units_for_share(
+            query=q,
+            exclude_semester_id=exclude_semester_id,
+            exclude_ids=exclude_ids,
+            limit=40,
+        )
+        return Response({"count": len(results), "results": results})
