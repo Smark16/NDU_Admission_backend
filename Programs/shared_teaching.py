@@ -269,6 +269,10 @@ def find_peer_course_units(
             and peer.shared_teaching_offering_id == source.shared_teaching_offering_id
         )
         row["same_study_mode"] = row.get("study_mode") == preferred_mode
+        # When scheduling a Day (or Weekend/Main) programme, only show that study mode
+        if preferred_mode and preferred_mode != "Other":
+            if row.get("study_mode") != preferred_mode:
+                continue
         if match_kind in ("exact_code", "similar_name"):
             strong.append(row)
         else:
@@ -310,6 +314,7 @@ def search_course_units_for_share(
     query: str,
     exclude_semester_id: int | None = None,
     exclude_ids: list[int] | None = None,
+    study_mode: str | None = None,
     limit: int = 60,
 ) -> list[dict]:
     """Search units across programmes and academic levels by code, name, or number."""
@@ -335,8 +340,13 @@ def search_course_units_for_share(
     for tok in list(name_tokens(q))[:4]:
         filt |= Q(name__icontains=tok)
 
+    preferred = (study_mode or "").strip()
     scored: list[tuple[tuple, dict]] = []
     for cu in qs.filter(filt).order_by("code", "id")[:800]:
+        row = serialize_peer_course_unit(cu, match_kind="search")
+        mode = row.get("study_mode") or "Other"
+        if preferred and preferred != "Other" and mode != preferred:
+            continue
         if normalize_course_code(cu.code) == normalize_course_code(q):
             kind = "exact_code"
         elif names_similar(q, cu.name):
@@ -345,13 +355,15 @@ def search_course_units_for_share(
             kind = "same_number"
         else:
             kind = "search"
-        row = serialize_peer_course_unit(cu, match_kind=kind)
+        row["match_kind"] = kind
+        row["same_study_mode"] = bool(preferred and mode == preferred)
         yos = row.get("year_of_study")
         term = row.get("term_number")
         scored.append(
             (
                 (
                     peer_match_rank(kind),
+                    *study_mode_sort_tuple(mode, preferred or None),
                     yos if isinstance(yos, int) else 99,
                     term if isinstance(term, int) else 99,
                     (row.get("name") or "").lower(),

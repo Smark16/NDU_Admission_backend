@@ -262,10 +262,12 @@ class SearchCourseUnitsForShareView(APIView):
         except (TypeError, ValueError):
             exclude_semester_id = None
         exclude_ids = _parse_int_list(request.query_params.get("exclude_ids"))
+        study_mode = (request.query_params.get("study_mode") or "").strip() or None
         results = search_course_units_for_share(
             query=q,
             exclude_semester_id=exclude_semester_id,
             exclude_ids=exclude_ids,
-            limit=40,
+            study_mode=study_mode,
+            limit=60,
         )
         return Response({"count": len(results), "results": results})
