@@ -542,6 +542,10 @@ class SemesterTimetableView(APIView):
         campuses, suggested_campus_id = resolve_semester_campuses(semester)
 
         campus_filter = request.query_params.get("campus_id") or suggested_campus_id
+        try:
+            campus_filter_id = int(campus_filter) if campus_filter not in (None, "") else None
+        except (TypeError, ValueError):
+            campus_filter_id = None
         sessions = sessions_for_semester(semester.id)
         by_unit: dict[int, list] = {}
         for s in sessions:
@@ -549,8 +553,13 @@ class SemesterTimetableView(APIView):
 
         units = (
             CourseUnit.objects.filter(semester_id=semester.id, is_active=True)
-            .select_related("catalog_unit", "shared_teaching_offering")
-            .prefetch_related("lecturers")
+            .select_related(
+                "catalog_unit",
+                "shared_teaching_offering",
+                "program_batch",
+                "program_batch__program",
+            )
+            .prefetch_related("lecturers", "program_batch__program__campuses")
             .order_by("code")
         )
 
@@ -580,7 +589,8 @@ class SemesterTimetableView(APIView):
             peer_rows = find_peer_course_units(
                 source=cu,
                 exclude_semester_id=semester.id,
-                limit=60,
+                campus_id=campus_filter_id,
+                limit=120,
             )
             course_units.append(
                 {
@@ -603,8 +613,8 @@ class SemesterTimetableView(APIView):
             )
 
         venues_qs = Venue.objects.filter(is_active=True).select_related("campus")
-        if campus_filter:
-            venues_qs = venues_qs.filter(campus_id=campus_filter)
+        if campus_filter_id:
+            venues_qs = venues_qs.filter(campus_id=campus_filter_id)
         else:
             # Restrict to program's allowed campuses only
             allowed_campus_ids = list(program.campuses.values_list("id", flat=True))

@@ -138,21 +138,12 @@ _STUDY_MODE_ORDER = {
     "Other": 9,
 }
 
-# Day-school labels that should match each other (Main ≈ Day on many programmes)
-_DAY_SCHOOL_MODES = frozenset({"Day", "Main"})
-
-
-def study_modes_compatible(a: str | None, b: str | None) -> bool:
-    """True when both are the same mode, or both are day-school (Day/Main)."""
-    ma = (a or "Other").strip() or "Other"
-    mb = (b or "Other").strip() or "Other"
-    if ma == mb:
-        return True
-    return ma in _DAY_SCHOOL_MODES and mb in _DAY_SCHOOL_MODES
-
 
 def infer_study_mode(*parts: str | None) -> str:
-    """Detect Day / Weekend / Main / etc. from programme or batch labels."""
+    """Detect Day / Weekend / Main / etc. from programme or batch labels.
+
+    Note: \"Main\" is its own stream (often Main Campus day school) — not the same as Day.
+    """
     text = " ".join((p or "").strip() for p in parts if p).lower()
     text = re.sub(r"[\s_/\-]+", " ", text)
     if re.search(r"\bweek\s*end\b|\bweekend\b", text):
@@ -183,14 +174,51 @@ def study_mode_for_course_unit(cu: CourseUnit) -> str:
 def study_mode_sort_tuple(mode: str | None, preferred: str | None) -> tuple:
     m = mode or "Other"
     return (
-        0 if preferred and study_modes_compatible(m, preferred) else 1,
+        0 if preferred and m == preferred else 1,
         _STUDY_MODE_ORDER.get(m, 9),
         m,
     )
 
 
+def campuses_for_course_unit(cu: CourseUnit) -> list[dict]:
+    if not cu.program_batch_id or not getattr(cu.program_batch, "program_id", None):
+        return []
+    prog = cu.program_batch.program
+    campuses = getattr(prog, "campuses", None)
+    if campuses is None:
+        return []
+    return [
+        {"id": c.id, "name": c.name, "code": getattr(c, "code", "") or ""}
+        for c in campuses.all()
+    ]
+
+
+def campus_ids_for_course_unit(cu: CourseUnit) -> set[int]:
+    return {int(c["id"]) for c in campuses_for_course_unit(cu)}
+
+
+def campuses_compatible(
+    source_ids: set[int],
+    peer_ids: set[int],
+    *,
+    required_campus_id: int | None = None,
+) -> bool:
+    """Peer must share campus with the source programme, or include the selected campus."""
+    if required_campus_id:
+        if peer_ids:
+            return required_campus_id in peer_ids
+        # No campus on peer programme — do not mix into a campus-scoped timetable
+        return False
+    if not source_ids:
+        return True
+    if not peer_ids:
+        return False
+    return bool(source_ids & peer_ids)
+
+
 def serialize_peer_course_unit(cu: CourseUnit, *, match_kind: str = "exact_code") -> dict:
     sem = cu.semester if cu.semester_id else None
+    campuses = campuses_for_course_unit(cu)
     return {
         "id": cu.id,
         "code": cu.code,
@@ -200,6 +228,8 @@ def serialize_peer_course_unit(cu: CourseUnit, *, match_kind: str = "exact_code"
         "year_of_study": getattr(sem, "year_of_study", None) if sem else None,
         "term_number": getattr(sem, "term_number", None) if sem else None,
         "study_mode": study_mode_for_course_unit(cu),
+        "campus_ids": [c["id"] for c in campuses],
+        "campus_names": [c["name"] for c in campuses],
         "program_batch_id": cu.program_batch_id,
         "program_batch_name": cu.program_batch.name if cu.program_batch_id else None,
         "program_name": (
@@ -217,14 +247,12 @@ def find_peer_course_units(
     *,
     source: CourseUnit,
     exclude_semester_id: int | None = None,
+    campus_id: int | None = None,
     limit: int = 120,
     same_number_limit: int = 40,
 ) -> list[dict]:
     """
-    Peers across programmes and academic levels (Year 1/2/3, any term) by:
-    - same code
-    - similar course title
-    - same trailing paper number (capped — often unrelated papers)
+    Peers across programmes (same study mode + campus) by code / similar name / number.
     """
     code = (source.code or "").strip()
     number = course_code_number(code)
@@ -242,6 +270,7 @@ def find_peer_course_units(
             "semester",
             "shared_teaching_offering",
         )
+        .prefetch_related("program_batch__program__campuses")
     )
     if exclude_semester_id:
         qs = qs.exclude(semester_id=exclude_semester_id)
@@ -262,9 +291,10 @@ def find_peer_course_units(
     if not q:
         return []
 
-    # Wide scan so Year 2/3 offerings are not cut off by early Year 1 hits
     candidates = list(qs.filter(q).order_by("code", "id")[:4000])
     preferred_mode = study_mode_for_course_unit(source)
+    source_campus_ids = campus_ids_for_course_unit(source)
+    required_campus_id = int(campus_id) if campus_id else None
     strong: list[dict] = []
     weak: list[dict] = []
     seen: set[int] = set()
@@ -276,15 +306,23 @@ def find_peer_course_units(
             continue
         seen.add(peer.id)
         row = serialize_peer_course_unit(peer, match_kind=match_kind)
+        peer_campus_ids = set(row.get("campus_ids") or [])
+        if not campuses_compatible(
+            source_campus_ids,
+            peer_campus_ids,
+            required_campus_id=required_campus_id,
+        ):
+            continue
+        # Exact study mode from programme name (Day ≠ Main campus stream)
+        if preferred_mode and preferred_mode != "Other":
+            if (row.get("study_mode") or "Other") != preferred_mode:
+                continue
         row["already_linked"] = bool(
             source.shared_teaching_offering_id
             and peer.shared_teaching_offering_id == source.shared_teaching_offering_id
         )
-        row["same_study_mode"] = study_modes_compatible(row.get("study_mode"), preferred_mode)
-        # Programmes on this paper: only same study mode from programme name (Day/Main together; not Weekend)
-        if preferred_mode and preferred_mode != "Other":
-            if not study_modes_compatible(row.get("study_mode"), preferred_mode):
-                continue
+        row["same_study_mode"] = True
+        row["same_campus"] = True
         if match_kind in ("exact_code", "similar_name"):
             strong.append(row)
         else:
@@ -312,12 +350,11 @@ def find_peer_course_units(
 
     strong.sort(key=_sort_key)
     weak.sort(key=_sort_key)
-    # Keep all strong matches (every academic level); cap number-only noise
     out = strong + weak[:same_number_limit]
     if len(out) > limit and len(strong) < limit:
         out = strong + weak[: max(0, limit - len(strong))]
     elif len(strong) >= limit:
-        out = strong  # never truncate strong matches for the weak cap
+        out = strong
     return out
 
 
@@ -327,18 +364,24 @@ def search_course_units_for_share(
     exclude_semester_id: int | None = None,
     exclude_ids: list[int] | None = None,
     study_mode: str | None = None,
+    campus_id: int | None = None,
+    source_campus_ids: list[int] | None = None,
     limit: int = 60,
 ) -> list[dict]:
-    """Search units across programmes and academic levels by code, name, or number."""
+    """Search units filtered by study mode and campus when provided."""
     q = (query or "").strip()
     if len(q) < 2:
         return []
 
-    qs = CourseUnit.objects.filter(is_active=True).select_related(
-        "program_batch",
-        "program_batch__program",
-        "semester",
-        "shared_teaching_offering",
+    qs = (
+        CourseUnit.objects.filter(is_active=True)
+        .select_related(
+            "program_batch",
+            "program_batch__program",
+            "semester",
+            "shared_teaching_offering",
+        )
+        .prefetch_related("program_batch__program__campuses")
     )
     if exclude_semester_id:
         qs = qs.exclude(semester_id=exclude_semester_id)
@@ -353,10 +396,21 @@ def search_course_units_for_share(
         filt |= Q(name__icontains=tok)
 
     preferred = (study_mode or "").strip()
+    required_campus_id = int(campus_id) if campus_id else None
+    source_ids = set(int(x) for x in (source_campus_ids or []) if x)
     scored: list[tuple[tuple, dict]] = []
     for cu in qs.filter(filt).order_by("code", "id")[:800]:
         row = serialize_peer_course_unit(cu, match_kind="search")
         mode = row.get("study_mode") or "Other"
+        peer_campus_ids = set(row.get("campus_ids") or [])
+        if preferred and preferred != "Other" and mode != preferred:
+            continue
+        if not campuses_compatible(
+            source_ids,
+            peer_campus_ids,
+            required_campus_id=required_campus_id,
+        ):
+            continue
         if normalize_course_code(cu.code) == normalize_course_code(q):
             kind = "exact_code"
         elif names_similar(q, cu.name):
@@ -366,11 +420,8 @@ def search_course_units_for_share(
         else:
             kind = "search"
         row["match_kind"] = kind
-        row["same_study_mode"] = bool(
-            preferred and preferred != "Other" and study_modes_compatible(mode, preferred)
-        )
-        if preferred and preferred != "Other" and not study_modes_compatible(mode, preferred):
-            continue
+        row["same_study_mode"] = bool(preferred and preferred != "Other" and mode == preferred)
+        row["same_campus"] = True
         yos = row.get("year_of_study")
         term = row.get("term_number")
         scored.append(

@@ -263,11 +263,17 @@ class SearchCourseUnitsForShareView(APIView):
             exclude_semester_id = None
         exclude_ids = _parse_int_list(request.query_params.get("exclude_ids"))
         study_mode = (request.query_params.get("study_mode") or "").strip() or None
+        campus_raw = request.query_params.get("campus_id")
+        try:
+            campus_id = int(campus_raw) if campus_raw not in (None, "") else None
+        except (TypeError, ValueError):
+            campus_id = None
         results = search_course_units_for_share(
             query=q,
             exclude_semester_id=exclude_semester_id,
             exclude_ids=exclude_ids,
             study_mode=study_mode,
+            campus_id=campus_id,
             limit=60,
         )
         return Response({"count": len(results), "results": results})
