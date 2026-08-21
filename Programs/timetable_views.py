@@ -48,6 +48,7 @@ from Programs.shared_teaching import (
     course_code_number,
     find_peer_course_units,
     serialize_peer_course_unit,
+    study_mode_for_course_unit,
 )
 
 
@@ -590,6 +591,7 @@ class SemesterTimetableView(APIView):
                     "catalog_unit_id": cat.id if cat else None,
                     "catalog_code": cat.code if cat else "",
                     "code_number": course_code_number(cu.code),
+                    "study_mode": study_mode_for_course_unit(cu),
                     "shared_teaching_offering_id": cu.shared_teaching_offering_id,
                     "shared_teaching_code": sto.code if sto else "",
                     "shared_teaching_linked_count": linked_count,

@@ -129,6 +129,54 @@ def suggested_canonical_code(units: list[CourseUnit]) -> str | None:
     return None
 
 
+_STUDY_MODE_ORDER = {
+    "Day": 0,
+    "Main": 1,
+    "Weekend": 2,
+    "Evening": 3,
+    "Distance": 4,
+    "Other": 9,
+}
+
+
+def infer_study_mode(*parts: str | None) -> str:
+    """Detect Day / Weekend / Main / etc. from programme or batch labels."""
+    text = " ".join((p or "").strip() for p in parts if p).lower()
+    text = re.sub(r"[\s_/\-]+", " ", text)
+    if re.search(r"\bweek\s*end\b|\bweekend\b", text):
+        return "Weekend"
+    if re.search(r"\bevening\b", text):
+        return "Evening"
+    if re.search(r"\bdistance\b|\bonline\b|\be[- ]?learning\b", text):
+        return "Distance"
+    if re.search(r"\bmain\b", text):
+        return "Main"
+    if re.search(r"\bday\b|\bweekday\b", text):
+        return "Day"
+    return "Other"
+
+
+def study_mode_for_course_unit(cu: CourseUnit) -> str:
+    prog_name = ""
+    prog_short = ""
+    batch_name = ""
+    if cu.program_batch_id:
+        batch_name = cu.program_batch.name or ""
+        if cu.program_batch.program_id:
+            prog_name = cu.program_batch.program.name or ""
+            prog_short = cu.program_batch.program.short_form or ""
+    return infer_study_mode(prog_name, prog_short, batch_name)
+
+
+def study_mode_sort_tuple(mode: str | None, preferred: str | None) -> tuple:
+    m = mode or "Other"
+    return (
+        0 if preferred and m == preferred else 1,
+        _STUDY_MODE_ORDER.get(m, 9),
+        m,
+    )
+
+
 def serialize_peer_course_unit(cu: CourseUnit, *, match_kind: str = "exact_code") -> dict:
     sem = cu.semester if cu.semester_id else None
     return {
@@ -139,6 +187,7 @@ def serialize_peer_course_unit(cu: CourseUnit, *, match_kind: str = "exact_code"
         "semester_name": sem.name if sem else None,
         "year_of_study": getattr(sem, "year_of_study", None) if sem else None,
         "term_number": getattr(sem, "term_number", None) if sem else None,
+        "study_mode": study_mode_for_course_unit(cu),
         "program_batch_id": cu.program_batch_id,
         "program_batch_name": cu.program_batch.name if cu.program_batch_id else None,
         "program_name": (
@@ -203,6 +252,7 @@ def find_peer_course_units(
 
     # Wide scan so Year 2/3 offerings are not cut off by early Year 1 hits
     candidates = list(qs.filter(q).order_by("code", "id")[:4000])
+    preferred_mode = study_mode_for_course_unit(source)
     strong: list[dict] = []
     weak: list[dict] = []
     seen: set[int] = set()
@@ -218,6 +268,7 @@ def find_peer_course_units(
             source.shared_teaching_offering_id
             and peer.shared_teaching_offering_id == source.shared_teaching_offering_id
         )
+        row["same_study_mode"] = row.get("study_mode") == preferred_mode
         if match_kind in ("exact_code", "similar_name"):
             strong.append(row)
         else:
@@ -228,6 +279,7 @@ def find_peer_course_units(
         term = r.get("term_number")
         return (
             peer_match_rank(r.get("match_kind")),
+            *study_mode_sort_tuple(r.get("study_mode"), preferred_mode),
             0
             if (
                 r.get("match_kind") == "similar_name"
@@ -406,6 +458,7 @@ def serialize_shared_offering(offering: SharedTeachingOffering) -> dict:
                     cu.semester.year_of_study if cu.semester_id else None
                 ),
                 "term_number": cu.semester.term_number if cu.semester_id else None,
+                "study_mode": study_mode_for_course_unit(cu),
                 "program_batch_id": cu.program_batch_id,
                 "program_batch_name": cu.program_batch.name if cu.program_batch_id else None,
                 "program_id": cu.program_batch.program_id if cu.program_batch_id else None,
