@@ -268,11 +268,11 @@ def find_peer_course_units(
             source.shared_teaching_offering_id
             and peer.shared_teaching_offering_id == source.shared_teaching_offering_id
         )
-        row["same_study_mode"] = row.get("study_mode") == preferred_mode
-        # When scheduling a Day (or Weekend/Main) programme, only show that study mode
-        if preferred_mode and preferred_mode != "Other":
-            if row.get("study_mode") != preferred_mode:
-                continue
+        row["same_study_mode"] = (
+            bool(preferred_mode)
+            and preferred_mode != "Other"
+            and row.get("study_mode") == preferred_mode
+        )
         if match_kind in ("exact_code", "similar_name"):
             strong.append(row)
         else:
@@ -345,8 +345,6 @@ def search_course_units_for_share(
     for cu in qs.filter(filt).order_by("code", "id")[:800]:
         row = serialize_peer_course_unit(cu, match_kind="search")
         mode = row.get("study_mode") or "Other"
-        if preferred and preferred != "Other" and mode != preferred:
-            continue
         if normalize_course_code(cu.code) == normalize_course_code(q):
             kind = "exact_code"
         elif names_similar(q, cu.name):
@@ -356,7 +354,7 @@ def search_course_units_for_share(
         else:
             kind = "search"
         row["match_kind"] = kind
-        row["same_study_mode"] = bool(preferred and mode == preferred)
+        row["same_study_mode"] = bool(preferred and preferred != "Other" and mode == preferred)
         yos = row.get("year_of_study")
         term = row.get("term_number")
         scored.append(
