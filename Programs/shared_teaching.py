@@ -8,6 +8,26 @@ from .models import CourseUnit, SharedTeachingOffering, StudentCourseUnitEnrollm
 
 # Trailing digits: BEC 1102 / BAF1102 / BEX 1102 → "1102"
 _CODE_NUMBER_RE = re.compile(r"(\d{3,})\s*$")
+_NAME_STOPWORDS = {
+    "and",
+    "the",
+    "of",
+    "for",
+    "to",
+    "in",
+    "a",
+    "an",
+    "on",
+    "with",
+    "i",
+    "ii",
+    "iii",
+    "iv",
+    "year",
+    "semester",
+    "course",
+    "unit",
+}
 
 
 def normalize_course_code(code: str | None) -> str:
@@ -21,6 +41,58 @@ def course_code_number(code: str | None) -> str:
         return ""
     m = _CODE_NUMBER_RE.search(raw)
     return m.group(1) if m else ""
+
+
+def normalize_course_name(name: str | None) -> str:
+    s = re.sub(r"[^a-z0-9\s]", " ", (name or "").lower())
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def name_tokens(name: str | None) -> set[str]:
+    return {
+        t
+        for t in normalize_course_name(name).split()
+        if len(t) >= 3 and t not in _NAME_STOPWORDS
+    }
+
+
+def names_similar(a: str | None, b: str | None) -> bool:
+    """True when titles look like the same paper (exact, containment, or token overlap)."""
+    na = normalize_course_name(a)
+    nb = normalize_course_name(b)
+    if not na or not nb:
+        return False
+    if na == nb:
+        return True
+    if len(na) >= 8 and len(nb) >= 8 and (na in nb or nb in na):
+        return True
+    ta, tb = name_tokens(a), name_tokens(b)
+    if not ta or not tb:
+        return False
+    inter = ta & tb
+    if len(inter) >= 2:
+        return True
+    union = ta | tb
+    return bool(union) and (len(inter) / len(union)) >= 0.65 and len(inter) >= 1
+
+
+def classify_peer_match(source: CourseUnit, peer: CourseUnit) -> str | None:
+    """Return match_kind or None if not a useful peer."""
+    source_norm = normalize_course_code(source.code)
+    peer_norm = normalize_course_code(peer.code)
+    source_num = course_code_number(source.code)
+    peer_num = course_code_number(peer.code)
+    similar = names_similar(source.name, peer.name)
+
+    if source_norm and peer_norm == source_norm:
+        return "exact_code"
+    if source_num and peer_num == source_num and similar:
+        return "same_number"  # strongest cross-prefix case: BEC/BAF 1102 + same title
+    if source_num and peer_num == source_num:
+        return "same_number"
+    if similar:
+        return "similar_name"
+    return None
 
 
 def suggested_canonical_code(units: list[CourseUnit]) -> str | None:
@@ -62,12 +134,16 @@ def find_peer_course_units(
     limit: int = 80,
 ) -> list[dict]:
     """
-    Peers on other programmes: same exact code, or same trailing number
-    (e.g. BEC 1102 ↔ BAF 1102 ↔ BEX 1102).
+    Peers on other programmes by:
+    - same code
+    - same trailing paper number (BEC/BAF/BEX 1102)
+    - similar course title
     """
     code = (source.code or "").strip()
     number = course_code_number(code)
-    if not code and not number:
+    name = (source.name or "").strip()
+    tokens = list(name_tokens(name))[:5]
+    if not code and not number and not name:
         return []
 
     qs = (
@@ -88,28 +164,26 @@ def find_peer_course_units(
         q |= Q(code__iexact=code)
         compact = normalize_course_code(code)
         if compact:
-            # Match "BEC1102" when source is "BEC 1102" (and vice versa) via endswith number + python filter
             q |= Q(code__iexact=compact)
     if number and len(number) >= 3:
         q |= Q(code__iendswith=number) | Q(code__iendswith=f" {number}")
+    if name and len(name) >= 5:
+        q |= Q(name__iexact=name)
+        # Pull candidates that share distinctive title words
+        for tok in tokens:
+            q |= Q(name__icontains=tok)
 
     if not q:
         return []
 
-    candidates = list(qs.filter(q).order_by("code", "id")[:800])
-    source_norm = normalize_course_code(code)
+    candidates = list(qs.filter(q).order_by("code", "id")[:1200])
     out: list[dict] = []
     seen: set[int] = set()
     for peer in candidates:
         if peer.id in seen:
             continue
-        peer_norm = normalize_course_code(peer.code)
-        peer_num = course_code_number(peer.code)
-        if source_norm and peer_norm == source_norm:
-            match_kind = "exact_code"
-        elif number and peer_num == number:
-            match_kind = "same_number"
-        else:
+        match_kind = classify_peer_match(source, peer)
+        if not match_kind:
             continue
         seen.add(peer.id)
         row = serialize_peer_course_unit(peer, match_kind=match_kind)
@@ -120,11 +194,14 @@ def find_peer_course_units(
         out.append(row)
         if len(out) >= limit:
             break
+
+    rank = {"exact_code": 0, "same_number": 1, "similar_name": 2}
     out.sort(
         key=lambda r: (
-            0 if r.get("match_kind") == "exact_code" else 1,
+            rank.get(r.get("match_kind") or "", 9),
             (r.get("program_name") or ""),
             (r.get("code") or ""),
+            (r.get("name") or ""),
         )
     )
     return out
@@ -142,14 +219,11 @@ def search_course_units_for_share(
     if len(q) < 2:
         return []
 
-    qs = (
-        CourseUnit.objects.filter(is_active=True)
-        .select_related(
-            "program_batch",
-            "program_batch__program",
-            "semester",
-            "shared_teaching_offering",
-        )
+    qs = CourseUnit.objects.filter(is_active=True).select_related(
+        "program_batch",
+        "program_batch__program",
+        "semester",
+        "shared_teaching_offering",
     )
     if exclude_semester_id:
         qs = qs.exclude(semester_id=exclude_semester_id)
@@ -160,13 +234,17 @@ def search_course_units_for_share(
     filt = Q(code__icontains=q) | Q(name__icontains=q)
     if number and len(number) >= 3:
         filt |= Q(code__iendswith=number) | Q(code__iendswith=f" {number}")
+    for tok in list(name_tokens(q))[:4]:
+        filt |= Q(name__icontains=tok)
 
     rows = []
-    for cu in qs.filter(filt).order_by("code", "id")[: limit * 3]:
+    for cu in qs.filter(filt).order_by("code", "id")[: limit * 4]:
         if number and course_code_number(cu.code) == number:
             kind = "same_number"
         elif normalize_course_code(cu.code) == normalize_course_code(q):
             kind = "exact_code"
+        elif names_similar(q, cu.name) or names_similar(q, cu.code):
+            kind = "similar_name"
         else:
             kind = "search"
         rows.append(serialize_peer_course_unit(cu, match_kind=kind))
