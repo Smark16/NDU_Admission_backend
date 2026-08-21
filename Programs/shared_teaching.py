@@ -130,12 +130,15 @@ def suggested_canonical_code(units: list[CourseUnit]) -> str | None:
 
 
 def serialize_peer_course_unit(cu: CourseUnit, *, match_kind: str = "exact_code") -> dict:
+    sem = cu.semester if cu.semester_id else None
     return {
         "id": cu.id,
         "code": cu.code,
         "name": cu.name,
         "semester_id": cu.semester_id,
-        "semester_name": cu.semester.name if cu.semester_id else None,
+        "semester_name": sem.name if sem else None,
+        "year_of_study": getattr(sem, "year_of_study", None) if sem else None,
+        "term_number": getattr(sem, "term_number", None) if sem else None,
         "program_batch_id": cu.program_batch_id,
         "program_batch_name": cu.program_batch.name if cu.program_batch_id else None,
         "program_name": (
@@ -153,13 +156,14 @@ def find_peer_course_units(
     *,
     source: CourseUnit,
     exclude_semester_id: int | None = None,
-    limit: int = 80,
+    limit: int = 120,
+    same_number_limit: int = 40,
 ) -> list[dict]:
     """
-    Peers on other programmes by:
+    Peers across programmes and academic levels (Year 1/2/3, any term) by:
     - same code
-    - same trailing paper number (BEC/BAF/BEX 1102)
     - similar course title
+    - same trailing paper number (capped — often unrelated papers)
     """
     code = (source.code or "").strip()
     number = course_code_number(code)
@@ -191,15 +195,16 @@ def find_peer_course_units(
         q |= Q(code__iendswith=number) | Q(code__iendswith=f" {number}")
     if name and len(name) >= 5:
         q |= Q(name__iexact=name)
-        # Pull candidates that share distinctive title words
         for tok in tokens:
             q |= Q(name__icontains=tok)
 
     if not q:
         return []
 
-    candidates = list(qs.filter(q).order_by("code", "id")[:1200])
-    out: list[dict] = []
+    # Wide scan so Year 2/3 offerings are not cut off by early Year 1 hits
+    candidates = list(qs.filter(q).order_by("code", "id")[:4000])
+    strong: list[dict] = []
+    weak: list[dict] = []
     seen: set[int] = set()
     for peer in candidates:
         if peer.id in seen:
@@ -213,14 +218,16 @@ def find_peer_course_units(
             source.shared_teaching_offering_id
             and peer.shared_teaching_offering_id == source.shared_teaching_offering_id
         )
-        out.append(row)
-        if len(out) >= limit:
-            break
+        if match_kind in ("exact_code", "similar_name"):
+            strong.append(row)
+        else:
+            weak.append(row)
 
-    out.sort(
-        key=lambda r: (
+    def _sort_key(r: dict):
+        yos = r.get("year_of_study")
+        term = r.get("term_number")
+        return (
             peer_match_rank(r.get("match_kind")),
-            # Within similar_name, prefer shared paper number too
             0
             if (
                 r.get("match_kind") == "similar_name"
@@ -228,11 +235,21 @@ def find_peer_course_units(
                 and course_code_number(r.get("code")) == number
             )
             else 1,
+            yos if isinstance(yos, int) else 99,
+            term if isinstance(term, int) else 99,
             (r.get("name") or "").lower(),
             (r.get("program_name") or ""),
             (r.get("code") or ""),
         )
-    )
+
+    strong.sort(key=_sort_key)
+    weak.sort(key=_sort_key)
+    # Keep all strong matches (every academic level); cap number-only noise
+    out = strong + weak[:same_number_limit]
+    if len(out) > limit and len(strong) < limit:
+        out = strong + weak[: max(0, limit - len(strong))]
+    elif len(strong) >= limit:
+        out = strong  # never truncate strong matches for the weak cap
     return out
 
 
@@ -241,9 +258,9 @@ def search_course_units_for_share(
     query: str,
     exclude_semester_id: int | None = None,
     exclude_ids: list[int] | None = None,
-    limit: int = 40,
+    limit: int = 60,
 ) -> list[dict]:
-    """Search other programme course units by code, name, or paper number."""
+    """Search units across programmes and academic levels by code, name, or number."""
     q = (query or "").strip()
     if len(q) < 2:
         return []
@@ -266,9 +283,8 @@ def search_course_units_for_share(
     for tok in list(name_tokens(q))[:4]:
         filt |= Q(name__icontains=tok)
 
-    rows = []
-    scored: list[tuple[int, dict]] = []
-    for cu in qs.filter(filt).order_by("code", "id")[: limit * 4]:
+    scored: list[tuple[tuple, dict]] = []
+    for cu in qs.filter(filt).order_by("code", "id")[:800]:
         if normalize_course_code(cu.code) == normalize_course_code(q):
             kind = "exact_code"
         elif names_similar(q, cu.name):
@@ -277,8 +293,22 @@ def search_course_units_for_share(
             kind = "same_number"
         else:
             kind = "search"
-        scored.append((peer_match_rank(kind), serialize_peer_course_unit(cu, match_kind=kind)))
-    scored.sort(key=lambda x: (x[0], (x[1].get("name") or "").lower(), x[1].get("code") or ""))
+        row = serialize_peer_course_unit(cu, match_kind=kind)
+        yos = row.get("year_of_study")
+        term = row.get("term_number")
+        scored.append(
+            (
+                (
+                    peer_match_rank(kind),
+                    yos if isinstance(yos, int) else 99,
+                    term if isinstance(term, int) else 99,
+                    (row.get("name") or "").lower(),
+                    row.get("code") or "",
+                ),
+                row,
+            )
+        )
+    scored.sort(key=lambda x: x[0])
     return [row for _, row in scored[:limit]]
 
 
@@ -365,13 +395,17 @@ def serialize_shared_offering(offering: SharedTeachingOffering) -> dict:
         "notes": offering.notes,
         "is_active": offering.is_active,
         "lecturers": lecturers,
-        "course_units": [
+                "course_units": [
             {
                 "id": cu.id,
                 "code": cu.code,
                 "name": cu.name,
                 "semester_id": cu.semester_id,
                 "semester_name": cu.semester.name if cu.semester_id else None,
+                "year_of_study": (
+                    cu.semester.year_of_study if cu.semester_id else None
+                ),
+                "term_number": cu.semester.term_number if cu.semester_id else None,
                 "program_batch_id": cu.program_batch_id,
                 "program_batch_name": cu.program_batch.name if cu.program_batch_id else None,
                 "program_id": cu.program_batch.program_id if cu.program_batch_id else None,
