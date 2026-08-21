@@ -809,6 +809,17 @@ class CourseUnit(models.Model):
     code = models.CharField(max_length=50)
     credit_units = models.DecimalField(max_digits=4, decimal_places=1, null=True, blank=True)
     lecturers = models.ManyToManyField('accounts.User', blank=True, related_name='course_units', help_text="Staff assigned to teach this course unit")
+    shared_teaching_offering = models.ForeignKey(
+        "SharedTeachingOffering",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="course_units",
+        help_text=(
+            "When set, this programme offering shares LMS course, exam sitting, and marks "
+            "entry with other CourseUnits linked to the same SharedTeachingOffering."
+        ),
+    )
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -819,6 +830,83 @@ class CourseUnit(models.Model):
 
     def __str__(self):
         return f"{self.code} - {self.name}"
+
+
+class SharedTeachingOffering(models.Model):
+    """One teaching / LMS / exam / marks instance for a common course across programmes.
+
+    Programme ``CourseUnit`` rows stay separate for registration, fees, and transcripts.
+    Link those offerings here so Moodle, papers, and marks entry collapse to one class.
+    """
+
+    code = models.CharField(
+        max_length=50,
+        db_index=True,
+        help_text="Canonical course code shown on LMS / exam papers (e.g. BCS 1101).",
+    )
+    name = models.CharField(max_length=200)
+    catalog_unit = models.ForeignKey(
+        CourseCatalogUnit,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="shared_teachings",
+        help_text="Optional link to the shared catalog definition.",
+    )
+    academic_year_label = models.CharField(
+        max_length=32,
+        blank=True,
+        default="",
+        help_text='Academic year label, e.g. "2026/2027". Not tied to one programme semester PK.',
+    )
+    year_of_study = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        help_text="Optional curriculum year (1-based).",
+    )
+    term_number = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        help_text="Optional term within the year (1–2 semester, 1–3 trimester).",
+    )
+    lecturers = models.ManyToManyField(
+        "accounts.User",
+        blank=True,
+        related_name="shared_teaching_offerings",
+        help_text="Staff teaching this shared class (may also be on linked CourseUnits).",
+    )
+    exam_paper_code = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        help_text="Optional paper / sitting code printed on scripts (defaults to moodle idnumber).",
+    )
+    notes = models.TextField(blank=True, default="")
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["code", "academic_year_label", "term_number", "id"]
+        verbose_name = "Shared teaching offering"
+        verbose_name_plural = "Shared teaching offerings"
+        indexes = [
+            models.Index(fields=["code", "academic_year_label", "term_number"]),
+        ]
+
+    def __str__(self):
+        period = self.academic_year_label or "—"
+        term = f" T{self.term_number}" if self.term_number else ""
+        return f"{self.code} — {self.name} ({period}{term})"
+
+    @property
+    def moodle_idnumber(self) -> str:
+        """Stable Moodle course idnumber shared by all linked programme CourseUnits."""
+        return f"STO-{self.pk}"
+
+    @property
+    def paper_code(self) -> str:
+        return (self.exam_paper_code or "").strip() or self.moodle_idnumber
 
 
 class CourseUnitSectionLecturer(models.Model):

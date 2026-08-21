@@ -11,6 +11,10 @@ import logging
 from admissions.faculty_scope import filter_course_units_for_user
 from admissions.models import AdmittedStudent
 from Programs.models import CourseUnit, StudentCourseUnitEnrollment
+from Programs.shared_teaching import (
+    linked_course_unit_ids,
+    registered_enrollments_for_course_unit,
+)
 
 from .models import AssessmentPolicy, CourseUnitResult, GradeScale
 from .services.grade_scale_resolver import resolve_grade_scale
@@ -37,7 +41,10 @@ logger = logging.getLogger(__name__)
 
 def _get_course_unit_or_404(course_unit_id):
     return CourseUnit.objects.select_related(
-        "semester", "program_batch", "program_batch__program__academic_level"
+        "semester",
+        "program_batch",
+        "program_batch__program__academic_level",
+        "shared_teaching_offering",
     ).get(pk=course_unit_id, is_active=True)
 
 
@@ -161,16 +168,10 @@ class LecturerCourseMarksView(APIView):
             level = getattr(program, "academic_level", None) if program else None
             level_name = level.name if level else None
 
-        enrollments = (
-            StudentCourseUnitEnrollment.objects.filter(
-                course_unit=course_unit,
-                # Include completed/failed so published students stay visible on Marks.
-                status__in=["enrolled", "completed", "failed"],
-                registration_date__isnull=False,
-            )
-            .select_related("student", "student__application", "course_result")
-            .order_by("student__reg_no")
-        )
+        enrollments = registered_enrollments_for_course_unit(
+            course_unit,
+            statuses=["enrolled", "completed", "failed"],
+        ).select_related("student", "student__application", "course_result")
 
         rows = []
         for enr in enrollments:
@@ -182,11 +183,18 @@ class LecturerCourseMarksView(APIView):
                 student_name = enr.student.full_name or ""
             except Exception:
                 student_name = ""
+            cu = enr.course_unit
+            batch = cu.program_batch if cu else None
+            program = batch.program if batch else None
             rows.append(
                 {
                     "enrollment_id": enr.id,
                     "reg_no": enr.student.reg_no or "",
                     "student_name": student_name,
+                    "course_unit_id": enr.course_unit_id,
+                    "program_batch_id": cu.program_batch_id if cu else None,
+                    "program_batch_name": batch.name if batch else None,
+                    "program_name": program.name if program else None,
                     "ca_mark": str(result.ca_mark) if result and result.ca_mark is not None else None,
                     "exam_mark": str(result.exam_mark) if result and result.exam_mark is not None else None,
                     "final_mark": str(result.final_mark) if result and result.final_mark is not None else None,
@@ -199,17 +207,27 @@ class LecturerCourseMarksView(APIView):
                 }
             )
 
-        enrolled_count = enrollments.count()
+        enrolled_count = len(rows)
         grade_bands = (
             list(GradeBandSerializer(grade_scale.bands.order_by("order"), many=True).data)
             if grade_scale
             else []
         )
+        sto = getattr(course_unit, "shared_teaching_offering", None)
+        if sto is None and course_unit.shared_teaching_offering_id:
+            from Programs.models import SharedTeachingOffering
+
+            sto = SharedTeachingOffering.objects.filter(
+                pk=course_unit.shared_teaching_offering_id
+            ).first()
         return Response(
             {
                 "course_unit_id": course_unit.id,
                 "course_code": course_unit.code,
                 "course_name": course_unit.name,
+                "shared_teaching_offering_id": course_unit.shared_teaching_offering_id,
+                "exam_paper_code": sto.paper_code if sto else None,
+                "linked_course_unit_ids": linked_course_unit_ids(course_unit),
                 "policy": AssessmentPolicySerializer(policy).data,
                 "policy_academic_level": level_name,
                 "grading_scheme": grade_scale.name if grade_scale else None,
@@ -247,6 +265,7 @@ class LecturerCourseMarksView(APIView):
         errors = []
 
         with transaction.atomic():
+            allowed_cu_ids = set(linked_course_unit_ids(course_unit))
             for row in serializer.validated_data["marks"]:
                 eid = row["enrollment_id"]
                 try:
@@ -256,7 +275,11 @@ class LecturerCourseMarksView(APIView):
                         "course_result",
                         "course_unit",
                         "course_unit__program_batch__program__academic_level",
-                    ).get(pk=eid, course_unit=course_unit, status="enrolled")
+                    ).get(
+                        pk=eid,
+                        course_unit_id__in=allowed_cu_ids,
+                        status="enrolled",
+                    )
                 except StudentCourseUnitEnrollment.DoesNotExist:
                     errors.append({"enrollment_id": eid, "detail": "Enrollment not found."})
                     continue

@@ -32,9 +32,27 @@ def session_catalog_unit_id(session: TimetableSession) -> int | None:
     return None
 
 
+def session_shared_teaching_id(session: TimetableSession) -> int | None:
+    cu = getattr(session, "course_unit", None)
+    if cu is None:
+        return None
+    return getattr(cu, "shared_teaching_offering_id", None) or None
+
+
 def shares_catalog_unit(a: TimetableSession, b: TimetableSession) -> bool:
     cid = session_catalog_unit_id(a)
     return bool(cid and cid == session_catalog_unit_id(b))
+
+
+def shares_shared_teaching(a: TimetableSession, b: TimetableSession) -> bool:
+    """True when both sessions belong to CourseUnits linked to the same SharedTeachingOffering."""
+    sid = session_shared_teaching_id(a)
+    return bool(sid and sid == session_shared_teaching_id(b))
+
+
+def is_same_shared_class(a: TimetableSession, b: TimetableSession) -> bool:
+    """Same physical class for clash exceptions (shared offering or shared catalog unit)."""
+    return shares_shared_teaching(a, b) or shares_catalog_unit(a, b)
 
 
 def is_online_delivery(session: TimetableSession) -> bool:
@@ -191,6 +209,7 @@ def serialize_session(session: TimetableSession) -> dict:
     else:
         date_label = day_label
     section = getattr(session, "teaching_section", None)
+    sto = getattr(cu, "shared_teaching_offering", None) if cu else None
     return {
         "id": session.id,
         "course_unit_id": session.course_unit_id,
@@ -199,6 +218,12 @@ def serialize_session(session: TimetableSession) -> dict:
         "catalog_unit_id": cat.id if cat else None,
         "catalog_code": cat.code if cat else "",
         "catalog_name": cat.title if cat else "",
+        "shared_teaching_offering_id": cu.shared_teaching_offering_id if cu else None,
+        "shared_teaching_code": sto.code if sto else "",
+        "shared_teaching_paper_code": sto.paper_code if sto else "",
+        "moodle_idnumber": (
+            sto.moodle_idnumber if sto else f"{cu.code}-{cu.semester_id}" if cu else ""
+        ),
         "teaching_section_id": section.id if section else None,
         "teaching_section_code": section.code if section else "",
         "teaching_section_name": section.name if section else "",
@@ -262,6 +287,9 @@ def _active_sessions_qs(exclude_pk: int | None = None):
         .select_related(
             "course_unit",
             "course_unit__catalog_unit",
+            "course_unit__program_batch",
+            "course_unit__program_batch__program",
+            "course_unit__shared_teaching_offering",
             "venue",
             "venue__campus",
             "teaching_section",
@@ -280,8 +308,10 @@ def validate_session_scheduling(
     require_venue: bool = True,
 ) -> ScheduleValidation:
     """
-    Hard errors: room double-book (unless online / parallel lab / shared catalog class),
-    lecturer time overlap (unless shared catalog offering), multi-campus same day.
+    Hard errors: room double-book (unless online / parallel lab / shared class),
+    lecturer time overlap (unless shared teaching offering or shared catalog),
+    multi-campus same day.
+    Soft warnings: shared offering scheduled at mismatched times; free-text rooms.
     """
     out = ScheduleValidation()
     pk = exclude_pk or session.pk
@@ -316,6 +346,19 @@ def validate_session_scheduling(
     if not session.course_unit_id:
         return out
 
+    sto_id = getattr(session.course_unit, "shared_teaching_offering_id", None)
+    if sto_id:
+        from Programs.models import CourseUnit
+
+        linked_n = CourseUnit.objects.filter(
+            shared_teaching_offering_id=sto_id, is_active=True
+        ).count()
+        if linked_n > 1:
+            out.warnings.append(
+                f"This unit is on Shared teaching #{sto_id} with {linked_n} programme offerings. "
+                f"Use “Also schedule on linked programmes” to place the same slot on all of them."
+            )
+
     others = _active_sessions_qs(exclude_pk=pk)
     if session.session_date:
         others = others.filter(
@@ -329,18 +372,36 @@ def validate_session_scheduling(
     check_room = not is_online_delivery(session) and bool(session.venue_id)
 
     for other in others:
+        if not occurrence_ranges_overlap(session, other):
+            continue
+
+        # Shared offering on same day but different clock time → warn (even if no overlap).
+        if shares_shared_teaching(session, other) and (
+            session.start_time != other.start_time or session.end_time != other.end_time
+        ):
+            other_batch = getattr(other.course_unit, "program_batch", None)
+            other_prog = getattr(other_batch, "program", None) if other_batch else None
+            where = (
+                f"{other_prog.name} / {other_batch.name}"
+                if other_prog and other_batch
+                else other.course_unit.code
+            )
+            out.warnings.append(
+                f"Shared teaching offering already has a different time for {where} "
+                f"({other.start_time.strftime('%H:%M')}-{other.end_time.strftime('%H:%M')}). "
+                f"Prefer one common slot for all linked programmes."
+            )
+
         if not times_overlap(
             session.start_time, session.end_time, other.start_time, other.end_time
         ):
             continue
-        if not occurrence_ranges_overlap(session, other):
-            continue
 
-        shared_catalog = shares_catalog_unit(session, other)
+        shared_class = is_same_shared_class(session, other)
 
         if check_room and session.venue_id and other.venue_id and session.venue_id == other.venue_id:
-            if shared_catalog or allows_parallel_room_use(session, other):
-                if allows_parallel_room_use(session, other):
+            if shared_class or allows_parallel_room_use(session, other):
+                if allows_parallel_room_use(session, other) and not shared_class:
                     out.warnings.append(
                         f'Room "{other.venue.name}" has parallel lab groups at this time '
                         f"({other.course_unit.code})."
@@ -373,7 +434,7 @@ def validate_session_scheduling(
             other_lecturer_ids = set(other.course_unit.lecturers.values_list("id", flat=True))
             shared = lecturer_ids & other_lecturer_ids
             if shared:
-                if shared_catalog:
+                if shared_class:
                     continue
                 from accounts.models import User
 
@@ -423,6 +484,110 @@ def find_clashes_for_session(session: TimetableSession, *, exclude_pk: int | Non
     return v.clashes
 
 
+def mirror_session_to_linked_units(session: TimetableSession) -> dict:
+    """Copy this slot onto other CourseUnits linked to the same SharedTeachingOffering.
+
+    Returns {created: [...serialize], skipped: [...], warnings: [...]}.
+    """
+    from Programs.models import CourseUnit, TimetableSession as TS
+
+    result = {"created": [], "skipped": [], "warnings": []}
+    cu = session.course_unit
+    sto_id = getattr(cu, "shared_teaching_offering_id", None) if cu else None
+    if not sto_id:
+        result["warnings"].append("Course unit is not on a shared teaching offering.")
+        return result
+
+    siblings = list(
+        CourseUnit.objects.filter(shared_teaching_offering_id=sto_id, is_active=True)
+        .exclude(pk=cu.pk)
+        .select_related("semester", "program_batch", "program_batch__program")
+    )
+    if not siblings:
+        result["warnings"].append("No other linked programme course units to mirror onto.")
+        return result
+
+    for sibling in siblings:
+        # Skip if an identical slot already exists on the sibling.
+        exists = TS.objects.filter(
+            course_unit=sibling,
+            is_active=True,
+            day_of_week=session.day_of_week,
+            start_time=session.start_time,
+            end_time=session.end_time,
+            session_date=session.session_date,
+            start_date=session.start_date,
+            end_date=session.end_date,
+            session_type=session.session_type,
+        ).exists()
+        if exists:
+            result["skipped"].append(
+                {
+                    "course_unit_id": sibling.id,
+                    "reason": "identical slot already exists",
+                }
+            )
+            continue
+
+        clone = TS(
+            course_unit=sibling,
+            teaching_section=None,  # cohort-wide on each programme
+            day_of_week=session.day_of_week,
+            session_date=session.session_date,
+            start_date=session.start_date,
+            end_date=session.end_date,
+            start_time=session.start_time,
+            end_time=session.end_time,
+            venue=session.venue,
+            room_label=session.room_label,
+            session_type=session.session_type,
+            delivery_mode=session.delivery_mode,
+            notes=(session.notes or "").strip()
+            or f"Mirrored from shared teaching #{sto_id} (cu {cu.id})",
+            is_published=session.is_published,
+            is_active=True,
+        )
+        validation = validate_session_scheduling(clone, require_venue=False)
+        if not validation.ok:
+            result["skipped"].append(
+                {
+                    "course_unit_id": sibling.id,
+                    "program": (
+                        sibling.program_batch.program.name
+                        if sibling.program_batch_id and sibling.program_batch.program_id
+                        else None
+                    ),
+                    "reason": "; ".join(validation.errors),
+                }
+            )
+            result["warnings"].extend(validation.errors)
+            continue
+        try:
+            clone.full_clean()
+            clone.save()
+        except Exception as exc:  # noqa: BLE001
+            result["skipped"].append(
+                {"course_unit_id": sibling.id, "reason": str(exc)}
+            )
+            continue
+        clone = (
+            TS.objects.select_related(
+                "course_unit",
+                "course_unit__catalog_unit",
+                "course_unit__shared_teaching_offering",
+                "venue",
+                "venue__campus",
+                "teaching_section",
+            )
+            .prefetch_related(*timetable_lecturer_prefetch())
+            .get(pk=clone.pk)
+        )
+        result["created"].append(serialize_session(clone))
+        result["warnings"].extend(validation.warnings)
+
+    return result
+
+
 def sessions_for_semester(semester_id: int, *, published_only: bool = False) -> list[TimetableSession]:
     qs = (
         TimetableSession.objects.filter(
@@ -433,6 +598,7 @@ def sessions_for_semester(semester_id: int, *, published_only: bool = False) -> 
         .select_related(
             "course_unit",
             "course_unit__catalog_unit",
+            "course_unit__shared_teaching_offering",
             "venue",
             "venue__campus",
             "teaching_section",

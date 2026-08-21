@@ -21,6 +21,11 @@ from .section_views import (
     MoveStudentsToSectionView,
     UpdateTeachingSectionView,
 )
+from .shared_teaching_views import (
+    SharedTeachingOfferingDetailView,
+    SharedTeachingOfferingListCreateView,
+    SuggestCommonCourseUnitsView,
+)
 from .views import *
 from .curriculum_views import (
     BulkUploadCurriculumView,
@@ -195,6 +200,23 @@ urlpatterns = [
         'batch/<int:batch_id>/unsectioned',
         ListBatchUnsectionedStudentsView.as_view(),
         name='list_batch_unsectioned_students',
+    ),
+
+    # ----- shared teaching offerings (common courses across programmes) -----
+    path(
+        'shared_teaching_offerings',
+        SharedTeachingOfferingListCreateView.as_view(),
+        name='shared_teaching_offerings',
+    ),
+    path(
+        'shared_teaching_offerings/suggest',
+        SuggestCommonCourseUnitsView.as_view(),
+        name='shared_teaching_suggest',
+    ),
+    path(
+        'shared_teaching_offerings/<int:offering_id>',
+        SharedTeachingOfferingDetailView.as_view(),
+        name='shared_teaching_offering_detail',
     ),
 
     # ----- MODULE: programme curriculum mapping (ProgramCurriculumLine) -----

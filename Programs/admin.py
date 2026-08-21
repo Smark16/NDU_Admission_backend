@@ -6,6 +6,7 @@ from .models import (
     ProgramBatch,
     ProgramCurriculumLine,
     Semester,
+    SharedTeachingOffering,
     StudentProgrammeEnrollment,
     StudentCurriculumOverride,
     StudentCourseUnitEnrollment,
@@ -67,6 +68,25 @@ class TeachingSectionAdmin(admin.ModelAdmin):
     list_filter = ['is_default', 'is_active', 'program_batch__program']
     search_fields = ['code', 'name', 'program_batch__name', 'program_batch__program__name']
     ordering = ['program_batch', '-is_default', 'code']
+
+
+@admin.register(SharedTeachingOffering)
+class SharedTeachingOfferingAdmin(admin.ModelAdmin):
+    list_display = [
+        "id",
+        "code",
+        "name",
+        "academic_year_label",
+        "term_number",
+        "exam_paper_code",
+        "is_active",
+        "updated_at",
+    ]
+    list_filter = ["is_active", "academic_year_label", "term_number"]
+    search_fields = ["code", "name", "exam_paper_code", "academic_year_label"]
+    filter_horizontal = ["lecturers"]
+    autocomplete_fields = ["catalog_unit"]
+    ordering = ["code", "academic_year_label", "id"]
 
 
 class ProgramCurriculumLineInline(admin.TabularInline):

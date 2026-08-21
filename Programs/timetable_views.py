@@ -36,6 +36,7 @@ from Programs.timetable_utils import (
     build_catalog_overview,
     compute_teaching_load,
     copy_timetable_between_semesters,
+    mirror_session_to_linked_units,
     parse_delivery_mode,
     resolve_semester_campuses,
     serialize_lecturer_brief,
@@ -542,13 +543,20 @@ class SemesterTimetableView(APIView):
 
         units = (
             CourseUnit.objects.filter(semester_id=semester.id, is_active=True)
-            .select_related("catalog_unit")
+            .select_related("catalog_unit", "shared_teaching_offering")
             .prefetch_related("lecturers")
             .order_by("code")
         )
         course_units = []
         for cu in units:
             cat = cu.catalog_unit
+            sto = cu.shared_teaching_offering
+            linked_count = 0
+            if cu.shared_teaching_offering_id:
+                linked_count = CourseUnit.objects.filter(
+                    shared_teaching_offering_id=cu.shared_teaching_offering_id,
+                    is_active=True,
+                ).count()
             course_units.append(
                 {
                     "id": cu.id,
@@ -557,6 +565,9 @@ class SemesterTimetableView(APIView):
                     "credit_units": float(cu.credit_units) if cu.credit_units else None,
                     "catalog_unit_id": cat.id if cat else None,
                     "catalog_code": cat.code if cat else "",
+                    "shared_teaching_offering_id": cu.shared_teaching_offering_id,
+                    "shared_teaching_code": sto.code if sto else "",
+                    "shared_teaching_linked_count": linked_count,
                     "lecturers": [serialize_lecturer_brief(lec) for lec in cu.lecturers.all()],
                     "sessions": by_unit.get(cu.id, []),
                 }
@@ -700,6 +711,18 @@ class SemesterTimetableView(APIView):
             is_published=is_published,
         )
 
+        # Reload course_unit with shared offering for validation warnings
+        session.course_unit = (
+            CourseUnit.objects.select_related(
+                "semester",
+                "semester__program_batch__program",
+                "shared_teaching_offering",
+                "program_batch",
+            )
+            .prefetch_related("lecturers", "semester__program_batch__program__campuses")
+            .get(pk=course_unit.pk)
+        )
+
         validation = validate_session_scheduling(session, require_venue=True)
         if not validation.ok:
             return _validation_response(validation)
@@ -708,6 +731,14 @@ class SemesterTimetableView(APIView):
         session.save()
 
         warnings = list(validation.warnings)
+        mirrored = {"created": [], "skipped": [], "warnings": []}
+        if bool(request.data.get("mirror_to_linked_units")):
+            mirrored = mirror_session_to_linked_units(session)
+            warnings.extend(mirrored.get("warnings") or [])
+            n = len(mirrored.get("created") or [])
+            if n:
+                warnings.append(f"Mirrored this slot onto {n} linked programme course unit(s).")
+
         raw_lecturer_ids = request.data.get("lecturer_ids", None)
         if raw_lecturer_ids is not None:
             if not isinstance(raw_lecturer_ids, list):
@@ -726,6 +757,7 @@ class SemesterTimetableView(APIView):
                         TimetableSession.objects.select_related(
                             "course_unit",
                             "course_unit__catalog_unit",
+                            "course_unit__shared_teaching_offering",
                             "venue",
                             "venue__campus",
                             "teaching_section",
@@ -741,6 +773,7 @@ class SemesterTimetableView(APIView):
         data = serialize_session(session)
         data["warnings"] = warnings
         data["clashes"] = validation.clashes
+        data["mirrored"] = mirrored
         return Response(data, status=201)
 
 

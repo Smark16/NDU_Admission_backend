@@ -182,6 +182,7 @@ def finance_status_for_student(student: AdmittedStudent) -> dict:
 def registered_courses_for_student(student: AdmittedStudent) -> list[dict]:
     """Course units this student has registered in Steward (same gate as Moodle rosters)."""
     from Programs.models import StudentCourseUnitEnrollment
+    from Programs.shared_teaching import moodle_idnumber_for_course_unit
 
     enrollments = (
         StudentCourseUnitEnrollment.objects.filter(
@@ -194,6 +195,7 @@ def registered_courses_for_student(student: AdmittedStudent) -> list[dict]:
             "course_unit__semester",
             "course_unit__program_batch",
             "course_unit__program_batch__program",
+            "course_unit__shared_teaching_offering",
         )
         .prefetch_related(
             "course_unit__lecturers",
@@ -212,6 +214,7 @@ def registered_courses_for_student(student: AdmittedStudent) -> list[dict]:
                 lecturers[link.lecturer_id] = lecturer_payload(link.lecturer)
         batch = cu.program_batch
         program = batch.program if batch else None
+        sto = cu.shared_teaching_offering
         rows.append(
             {
                 "id": cu.pk,
@@ -223,7 +226,9 @@ def registered_courses_for_student(student: AdmittedStudent) -> list[dict]:
                 "program_batch_name": batch.name if batch else None,
                 "program_code": getattr(program, "short_form", None) if program else None,
                 "program_name": program.name if program else None,
-                "idnumber": f"{cu.code}-{cu.semester_id}",
+                "idnumber": moodle_idnumber_for_course_unit(cu),
+                "shared_teaching_offering_id": cu.shared_teaching_offering_id,
+                "exam_paper_code": sto.paper_code if sto else None,
                 "registration_kind": enr.registration_kind,
                 "registration_date": enr.registration_date.isoformat()
                 if enr.registration_date

@@ -7,6 +7,10 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from Programs.models import CourseUnit, Semester, StudentCourseUnitEnrollment
+from Programs.shared_teaching import (
+    moodle_idnumber_for_course_unit,
+    registered_enrollments_for_course_unit,
+)
 
 from .permissions import HasMoodleApiKey
 from .services import (
@@ -228,15 +232,30 @@ class MoodleCourseUnitsView(APIView):
 
         units = (
             CourseUnit.objects.filter(semester_id=sid, is_active=True)
-            .prefetch_related("lecturers", "section_lecturers__lecturer")
+            .select_related("shared_teaching_offering")
+            .prefetch_related(
+                "lecturers",
+                "section_lecturers__lecturer",
+                "shared_teaching_offering__lecturers",
+            )
             .order_by("code")
         )
         rows = []
+        seen_sto = set()
         for cu in units:
+            # One Moodle catalogue row per shared offering (avoid N programme duplicates).
+            if cu.shared_teaching_offering_id:
+                if cu.shared_teaching_offering_id in seen_sto:
+                    continue
+                seen_sto.add(cu.shared_teaching_offering_id)
             lecturers = {u.pk: lecturer_payload(u) for u in cu.lecturers.all()}
             for link in cu.section_lecturers.all():
                 if link.lecturer_id and link.lecturer_id not in lecturers:
                     lecturers[link.lecturer_id] = lecturer_payload(link.lecturer)
+            sto = cu.shared_teaching_offering
+            if sto is not None:
+                for u in sto.lecturers.all():
+                    lecturers.setdefault(u.pk, lecturer_payload(u))
             rows.append(
                 {
                     "id": cu.pk,
@@ -245,7 +264,9 @@ class MoodleCourseUnitsView(APIView):
                     "credit_units": float(cu.credit_units) if cu.credit_units is not None else None,
                     "semester_id": cu.semester_id,
                     "program_batch_id": cu.program_batch_id,
-                    "idnumber": f"{cu.code}-{cu.semester_id}",
+                    "idnumber": moodle_idnumber_for_course_unit(cu),
+                    "shared_teaching_offering_id": cu.shared_teaching_offering_id,
+                    "exam_paper_code": sto.paper_code if sto else None,
                     "lecturers": list(lecturers.values()),
                 }
             )
@@ -264,7 +285,11 @@ class MoodleEnrolledStudentsView(APIView):
 
     def get(self, request, course_unit_id: int):
         endpoint = "moodle/enrolled-students"
-        cu = CourseUnit.objects.filter(pk=course_unit_id, is_active=True).first()
+        cu = (
+            CourseUnit.objects.filter(pk=course_unit_id, is_active=True)
+            .select_related("shared_teaching_offering")
+            .first()
+        )
         if not cu:
             log_moodle_access(
                 endpoint=endpoint,
@@ -277,20 +302,13 @@ class MoodleEnrolledStudentsView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        enrollments = (
-            StudentCourseUnitEnrollment.objects.filter(
-                course_unit=cu,
-                status="enrolled",
-                registration_date__isnull=False,
-            )
-            .select_related(
-                "student",
-                "student__admitted_program",
-                "student__intended_program_batch",
-                "student__programme_enrollment",
-                "student__programme_enrollment__program_batch",
-            )
-            .order_by("student__reg_no")
+        enrollments = registered_enrollments_for_course_unit(cu).select_related(
+            "student",
+            "student__admitted_program",
+            "student__intended_program_batch",
+            "student__programme_enrollment",
+            "student__programme_enrollment__program_batch",
+            "course_unit__program_batch__program",
         )
         students = []
         for enr in enrollments:
@@ -300,6 +318,7 @@ class MoodleEnrolledStudentsView(APIView):
                 "student_id": st.student_id or "",
                 "full_name": st.full_name or "",
                 "programme": st.admitted_program.name if st.admitted_program_id else None,
+                "course_unit_id": enr.course_unit_id,
                 "registration_kind": enr.registration_kind,
                 "registration_date": enr.registration_date.isoformat()
                 if enr.registration_date
@@ -318,6 +337,8 @@ class MoodleEnrolledStudentsView(APIView):
                 "ok": True,
                 "course_unit_id": cu.pk,
                 "course_code": cu.code,
+                "idnumber": moodle_idnumber_for_course_unit(cu),
+                "shared_teaching_offering_id": cu.shared_teaching_offering_id,
                 "students": students,
             }
         )
