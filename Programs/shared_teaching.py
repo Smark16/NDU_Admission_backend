@@ -138,6 +138,18 @@ _STUDY_MODE_ORDER = {
     "Other": 9,
 }
 
+# Day-school labels that should match each other (Main ≈ Day on many programmes)
+_DAY_SCHOOL_MODES = frozenset({"Day", "Main"})
+
+
+def study_modes_compatible(a: str | None, b: str | None) -> bool:
+    """True when both are the same mode, or both are day-school (Day/Main)."""
+    ma = (a or "Other").strip() or "Other"
+    mb = (b or "Other").strip() or "Other"
+    if ma == mb:
+        return True
+    return ma in _DAY_SCHOOL_MODES and mb in _DAY_SCHOOL_MODES
+
 
 def infer_study_mode(*parts: str | None) -> str:
     """Detect Day / Weekend / Main / etc. from programme or batch labels."""
@@ -171,7 +183,7 @@ def study_mode_for_course_unit(cu: CourseUnit) -> str:
 def study_mode_sort_tuple(mode: str | None, preferred: str | None) -> tuple:
     m = mode or "Other"
     return (
-        0 if preferred and m == preferred else 1,
+        0 if preferred and study_modes_compatible(m, preferred) else 1,
         _STUDY_MODE_ORDER.get(m, 9),
         m,
     )
@@ -268,11 +280,11 @@ def find_peer_course_units(
             source.shared_teaching_offering_id
             and peer.shared_teaching_offering_id == source.shared_teaching_offering_id
         )
-        row["same_study_mode"] = (
-            bool(preferred_mode)
-            and preferred_mode != "Other"
-            and row.get("study_mode") == preferred_mode
-        )
+        row["same_study_mode"] = study_modes_compatible(row.get("study_mode"), preferred_mode)
+        # Programmes on this paper: only same study mode from programme name (Day/Main together; not Weekend)
+        if preferred_mode and preferred_mode != "Other":
+            if not study_modes_compatible(row.get("study_mode"), preferred_mode):
+                continue
         if match_kind in ("exact_code", "similar_name"):
             strong.append(row)
         else:
@@ -354,7 +366,11 @@ def search_course_units_for_share(
         else:
             kind = "search"
         row["match_kind"] = kind
-        row["same_study_mode"] = bool(preferred and preferred != "Other" and mode == preferred)
+        row["same_study_mode"] = bool(
+            preferred and preferred != "Other" and study_modes_compatible(mode, preferred)
+        )
+        if preferred and preferred != "Other" and not study_modes_compatible(mode, preferred):
+            continue
         yos = row.get("year_of_study")
         term = row.get("term_number")
         scored.append(
