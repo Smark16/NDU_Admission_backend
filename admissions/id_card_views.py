@@ -33,6 +33,8 @@ from .permissions import ManageIdCardsPermission
 
 logger = logging.getLogger(__name__)
 
+ID_CARD_PASSPORT_MAX_BYTES = 6 * 1024 * 1024
+
 
 def _add_years_and_months(start: date, *, years: int = 0, months: int = 0) -> date:
     total_months = start.month - 1 + (years * 12) + months
@@ -225,10 +227,12 @@ def _card_payload(card: StudentIdCard) -> dict:
     st = card.admitted_student
     return {
         "id": card.id,
-        "admitted_student": st.id,
-        "admitted_student_name": st.full_name,
-        "student_id": st.student_id or "",
-        "reg_no": st.reg_no or "",
+        "admitted_student": st.id if st else None,
+        "admitted_student_name": card.display_name,
+        "student_id": card.display_student_no,
+        "reg_no": (st.reg_no if st else card.walk_in_reg_no) or "",
+        "programme": (st.admitted_program.name if st and st.admitted_program_id else card.walk_in_programme) or "",
+        "is_walk_in": card.is_walk_in,
         "card_number": card.card_number,
         "status": card.status,
         "issue_date": card.issue_date.isoformat() if card.issue_date else None,
@@ -284,32 +288,60 @@ def _resolve_template_dict() -> dict | None:
     return chosen
 
 
+def _walk_in_photo_url(request, card: StudentIdCard) -> str | None:
+    if not card.walk_in_photo:
+        return None
+    try:
+        return request.build_absolute_uri(card.walk_in_photo.url)
+    except Exception:
+        return None
+
+
+def _normalize_passport_jpeg(raw: bytes) -> tuple[bytes | None, str | None]:
+    if len(raw) > ID_CARD_PASSPORT_MAX_BYTES:
+        return None, "Image is too large (max 6 MB)."
+    if len(raw) < 256:
+        return None, "Image file is too small or empty."
+    try:
+        Image.open(BytesIO(raw)).verify()
+    except Exception:
+        return None, "Invalid image file. Use JPEG or PNG."
+    try:
+        im = Image.open(BytesIO(raw))
+        if im.mode in ("RGBA", "P"):
+            im = im.convert("RGB")
+        else:
+            im = im.convert("RGB")
+        w, h = im.size
+        if w < 64 or h < 64:
+            return None, "Image is too small. Minimum size 64×64 pixels."
+        out = BytesIO()
+        im.save(out, format="JPEG", quality=90)
+        out.seek(0)
+        return out.read(), None
+    except Exception:
+        return None, "Could not process this image. Try another file."
+
+
 def _preview_payload(request, card: StudentIdCard) -> dict:
     from .id_card_pdf_render import explain_pdf_render_blocker, pdf_pages_png_base64, render_id_card_pdf
 
     card.ensure_card_number()
 
-    st = card.admitted_student
-    app = st.application
     tmpl = _resolve_template_dict() or {}
     issue = card.issue_date or timezone.now().date()
-    expiry = _default_expiry(issue, years=_programme_min_years(st))
-    student_no = st.student_id or ""
     return_to = (tmpl.get("return_to") or tmpl.get("back_text") or "").strip()
     if not return_to:
         return_to = _default_id_card_return_address()
     institution = (tmpl.get("institution") or "Ndejje University").strip()
     from .id_card_pdf_render import build_id_card_qr_payload
 
-    payload = {
-        "card_number": card.card_number,
-        "template": {
-            "key": tmpl.get("key"),
-            "name": tmpl.get("name"),
-            "front_title": tmpl.get("front_title"),
-            "back_text": tmpl.get("back_text"),
-        },
-        "front": {
+    if card.admitted_student_id:
+        st = card.admitted_student
+        app = st.application
+        expiry = _default_expiry(issue, years=_programme_min_years(st))
+        student_no = st.student_id or ""
+        front = {
             "name": st.full_name,
             "student_no": student_no,
             "reg_no": st.reg_no or "",
@@ -319,7 +351,35 @@ def _preview_payload(request, card: StudentIdCard) -> dict:
             "barcode_value": student_no or st.reg_no or card.card_number,
             "qr_payload": build_id_card_qr_payload(card),
             "passport_photo": _passport_absolute_url(request, st),
+        }
+    else:
+        years = int(card.walk_in_validity_years or 4)
+        if years < 1:
+            years = 4
+        expiry = _default_expiry(issue, years=years)
+        student_no = card.walk_in_student_no or ""
+        front = {
+            "name": card.walk_in_full_name,
+            "student_no": student_no,
+            "reg_no": card.walk_in_reg_no or "",
+            "course": card.walk_in_programme or "",
+            "gender": card.walk_in_gender or "",
+            "expiry_date": expiry.isoformat(),
+            "barcode_value": student_no or card.walk_in_reg_no or card.card_number,
+            "qr_payload": build_id_card_qr_payload(card),
+            "passport_photo": _walk_in_photo_url(request, card),
+        }
+
+    payload = {
+        "card_number": card.card_number,
+        "is_walk_in": card.is_walk_in,
+        "template": {
+            "key": tmpl.get("key"),
+            "name": tmpl.get("name"),
+            "front_title": tmpl.get("front_title"),
+            "back_text": tmpl.get("back_text"),
         },
+        "front": front,
         "back": {
             "institution": institution,
             "issuer_title": tmpl.get("issuer_title") or "Academic Registrar",
@@ -398,9 +458,6 @@ class IdCardFilterOptionsView(APIView):
         )
 
 
-ID_CARD_PASSPORT_MAX_BYTES = 6 * 1024 * 1024
-
-
 class IdCardAdmittedPassportPhotoView(APIView):
     """Read or replace the applicant passport photo used for ID cards (upload from desk or camera)."""
 
@@ -450,37 +507,9 @@ class IdCardAdmittedPassportPhotoView(APIView):
             )
 
         raw = uploaded.read()
-        if len(raw) > ID_CARD_PASSPORT_MAX_BYTES:
-            return Response(
-                {"detail": "Image is too large (max 6 MB)."},
-                status=400,
-            )
-        if len(raw) < 256:
-            return Response({"detail": "Image file is too small or empty."}, status=400)
-
-        try:
-            Image.open(BytesIO(raw)).verify()
-        except Exception:
-            return Response({"detail": "Invalid image file. Use JPEG or PNG."}, status=400)
-
-        try:
-            im = Image.open(BytesIO(raw))
-            if im.mode in ("RGBA", "P"):
-                im = im.convert("RGB")
-            else:
-                im = im.convert("RGB")
-            w, h = im.size
-            if w < 64 or h < 64:
-                return Response(
-                    {"detail": "Image is too small. Minimum size 64×64 pixels."},
-                    status=400,
-                )
-            out = BytesIO()
-            im.save(out, format="JPEG", quality=90)
-            out.seek(0)
-            jpeg_bytes = out.read()
-        except Exception:
-            return Response({"detail": "Could not process this image. Try another file."}, status=400)
+        jpeg_bytes, err = _normalize_passport_jpeg(raw)
+        if err:
+            return Response({"detail": err}, status=400)
 
         application = admitted.application
         fname = f"passport_app_{application.pk}.jpg"
@@ -645,6 +674,80 @@ class IdCardGenerateView(APIView):
         return Response(_card_payload(card), status=status.HTTP_201_CREATED)
 
 
+class IdCardWalkInGenerateView(APIView):
+    """
+    Print an ID for someone not in Steward — desk enters details + photo manually.
+    Card is stored for audit but is not linked to AdmittedStudent.
+    """
+
+    permission_classes = [IsAuthenticated, ManageIdCardsPermission]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request):
+        full_name = (request.data.get("full_name") or "").strip()
+        student_no = (request.data.get("student_no") or request.data.get("student_id") or "").strip()
+        programme = (request.data.get("programme") or request.data.get("course") or "").strip()
+        reg_no = (request.data.get("reg_no") or "").strip()
+        gender = (request.data.get("gender") or "").strip()
+        campus = (request.data.get("campus") or "").strip()
+        uploaded = request.FILES.get("passport_photo")
+
+        if not full_name:
+            return Response({"detail": "full_name is required."}, status=status.HTTP_400_BAD_REQUEST)
+        if not student_no:
+            return Response({"detail": "student_no is required."}, status=status.HTTP_400_BAD_REQUEST)
+        if not programme:
+            return Response({"detail": "programme is required."}, status=status.HTTP_400_BAD_REQUEST)
+        if not uploaded:
+            return Response({"detail": "passport_photo is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            validity_years = int(request.data.get("validity_years") or 4)
+        except (TypeError, ValueError):
+            validity_years = 4
+        if validity_years < 1 or validity_years > 10:
+            validity_years = 4
+
+        raw = uploaded.read()
+        jpeg_bytes, err = _normalize_passport_jpeg(raw)
+        if err:
+            return Response({"detail": err}, status=400)
+
+        issue = timezone.now().date()
+        expiry = _default_expiry(issue, years=validity_years)
+        with transaction.atomic():
+            card = StudentIdCard.objects.create(
+                admitted_student=None,
+                walk_in_full_name=full_name,
+                walk_in_student_no=student_no,
+                walk_in_reg_no=reg_no,
+                walk_in_programme=programme,
+                walk_in_gender=gender,
+                walk_in_campus=campus,
+                walk_in_validity_years=validity_years,
+                card_number=_allocate_card_number(),
+                status=StudentIdCard.STATUS_GENERATED,
+                is_active=True,
+                issue_date=issue,
+                expiry_date=expiry,
+                issued_by=request.user,
+            )
+            card.walk_in_photo.save(
+                f"walk_in_{card.pk}.jpg",
+                ContentFile(jpeg_bytes),
+                save=True,
+            )
+
+        log_audit_event(
+            request.user,
+            "id_card_walk_in_generate",
+            card,
+            f"Walk-in ID card {card.card_number} for {full_name} ({student_no})",
+            request,
+        )
+        return Response(_card_payload(card), status=status.HTTP_201_CREATED)
+
+
 class IdCardPreviewDataView(APIView):
     permission_classes = [IsAuthenticated, ManageIdCardsPermission]
 
@@ -728,7 +831,7 @@ class IdCardRevokeView(APIView):
         log_audit_event(
             request.user,
             "id_card_revoke",
-            card.admitted_student,
+            card.admitted_student or card,
             f"Revoked ID card {card.card_number}: {reason[:200]}",
             request,
         )
@@ -754,29 +857,60 @@ class IdCardReissueView(APIView):
             if not old.is_active or old.status == StudentIdCard.STATUS_REVOKED:
                 return Response({"detail": "This card is not active."}, status=400)
             admitted = old.admitted_student
-            if not admitted.physical_documents_verified:
+            if admitted is not None and not admitted.physical_documents_verified:
                 return Response(
                     {"detail": "Physical documents must be verified before reissuing an ID card."},
                     status=400,
                 )
             from admissions.student_photo import admitted_student_photo_file
 
-            photo = admitted_student_photo_file(admitted)
+            if admitted is not None:
+                photo = admitted_student_photo_file(admitted)
+            else:
+                photo = old.walk_in_photo
             if not photo:
                 return Response({"detail": "A passport photo is required on the application."}, status=400)
 
             issue = timezone.now().date()
-            expiry = _default_expiry(issue, years=_programme_min_years(admitted))
-            new_card = StudentIdCard.objects.create(
-                admitted_student=admitted,
-                card_number=_allocate_card_number(),
-                status=StudentIdCard.STATUS_GENERATED,
-                is_active=True,
-                issue_date=issue,
-                expiry_date=expiry,
-                issued_by=request.user,
-                reissue_reason=reason,
-            )
+            if admitted is not None:
+                expiry = _default_expiry(issue, years=_programme_min_years(admitted))
+            else:
+                years = int(old.walk_in_validity_years or 4)
+                if years < 1:
+                    years = 4
+                expiry = _default_expiry(issue, years=years)
+
+            create_kwargs = {
+                "card_number": _allocate_card_number(),
+                "status": StudentIdCard.STATUS_GENERATED,
+                "is_active": True,
+                "issue_date": issue,
+                "expiry_date": expiry,
+                "issued_by": request.user,
+                "reissue_reason": reason,
+            }
+            if admitted is not None:
+                create_kwargs["admitted_student"] = admitted
+            else:
+                create_kwargs.update(
+                    {
+                        "walk_in_full_name": old.walk_in_full_name,
+                        "walk_in_student_no": old.walk_in_student_no,
+                        "walk_in_reg_no": old.walk_in_reg_no,
+                        "walk_in_programme": old.walk_in_programme,
+                        "walk_in_gender": old.walk_in_gender,
+                        "walk_in_campus": old.walk_in_campus,
+                        "walk_in_validity_years": old.walk_in_validity_years or 4,
+                    }
+                )
+            new_card = StudentIdCard.objects.create(**create_kwargs)
+            if admitted is None and old.walk_in_photo:
+                try:
+                    with old.walk_in_photo.open("rb") as src:
+                        fname = old.walk_in_photo.name.rsplit("/", 1)[-1] or "walk_in.jpg"
+                        new_card.walk_in_photo.save(fname, ContentFile(src.read()), save=True)
+                except Exception:
+                    logger.exception("Could not copy walk-in photo on reissue for card %s", old.pk)
             old.status = StudentIdCard.STATUS_REISSUED
             old.is_active = False
             old.replaced_by = new_card
@@ -785,7 +919,7 @@ class IdCardReissueView(APIView):
         log_audit_event(
             request.user,
             "id_card_reissue",
-            admitted,
+            admitted or old,
             f"Reissued ID: {old.card_number} → {new_card.card_number}. {reason[:200]}",
             request,
         )

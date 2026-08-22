@@ -188,32 +188,60 @@ def _card_date(value: date | None) -> str:
 
 
 def build_id_card_field_context(card: StudentIdCard) -> dict[str, str]:
-    st = card.admitted_student
-    app = st.application
     issue = card.issue_date or date.today()
-    expiry = _default_expiry(issue, years=_programme_min_years(st))
-    program = st.admitted_program
-    faculty = getattr(program, "faculty", None) if program else None
-    department = getattr(program, "department", None) if program else None
-    batch = st.admitted_batch
+    if card.admitted_student_id:
+        st = card.admitted_student
+        app = st.application
+        expiry = _default_expiry(issue, years=_programme_min_years(st))
+        program = st.admitted_program
+        faculty = getattr(program, "faculty", None) if program else None
+        department = getattr(program, "department", None) if program else None
+        batch = st.admitted_batch
+        return {
+            "name": st.full_name or "",
+            "title": ((getattr(app, "title", None) or "").strip() if app else ""),
+            "student_no": (st.student_id or "").strip(),
+            "student_id": (st.student_id or "").strip(),
+            "reg_no": (st.reg_no or "").strip(),
+            "course": program.name if program else "",
+            "course_code": (program.code or "").strip() if program else "",
+            "faculty": faculty.name if faculty else "",
+            "department": department.name if department else "",
+            "campus": st.admitted_campus.name if st.admitted_campus_id else "",
+            "academic_batch": batch.name if batch else "",
+            "academic_year": (getattr(batch, "academic_year", None) or "").strip() if batch else "",
+            "study_mode": (st.study_mode or "").strip(),
+            "gender": (app.gender or "").strip() if app else "",
+            "nationality": (app.nationality or "").strip() if app else "",
+            "date_of_birth": _card_date(getattr(app, "date_of_birth", None) if app else None),
+            "phone": (app.phone or "").strip() if app else "",
+            "issue_date": _card_date(issue),
+            "expiry_date": _card_date(expiry),
+            "card_number": card.card_number or "",
+        }
+
+    years = int(card.walk_in_validity_years or 4)
+    if years < 1:
+        years = 4
+    expiry = _default_expiry(issue, years=years)
     return {
-        "name": st.full_name or "",
-        "title": ((getattr(app, "title", None) or "").strip() if app else ""),
-        "student_no": (st.student_id or "").strip(),
-        "student_id": (st.student_id or "").strip(),
-        "reg_no": (st.reg_no or "").strip(),
-        "course": program.name if program else "",
-        "course_code": (program.code or "").strip() if program else "",
-        "faculty": faculty.name if faculty else "",
-        "department": department.name if department else "",
-        "campus": st.admitted_campus.name if st.admitted_campus_id else "",
-        "academic_batch": batch.name if batch else "",
-        "academic_year": (getattr(batch, "academic_year", None) or "").strip() if batch else "",
-        "study_mode": (st.study_mode or "").strip(),
-        "gender": (app.gender or "").strip() if app else "",
-        "nationality": (app.nationality or "").strip() if app else "",
-        "date_of_birth": _card_date(getattr(app, "date_of_birth", None) if app else None),
-        "phone": (app.phone or "").strip() if app else "",
+        "name": (card.walk_in_full_name or "").strip(),
+        "title": "",
+        "student_no": (card.walk_in_student_no or "").strip(),
+        "student_id": (card.walk_in_student_no or "").strip(),
+        "reg_no": (card.walk_in_reg_no or "").strip(),
+        "course": (card.walk_in_programme or "").strip(),
+        "course_code": "",
+        "faculty": "",
+        "department": "",
+        "campus": (card.walk_in_campus or "").strip(),
+        "academic_batch": "",
+        "academic_year": "",
+        "study_mode": "",
+        "gender": (card.walk_in_gender or "").strip(),
+        "nationality": "",
+        "date_of_birth": "",
+        "phone": "",
         "issue_date": _card_date(issue),
         "expiry_date": _card_date(expiry),
         "card_number": card.card_number or "",
@@ -221,9 +249,21 @@ def build_id_card_field_context(card: StudentIdCard) -> dict[str, str]:
 
 
 def _passport_photo_path(card: StudentIdCard) -> str | None:
-    from admissions.student_photo import admitted_student_photo_file
+    if card.admitted_student_id:
+        from admissions.student_photo import admitted_student_photo_file
 
-    photo = admitted_student_photo_file(card.admitted_student)
+        photo = admitted_student_photo_file(card.admitted_student)
+        if not photo:
+            return None
+        try:
+            path = photo.path
+        except (ValueError, AttributeError):
+            return None
+        if path and os.path.isfile(path):
+            return path
+        return None
+
+    photo = card.walk_in_photo
     if not photo:
         return None
     try:
@@ -238,13 +278,16 @@ def _passport_photo_path(card: StudentIdCard) -> str | None:
 def build_id_card_qr_payload(card: StudentIdCard) -> str:
     """
     Short paycode / student number only — dense URLs on a CR80 QR fail laptop cameras.
-    The scan desk accepts this value and still resolves the student.
+    The scan desk accepts this value and still resolves the student when on file.
     """
-    st = card.admitted_student
-    lookup = (st.student_id or st.reg_no or "").strip()
-    if not lookup:
-        lookup = str(st.pk)
-    return lookup
+    if card.admitted_student_id:
+        st = card.admitted_student
+        lookup = (st.student_id or st.reg_no or "").strip()
+        if not lookup:
+            lookup = str(st.pk)
+        return lookup
+    lookup = (card.walk_in_student_no or card.walk_in_reg_no or card.card_number or "").strip()
+    return lookup or str(card.pk)
 
 
 def _qr_png_bytes(payload: str) -> bytes | None:

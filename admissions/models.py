@@ -706,7 +706,7 @@ class StudentPortalAccountAction(models.Model):
 
 
 class StudentIdCard(models.Model):
-    """Physical / digital student ID card issuance tied to an admission record."""
+    """Physical student ID card — linked to an admission record or a walk-in desk entry."""
 
     STATUS_GENERATED = "generated"
     STATUS_PRINTED = "printed"
@@ -725,6 +725,25 @@ class StudentIdCard(models.Model):
         AdmittedStudent,
         on_delete=models.CASCADE,
         related_name="id_cards",
+        null=True,
+        blank=True,
+        help_text="Null for walk-in IDs printed without an ERP student record.",
+    )
+    walk_in_full_name = models.CharField(max_length=200, blank=True, default="")
+    walk_in_student_no = models.CharField(max_length=64, blank=True, default="")
+    walk_in_reg_no = models.CharField(max_length=64, blank=True, default="")
+    walk_in_programme = models.CharField(max_length=200, blank=True, default="")
+    walk_in_gender = models.CharField(max_length=20, blank=True, default="")
+    walk_in_campus = models.CharField(max_length=120, blank=True, default="")
+    walk_in_photo = models.ImageField(
+        upload_to="id_cards/walk_in/",
+        blank=True,
+        null=True,
+        help_text="Passport photo for walk-in cards (not linked to Application).",
+    )
+    walk_in_validity_years = models.PositiveSmallIntegerField(
+        default=4,
+        help_text="Programme length used for expiry on walk-in cards.",
     )
     card_number = models.CharField(max_length=48, unique=True, db_index=True)
     status = models.CharField(
@@ -774,7 +793,24 @@ class StudentIdCard(models.Model):
         ]
 
     def __str__(self):
-        return f"{self.card_number} ({self.admitted_student_id})"
+        label = self.walk_in_full_name if self.is_walk_in else str(self.admitted_student_id)
+        return f"{self.card_number} ({label})"
+
+    @property
+    def is_walk_in(self) -> bool:
+        return self.admitted_student_id is None
+
+    @property
+    def display_name(self) -> str:
+        if self.admitted_student_id:
+            return self.admitted_student.full_name or ""
+        return (self.walk_in_full_name or "").strip()
+
+    @property
+    def display_student_no(self) -> str:
+        if self.admitted_student_id:
+            return (self.admitted_student.student_id or "").strip()
+        return (self.walk_in_student_no or "").strip()
 
     @classmethod
     def next_card_number(cls) -> str:

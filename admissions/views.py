@@ -5224,6 +5224,8 @@ class ExemptionFormFeeReportView(APIView):
                 status=403,
             )
 
+        search = (request.query_params.get("search") or request.query_params.get("q") or "").strip()
+
         status_filter = request.query_params.get("status")
         if status_filter not in (
             "pending",
@@ -5273,6 +5275,7 @@ class ExemptionFormFeeReportView(APIView):
                 }
                 for r in unpaid
             ]
+            rows = _filter_exemption_fee_rows_by_search(rows, search)
             pending_count = len(exemption_form_fee_report("pending"))
             paid_unsubmitted_count = len(exemption_form_fee_report("paid_unsubmitted"))
             return Response(
@@ -5285,6 +5288,7 @@ class ExemptionFormFeeReportView(APIView):
                 }
             )
         rows = exemption_form_fee_report(status_filter or None)
+        rows = _filter_exemption_fee_rows_by_search(rows, search)
         if status_filter == "paid_unsubmitted":
             paid_unsubmitted_count = len(rows)
             pending_count = 0
@@ -5694,6 +5698,44 @@ class StudentChangeRequestOptions(APIView):
         campuses = [{"id": c.id, "name": c.name} for c in Campus.objects.all().order_by("name")]
         return Response({"programs": programs, "campuses": campuses}, status=200)
 
+
+def _change_request_search_q(search: str) -> Q | None:
+    """Match student name, reg no, student ID, or email on change/exemption requests."""
+    q = (search or "").strip()
+    if not q:
+        return None
+    reg_alt = q.replace("_", "/")
+    return (
+        Q(admitted_student__reg_no__icontains=q)
+        | Q(admitted_student__reg_no__icontains=reg_alt)
+        | Q(admitted_student__student_id__icontains=q)
+        | Q(admitted_student__application__first_name__icontains=q)
+        | Q(admitted_student__application__last_name__icontains=q)
+        | Q(admitted_student__application__middle_name__icontains=q)
+        | Q(admitted_student__application__email__icontains=q)
+    )
+
+
+def _filter_exemption_fee_rows_by_search(rows: list[dict], search: str) -> list[dict]:
+    q = (search or "").strip().lower()
+    if not q:
+        return rows
+    q_alt = q.replace("_", "/")
+    filtered = []
+    for row in rows:
+        hay = " ".join(
+            [
+                str(row.get("student_name") or ""),
+                str(row.get("reg_no") or ""),
+                str(row.get("student_id") or ""),
+                str(row.get("programme") or ""),
+            ]
+        ).lower()
+        if q in hay or q_alt in hay:
+            filtered.append(row)
+    return filtered
+
+
 class AdminChangeRequestList(APIView):
     """Admin: list all requests with optional status filter."""
     permission_classes = [IsAuthenticated, CanViewAdmissionChangeRequests]
@@ -5720,6 +5762,12 @@ class AdminChangeRequestList(APIView):
         change_type = request.query_params.get('change_type')
         if change_type:
             qs = qs.filter(change_type=change_type)
+
+        search_q = _change_request_search_q(
+            request.query_params.get("search") or request.query_params.get("q") or ""
+        )
+        if search_q is not None:
+            qs = qs.filter(search_q).distinct()
 
         qs = filter_admission_change_requests_for_user(qs, request.user)
         return Response(

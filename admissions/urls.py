@@ -422,6 +422,11 @@ urlpatterns = [
         name='id_cards_admitted_passport_photo',
     ),
     path('id_cards/generate', id_card_views.IdCardGenerateView.as_view(), name='id_cards_generate'),
+    path(
+        'id_cards/walk_in/generate',
+        id_card_views.IdCardWalkInGenerateView.as_view(),
+        name='id_cards_walk_in_generate',
+    ),
     path('id_cards/<int:card_id>/preview-data', id_card_views.IdCardPreviewDataView.as_view(), name='id_cards_preview'),
     path('id_cards/<int:card_id>/print.pdf', id_card_views.IdCardPrintPdfView.as_view(), name='id_cards_print_pdf'),
     path('id_cards/<int:card_id>/revoke', id_card_views.IdCardRevokeView.as_view(), name='id_cards_revoke'),
