@@ -8,9 +8,11 @@ from django.contrib.auth import authenticate, get_user_model
 from django.db.models import Q
 
 from admissions.models import AdmittedStudent
+from admissions.student_accounts import student_portal_username
 from payments.student_portal_finance import student_finance_totals
 
 from .models import MoodleApiAccessLog, MoodleIntegrationConfig
+from .moodle_sso import split_full_name
 
 User = get_user_model()
 
@@ -116,10 +118,15 @@ def academic_batch_payload(student: AdmittedStudent) -> dict:
 
 def student_profile_payload(student: AdmittedStudent, user: User | None = None) -> dict:
     app = getattr(student, "application", None)
+    reg_no = (student.reg_no or "").strip()
+    username = (user.username if user else "") or student_portal_username(reg_no)
+    firstname, lastname = split_full_name(student.full_name or "")
     payload = {
-        "reg_no": student.reg_no or "",
+        "reg_no": reg_no,
         "student_id": student.student_id or "",
-        "username": (user.username if user else "") or (student.reg_no or ""),
+        "username": username,
+        "firstname": firstname,
+        "lastname": lastname,
         "full_name": student.full_name or "",
         "email": (getattr(app, "email", None) or getattr(user, "email", None) or "") if (app or user) else "",
         "programme": student.admitted_program.name if student.admitted_program_id else None,
@@ -130,6 +137,25 @@ def student_profile_payload(student: AdmittedStudent, user: User | None = None) 
     }
     payload.update(academic_batch_payload(student))
     return payload
+
+
+def moodle_launch_profile_for_student(
+    student: AdmittedStudent,
+    user: User | None = None,
+) -> dict:
+    """Signed profile fields embedded in SSO launch URL for first-time Moodle login."""
+    reg_no = (student.reg_no or "").strip()
+    username = (user.username if user else "") or student_portal_username(reg_no)
+    firstname, lastname = split_full_name(student.full_name or "")
+    email = (student.email or "").strip()
+    if user and (user.email or "").strip():
+        email = email or (user.email or "").strip()
+    return {
+        "username": username,
+        "firstname": firstname,
+        "lastname": lastname,
+        "email": email,
+    }
 
 
 def finance_status_for_student(student: AdmittedStudent) -> dict:

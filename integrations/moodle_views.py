@@ -89,6 +89,41 @@ class MoodleAuthVerifyView(APIView):
         )
 
 
+class MoodleStudentProfileView(APIView):
+    """
+    Moodle service: fetch student display fields by reg_no (no password).
+
+    Use after SSO launch when psig/profile params are not yet handled in sso.php,
+    or to refresh name/email on each login.
+    """
+
+    authentication_classes = []
+    permission_classes = [HasMoodleApiKey]
+
+    def get(self, request, reg_no: str):
+        endpoint = "moodle/students/profile"
+        student = resolve_student_by_lookup(reg_no)
+        if not student:
+            log_moodle_access(
+                endpoint=endpoint,
+                http_status=404,
+                key_prefix=_key_prefix(request),
+                detail=reg_no,
+            )
+            return Response(
+                {"ok": False, "detail": "Student not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        user = student.student_user if student.student_user_id else None
+        log_moodle_access(
+            endpoint=endpoint,
+            http_status=200,
+            key_prefix=_key_prefix(request),
+            detail=student.reg_no or "",
+        )
+        return Response({"ok": True, "student": student_profile_payload(student, user)})
+
+
 class MoodleFinanceStatusView(APIView):
     authentication_classes = []
     permission_classes = [HasMoodleApiKey]

@@ -11,7 +11,7 @@ from payments.student_portal_finance import get_admitted_student_for_user
 
 from .models import MoodleIntegrationConfig
 from .moodle_sso import build_moodle_sso_launch_url, moodle_launch_signing_secret
-from .services import log_moodle_access
+from .services import log_moodle_access, moodle_launch_profile_for_student
 
 
 class StudentMoodleLaunchView(APIView):
@@ -19,6 +19,8 @@ class StudentMoodleLaunchView(APIView):
     Logged-in student asks STEWARD for a one-time Moodle SSO URL.
 
     Moodle verifies reg_no|exp HMAC (sig) with the shared secret.
+    Launch URL also carries signed profile fields (username, firstname,
+    lastname, email, psig) so Moodle can show names on first portal SSO.
     """
 
     permission_classes = [IsAuthenticated]
@@ -56,11 +58,13 @@ class StudentMoodleLaunchView(APIView):
             )
 
         secret = moodle_launch_signing_secret(cfg)
+        profile = moodle_launch_profile_for_student(student, request.user)
         try:
             payload = build_moodle_sso_launch_url(
                 base_url=cfg.moodle_base_url or "",
                 reg_no=reg_no,
                 secret=secret,
+                profile=profile,
             )
         except ValueError as exc:
             log_moodle_access(endpoint=endpoint, http_status=400, detail=str(exc)[:200])

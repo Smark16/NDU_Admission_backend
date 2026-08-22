@@ -23,6 +23,11 @@ urlpatterns = [
         name="moodle_auth_verify",
     ),
     path(
+        "moodle/students/<str:reg_no>/profile",
+        moodle_views.MoodleStudentProfileView.as_view(),
+        name="moodle_student_profile",
+    ),
+    path(
         "moodle/students/<str:reg_no>/finance-status",
         moodle_views.MoodleFinanceStatusView.as_view(),
         name="moodle_finance_status",
