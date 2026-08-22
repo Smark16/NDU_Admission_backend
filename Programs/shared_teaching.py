@@ -451,6 +451,127 @@ def moodle_idnumber_for_course_unit(cu: CourseUnit) -> str:
     return f"{cu.code}-{cu.semester_id}"
 
 
+def normalize_shared_unit_key(code: str | None) -> str:
+    """Stable shared paper key, e.g. ``ETH 1101`` → ``ETH1101``."""
+    return re.sub(r"[^A-Z0-9]", "", normalize_course_code(code))
+
+
+def global_term_key_for_course_unit(cu: CourseUnit) -> str:
+    """Term label for Moodle parent idnumbers, e.g. ``2026-S1``."""
+    sem = cu.semester if cu.semester_id else None
+    batch = cu.program_batch if cu.program_batch_id else None
+    ay = ""
+    if batch and (batch.academic_year or "").strip():
+        ay = (batch.academic_year or "").split("/")[0].strip()
+    elif sem and sem.start_date:
+        ay = str(sem.start_date.year)
+    term = None
+    if sem and sem.term_number:
+        term = sem.term_number
+    elif sem and sem.order:
+        term = sem.order
+    else:
+        term = 1
+    return f"{ay}-S{term}" if ay else f"S{term}"
+
+
+def shared_unit_key_for_sto(sto: SharedTeachingOffering) -> str:
+    catalog = getattr(sto, "catalog_unit", None)
+    if catalog is not None and getattr(catalog, "code", None):
+        key = normalize_shared_unit_key(catalog.code)
+        if key:
+            return key
+    key = normalize_shared_unit_key(sto.code)
+    if key:
+        return key
+    return f"STO{sto.pk}"
+
+
+def moodle_parent_idnumber(sto: SharedTeachingOffering, term_key: str) -> str:
+    return f"ndu_erp:shared:{shared_unit_key_for_sto(sto)}:{term_key}"
+
+
+def moodle_group_idnumber(course_unit_id: int) -> str:
+    return f"ndu_erp:group:{course_unit_id}"
+
+
+def moodle_unit_idnumber(course_unit_id: int) -> str:
+    return f"ndu_erp:unit:{course_unit_id}"
+
+
+def offering_label_for_course_unit(cu: CourseUnit) -> str:
+    prog_short = ""
+    prog_name = ""
+    if cu.program_batch_id and cu.program_batch.program_id:
+        prog = cu.program_batch.program
+        prog_short = (prog.short_form or "").strip()
+        prog_name = (prog.name or "").strip()
+    mode = study_mode_for_course_unit(cu)
+    head = prog_short or prog_name or (cu.code or "").strip()
+    if mode and mode != "Other":
+        head = f"{head} {mode}".strip()
+    yos = cu.semester.year_of_study if cu.semester_id else None
+    if yos:
+        return f"{head} · Year {yos}"
+    return head
+
+
+def parent_unit_id_for_sto(sto: SharedTeachingOffering) -> str | None:
+    unit_id = (
+        sto.course_units.filter(is_active=True)
+        .order_by("id")
+        .values_list("id", flat=True)
+        .first()
+    )
+    return str(unit_id) if unit_id else None
+
+
+def moodle_shared_fields_for_course_unit(
+    cu: CourseUnit,
+    *,
+    parent_ids: dict[int, str] | None = None,
+) -> dict:
+    """Shared-unit metadata for Moodle LMS sync (parent course + programme groups)."""
+    sto = getattr(cu, "shared_teaching_offering", None)
+    is_shared = bool(cu.shared_teaching_offering_id and sto is not None)
+    term_key = global_term_key_for_course_unit(cu)
+    offering_id = str(cu.pk)
+    fields: dict = {
+        "is_shared": is_shared,
+        "shared_unit_key": None,
+        "offering_id": offering_id,
+        "offering_label": offering_label_for_course_unit(cu),
+        "parent_unit_id": None,
+        "parent_idnumber": None,
+        "group_idnumber": moodle_group_idnumber(cu.pk) if is_shared else None,
+        "global_term_key": term_key,
+        "legacy_idnumber": moodle_idnumber_for_course_unit(cu),
+    }
+    if not is_shared or sto is None:
+        fields["idnumber"] = moodle_unit_idnumber(cu.pk)
+        return fields
+
+    sto_id = sto.pk
+    if parent_ids is not None and sto_id in parent_ids:
+        parent_unit_id = parent_ids[sto_id]
+    else:
+        parent_unit_id = parent_unit_id_for_sto(sto)
+        if parent_ids is not None and parent_unit_id:
+            parent_ids[sto_id] = parent_unit_id
+
+    parent_idnumber = moodle_parent_idnumber(sto, term_key)
+    fields.update(
+        {
+            "shared_unit_key": shared_unit_key_for_sto(sto),
+            "parent_unit_id": parent_unit_id,
+            "parent_idnumber": parent_idnumber,
+            "idnumber": parent_idnumber,
+            "shared_teaching_offering_id": sto_id,
+        }
+    )
+    return fields
+
+
 def linked_course_unit_ids(course_unit: CourseUnit) -> list[int]:
     """All CourseUnit PKs that share teaching with this one (at least itself)."""
     if not course_unit.shared_teaching_offering_id:
@@ -472,11 +593,20 @@ def registered_enrollments_for_course_unit(
     course_unit: CourseUnit,
     *,
     statuses: list[str] | None = None,
+    merge_shared: bool = True,
 ) -> QuerySet[StudentCourseUnitEnrollment]:
-    """Roster for LMS / marks: merges all programme CourseUnits on the same offering."""
+    """Roster for LMS / marks.
+
+    When ``merge_shared`` is true (default), merges all programme CourseUnits on the
+    same SharedTeachingOffering. Moodle per-offering sync should pass ``merge_shared=False``.
+    """
     if statuses is None:
         statuses = ["enrolled"]
-    cu_ids = linked_course_unit_ids(course_unit)
+    cu_ids = (
+        linked_course_unit_ids(course_unit)
+        if merge_shared
+        else [course_unit.pk]
+    )
     return (
         StudentCourseUnitEnrollment.objects.filter(
             course_unit_id__in=cu_ids,

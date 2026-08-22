@@ -48,6 +48,11 @@ urlpatterns = [
         name="moodle_course_units",
     ),
     path(
+        "moodle/shared-course-units",
+        moodle_views.MoodleSharedCourseUnitsView.as_view(),
+        name="moodle_shared_course_units",
+    ),
+    path(
         "moodle/course-units/<int:course_unit_id>/enrolled-students",
         moodle_views.MoodleEnrolledStudentsView.as_view(),
         name="moodle_enrolled_students",

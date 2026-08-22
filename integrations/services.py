@@ -208,7 +208,6 @@ def finance_status_for_student(student: AdmittedStudent) -> dict:
 def registered_courses_for_student(student: AdmittedStudent) -> list[dict]:
     """Course units this student has registered in Steward (same gate as Moodle rosters)."""
     from Programs.models import StudentCourseUnitEnrollment
-    from Programs.shared_teaching import moodle_idnumber_for_course_unit
 
     enrollments = (
         StudentCourseUnitEnrollment.objects.filter(
@@ -221,47 +220,29 @@ def registered_courses_for_student(student: AdmittedStudent) -> list[dict]:
             "course_unit__semester",
             "course_unit__program_batch",
             "course_unit__program_batch__program",
+            "course_unit__program_batch__program__faculty",
             "course_unit__shared_teaching_offering",
+            "course_unit__shared_teaching_offering__catalog_unit",
         )
         .prefetch_related(
             "course_unit__lecturers",
             "course_unit__section_lecturers__lecturer",
+            "course_unit__shared_teaching_offering__lecturers",
         )
         .order_by("course_unit__code")
     )
     rows = []
+    parent_ids: dict[int, str] = {}
     for enr in enrollments:
         cu = enr.course_unit
         if cu is None or not cu.is_active:
             continue
-        lecturers = {u.pk: lecturer_payload(u) for u in cu.lecturers.all()}
-        for link in cu.section_lecturers.all():
-            if link.lecturer_id and link.lecturer_id not in lecturers:
-                lecturers[link.lecturer_id] = lecturer_payload(link.lecturer)
-        batch = cu.program_batch
-        program = batch.program if batch else None
-        sto = cu.shared_teaching_offering
-        rows.append(
-            {
-                "id": cu.pk,
-                "code": cu.code,
-                "name": cu.name,
-                "credit_units": float(cu.credit_units) if cu.credit_units is not None else None,
-                "semester_id": cu.semester_id,
-                "program_batch_id": cu.program_batch_id,
-                "program_batch_name": batch.name if batch else None,
-                "program_code": getattr(program, "short_form", None) if program else None,
-                "program_name": program.name if program else None,
-                "idnumber": moodle_idnumber_for_course_unit(cu),
-                "shared_teaching_offering_id": cu.shared_teaching_offering_id,
-                "exam_paper_code": sto.paper_code if sto else None,
-                "registration_kind": enr.registration_kind,
-                "registration_date": enr.registration_date.isoformat()
-                if enr.registration_date
-                else None,
-                "lecturers": list(lecturers.values()),
-            }
+        row = moodle_course_unit_payload(cu, parent_ids=parent_ids)
+        row["registration_kind"] = enr.registration_kind
+        row["registration_date"] = (
+            enr.registration_date.isoformat() if enr.registration_date else None
         )
+        rows.append(row)
     return rows
 
 
@@ -273,3 +254,163 @@ def lecturer_payload(user) -> dict:
         "full_name": user.get_full_name() or user.username,
         "staff_id": getattr(user, "staff_id", None) or "",
     }
+
+
+def _lecturers_for_course_unit(cu) -> list[dict]:
+    lecturers = {u.pk: lecturer_payload(u) for u in cu.lecturers.all()}
+    for link in cu.section_lecturers.all():
+        if link.lecturer_id and link.lecturer_id not in lecturers:
+            lecturers[link.lecturer_id] = lecturer_payload(link.lecturer)
+    sto = getattr(cu, "shared_teaching_offering", None)
+    if sto is not None:
+        for u in sto.lecturers.all():
+            lecturers.setdefault(u.pk, lecturer_payload(u))
+    return list(lecturers.values())
+
+
+def moodle_course_unit_payload(
+    cu,
+    *,
+    parent_ids: dict[int, str] | None = None,
+) -> dict:
+    """Full Moodle sync row for one programme CourseUnit offering."""
+    from Programs.shared_teaching import (
+        moodle_shared_fields_for_course_unit,
+        study_mode_for_course_unit,
+    )
+
+    batch = cu.program_batch if cu.program_batch_id else None
+    program = batch.program if batch and batch.program_id else None
+    faculty = program.faculty if program and program.faculty_id else None
+    sem = cu.semester if cu.semester_id else None
+    sto = cu.shared_teaching_offering if cu.shared_teaching_offering_id else None
+    academic_year = ""
+    if batch and (batch.academic_year or "").strip():
+        academic_year = (batch.academic_year or "").strip()
+    elif sto and (sto.academic_year_label or "").strip():
+        academic_year = (sto.academic_year_label or "").strip()
+
+    row = {
+        "id": cu.pk,
+        "code": cu.code,
+        "name": cu.name,
+        "credit_units": float(cu.credit_units) if cu.credit_units is not None else None,
+        "semester_id": cu.semester_id,
+        "semester": sem.name if sem else None,
+        "year_of_study": sem.year_of_study if sem else None,
+        "term_number": sem.term_number if sem else None,
+        "academic_year": academic_year or None,
+        "program_batch_id": cu.program_batch_id,
+        "program_batch_name": batch.name if batch else None,
+        "programme": program.name if program else None,
+        "programme_id": program.pk if program else None,
+        "program_code": getattr(program, "short_form", None) if program else None,
+        "program_name": program.name if program else None,
+        "faculty": faculty.name if faculty else None,
+        "faculty_id": faculty.pk if faculty else None,
+        "study_mode": study_mode_for_course_unit(cu),
+        "exam_paper_code": sto.paper_code if sto else None,
+        "lecturers": _lecturers_for_course_unit(cu),
+    }
+    row.update(moodle_shared_fields_for_course_unit(cu, parent_ids=parent_ids))
+    return row
+
+
+def shared_course_units_registry(
+    *,
+    semester_id: int | None = None,
+    academic_year: str | None = None,
+    term_number: int | None = None,
+) -> list[dict]:
+    """Registry of SharedTeachingOffering rows for Moodle admin / validation."""
+    from Programs.models import CourseUnit, SharedTeachingOffering
+    from Programs.shared_teaching import (
+        moodle_parent_idnumber,
+        offering_label_for_course_unit,
+        parent_unit_id_for_sto,
+        shared_unit_key_for_sto,
+    )
+
+    cu_qs = CourseUnit.objects.filter(
+        is_active=True,
+        shared_teaching_offering_id__isnull=False,
+    )
+    if semester_id is not None:
+        cu_qs = cu_qs.filter(semester_id=semester_id)
+    if academic_year:
+        cu_qs = cu_qs.filter(program_batch__academic_year__icontains=academic_year.strip())
+    if term_number is not None:
+        cu_qs = cu_qs.filter(semester__term_number=term_number)
+
+    sto_ids = cu_qs.values_list("shared_teaching_offering_id", flat=True).distinct()
+    offerings = (
+        SharedTeachingOffering.objects.filter(id__in=sto_ids, is_active=True)
+        .prefetch_related(
+            "course_units",
+            "course_units__program_batch",
+            "course_units__program_batch__program",
+            "course_units__semester",
+            "catalog_unit",
+        )
+        .order_by("code", "id")
+    )
+
+    rows = []
+    for sto in offerings:
+        units = [
+            u
+            for u in sto.course_units.all()
+            if u.is_active
+            and (semester_id is None or u.semester_id == semester_id)
+            and (
+                not academic_year
+                or (
+                    u.program_batch_id
+                    and academic_year.strip().lower()
+                    in (u.program_batch.academic_year or "").lower()
+                )
+            )
+            and (term_number is None or (u.semester_id and u.semester.term_number == term_number))
+        ]
+        if len(units) < 2:
+            continue
+        term_key = global_term_key_from_units(units)
+        parent_unit_id = parent_unit_id_for_sto(sto)
+        rows.append(
+            {
+                "shared_unit_key": shared_unit_key_for_sto(sto),
+                "code": sto.code,
+                "name": sto.name,
+                "shared_teaching_offering_id": sto.pk,
+                "parent_unit_id": parent_unit_id,
+                "parent_idnumber": moodle_parent_idnumber(sto, term_key),
+                "global_term_key": term_key,
+                "semester_ids": sorted({u.semester_id for u in units if u.semester_id}),
+                "offerings": [
+                    {
+                        "offering_id": str(u.pk),
+                        "offering_label": offering_label_for_course_unit(u),
+                        "programme_id": (
+                            u.program_batch.program_id if u.program_batch_id else None
+                        ),
+                        "programme": (
+                            u.program_batch.program.name
+                            if u.program_batch_id and u.program_batch.program_id
+                            else None
+                        ),
+                        "course_unit_id": u.pk,
+                        "semester_id": u.semester_id,
+                    }
+                    for u in sorted(units, key=lambda x: (x.code or "", x.id))
+                ],
+            }
+        )
+    return rows
+
+
+def global_term_key_from_units(units) -> str:
+    from Programs.shared_teaching import global_term_key_for_course_unit
+
+    if not units:
+        return "S1"
+    return global_term_key_for_course_unit(units[0])
