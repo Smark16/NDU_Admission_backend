@@ -476,6 +476,11 @@ def global_term_key_for_course_unit(cu: CourseUnit) -> str:
 
 
 def shared_unit_key_for_sto(sto: SharedTeachingOffering) -> str:
+    parent = getattr(sto, "parent_course_unit", None)
+    if parent is not None and getattr(parent, "is_active", True):
+        key = normalize_shared_unit_key(parent.code)
+        if key:
+            return key
     catalog = getattr(sto, "catalog_unit", None)
     if catalog is not None and getattr(catalog, "code", None):
         key = normalize_shared_unit_key(catalog.code)
@@ -517,6 +522,10 @@ def offering_label_for_course_unit(cu: CourseUnit) -> str:
 
 
 def parent_unit_id_for_sto(sto: SharedTeachingOffering) -> str | None:
+    parent = getattr(sto, "parent_course_unit", None)
+    if parent is not None and getattr(parent, "is_active", True):
+        if parent.shared_teaching_offering_id == sto.pk:
+            return str(parent.pk)
     unit_id = (
         sto.course_units.filter(is_active=True)
         .order_by("id")
@@ -524,6 +533,36 @@ def parent_unit_id_for_sto(sto: SharedTeachingOffering) -> str | None:
         .first()
     )
     return str(unit_id) if unit_id else None
+
+
+def resolve_parent_course_unit(
+    sto: SharedTeachingOffering,
+    *,
+    parent_course_unit_id: int | None = None,
+) -> CourseUnit | None:
+    """Return the designated parent unit when valid for this offering."""
+    if parent_course_unit_id:
+        cu = (
+            CourseUnit.objects.filter(
+                pk=parent_course_unit_id,
+                shared_teaching_offering_id=sto.pk,
+                is_active=True,
+            )
+            .select_related("catalog_unit", "semester", "program_batch")
+            .first()
+        )
+        if cu is not None:
+            return cu
+    parent = getattr(sto, "parent_course_unit", None)
+    if parent is not None and getattr(parent, "is_active", True):
+        if parent.shared_teaching_offering_id == sto.pk:
+            return parent
+    return (
+        sto.course_units.filter(is_active=True)
+        .select_related("catalog_unit", "semester", "program_batch")
+        .order_by("id")
+        .first()
+    )
 
 
 def moodle_shared_fields_for_course_unit(
@@ -645,6 +684,8 @@ def serialize_shared_offering(offering: SharedTeachingOffering) -> dict:
         "code": offering.code,
         "name": offering.name,
         "catalog_unit_id": offering.catalog_unit_id,
+        "parent_course_unit_id": offering.parent_course_unit_id,
+        "parent_unit_id": parent_unit_id_for_sto(offering),
         "academic_year_label": offering.academic_year_label,
         "year_of_study": offering.year_of_study,
         "term_number": offering.term_number,
@@ -694,6 +735,7 @@ def create_shared_offering_from_course_units(
     exam_paper_code: str = "",
     notes: str = "",
     lecturer_ids: list[int] | None = None,
+    parent_course_unit_id: int | None = None,
 ) -> SharedTeachingOffering:
     """Create an offering and link the given programme CourseUnits to it."""
     units = list(
@@ -703,6 +745,13 @@ def create_shared_offering_from_course_units(
     )
     if len(units) < 2:
         raise ValueError("Link at least two active course units to create a shared offering.")
+
+    unit_by_id = {u.id: u for u in units}
+    parent_unit = None
+    if parent_course_unit_id is not None:
+        parent_unit = unit_by_id.get(int(parent_course_unit_id))
+        if parent_unit is None:
+            raise ValueError("parent_course_unit_id must be one of the linked course units.")
 
     codes = {u.code.strip() for u in units if u.code}
     canonical = (code or "").strip()
@@ -716,9 +765,9 @@ def create_shared_offering_from_course_units(
             )
         canonical = auto
     if not canonical:
-        canonical = (units[0].code or "").strip()
+        canonical = ((parent_unit or units[0]).code or "").strip()
 
-    primary = units[0]
+    primary = parent_unit or units[0]
     offering = SharedTeachingOffering.objects.create(
         code=canonical or (primary.code or "").strip(),
         name=(name or primary.name or "").strip(),
@@ -729,6 +778,7 @@ def create_shared_offering_from_course_units(
         exam_paper_code=(exam_paper_code or "").strip(),
         notes=(notes or "").strip(),
         is_active=True,
+        parent_course_unit=parent_unit,
     )
     CourseUnit.objects.filter(id__in=[u.id for u in units]).update(
         shared_teaching_offering_id=offering.id

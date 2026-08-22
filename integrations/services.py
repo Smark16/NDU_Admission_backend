@@ -223,6 +223,7 @@ def registered_courses_for_student(student: AdmittedStudent) -> list[dict]:
             "course_unit__program_batch__program__faculty",
             "course_unit__shared_teaching_offering",
             "course_unit__shared_teaching_offering__catalog_unit",
+            "course_unit__shared_teaching_offering__parent_course_unit",
         )
         .prefetch_related(
             "course_unit__lecturers",
@@ -351,6 +352,7 @@ def shared_course_units_registry(
             "course_units__program_batch__program",
             "course_units__semester",
             "catalog_unit",
+            "parent_course_unit",
         )
         .order_by("code", "id")
     )

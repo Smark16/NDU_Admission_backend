@@ -7,6 +7,7 @@ from Programs.shared_teaching import (
     moodle_unit_idnumber,
     normalize_shared_unit_key,
     offering_label_for_course_unit,
+    shared_unit_key_for_sto,
 )
 
 
@@ -42,10 +43,31 @@ class _STO:
     name = "Ethics"
     catalog_unit = _Catalog()
     academic_year_label = "2026/2027"
+    parent_course_unit = None
+    parent_course_unit_id = None
 
     @property
     def moodle_idnumber(self):
         return f"STO-{self.pk}"
+
+    def course_units(self):
+        class _QS:
+            def filter(self, **kwargs):
+                return self
+
+            def order_by(self, *args):
+                return self
+
+            def values_list(self, *args, **kwargs):
+                return self
+
+            def first(self):
+                return 88001
+
+            def select_related(self, *args):
+                return self
+
+        return _QS()
 
 
 class _CourseUnit:
@@ -93,3 +115,11 @@ class MoodleSharedFieldsTests(SimpleTestCase):
         self.assertFalse(fields["is_shared"])
         self.assertIsNone(fields["shared_unit_key"])
         self.assertEqual(fields["idnumber"], moodle_unit_idnumber(88001))
+
+    def test_parent_course_unit_drives_shared_unit_key(self):
+        parent = _CourseUnit()
+        parent.code = "BXE 1101"
+        sto = _STO()
+        sto.parent_course_unit = parent
+        sto.parent_course_unit_id = parent.pk
+        self.assertEqual(shared_unit_key_for_sto(sto), "BXE1101")

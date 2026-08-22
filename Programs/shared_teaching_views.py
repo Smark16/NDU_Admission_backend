@@ -78,6 +78,10 @@ class SharedTeachingOfferingListCreateView(APIView):
         try:
             yos = request.data.get("year_of_study")
             term = request.data.get("term_number")
+            parent_raw = request.data.get("parent_course_unit_id")
+            parent_course_unit_id = (
+                int(parent_raw) if parent_raw not in (None, "") else ids[0]
+            )
             with transaction.atomic():
                 offering = create_shared_offering_from_course_units(
                     course_unit_ids=ids,
@@ -89,6 +93,7 @@ class SharedTeachingOfferingListCreateView(APIView):
                     exam_paper_code=(request.data.get("exam_paper_code") or ""),
                     notes=(request.data.get("notes") or ""),
                     lecturer_ids=_parse_int_list(request.data.get("lecturer_ids")) or None,
+                    parent_course_unit_id=parent_course_unit_id,
                 )
         except (TypeError, ValueError) as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
@@ -149,6 +154,33 @@ class SharedTeachingOfferingDetailView(APIView):
         if "catalog_unit_id" in data:
             raw = data.get("catalog_unit_id")
             offering.catalog_unit_id = int(raw) if raw not in (None, "") else None
+        if "parent_course_unit_id" in data:
+            raw = data.get("parent_course_unit_id")
+            if raw in (None, ""):
+                offering.parent_course_unit_id = None
+            else:
+                try:
+                    parent_id = int(raw)
+                except (TypeError, ValueError):
+                    return Response(
+                        {"detail": "parent_course_unit_id must be an integer."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                if not CourseUnit.objects.filter(
+                    pk=parent_id,
+                    shared_teaching_offering_id=offering.id,
+                    is_active=True,
+                ).exists():
+                    return Response(
+                        {
+                            "detail": (
+                                "parent_course_unit_id must be an active course unit "
+                                "linked to this shared offering."
+                            )
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                offering.parent_course_unit_id = parent_id
         offering.save()
 
         if "lecturer_ids" in data:

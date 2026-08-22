@@ -274,6 +274,7 @@ class MoodleCourseUnitsView(APIView):
                 "program_batch__program__faculty",
                 "shared_teaching_offering",
                 "shared_teaching_offering__catalog_unit",
+                "shared_teaching_offering__parent_course_unit",
             )
             .prefetch_related(
                 "lecturers",
@@ -392,6 +393,7 @@ class MoodleEnrolledStudentsView(APIView):
             "course_unit__program_batch__program",
             "course_unit__shared_teaching_offering",
             "course_unit__shared_teaching_offering__catalog_unit",
+            "course_unit__shared_teaching_offering__parent_course_unit",
         )
         shared_meta = moodle_shared_fields_for_course_unit(cu)
         students = []

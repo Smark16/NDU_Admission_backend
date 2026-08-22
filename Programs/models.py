@@ -881,6 +881,17 @@ class SharedTeachingOffering(models.Model):
         default="",
         help_text="Optional paper / sitting code printed on scripts (defaults to moodle idnumber).",
     )
+    parent_course_unit = models.ForeignKey(
+        "CourseUnit",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="shared_teaching_as_parent",
+        help_text=(
+            "Canonical programme offering for this shared class (Moodle parent_unit_id "
+            "and shared_unit_key). Set from Timetable when linking cross-cutting programmes."
+        ),
+    )
     notes = models.TextField(blank=True, default="")
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
