@@ -859,7 +859,14 @@ def registration_card_payment_history(
             status="completed",
             is_waived=False,
         )
-        .select_related("fee_plan_rule__fee_head", "fee_plan_rule__semester", "fee_head", "semester")
+        .select_related(
+            "fee_plan_rule__fee_head",
+            "fee_plan_rule__semester",
+            "fee_head",
+            "semester",
+            "charged_by",
+            "verified_by",
+        )
         .order_by("-paid_at", "-created_at")[:80]
     ):
         if _is_internal_reallocation(p):
@@ -870,6 +877,14 @@ def registration_card_payment_history(
             (p.transaction_id or "").startswith("MANUAL-CREDIT-")
             or (p.payment_reference or "").startswith("MANUAL-CREDIT-")
         )
+        actor = getattr(p, "charged_by", None) or getattr(p, "verified_by", None)
+        posted_by = ""
+        if actor is not None:
+            posted_by = (
+                (actor.get_full_name() or "").strip()
+                or getattr(actor, "username", "")
+                or ""
+            )
         if is_account_credit:
             channel = "Account credit"
             desc = (
@@ -889,6 +904,7 @@ def registration_card_payment_history(
                     desc = p.fee_plan_rule.fee_head.name
         rows.append(
             {
+                "id": p.id,
                 "paid_at": paid_at.isoformat() if paid_at else None,
                 "amount": float(p.amount or 0),
                 "currency": (p.currency or "UGX").strip() or "UGX",
@@ -898,6 +914,8 @@ def registration_card_payment_history(
                 "semester": _payment_history_semester_label(p, student, windows),
                 "source": src or "portal",
                 "is_account_credit": is_account_credit,
+                "posted_by": posted_by or None,
+                "posted_by_id": getattr(actor, "pk", None) if actor is not None else None,
             }
         )
 
