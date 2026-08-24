@@ -48,6 +48,7 @@ jobs:
           # python manage.py migrate Programs 0032_timetablesession_start_end_date --fake
           python manage.py migrate Programs 0034_program_department --fake
           python manage.py migrate Programs 0035_shared_teaching_offering --fake
+          python manage.py migrate Programs 0036_sharedteachingoffering_parent_course_unit --fake
           python manage.py migrate
 
           python manage.py ensure_program_choice_confirmation_columns || true
