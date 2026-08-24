@@ -816,8 +816,10 @@ def registration_card_payment_history(
     student: AdmittedStudent, *, limit: int = 12
 ) -> list[dict[str, Any]]:
     """
-    Compact completed-payment rows for the printed registration card (A4).
-    Excludes pending/failed/waived and scholarship ledger credits.
+    Compact completed-payment rows for registration card / Bonafide finance.
+    Includes SchoolPay ledger and portal rows, plus Accounts scholarship /
+    MANUAL-CREDIT rows (labeled as account credit) so paid % is auditable.
+    Excludes pending/failed/waived and internal reallocations.
     Includes all semesters; each row is labeled by payment date → cohort semester.
     """
     rows: list[dict[str, Any]] = []
@@ -857,29 +859,45 @@ def registration_card_payment_history(
             status="completed",
             is_waived=False,
         )
-        .exclude(source="scholarship")
         .select_related("fee_plan_rule__fee_head", "fee_plan_rule__semester", "fee_head", "semester")
         .order_by("-paid_at", "-created_at")[:80]
     ):
         if _is_internal_reallocation(p):
             continue
         paid_at = p.paid_at or p.created_at
-        channel = (p.payment_method or "").replace("_", " ").strip() or "Portal"
-        if p.source == "ad_hoc":
-            desc = (p.label or (p.fee_head.name if p.fee_head_id else "Charge")).strip()
+        src = (p.source or "").strip().lower()
+        is_account_credit = src == "scholarship" or (
+            (p.transaction_id or "").startswith("MANUAL-CREDIT-")
+            or (p.payment_reference or "").startswith("MANUAL-CREDIT-")
+        )
+        if is_account_credit:
+            channel = "Account credit"
+            desc = (
+                (p.label or "").strip()
+                or (p.fee_head.name if p.fee_head_id else "")
+                or "Scholarship / manual credit"
+            )
+            if not desc.lower().startswith("account") and "credit" not in desc.lower():
+                desc = f"Account credit — {desc}"
         else:
-            desc = "Tuition"
-            if p.fee_plan_rule_id and p.fee_plan_rule and p.fee_plan_rule.fee_head_id:
-                desc = p.fee_plan_rule.fee_head.name
+            channel = (p.payment_method or "").replace("_", " ").strip() or "Portal"
+            if src == "ad_hoc":
+                desc = (p.label or (p.fee_head.name if p.fee_head_id else "Charge")).strip()
+            else:
+                desc = "Tuition"
+                if p.fee_plan_rule_id and p.fee_plan_rule and p.fee_plan_rule.fee_head_id:
+                    desc = p.fee_plan_rule.fee_head.name
         rows.append(
             {
                 "paid_at": paid_at.isoformat() if paid_at else None,
                 "amount": float(p.amount or 0),
                 "currency": (p.currency or "UGX").strip() or "UGX",
-                "channel": channel.title() if channel else "Portal",
-                "receipt": (p.receipt_number or p.payment_reference or "").strip(),
+                "channel": channel.title() if channel and not is_account_credit else channel,
+                "receipt": (p.receipt_number or p.payment_reference or p.transaction_id or "").strip(),
                 "description": desc or "Payment",
                 "semester": _payment_history_semester_label(p, student, windows),
+                "source": src or "portal",
+                "is_account_credit": is_account_credit,
             }
         )
 
