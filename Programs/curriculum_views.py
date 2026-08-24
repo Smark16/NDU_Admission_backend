@@ -757,13 +757,21 @@ class BulkUploadCurriculumView(APIView):
 
             key = (catalog_course.id, year, term, specialization.casefold())
             if key in existing:
-                track = specialization or "shared"
+                if specialization:
+                    reason = (
+                        f'Already mapped for this programme / year / term / '
+                        f'combination ({specialization})'
+                    )
+                else:
+                    reason = (
+                        'Already mapped as a shared row (blank specialization). '
+                        'To add a track-only copy, fill specialization with the '
+                        'exact combination name from programme settings.'
+                    )
                 skipped.append({
                     'row': row_num,
                     'course_code': course_code,
-                    'reason': (
-                        f'Already mapped for this programme / year / term / combination ({track})'
-                    ),
+                    'reason': reason,
                 })
                 continue
 
