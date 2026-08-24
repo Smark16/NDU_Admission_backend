@@ -1,5 +1,6 @@
 from accounts.models import Campus
 from accounts.erp_drf_permissions import CanViewAdmissionQueues, user_has_any_erp_perm
+from accounts.super_admin import user_is_super_admin
 from .models import *
 from rest_framework.views import APIView
 from django.shortcuts import get_object_or_404
@@ -3138,6 +3139,7 @@ class RevokeAdmittedStudent(APIView):
         if not (
             request.user.has_perm("admissions.revoke_admission")
             or request.user.has_perm("admissions.change_admittedstudent")
+            or user_is_super_admin(request.user)
         ):
             return Response({"detail": "You do not have permission to revoke admissions."}, status=403)
 
@@ -3149,7 +3151,9 @@ class RevokeAdmittedStudent(APIView):
             admission_revoke_or_delete_blocked_reason,
         )
 
-        blocked = admission_revoke_or_delete_blocked_reason(admission)
+        blocked = admission_revoke_or_delete_blocked_reason(
+            admission, request.user, action="revoke"
+        )
         if blocked:
             return Response({"detail": blocked}, status=400)
 
@@ -4560,7 +4564,9 @@ class DeleteAdmittedStudent(generics.DestroyAPIView):
             admission_revoke_or_delete_blocked_reason,
         )
 
-        blocked = admission_revoke_or_delete_blocked_reason(admission)
+        blocked = admission_revoke_or_delete_blocked_reason(
+            admission, request.user, action="delete"
+        )
         if blocked:
             return Response({"detail": blocked}, status=400)
         application_id = admission.application_id

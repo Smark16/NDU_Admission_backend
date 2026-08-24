@@ -708,6 +708,7 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
     commitment_balance = serializers.SerializerMethodField()
     commitment_threshold = serializers.SerializerMethodField()
     can_revoke_or_delete = serializers.SerializerMethodField()
+    can_revoke = serializers.SerializerMethodField()
     admission_lock_reason = serializers.SerializerMethodField()
     phone = serializers.CharField(source="application.phone", default="", read_only=True)
     email = serializers.EmailField(source="application.email", default="", read_only=True)
@@ -751,6 +752,7 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
             'physical_documents_notes',
             'accounts_registration_cleared',
             'can_revoke_or_delete',
+            'can_revoke',
             'admission_lock_reason',
             'is_approved',
             'approved_by_name',
@@ -913,18 +915,26 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
         totals = self._commitment_totals(obj)
         return totals["commitment_threshold"] if totals else None
 
-    def _admission_lock_reason(self, obj):
+    def _admission_lock_reason(self, obj, *, action: str = "delete"):
         from admissions.registration_workflow import (
             admission_revoke_or_delete_blocked_reason,
         )
 
-        return admission_revoke_or_delete_blocked_reason(obj)
+        request = self.context.get("request")
+        user = getattr(request, "user", None) if request else None
+        return admission_revoke_or_delete_blocked_reason(obj, user, action=action)
 
     def get_admission_lock_reason(self, obj):
-        return self._admission_lock_reason(obj)
+        # Informational lock text for registered/verified students.
+        return self._admission_lock_reason(obj, action="delete")
 
     def get_can_revoke_or_delete(self, obj):
-        return self._admission_lock_reason(obj) is None
+        # Delete remains blocked for registered/verified students (even Super Admin).
+        return self._admission_lock_reason(obj, action="delete") is None
+
+    def get_can_revoke(self, obj):
+        # Super Admin may revoke registered/verified admissions.
+        return self._admission_lock_reason(obj, action="revoke") is None
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
@@ -1399,9 +1409,17 @@ class AdmissionDetailSerializer(serializers.ModelSerializer):
         )
 
         response.update(schoolpay_wallet_api_fields(instance))
-        lock_reason = admission_revoke_or_delete_blocked_reason(instance)
-        response["admission_lock_reason"] = lock_reason
-        response["can_revoke_or_delete"] = lock_reason is None
+        request = self.context.get("request")
+        user = getattr(request, "user", None) if request else None
+        delete_lock = admission_revoke_or_delete_blocked_reason(
+            instance, user, action="delete"
+        )
+        revoke_lock = admission_revoke_or_delete_blocked_reason(
+            instance, user, action="revoke"
+        )
+        response["admission_lock_reason"] = delete_lock
+        response["can_revoke_or_delete"] = delete_lock is None
+        response["can_revoke"] = revoke_lock is None
         return response
     
 # notification serializers

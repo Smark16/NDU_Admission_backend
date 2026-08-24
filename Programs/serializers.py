@@ -2,6 +2,7 @@ from decimal import Decimal
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError
+from django.db.models import Q
 from rest_framework import serializers
 
 from .catalog_reference_sync import sync_catalog_unit_references
@@ -123,6 +124,10 @@ class ProgramSerializer(serializers.ModelSerializer):
     class Meta:
         model = Program
         fields = '__all__'
+        extra_kwargs = {
+            # DB still allows null for legacy rows; API create/update must set faculty.
+            "faculty": {"required": True, "allow_null": False},
+        }
 
     def validate(self, attrs):
         has_spec = attrs.get('has_specialization')
@@ -145,6 +150,23 @@ class ProgramSerializer(serializers.ModelSerializer):
         department = attrs.get("department")
         if department is not None:
             attrs["faculty"] = department.faculty
+
+        # Faculty is required for bursar / faculty-scoped reports (no "Unassigned").
+        if "faculty" in attrs:
+            faculty = attrs.get("faculty")
+        elif self.instance is not None:
+            faculty = self.instance.faculty
+        else:
+            faculty = None
+        if faculty is None:
+            raise serializers.ValidationError(
+                {
+                    "faculty": (
+                        "Faculty is required. Assign this programme to a faculty "
+                        "so students appear correctly on reports."
+                    )
+                }
+            )
         return attrs
 
     def to_representation(self, instance):
@@ -354,20 +376,29 @@ class ProgramCurriculumLineSerializer(serializers.ModelSerializer):
                     )
                 })
 
-        # duplicate slot check — surfaces a readable message before the DB constraint fires
-        if program and catalog_course and year_of_study and term_number:
+        # duplicate slot check — same course/year/term/track only
+        # (Math&Physics and Math&Chemistry may both map the same catalog course)
+        specialization = attrs.get('specialization', getattr(self.instance, 'specialization', None))
+        spec_for_dup = (specialization or '').strip()
+        if program and catalog_course and year_of_study and term_number and curriculum_version:
             qs = ProgramCurriculumLine.objects.filter(
                 curriculum_version=curriculum_version,
                 catalog_course=catalog_course,
                 year_of_study=year_of_study,
                 term_number=term_number,
             )
+            # Match blank/null as the shared track
+            if spec_for_dup:
+                qs = qs.filter(specialization__iexact=spec_for_dup)
+            else:
+                qs = qs.filter(Q(specialization__isnull=True) | Q(specialization=''))
             if self.instance:
                 qs = qs.exclude(pk=self.instance.pk)
             if qs.exists():
+                track_label = spec_for_dup or "shared (all combinations)"
                 raise serializers.ValidationError(
                     f"{catalog_course.code} is already mapped to this programme "
-                    f"at Year {year_of_study} Term {term_number}."
+                    f"at Year {year_of_study} Term {term_number} for {track_label}."
                 )
 
         # No track-specific lines before the programme's specialization entry point
@@ -375,6 +406,10 @@ class ProgramCurriculumLineSerializer(serializers.ModelSerializer):
 
         specialization = attrs.get('specialization', getattr(self.instance, 'specialization', None))
         spec_value = (specialization or '').strip()
+        if spec_value:
+            attrs['specialization'] = spec_value
+        else:
+            attrs['specialization'] = ''
         if (
             program
             and program.has_specialization
@@ -418,7 +453,8 @@ class ProgramCurriculumLineSerializer(serializers.ModelSerializer):
             return super().create(validated_data)
         except IntegrityError:
             raise serializers.ValidationError(
-                "A curriculum line with this programme / course / year / semester already exists."
+                "A curriculum line with this programme / course / year / semester / "
+                "subject combination already exists."
             )
 
     def update(self, instance, validated_data):
@@ -426,7 +462,8 @@ class ProgramCurriculumLineSerializer(serializers.ModelSerializer):
             return super().update(instance, validated_data)
         except IntegrityError:
             raise serializers.ValidationError(
-                "A curriculum line with this programme / course / year / semester already exists."
+                "A curriculum line with this programme / course / year / semester / "
+                "subject combination already exists."
             )
 
 

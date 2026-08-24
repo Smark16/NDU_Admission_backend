@@ -699,12 +699,16 @@ class BulkUploadCurriculumView(APIView):
             for c in CourseCatalogUnit.objects.all()
         }
 
-        # Existing mappings for this programme (to skip duplicates)
-        existing = set(
-            ProgramCurriculumLine.objects
-            .filter(program=owner, curriculum_version=curriculum_version)
-            .values_list('catalog_course_id', 'year_of_study', 'term_number')
-        )
+        # Existing mappings for this programme (to skip true duplicates only).
+        # Key includes specialization so Math&Physics and Math&Chemistry can share a course code.
+        existing = {
+            (cid, y, t, (spec or "").strip().casefold())
+            for cid, y, t, spec in ProgramCurriculumLine.objects.filter(
+                program=owner, curriculum_version=curriculum_version
+            ).values_list(
+                "catalog_course_id", "year_of_study", "term_number", "specialization"
+            )
+        }
 
         to_create = []
         skipped = []
@@ -748,12 +752,18 @@ class BulkUploadCurriculumView(APIView):
                 })
                 continue
 
-            key = (catalog_course.id, year, term)
+            elective_group = row.get('elective_group') or None
+            specialization = (row.get('specialization') or '').strip()
+
+            key = (catalog_course.id, year, term, specialization.casefold())
             if key in existing:
+                track = specialization or "shared"
                 skipped.append({
                     'row': row_num,
                     'course_code': course_code,
-                    'reason': 'Already mapped for this programme / year / term',
+                    'reason': (
+                        f'Already mapped for this programme / year / term / combination ({track})'
+                    ),
                 })
                 continue
 
@@ -761,9 +771,6 @@ class BulkUploadCurriculumView(APIView):
                 sort_order = int(row.get('sort_order') or '0')
             except ValueError:
                 sort_order = 0
-
-            elective_group  = row.get('elective_group') or None
-            specialization  = row.get('specialization') or None
 
             to_create.append(ProgramCurriculumLine(
                 program=owner,

@@ -68,21 +68,47 @@ ADMISSION_REVOKE_OR_DELETE_BLOCKED = (
     "Admission cannot be revoked or deleted."
 )
 
+ADMISSION_DELETE_BLOCKED_SUPER_ADMIN_HINT = (
+    "This student is accounts-cleared and registered (verified roster). "
+    "Admission cannot be deleted. Super Admin may revoke instead."
+)
+
 
 def admission_revoke_or_delete_blocked_reason(
     student: AdmittedStudent | None,
+    user=None,
+    *,
+    action: str = "delete",
 ) -> str | None:
     """
-    Official students cannot be withdrawn from the system.
+    Official students cannot be withdrawn from the system by normal staff.
 
     Locked when they are on the verified roster (physical documents verified)
     or they are both accounts-cleared and registered.
+
+    Super Admin may **revoke** (not delete) locked admissions — pass
+    ``action="revoke"`` and the acting ``user``.
     """
     if student is None:
         return None
     verified = bool(getattr(student, "physical_documents_verified", False))
     cleared = bool(getattr(student, "accounts_registration_cleared", False))
     registered = bool(getattr(student, "is_registered", False))
-    if verified or (cleared and registered):
+    locked = verified or (cleared and registered)
+    if not locked:
+        return None
+
+    if action == "revoke" and user is not None:
+        from accounts.super_admin import user_is_super_admin
+
+        if user_is_super_admin(user):
+            return None
+
+    if action == "revoke":
         return ADMISSION_REVOKE_OR_DELETE_BLOCKED
-    return None
+    if user is not None:
+        from accounts.super_admin import user_is_super_admin
+
+        if user_is_super_admin(user):
+            return ADMISSION_DELETE_BLOCKED_SUPER_ADMIN_HINT
+    return ADMISSION_REVOKE_OR_DELETE_BLOCKED

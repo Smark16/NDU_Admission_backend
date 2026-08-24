@@ -16,7 +16,14 @@ class Program(models.Model):
     name = models.CharField(max_length=200)
     short_form = models.CharField(max_length=200)
     code = models.CharField(max_length=40)
-    faculty = models.ForeignKey('admissions.Faculty', on_delete=models.CASCADE, related_name='programs', null=True, blank=True)
+    faculty = models.ForeignKey(
+        'admissions.Faculty',
+        on_delete=models.CASCADE,
+        related_name='programs',
+        null=True,
+        blank=True,
+        help_text="Required on create/update via API. Nullable only for legacy rows.",
+    )
     department = models.ForeignKey(
         'admissions.AcademicDepartment',
         on_delete=models.SET_NULL,
@@ -442,8 +449,11 @@ class ProgramCurriculumLine(models.Model):
     specialization = models.CharField(
         max_length=100,
         blank=True,
-        null=True,
-        help_text="Reserved for future specialization/track filtering.",
+        default="",
+        help_text=(
+            "Track / subject combination this line belongs to "
+            "(e.g. 'Mathematics and Physics'). Blank = shared by all tracks."
+        ),
     )
     sort_order = models.PositiveSmallIntegerField(
         default=0,
@@ -456,8 +466,17 @@ class ProgramCurriculumLine(models.Model):
     class Meta:
         ordering = ['year_of_study', 'term_number', 'sort_order', 'catalog_course__code']
         constraints = [
+            # Same catalog course may appear once per track at the same year/term
+            # (e.g. EDU methods for Math&Physics and again for Math&Chemistry).
+            # Blank specialization = one shared row for all combinations.
             models.UniqueConstraint(
-                fields=('curriculum_version', 'catalog_course', 'year_of_study', 'term_number'),
+                fields=(
+                    'curriculum_version',
+                    'catalog_course',
+                    'year_of_study',
+                    'term_number',
+                    'specialization',
+                ),
                 name='unique_curriculum_slot',
             )
         ]
