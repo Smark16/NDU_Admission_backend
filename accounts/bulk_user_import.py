@@ -15,8 +15,9 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 
 from accounts.models import Campus, User
-from accounts.serializers import normalize_staff_id
+from accounts.serializers import normalize_login_username, normalize_staff_id, normalize_staff_kind
 from accounts.tasks import celery_send_account_email
+from rest_framework import serializers as drf_serializers
 
 # Same essentials as Add User form (password is system-generated — not in the sheet).
 # Faculty is assigned later via Edit User when needed (Dean / Admin / HOD).
@@ -24,18 +25,21 @@ HEADER_MAP = {
     "FIRST NAME *": "first_name",
     "LAST NAME *": "last_name",
     "EMAIL *": "email",
+    "STAFF TYPE *": "staff_kind",
+    "USERNAME": "username",
     "ROLE *": "role",
     "STAFF ID": "staff_id",
     "PHONE": "phone",
     "CAMPUS": "campus",
 }
 
-REQUIRED_FIELDS = ("first_name", "last_name", "email", "role")
+REQUIRED_FIELDS = ("first_name", "last_name", "email", "staff_kind", "role")
 
 TEMPLATE_HEADERS = list(HEADER_MAP.keys())
 
 TEMPLATE_INSTRUCTIONS = (
-    "* = compulsory. Use ROLE and CAMPUS dropdowns only. "
+    "* = compulsory. Use STAFF TYPE, ROLE and CAMPUS dropdowns only. "
+    "Full-time logs in with email; part-time needs USERNAME (email still for communication). "
     "Password is emailed automatically — user changes it on first login."
 )
 
@@ -92,14 +96,19 @@ def build_user_upload_workbook() -> Workbook:
     ws_look.title = "Lookups"
     ws_look["A1"] = "ROLE"
     ws_look["B1"] = "CAMPUS"
+    ws_look["C1"] = "STAFF TYPE"
     ws_look["A1"].font = Font(bold=True)
     ws_look["B1"].font = Font(bold=True)
+    ws_look["C1"].font = Font(bold=True)
     for i, role in enumerate(roles, start=2):
         ws_look.cell(row=i, column=1, value=role)
     for i, campus in enumerate(campuses, start=2):
         ws_look.cell(row=i, column=2, value=campus)
+    ws_look.cell(row=2, column=3, value="Full-time")
+    ws_look.cell(row=3, column=3, value="Part-time")
     ws_look.column_dimensions["A"].width = 36
     ws_look.column_dimensions["B"].width = 28
+    ws_look.column_dimensions["C"].width = 16
     role_last = max(2, len(roles) + 1)
     campus_last = max(2, len(campuses) + 1)
 
@@ -114,7 +123,7 @@ def build_user_upload_workbook() -> Workbook:
     ws.cell(1, 1, TEMPLATE_INSTRUCTIONS)
     ws.cell(1, 1).font = Font(color="7C1519", italic=True, size=11)
     ws.cell(1, 1).alignment = Alignment(wrap_text=True, vertical="center")
-    ws.row_dimensions[1].height = 28
+    ws.row_dimensions[1].height = 36
 
     header_row = 2
     for col_idx, header in enumerate(TEMPLATE_HEADERS, 1):
@@ -133,7 +142,22 @@ def build_user_upload_workbook() -> Workbook:
     data_start = 3
     data_end = 1000
 
-    # ROLE * = column 4 — dropdown from Lookups!A
+    # STAFF TYPE * = column 4
+    dv_kind = DataValidation(
+        type="list",
+        formula1="Lookups!$C$2:$C$3",
+        allow_blank=False,
+        showDropDown=False,
+        showErrorMessage=True,
+        errorTitle="Invalid staff type",
+        error="Pick Full-time or Part-time.",
+        promptTitle="Staff type",
+        prompt="Full-time logs in with email; Part-time needs a USERNAME.",
+    )
+    dv_kind.add(f"D{data_start}:D{data_end}")
+    ws.add_data_validation(dv_kind)
+
+    # ROLE * = column 6 — dropdown from Lookups!A
     if roles:
         dv_role = DataValidation(
             type="list",
@@ -146,10 +170,10 @@ def build_user_upload_workbook() -> Workbook:
             promptTitle="Role",
             prompt="Select a role from the list.",
         )
-        dv_role.add(f"D{data_start}:D{data_end}")
+        dv_role.add(f"F{data_start}:F{data_end}")
         ws.add_data_validation(dv_role)
 
-    # CAMPUS = column 7 — dropdown from Lookups!B
+    # CAMPUS = column 9 — dropdown from Lookups!B
     if campuses:
         dv_campus = DataValidation(
             type="list",
@@ -162,7 +186,7 @@ def build_user_upload_workbook() -> Workbook:
             promptTitle="Campus",
             prompt="Select a campus from the list (optional).",
         )
-        dv_campus.add(f"G{data_start}:G{data_end}")
+        dv_campus.add(f"I{data_start}:I{data_end}")
         ws.add_data_validation(dv_campus)
 
     ws.freeze_panes = "A3"
@@ -172,7 +196,19 @@ def build_user_upload_workbook() -> Workbook:
     guide.append(["Column", "Required?", "Notes"])
     guide.append(["FIRST NAME *", "Compulsory", "Same as Add User form"])
     guide.append(["LAST NAME *", "Compulsory", "Same as Add User form"])
-    guide.append(["EMAIL *", "Compulsory", "Login username = email (unique)"])
+    guide.append(
+        ["EMAIL *", "Compulsory", "Always captured. Full-time: also used as login."]
+    )
+    guide.append(
+        ["STAFF TYPE *", "Compulsory", "Full-time or Part-time (dropdown)"]
+    )
+    guide.append(
+        [
+            "USERNAME",
+            "Required if Part-time",
+            "Login username for part-time staff (not an email). Leave blank for full-time.",
+        ]
+    )
     guide.append(["ROLE *", "Compulsory", "Dropdown from DB roles (Groups)"])
     guide.append(["STAFF ID", "Optional", "Same as Add User form"])
     guide.append(["PHONE", "Optional", "Same as Add User form"])
@@ -235,10 +271,14 @@ def parse_upload_file(upload) -> list[dict[str, Any]]:
 
     missing = [f for f in REQUIRED_FIELDS if f not in col_index]
     if missing:
-        raise ValueError(
-            "Template headers missing or renamed. Download a fresh template. "
-            f"Missing: {', '.join(missing)}"
-        )
+        # Older templates without STAFF TYPE default to full-time.
+        if missing == ["staff_kind"]:
+            pass
+        else:
+            raise ValueError(
+                "Template headers missing or renamed. Download a fresh template. "
+                f"Missing: {', '.join(missing)}"
+            )
 
     for r_i, row in enumerate(all_rows[start + 1 :], start=start + 2):
         if not row or not any(str(c or "").strip() for c in row):
@@ -287,6 +327,12 @@ def import_users_from_rows(rows: list[dict[str, Any]], *, send_email: bool = Tru
         .exclude(email="")
         .values_list("email", flat=True)
     }
+    existing_usernames = {
+        u.lower()
+        for u in User.objects.exclude(username__isnull=True)
+        .exclude(username="")
+        .values_list("username", flat=True)
+    }
     existing_staff_ids = {
         s
         for s in User.objects.exclude(staff_id__isnull=True)
@@ -295,6 +341,7 @@ def import_users_from_rows(rows: list[dict[str, Any]], *, send_email: bool = Tru
     }
     # Also reserve emails within this upload file
     seen_in_file: set[str] = set()
+    seen_usernames_in_file: set[str] = set()
     seen_staff_in_file: set[str] = set()
 
     for item in rows:
@@ -323,6 +370,31 @@ def import_users_from_rows(rows: list[dict[str, Any]], *, send_email: bool = Tru
         elif role_raw.lower() == "student":
             row_errors.append("Student role cannot be created here")
 
+        try:
+            staff_kind = normalize_staff_kind(item.get("staff_kind") or "FULL_TIME")
+        except drf_serializers.ValidationError as exc:
+            staff_kind = User.STAFF_KIND_FULL_TIME
+            detail = getattr(exc, "detail", None)
+            row_errors.append(str(detail[0] if isinstance(detail, list) else detail or exc))
+
+        login_username = email
+        if staff_kind == User.STAFF_KIND_PART_TIME:
+            try:
+                login_username = normalize_login_username(item.get("username"))
+            except drf_serializers.ValidationError as exc:
+                detail = getattr(exc, "detail", None)
+                row_errors.append(
+                    f"username: {detail[0] if isinstance(detail, list) else detail or exc}"
+                )
+                login_username = ""
+            if not login_username:
+                row_errors.append("username required for part-time staff")
+            elif login_username in existing_usernames or login_username in seen_usernames_in_file:
+                row_errors.append(f"username '{login_username}' already exists")
+        else:
+            if email and (email in existing_usernames or email in seen_usernames_in_file):
+                row_errors.append(f"email '{email}' already used as a username")
+
         group = groups_by_name.get(role_raw.lower()) if role_raw else None
         if role_raw and group is None and role_raw.lower() != "student":
             row_errors.append(
@@ -347,11 +419,12 @@ def import_users_from_rows(rows: list[dict[str, Any]], *, send_email: bool = Tru
             with transaction.atomic():
                 user = User(
                     email=email,
-                    username=email,
+                    username=login_username,
                     first_name=first_name,
                     last_name=last_name,
                     phone=phone or None,
                     staff_id=staff_id or None,
+                    staff_kind=staff_kind,
                     role=group.name if group else role_raw,
                     is_staff=True,
                     is_active=True,
@@ -389,6 +462,8 @@ def import_users_from_rows(rows: list[dict[str, Any]], *, send_email: bool = Tru
 
         seen_in_file.add(email)
         existing_emails.add(email)
+        seen_usernames_in_file.add(login_username)
+        existing_usernames.add(login_username)
         if staff_id:
             seen_staff_in_file.add(staff_id)
             existing_staff_ids.add(staff_id)
@@ -398,6 +473,8 @@ def import_users_from_rows(rows: list[dict[str, Any]], *, send_email: bool = Tru
             {
                 "id": user.pk,
                 "email": email,
+                "username": login_username,
+                "staff_kind": staff_kind,
                 "name": f"{first_name} {last_name}".strip(),
                 "role": group.name if group else role_raw,
                 "email_queued": False,

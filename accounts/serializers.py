@@ -27,6 +27,33 @@ def normalize_staff_id(value):
     return text or None
 
 
+def normalize_staff_kind(value):
+    kind = (value or "").strip().upper().replace("-", "_").replace(" ", "_")
+    if kind in ("PART_TIME", "PARTTIME", "PART"):
+        return User.STAFF_KIND_PART_TIME
+    if kind in ("FULL_TIME", "FULLTIME", "FULL", ""):
+        return User.STAFF_KIND_FULL_TIME
+    raise serializers.ValidationError(
+        "Staff type must be Full-time or Part-time."
+    )
+
+
+def normalize_login_username(value):
+    """Part-time login username — no @ (avoids clashing with email login)."""
+    text = (value or "").strip().lower()
+    if not text:
+        return ""
+    if "@" in text:
+        raise serializers.ValidationError(
+            "Part-time login username cannot be an email. Use a short username (e.g. j.doe)."
+        )
+    if len(text) < 3:
+        raise serializers.ValidationError("Username must be at least 3 characters.")
+    if len(text) > 150:
+        raise serializers.ValidationError("Username is too long.")
+    return text
+
+
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
@@ -50,14 +77,19 @@ class UserSerializer(serializers.ModelSerializer):
 class UserManagementUpdateSerializer(serializers.ModelSerializer):
     """Safe subset for User Management edits — never touches groups/permissions M2M."""
 
+    username = serializers.CharField(required=False, allow_blank=True)
+    staff_kind = serializers.CharField(required=False, allow_blank=True)
+
     class Meta:
         model = User
         fields = (
             "first_name",
             "last_name",
             "email",
+            "username",
             "phone",
             "staff_id",
+            "staff_kind",
             "role",
             "is_staff",
             "is_active",
@@ -76,6 +108,9 @@ class UserManagementUpdateSerializer(serializers.ModelSerializer):
             )
         return staff_id
 
+    def validate_staff_kind(self, value):
+        return normalize_staff_kind(value)
+
     def validate_email(self, value):
         email = (value or "").strip()
         if not email:
@@ -88,34 +123,62 @@ class UserManagementUpdateSerializer(serializers.ModelSerializer):
             qs = qs.exclude(pk=self.instance.pk)
         if qs.exists():
             raise serializers.ValidationError("A user with this email already exists.")
-        # Username is the login key and is unique — block email if another account
-        # already uses it as username (email→username sync would fail later).
-        uname_qs = User.objects.filter(username__iexact=email)
-        if self.instance:
-            uname_qs = uname_qs.exclude(pk=self.instance.pk)
-        if uname_qs.exists():
-            raise serializers.ValidationError(
-                "A user with this email (as username) already exists."
-            )
         return email
 
+    def validate(self, attrs):
+        instance = self.instance
+        email = (attrs.get("email") if "email" in attrs else (instance.email if instance else "") or "").strip()
+        staff_kind = attrs.get("staff_kind")
+        if staff_kind is None and instance is not None:
+            staff_kind = instance.staff_kind or User.STAFF_KIND_FULL_TIME
+        else:
+            staff_kind = normalize_staff_kind(staff_kind)
+
+        attrs["staff_kind"] = staff_kind
+
+        if staff_kind == User.STAFF_KIND_PART_TIME:
+            raw_username = attrs.get("username")
+            if raw_username is None and instance is not None:
+                username = (instance.username or "").strip().lower()
+            else:
+                username = normalize_login_username(raw_username)
+            if not username:
+                raise serializers.ValidationError(
+                    {"username": "Username is required for part-time staff (they log in with it)."}
+                )
+            qs = User.objects.filter(username__iexact=username)
+            if instance:
+                qs = qs.exclude(pk=instance.pk)
+            if qs.exists():
+                raise serializers.ValidationError(
+                    {"username": "That username is already taken."}
+                )
+            # Avoid login ambiguity with another account's email.
+            email_clash = User.objects.filter(email__iexact=username)
+            if instance:
+                email_clash = email_clash.exclude(pk=instance.pk)
+            if email_clash.exists():
+                raise serializers.ValidationError(
+                    {"username": "That username matches another user's email."}
+                )
+            attrs["username"] = username
+        else:
+            # Full-time: login username is always the email.
+            if not email:
+                raise serializers.ValidationError({"email": "Email is required."})
+            uname_qs = User.objects.filter(username__iexact=email)
+            if instance:
+                uname_qs = uname_qs.exclude(pk=instance.pk)
+            if uname_qs.exists():
+                raise serializers.ValidationError(
+                    {"email": "A user with this email (as username) already exists."}
+                )
+            attrs["username"] = email
+
+        return attrs
+
     def update(self, instance, validated_data):
-        email = validated_data.get("email", instance.email)
-        email = (email or "").strip()
-        instance = super().update(instance, validated_data)
-        if not email or instance.username == email:
-            return instance
-        # Prefer aligning username to email when free; never fail the whole edit
-        # if only the username sync conflicts (legacy login names).
-        taken = (
-            User.objects.filter(username__iexact=email)
-            .exclude(pk=instance.pk)
-            .exists()
-        )
-        if not taken:
-            instance.username = email
-            instance.save(update_fields=["username"])
-        return instance
+        return super().update(instance, validated_data)
 
 
 class ListUserSerializer(serializers.ModelSerializer):
@@ -130,6 +193,7 @@ class ListUserSerializer(serializers.ModelSerializer):
             "email",
             "username",
             "staff_id",
+            "staff_kind",
             "phone",
             "role",
             "is_active",
@@ -270,6 +334,9 @@ class RegisterSerializer(serializers.ModelSerializer):
         required=False,
         write_only=True,
     )
+    username = serializers.CharField(required=False, allow_blank=True)
+    staff_kind = serializers.CharField(required=False, allow_blank=True)
+    staff_id = serializers.CharField(required=False, allow_blank=True, allow_null=True)
 
     campuses = serializers.PrimaryKeyRelatedField(
         queryset=Campus.objects.all(),
@@ -286,9 +353,10 @@ class RegisterSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = [
-            'id', 'email', 'password', 'confirm_password', 'roles',
+            'id', 'email', 'username', 'password', 'confirm_password', 'roles',
             'first_name', 'last_name', 'last_login',
             'date_joined', 'role', 'campuses', 'faculties', 'phone',
+            'staff_id', 'staff_kind',
             'is_active', 'is_staff', 'is_applicant',
         ]
         read_only_fields = ('id', 'last_login', 'date_joined')
@@ -297,6 +365,19 @@ class RegisterSerializer(serializers.ModelSerializer):
         if value in (None, ''):
             return ''
         return str(value).strip().replace(' ', '')[:20]
+
+    def validate_staff_id(self, value):
+        staff_id = normalize_staff_id(value)
+        if not staff_id:
+            return None
+        if User.objects.filter(staff_id__iexact=staff_id).exists():
+            raise serializers.ValidationError(
+                "That staff ID is already assigned to another user."
+            )
+        return staff_id
+
+    def validate_staff_kind(self, value):
+        return normalize_staff_kind(value)
 
     def validate(self, data):
         role_name = (data.get("role") or "").strip().lower()
@@ -319,10 +400,40 @@ class RegisterSerializer(serializers.ModelSerializer):
         if data['password'] != data['confirm_password']:
             raise serializers.ValidationError({"password": "Password fields didn't match."})
 
-        # Check email uniqueness
-        if User.objects.filter(email=data.get('email')).exists():
+        email = (data.get("email") or "").strip()
+        if not email:
+            raise serializers.ValidationError({"email": "Email is required."})
+        data["email"] = email
+
+        if User.objects.filter(email__iexact=email).exists():
             raise serializers.ValidationError({'email': 'A user with this email already exists.'})
-        
+
+        staff_kind = normalize_staff_kind(data.get("staff_kind"))
+        data["staff_kind"] = staff_kind
+
+        if staff_kind == User.STAFF_KIND_PART_TIME:
+            try:
+                username = normalize_login_username(data.get("username"))
+            except serializers.ValidationError as exc:
+                raise serializers.ValidationError({"username": exc.detail})
+            if not username:
+                raise serializers.ValidationError(
+                    {"username": "Username is required for part-time staff (they log in with it)."}
+                )
+            if User.objects.filter(username__iexact=username).exists():
+                raise serializers.ValidationError({"username": "That username is already taken."})
+            if User.objects.filter(email__iexact=username).exists():
+                raise serializers.ValidationError(
+                    {"username": "That username matches another user's email."}
+                )
+            data["username"] = username
+        else:
+            if User.objects.filter(username__iexact=email).exists():
+                raise serializers.ValidationError(
+                    {"email": "A user with this email (as username) already exists."}
+                )
+            data["username"] = email
+
         return data
 
     def create(self, validated_data):
@@ -332,6 +443,8 @@ class RegisterSerializer(serializers.ModelSerializer):
         validated_data.pop('confirm_password')
         campuses = validated_data.pop('campuses', [])
         faculties = validated_data.pop('faculties', [])
+        staff_kind = validated_data.get("staff_kind") or User.STAFF_KIND_FULL_TIME
+        login_username = validated_data.get("username") or validated_data.get("email", "")
 
         # Create user (excluding ManyToMany fields)
         user = User.objects.create(
@@ -339,7 +452,9 @@ class RegisterSerializer(serializers.ModelSerializer):
             first_name=validated_data.get('first_name', ''),
             last_name=validated_data.get('last_name', ''),
             phone=validated_data.get('phone', ''),
-            username=validated_data.get('email', ''),
+            username=login_username,
+            staff_id=validated_data.get("staff_id") or None,
+            staff_kind=staff_kind,
             role=validated_data.get('role', None),
             is_staff=validated_data.get('is_staff', False),
             is_applicant=validated_data.get('is_applicant', False)

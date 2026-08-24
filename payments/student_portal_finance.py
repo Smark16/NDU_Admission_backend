@@ -835,21 +835,25 @@ def registration_card_payment_history(
         is_manual = (row.schoolpay_receipt_number or "").startswith("BANK-") or (
             raw.get("source") == "manual_bank_reconciliation"
         )
+        bank_or_agent = (row.source_payment_channel or "").strip()
         rows.append(
             {
                 "id": row.id,
                 "paid_at": paid_at.isoformat() if paid_at else None,
                 "amount": float(row.amount or 0),
                 "currency": "UGX",
-                "channel": (row.source_payment_channel or "SchoolPay").strip() or "SchoolPay",
+                "channel": "SchoolPay" if not is_manual else "Direct deposit (bank)",
+                "channel_detail": bank_or_agent or None,
                 "receipt": (row.schoolpay_receipt_number or "").strip(),
                 "description": (row.source_channel_trans_detail or "Tuition payment").strip()
                 or "Tuition payment",
                 "semester": _semester_label_for_paid_at(paid_at, student, windows),
                 "is_manual_bank": is_manual,
+                "is_schoolpay_ledger": not is_manual,
                 "bank_reference": (row.source_channel_transaction_id or raw.get("bank_reference") or ""),
                 "bank_name": (row.settlement_bank_code or raw.get("bank_name") or ""),
                 "notes": (raw.get("notes") or ""),
+                "posted_by": None,
             }
         )
 
@@ -894,10 +898,6 @@ def registration_card_payment_history(
             )
             if not desc.lower().startswith("account") and "credit" not in desc.lower():
                 desc = f"Account credit — {desc}"
-            if posted_by:
-                desc = f"{desc} · Posted by {posted_by}"
-            else:
-                desc = f"{desc} · Posted by not recorded"
         else:
             channel = (p.payment_method or "").replace("_", " ").strip() or "Portal"
             if src == "ad_hoc":
@@ -913,12 +913,14 @@ def registration_card_payment_history(
                 "amount": float(p.amount or 0),
                 "currency": (p.currency or "UGX").strip() or "UGX",
                 "channel": channel.title() if channel and not is_account_credit else channel,
+                "channel_detail": None,
                 "receipt": (p.receipt_number or p.payment_reference or p.transaction_id or "").strip(),
                 "description": desc or "Payment",
                 "semester": _payment_history_semester_label(p, student, windows),
                 "source": src or "portal",
                 "is_account_credit": is_account_credit,
-                "posted_by": posted_by or None,
+                "is_schoolpay_ledger": False,
+                "posted_by": posted_by if (is_account_credit or src == "ad_hoc") else None,
                 "posted_by_id": getattr(actor, "pk", None) if actor is not None else None,
             }
         )

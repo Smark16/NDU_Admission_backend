@@ -25,10 +25,25 @@ class Campus(models.Model):
 
 
 class User(AbstractUser):
+    STAFF_KIND_FULL_TIME = "FULL_TIME"
+    STAFF_KIND_PART_TIME = "PART_TIME"
+    STAFF_KIND_CHOICES = (
+        (STAFF_KIND_FULL_TIME, "Full-time"),
+        (STAFF_KIND_PART_TIME, "Part-time"),
+    )
+
     role = models.CharField(max_length=64, blank=True, null=True)
     campuses = models.ManyToManyField(Campus, blank=True, related_name="users")
     phone = models.CharField(max_length=20, blank=True, null=True)
     staff_id = models.CharField(max_length=50, blank=True, null=True, unique=True, db_index=True)
+    staff_kind = models.CharField(
+        max_length=20,
+        choices=STAFF_KIND_CHOICES,
+        default=STAFF_KIND_FULL_TIME,
+        db_index=True,
+        help_text="Full-time staff log in with email; part-time staff log in with a username "
+        "(email is still captured for communication).",
+    )
     is_staff = models.BooleanField(default=False)
     is_applicant = models.BooleanField(default=False, db_index=True)
     is_student = models.BooleanField(default=False, db_index=True)
