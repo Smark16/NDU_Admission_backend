@@ -791,15 +791,30 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
             return "__"
         return obj.admitted_program.faculty.name
 
+    def _list_programme_enrollment(self, obj):
+        """Safe SPE load — avoid SELECT of teaching_section when column is missing."""
+        try:
+            cache = getattr(obj, "_prefetched_objects_cache", None) or {}
+            if "programme_enrollment" in cache:
+                return obj.programme_enrollment
+        except Exception:
+            pass
+        try:
+            from Programs.spe_queryset import programme_enrollment_qs_for_lists
+
+            return programme_enrollment_qs_for_lists().filter(student_id=obj.pk).first()
+        except Exception:
+            return None
+
     def get_academic_batch(self, obj):
         from Programs.program_batch_resolution import format_program_batch_display
 
-        try:
-            enrollment = obj.programme_enrollment
-        except Exception:
-            enrollment = None
+        enrollment = self._list_programme_enrollment(obj)
         if enrollment is not None and enrollment.program_batch_id:
-            return format_program_batch_display(enrollment.program_batch)
+            try:
+                return format_program_batch_display(enrollment.program_batch)
+            except Exception:
+                pass
         intended = getattr(obj, "intended_program_batch", None)
         if intended is not None and getattr(intended, "pk", None):
             return format_program_batch_display(intended)
@@ -916,13 +931,17 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
         return totals["commitment_threshold"] if totals else None
 
     def _admission_lock_reason(self, obj, *, action: str = "delete"):
-        from admissions.registration_workflow import (
-            admission_revoke_or_delete_blocked_reason,
-        )
+        try:
+            from admissions.registration_workflow import (
+                admission_revoke_or_delete_blocked_reason,
+            )
 
-        request = self.context.get("request")
-        user = getattr(request, "user", None) if request else None
-        return admission_revoke_or_delete_blocked_reason(obj, user, action=action)
+            request = self.context.get("request")
+            user = getattr(request, "user", None) if request else None
+            return admission_revoke_or_delete_blocked_reason(obj, user, action=action)
+        except Exception:
+            # Never 500 the directory over lock metadata.
+            return "Unable to determine admission lock status."
 
     def get_admission_lock_reason(self, obj):
         # Informational lock text for registered/verified students.
@@ -933,7 +952,7 @@ class AdmittedStudentListSerializer(serializers.ModelSerializer):
         return self._admission_lock_reason(obj, action="delete") is None
 
     def get_can_revoke(self, obj):
-        # Super Admin may revoke registered/verified admissions.
+        # Super Admin / staff with revoke permission may revoke locked admissions.
         return self._admission_lock_reason(obj, action="revoke") is None
 
     def to_representation(self, instance):

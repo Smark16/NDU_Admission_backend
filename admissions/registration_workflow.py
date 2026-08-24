@@ -70,8 +70,25 @@ ADMISSION_REVOKE_OR_DELETE_BLOCKED = (
 
 ADMISSION_DELETE_BLOCKED_SUPER_ADMIN_HINT = (
     "This student is accounts-cleared and registered (verified roster). "
-    "Admission cannot be deleted. Super Admin may revoke instead."
+    "Admission cannot be deleted. Use Revoke Admission instead."
 )
+
+
+def user_can_revoke_locked_admission(user) -> bool:
+    """Who may revoke a verified / accounts-cleared+registered admission."""
+    if user is None or not getattr(user, "is_authenticated", False):
+        return False
+    from accounts.super_admin import user_is_super_admin
+
+    if user_is_super_admin(user):
+        return True
+    try:
+        return bool(
+            user.has_perm("admissions.revoke_admission")
+            or user.has_perm("admissions.change_admittedstudent")
+        )
+    except Exception:
+        return False
 
 
 def admission_revoke_or_delete_blocked_reason(
@@ -86,8 +103,9 @@ def admission_revoke_or_delete_blocked_reason(
     Locked when they are on the verified roster (physical documents verified)
     or they are both accounts-cleared and registered.
 
-    Super Admin may **revoke** (not delete) locked admissions — pass
-    ``action="revoke"`` and the acting ``user``.
+    Super Admin (or staff with revoke/change admission permission) may
+    **revoke** locked admissions — pass ``action="revoke"`` and the acting
+    ``user``. Delete stays blocked for everyone.
     """
     if student is None:
         return None
@@ -98,17 +116,11 @@ def admission_revoke_or_delete_blocked_reason(
     if not locked:
         return None
 
-    if action == "revoke" and user is not None:
-        from accounts.super_admin import user_is_super_admin
-
-        if user_is_super_admin(user):
-            return None
+    if action == "revoke" and user_can_revoke_locked_admission(user):
+        return None
 
     if action == "revoke":
         return ADMISSION_REVOKE_OR_DELETE_BLOCKED
-    if user is not None:
-        from accounts.super_admin import user_is_super_admin
-
-        if user_is_super_admin(user):
-            return ADMISSION_DELETE_BLOCKED_SUPER_ADMIN_HINT
+    if user_can_revoke_locked_admission(user):
+        return ADMISSION_DELETE_BLOCKED_SUPER_ADMIN_HINT
     return ADMISSION_REVOKE_OR_DELETE_BLOCKED
