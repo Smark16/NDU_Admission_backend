@@ -1100,3 +1100,71 @@ class StudentExemptionChargesCreateView(APIView):
             },
             status=status.HTTP_201_CREATED,
         )
+
+
+def _is_manual_account_credit(payment: StudentTuitionPayment) -> bool:
+    tid = (payment.transaction_id or "").strip()
+    pref = (payment.payment_reference or "").strip()
+    receipt = (payment.receipt_number or "").strip()
+    return (
+        tid.startswith("MANUAL-CREDIT")
+        or pref.startswith("MANUAL-CREDIT")
+        or receipt.startswith("MANUAL-CREDIT")
+    )
+
+
+class ManualAccountCreditDeleteView(APIView):
+    """
+    DELETE /api/payments/admin/account-credit/<pk>/
+
+    Super Admin only — reverse an Accounts MANUAL-CREDIT row from Bonafide Finance.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, pk):
+        from accounts.super_admin import user_is_super_admin
+
+        if not user_is_super_admin(request.user):
+            return Response(
+                {"detail": "Only Super Admin can delete Accounts manual credits."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        payment = get_object_or_404(
+            StudentTuitionPayment.objects.select_related("student", "charged_by"),
+            pk=pk,
+        )
+        if not _is_manual_account_credit(payment):
+            return Response(
+                {
+                    "detail": (
+                        "This is not an Accounts manual credit. "
+                        "Bank payments use the bank-payment tools; "
+                        "SchoolPay rows cannot be deleted here."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        label = (payment.label or payment.transaction_id or f"#{payment.pk}").strip()
+        amount = float(payment.amount or 0)
+        poster = ""
+        if payment.charged_by_id:
+            poster = (
+                payment.charged_by.get_full_name() or payment.charged_by.username or ""
+            ).strip()
+        payment.delete()
+        return Response(
+            {
+                "detail": (
+                    f"Account credit '{label}' ({amount:,.0f}) deleted"
+                    + (f" (was posted by {poster})" if poster else "")
+                    + ". Paid totals will refresh."
+                ),
+                "deleted_id": pk,
+                "deleted_amount": amount,
+                "posted_by": poster or None,
+            },
+            status=status.HTTP_200_OK,
+        )

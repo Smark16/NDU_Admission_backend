@@ -5,6 +5,7 @@ from .batch_semester_fee_views import BatchSemesterFeeMatrixView, BulkUploadSeme
 from .adhoc_views import (
     FeeHeadDetailView,
     FeeHeadListView,
+    ManualAccountCreditDeleteView,
     StudentAdHocChargeDetailView,
     StudentAdHocChargeListCreate,
     StudentAdHocChargeWaiveView,
@@ -293,6 +294,16 @@ urlpatterns = [
         'admin/charge/<int:pk>/apply_credit/',
         StudentAdHocChargeApplyCreditView.as_view(),
         name='adhoc_charge_apply_credit_slash',
+    ),
+    path(
+        'admin/account-credit/<int:pk>',
+        ManualAccountCreditDeleteView.as_view(),
+        name='manual_account_credit_delete',
+    ),
+    path(
+        'admin/account-credit/<int:pk>/',
+        ManualAccountCreditDeleteView.as_view(),
+        name='manual_account_credit_delete_slash',
     ),
 
     path('other_fee_schedule/clone', OtherFeeScheduleCloneView.as_view()),
