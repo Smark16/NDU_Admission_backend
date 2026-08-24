@@ -974,6 +974,80 @@ class AdmissionChangeRequest(models.Model):
         ),
     )
 
+    # Multi-stage exemption pipeline: HOD → Dean → AR → Accounts billing.
+    hod_status = models.CharField(
+        max_length=20,
+        choices=[
+            ("pending", "Pending"),
+            ("approved", "Approved"),
+            ("rejected", "Rejected"),
+        ],
+        default="pending",
+    )
+    dean_status = models.CharField(
+        max_length=20,
+        choices=[
+            ("pending", "Pending"),
+            ("approved", "Approved"),
+            ("rejected", "Rejected"),
+        ],
+        default="pending",
+    )
+    ar_status = models.CharField(
+        max_length=20,
+        choices=[
+            ("pending", "Pending"),
+            ("approved", "Approved"),
+            ("rejected", "Rejected"),
+        ],
+        default="pending",
+    )
+    accounts_status = models.CharField(
+        max_length=20,
+        choices=[
+            ("pending", "Pending"),
+            ("billed", "Billed"),
+            ("confirmed", "Confirmed"),
+        ],
+        default="pending",
+    )
+    hod_reviewed_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="hod_reviewed_exemption_requests",
+    )
+    hod_reviewed_at = models.DateTimeField(null=True, blank=True)
+    hod_notes = models.TextField(blank=True, default="")
+    dean_reviewed_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="dean_reviewed_exemption_requests",
+    )
+    dean_reviewed_at = models.DateTimeField(null=True, blank=True)
+    dean_notes = models.TextField(blank=True, default="")
+    ar_reviewed_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="ar_reviewed_exemption_requests",
+    )
+    ar_reviewed_at = models.DateTimeField(null=True, blank=True)
+    ar_notes = models.TextField(blank=True, default="")
+    accounts_reviewed_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="accounts_reviewed_exemption_requests",
+    )
+    accounts_reviewed_at = models.DateTimeField(null=True, blank=True)
+    accounts_notes = models.TextField(blank=True, default="")
+
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     reviewed_by = models.ForeignKey(
         User, on_delete=models.SET_NULL, null=True, blank=True, related_name='reviewed_change_requests'
@@ -996,7 +1070,19 @@ class AdmissionChangeRequest(models.Model):
             ),
             (
                 'approve_exemption_requests',
-                'Can approve or reject course exemption change requests',
+                'Can approve or reject course exemption change requests (HOD stage)',
+            ),
+            (
+                'review_exemption_dean',
+                'Can approve or reject course exemptions at Faculty Dean stage',
+            ),
+            (
+                'review_exemption_ar',
+                'Can approve or reject course exemptions at Academic Registrar stage',
+            ),
+            (
+                'bill_exemption_accounts',
+                'Can bill course exemption fees after AR approval',
             ),
         ]
 
@@ -1039,18 +1125,45 @@ class ExemptionRequestLine(models.Model):
         help_text="Score/grade the student obtained in this course at the previous institution "
                   "(e.g. 65, B+, 3.5 GPA).",
     )
-    # HOD/Dean may approve some papers and reject others on the same request.
+    # HOD per-paper decision (Dean and AR have their own columns below).
     decision = models.CharField(
         max_length=20,
         choices=DECISION_CHOICES,
         default=DECISION_PENDING,
         db_index=True,
+        help_text="HOD approve/reject for this paper.",
     )
     decision_note = models.CharField(
         max_length=255,
         blank=True,
         default='',
-        help_text="Optional note when a paper is rejected (shown to reviewers).",
+        help_text="Optional note when HOD rejects a paper.",
+    )
+    dean_decision = models.CharField(
+        max_length=20,
+        choices=DECISION_CHOICES,
+        default=DECISION_PENDING,
+        db_index=True,
+        help_text="Faculty Dean approve/reject for this paper (after HOD).",
+    )
+    dean_decision_note = models.CharField(
+        max_length=255,
+        blank=True,
+        default='',
+        help_text="Optional note when Dean rejects a paper.",
+    )
+    ar_decision = models.CharField(
+        max_length=20,
+        choices=DECISION_CHOICES,
+        default=DECISION_PENDING,
+        db_index=True,
+        help_text="Academic Registrar approve/reject for this paper (after Dean).",
+    )
+    ar_decision_note = models.CharField(
+        max_length=255,
+        blank=True,
+        default='',
+        help_text="Optional note when AR rejects a paper.",
     )
     created_at = models.DateTimeField(auto_now_add=True)
 

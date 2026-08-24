@@ -832,7 +832,7 @@ class StudentExemptionChargesCreateView(APIView):
       replace_pending: bool — delete pending EXEMPTION_COURSE rows for this
         change request, then recreate
 
-    Per-paper default = semester tuition ÷ curriculum papers (ex functional).
+    Per-paper default = UGX 100,000 (Ndejje alumnus) or UGX 150,000 (external).
     Accounts confirms the line amounts → system sums the total → equal split
     across the chosen semester_ids.
     """
@@ -884,9 +884,9 @@ class StudentExemptionChargesCreateView(APIView):
             admitted_student=student,
             change_type="exemption",
         )
-        if req.status != "approved":
+        if req.ar_status != "approved":
             return Response(
-                {"detail": "Exemption request must be approved before billing."},
+                {"detail": "Exemption request must be AR-approved before billing."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -1013,8 +1013,9 @@ class StudentExemptionChargesCreateView(APIView):
                             )
                         amount = exemption_course_fee_for_paper(
                             student,
-                            year_of_study=int(year),
-                            term_number=int(term),
+                            year_of_study=int(year) if year not in (None, "") else None,
+                            term_number=int(term) if term not in (None, "") else None,
+                            change_request=req,
                         )
                 else:
                     amount = Decimal(str(raw_amount)).quantize(
@@ -1048,7 +1049,7 @@ class StudentExemptionChargesCreateView(APIView):
         label_base = f"Course exemption fees ({paper_count} paper(s))"
         notes = (
             f"{note_marker}; fee head {EXEMPTION_COURSE_FEE_CODE}; "
-            f"total UGX {paper_total} = sum of tuition÷papers; "
+            f"total UGX {paper_total} = sum of per-paper exemption fees; "
             f"spread across {len(semesters)} semester(s). "
             f"Papers: {', '.join(paper_labels[:20])}"
             + ("…" if len(paper_labels) > 20 else "")
@@ -1080,6 +1081,12 @@ class StudentExemptionChargesCreateView(APIView):
                     semesters=semesters,
                     charged_by=request.user,
                 )
+                from django.utils import timezone
+
+                req.accounts_status = "billed"
+                req.accounts_reviewed_by = request.user
+                req.accounts_reviewed_at = timezone.now()
+                req.save(update_fields=["accounts_status", "accounts_reviewed_by", "accounts_reviewed_at"])
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 

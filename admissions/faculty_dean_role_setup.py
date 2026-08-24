@@ -6,6 +6,8 @@ FACULTY_DEAN_PERMISSIONS = [
     ("accounts", "access_admissions"),
     ("admissions", "view_application"),
     ("admissions", "view_admittedstudent"),
+    ("admissions", "view_admissionchangerequest"),
+    ("admissions", "review_exemption_dean"),
 ]
 
 

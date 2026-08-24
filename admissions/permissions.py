@@ -88,6 +88,40 @@ def user_can_approve_exemption_requests(user) -> bool:
     return False
 
 
+def user_can_review_exemption_dean(user) -> bool:
+    if not user.is_authenticated:
+        return False
+    if user_is_super_admin(user):
+        return True
+    if user.has_perm("admissions.review_exemption_dean"):
+        return True
+    return False
+
+
+def user_can_review_exemption_ar(user) -> bool:
+    if not user.is_authenticated:
+        return False
+    if user_is_super_admin(user):
+        return True
+    if user.has_perm("admissions.review_exemption_ar"):
+        return True
+    return False
+
+
+def user_can_bill_exemption_accounts(user) -> bool:
+    if not user.is_authenticated:
+        return False
+    if user_is_super_admin(user):
+        return True
+    if user.has_perm("admissions.bill_exemption_accounts"):
+        return True
+    from accounts.finance_access import user_can_configure_fee_plans
+
+    if user_can_configure_fee_plans(user):
+        return True
+    return False
+
+
 def user_can_edit_application_registration(user) -> bool:
     """Edit demographics / programme choices on an application (admin-side)."""
     if not user.is_authenticated:
@@ -200,6 +234,12 @@ class CanViewAdmissionChangeRequests(BasePermission):
         if user_can_manage_admission_change_requests(u):
             return True
         if user_can_approve_exemption_requests(u):
+            return True
+        if user_can_review_exemption_dean(u):
+            return True
+        if user_can_review_exemption_ar(u):
+            return True
+        if user_can_bill_exemption_accounts(u):
             return True
         if user_has_any_erp_perm(u, "approve_admissions", "access_admissions"):
             return True

@@ -77,6 +77,9 @@ AR_DATA_CLERK_ALLOW = (
     ("Drafts", "view_draftapplication"),
     ("Drafts", "change_draftapplication"),
     ("payments", "view_applicationpayment"),
+    # Course exemption AR stage
+    ("admissions", "view_admissionchangerequest"),
+    ("admissions", "review_exemption_ar"),
 )
 
 # Soft excludes — not core AR admissions ops.

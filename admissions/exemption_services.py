@@ -426,9 +426,7 @@ def exemption_paper_meets_min_mark(
     _ = paper, min_percent
     return True, ""
 
-# Legacy flat rates (settings-overridable). Kept for display/migration only —
-# Accounts now bills EXEMPTION_COURSE as semester tuition ÷ curriculum papers
-# (no functional fees). See exemption_course_fee_for_paper().
+# Per-paper flat rates (Option A): Ndejje alumnus vs external applicant.
 EXEMPTION_COURSE_FEE_STANDARD_UGX = Decimal(
     str(getattr(settings, "EXEMPTION_COURSE_FEE_STANDARD_UGX", "150000"))
 )
@@ -438,16 +436,12 @@ EXEMPTION_COURSE_FEE_ALUMNI_UGX = Decimal(
 
 
 def exemption_course_fee_rate(change_request: "AdmissionChangeRequest") -> Decimal | None:
-    """
-    Legacy single flat rate (alumni vs standard). Prefer per-paper
-    exemption_course_fee_for_paper / exemption_billing_lines_for_request —
-    those use tuition ÷ papers. Returns None when the request should use
-    curriculum-based amounts instead of a flat rate.
-    """
-    # Flat rates are retired as the billing default. Callers that still need a
-    # display fallback can use EXEMPTION_COURSE_FEE_* constants directly.
-    _ = change_request
-    return None
+    """Flat UGX rate per approved paper (alumni vs external)."""
+    if getattr(change_request, "change_type", None) != "exemption":
+        return None
+    if change_request.exemption_is_alumnus:
+        return EXEMPTION_COURSE_FEE_ALUMNI_UGX
+    return EXEMPTION_COURSE_FEE_STANDARD_UGX
 
 
 def semester_tuition_amount_for_student(
@@ -488,42 +482,36 @@ def semester_tuition_amount_for_student(
 def exemption_course_fee_for_paper(
     student: AdmittedStudent,
     *,
-    year_of_study: int,
-    term_number: int,
+    year_of_study: int | None = None,
+    term_number: int | None = None,
+    change_request: "AdmissionChangeRequest | None" = None,
 ) -> Decimal:
     """
-    Accounts rule: (semester tuition excluding functional fees) ÷ papers in
-    that curriculum year/term. Raises ValueError when tuition or papers
-    cannot be resolved.
+    Per approved paper: UGX 100,000 (Ndejje alumnus) or UGX 150,000 (external).
+    When change_request is omitted, defaults to the standard external rate.
     """
-    from decimal import ROUND_HALF_UP
-
-    tuition = semester_tuition_amount_for_student(
-        student, year_of_study=year_of_study, term_number=term_number
-    )
-    if tuition is None or tuition <= 0:
-        raise ValueError(
-            f"No semester tuition configured for Year {year_of_study} "
-            f"Term {term_number}."
-        )
-    counts = semester_paper_counts_for_exemptions(
-        student, year_of_study=year_of_study, term_number=term_number
-    )
-    if counts is None or counts["total_papers"] <= 0:
-        raise ValueError(
-            f"No curriculum papers found for Year {year_of_study} "
-            f"Term {term_number}."
-        )
-    total = Decimal(counts["total_papers"])
-    return (tuition / total).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    _ = student, year_of_study, term_number
+    if change_request is not None:
+        rate = exemption_course_fee_rate(change_request)
+        if rate is not None:
+            return rate
+    return EXEMPTION_COURSE_FEE_STANDARD_UGX
 
 
 def _billable_exemption_lines(change_request: "AdmissionChangeRequest"):
     from admissions.models import ExemptionRequestLine
 
     qs = change_request.exemption_lines.all()
+    if change_request.ar_status == "approved":
+        return list(
+            qs.filter(
+                decision=ExemptionRequestLine.DECISION_APPROVED,
+                dean_decision=ExemptionRequestLine.DECISION_APPROVED,
+                ar_decision=ExemptionRequestLine.DECISION_APPROVED,
+            )
+        )
     if change_request.status == "pending":
-        return list(qs)
+        return list(qs.filter(decision=ExemptionRequestLine.DECISION_APPROVED))
     return list(qs.filter(decision=ExemptionRequestLine.DECISION_APPROVED))
 
 
@@ -531,14 +519,15 @@ def exemption_billing_lines_for_request(
     change_request: "AdmissionChangeRequest",
 ) -> list[dict]:
     """
-    Per approved (or pending-estimate) paper: amount = tuition÷papers for that
-    paper's curriculum year/term, plus resolved semester metadata when available.
+    Per approved (or pending-estimate) paper: flat alumni/external rate,
+    plus resolved semester metadata when available.
     """
     from payments.billing_visibility import resolve_semester_for_year_term
     from payments.student_portal_finance import _student_program_batch_id
 
     student = change_request.admitted_student
     pb_id = _student_program_batch_id(student)
+    paper_rate = exemption_course_fee_rate(change_request) or EXEMPTION_COURSE_FEE_STANDARD_UGX
     out: list[dict] = []
     for line in _billable_exemption_lines(change_request):
         year = line.year_of_study
@@ -548,22 +537,16 @@ def exemption_billing_lines_for_request(
             if cl is not None:
                 year = cl.year_of_study
                 term = cl.term_number
-        amount = None
+        amount = paper_rate
         error = None
         semester = None
         if year is not None and term is not None:
-            try:
-                amount = exemption_course_fee_for_paper(
-                    student, year_of_study=int(year), term_number=int(term)
-                )
-            except ValueError as exc:
-                error = str(exc)
             semester = resolve_semester_for_year_term(
                 program_batch_id=pb_id,
                 year_of_study=int(year),
                 term_number=int(term),
             )
-        else:
+        elif line.curriculum_line_id is None:
             error = "Paper has no year/term — match it to a curriculum unit first."
         out.append(
             {
@@ -574,7 +557,7 @@ def exemption_billing_lines_for_request(
                 "score_obtained": line.score_obtained or "",
                 "year_of_study": int(year) if year is not None else None,
                 "term_number": int(term) if term is not None else None,
-                "amount": float(amount) if amount is not None else None,
+                "amount": float(amount),
                 "semester_id": semester.id if semester is not None else None,
                 "semester_label": (
                     f"Year {semester.year_of_study}, Term {semester.term_number}"
@@ -1614,26 +1597,54 @@ def apply_line_matches(change_request: AdmissionChangeRequest, matches: list[dic
         )
 
 
-def apply_line_decisions(change_request: AdmissionChangeRequest, decisions: list[dict]) -> None:
+def apply_line_decisions(
+    change_request: AdmissionChangeRequest,
+    decisions: list[dict],
+    *,
+    stage: str = "hod",
+) -> None:
     """
-    Record per-paper approve/reject on an exemption request.
-    decisions: [{exemption_line_id, decision: 'approved'|'rejected', decision_note?, curriculum_line_id?}]
+    Record per-paper approve/reject at HOD, Dean, or AR stage.
+    decisions: [{exemption_line_id, decision, decision_note?, curriculum_line_id?}]
     """
     from admissions.models import ExemptionRequestLine
     from Programs.models import ProgramCurriculumLine
 
+    stage = (stage or "hod").strip().lower()
+    if stage not in ("hod", "dean", "ar"):
+        raise ValueError('stage must be "hod", "dean", or "ar".')
+
     if not decisions:
-        raise ValueError("Provide a decision (approve or reject) for each requested paper.")
+        raise ValueError("Provide a decision (approve or reject) for each paper.")
 
     by_id = {line.id: line for line in change_request.exemption_lines.all()}
     if not by_id:
         raise ValueError("This exemption request has no course papers.")
 
+    if stage == "dean":
+        eligible = {
+            lid: line
+            for lid, line in by_id.items()
+            if line.decision == ExemptionRequestLine.DECISION_APPROVED
+        }
+    elif stage == "ar":
+        eligible = {
+            lid: line
+            for lid, line in by_id.items()
+            if line.decision == ExemptionRequestLine.DECISION_APPROVED
+            and line.dean_decision == ExemptionRequestLine.DECISION_APPROVED
+        }
+    else:
+        eligible = by_id
+
+    if not eligible:
+        raise ValueError("No papers are eligible for review at this stage.")
+
     seen: set[int] = set()
     curriculum_ids = {
         int(d["curriculum_line_id"])
         for d in decisions
-        if d.get("curriculum_line_id") not in (None, "", 0, "0")
+        if stage == "hod" and d.get("curriculum_line_id") not in (None, "", 0, "0")
     }
     curriculum_map = {
         c.id: c
@@ -1647,8 +1658,12 @@ def apply_line_decisions(change_request: AdmissionChangeRequest, decisions: list
             eid = int(raw.get("exemption_line_id"))
         except (TypeError, ValueError):
             raise ValueError("Each decision needs a valid exemption_line_id.")
-        line = by_id.get(eid)
+        line = eligible.get(eid)
         if line is None:
+            if eid in by_id:
+                raise ValueError(
+                    f"Paper {by_id[eid].course_code or eid} is not eligible at the {stage.upper()} stage."
+                )
             raise ValueError(f"Unknown exemption line {eid} on this request.")
         if eid in seen:
             raise ValueError(f"Duplicate decision for paper {line.course_code or eid}.")
@@ -1656,54 +1671,138 @@ def apply_line_decisions(change_request: AdmissionChangeRequest, decisions: list
 
         decision = str(raw.get("decision") or "").strip().lower()
         if decision in ("approve", "approved"):
-            decision = ExemptionRequestLine.DECISION_APPROVED
+            decision_val = ExemptionRequestLine.DECISION_APPROVED
         elif decision in ("reject", "rejected"):
-            decision = ExemptionRequestLine.DECISION_REJECTED
+            decision_val = ExemptionRequestLine.DECISION_REJECTED
         else:
             raise ValueError(
                 f"Decision for {line.course_code or eid} must be approve or reject."
             )
 
         note = str(raw.get("decision_note") or "").strip()[:255]
-        update_fields = ["decision", "decision_note"]
 
-        if decision == ExemptionRequestLine.DECISION_APPROVED:
-            cid_raw = raw.get("curriculum_line_id") or line.curriculum_line_id
-            try:
-                cid = int(cid_raw)
-            except (TypeError, ValueError):
-                raise ValueError(
-                    f"Match {line.course_code or eid} to a curriculum unit before approving it."
+        if stage == "hod":
+            update_fields = ["decision", "decision_note"]
+            if decision_val == ExemptionRequestLine.DECISION_APPROVED:
+                cid_raw = raw.get("curriculum_line_id") or line.curriculum_line_id
+                try:
+                    cid = int(cid_raw)
+                except (TypeError, ValueError):
+                    raise ValueError(
+                        f"Match {line.course_code or eid} to a curriculum unit before approving it."
+                    )
+                curriculum = curriculum_map.get(cid) or (
+                    ProgramCurriculumLine.objects.select_related("catalog_course")
+                    .filter(pk=cid)
+                    .first()
                 )
-            curriculum = curriculum_map.get(cid) or (
-                ProgramCurriculumLine.objects.select_related("catalog_course").filter(pk=cid).first()
-            )
-            if curriculum is None:
-                raise ValueError(f"Unknown curriculum unit {cid}.")
-            course = curriculum.catalog_course
-            line.curriculum_line = curriculum
-            if course:
-                line.course_code = (course.code or line.course_code or "")[:40]
-                line.course_name = ((course.title or "") or line.course_name or "")[:255]
-            line.year_of_study = curriculum.year_of_study
-            line.term_number = curriculum.term_number
-            update_fields.extend(
-                ["curriculum_line", "course_code", "course_name", "year_of_study", "term_number"]
-            )
-            line.decision_note = note
+                if curriculum is None:
+                    raise ValueError(f"Unknown curriculum unit {cid}.")
+                course = curriculum.catalog_course
+                line.curriculum_line = curriculum
+                if course:
+                    line.course_code = (course.code or line.course_code or "")[:40]
+                    line.course_name = ((course.title or "") or line.course_name or "")[:255]
+                line.year_of_study = curriculum.year_of_study
+                line.term_number = curriculum.term_number
+                update_fields.extend(
+                    ["curriculum_line", "course_code", "course_name", "year_of_study", "term_number"]
+                )
+                line.decision_note = note
+            else:
+                line.decision_note = note or line.decision_note
+            line.decision = decision_val
+            line.save(update_fields=update_fields)
+        elif stage == "dean":
+            line.dean_decision = decision_val
+            line.dean_decision_note = note or line.dean_decision_note
+            line.save(update_fields=["dean_decision", "dean_decision_note"])
+            if decision_val == ExemptionRequestLine.DECISION_REJECTED:
+                revoke_exemption_override_for_line(line)
         else:
-            line.decision_note = note or line.decision_note
+            line.ar_decision = decision_val
+            line.ar_decision_note = note or line.ar_decision_note
+            line.save(update_fields=["ar_decision", "ar_decision_note"])
+            if decision_val == ExemptionRequestLine.DECISION_REJECTED:
+                revoke_exemption_override_for_line(line)
 
-        line.decision = decision
-        line.save(update_fields=update_fields)
-
-    undecided = [l for lid, l in by_id.items() if lid not in seen]
+    undecided = [l for lid, l in eligible.items() if lid not in seen]
     if undecided:
         codes = ", ".join((l.course_code or f"#{l.id}") for l in undecided[:8])
         raise ValueError(
-            "Decide every paper (approve or reject). Still pending: "
-            f"{codes}."
+            f"Decide every eligible paper at {stage.upper()} (approve or reject). Still pending: {codes}."
         )
+
+    sync_exemption_request_stages_from_lines(change_request)
+
+
+def revoke_exemption_override_for_line(line) -> None:
+    """Remove curriculum exemption when Dean/AR rejects a paper HOD had approved."""
+    from Programs.models import StudentCurriculumOverride
+
+    if not line.curriculum_line_id:
+        return
+    try:
+        enrollment = line.change_request.admitted_student.programme_enrollment
+    except Exception:
+        return
+    if enrollment is None:
+        return
+    StudentCurriculumOverride.objects.filter(
+        enrollment=enrollment,
+        curriculum_line_id=line.curriculum_line_id,
+        override_type="exempted",
+    ).delete()
+
+
+def sync_exemption_request_stages_from_lines(change_request: AdmissionChangeRequest) -> None:
+    """Derive HOD / Dean / AR request status from per-paper decisions."""
+    from admissions.exemption_stages import (
+        compute_exemption_pipeline_from_lines,
+        sync_exemption_overall_status,
+    )
+
+    lines = list(change_request.exemption_lines.all())
+    if not lines:
+        return
+
+    hod, dean, ar = compute_exemption_pipeline_from_lines(lines)
+    change_request.hod_status = hod
+    change_request.dean_status = dean
+    change_request.ar_status = ar
+    sync_exemption_overall_status(change_request)
+
+
+def ensure_exemption_request_stages_synced(
+    change_request: AdmissionChangeRequest,
+    *,
+    save: bool = True,
+) -> bool:
+    """Align stored request-level stage fields with line decisions; persist if changed."""
+    lines = list(change_request.exemption_lines.all())
+    if not lines:
+        return False
+
+    before = (
+        change_request.hod_status,
+        change_request.dean_status,
+        change_request.ar_status,
+        change_request.status,
+    )
+    sync_exemption_request_stages_from_lines(change_request)
+    after = (
+        change_request.hod_status,
+        change_request.dean_status,
+        change_request.ar_status,
+        change_request.status,
+    )
+    if after == before:
+        return False
+    if save:
+        change_request.save(
+            update_fields=["hod_status", "dean_status", "ar_status", "status"]
+        )
+    return True
 
 
 def apply_exemption_overrides(change_request: AdmissionChangeRequest, decided_by) -> int:

@@ -1451,6 +1451,8 @@ class NotificationSerializer(serializers.ModelSerializer):
 # ── Admission Change Request ──────────────────────────────────────────────────
 class ExemptionRequestLineSerializer(serializers.ModelSerializer):
     decision_display = serializers.CharField(source="get_decision_display", read_only=True)
+    dean_decision_display = serializers.CharField(source="get_dean_decision_display", read_only=True)
+    ar_decision_display = serializers.CharField(source="get_ar_decision_display", read_only=True)
 
     class Meta:
         model = ExemptionRequestLine
@@ -1465,6 +1467,12 @@ class ExemptionRequestLineSerializer(serializers.ModelSerializer):
             "decision",
             "decision_display",
             "decision_note",
+            "dean_decision",
+            "dean_decision_display",
+            "dean_decision_note",
+            "ar_decision",
+            "ar_decision_display",
+            "ar_decision_note",
         ]
 
 
@@ -1540,6 +1548,14 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
     new_program_name = serializers.CharField(source='new_program.name', read_only=True, default=None)
     new_campus_name = serializers.CharField(source='new_campus.name', read_only=True, default=None)
     reviewed_by_name = serializers.SerializerMethodField()
+    hod_reviewed_by_name = serializers.SerializerMethodField()
+    dean_reviewed_by_name = serializers.SerializerMethodField()
+    ar_reviewed_by_name = serializers.SerializerMethodField()
+    accounts_reviewed_by_name = serializers.SerializerMethodField()
+    hod_status_display = serializers.CharField(source="get_hod_status_display", read_only=True)
+    dean_status_display = serializers.CharField(source="get_dean_status_display", read_only=True)
+    ar_status_display = serializers.CharField(source="get_ar_status_display", read_only=True)
+    accounts_status_display = serializers.CharField(source="get_accounts_status_display", read_only=True)
     exemption_lines = ExemptionRequestLineSerializer(many=True, read_only=True)
     supporting_documents = serializers.SerializerMethodField()
     application_documents = serializers.SerializerMethodField()
@@ -1559,6 +1575,11 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
             'new_program_name', 'new_campus_name', 'new_study_mode',
             'requested_year', 'requested_semester',
             'reason', 'review_notes', 'reviewed_by_name', 'reviewed_at', 'created_at',
+            'hod_status', 'hod_status_display', 'hod_reviewed_by_name', 'hod_reviewed_at', 'hod_notes',
+            'dean_status', 'dean_status_display', 'dean_reviewed_by_name', 'dean_reviewed_at', 'dean_notes',
+            'ar_status', 'ar_status_display', 'ar_reviewed_by_name', 'ar_reviewed_at', 'ar_notes',
+            'accounts_status', 'accounts_status_display', 'accounts_reviewed_by_name',
+            'accounts_reviewed_at', 'accounts_notes',
             'exemption_lines', 'supporting_documents', 'application_documents',
             'form_fee_charge_id', 'form_fee_paid_at', 'form_fee_paid',
             'exemption_attained_at', 'exemption_academic_years', 'exemption_is_alumnus',
@@ -1618,6 +1639,23 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
             return obj.reviewed_by.get_full_name() or obj.reviewed_by.username
         return None
 
+    def _reviewer_name(self, user):
+        if user:
+            return user.get_full_name() or user.username
+        return None
+
+    def get_hod_reviewed_by_name(self, obj):
+        return self._reviewer_name(getattr(obj, "hod_reviewed_by", None))
+
+    def get_dean_reviewed_by_name(self, obj):
+        return self._reviewer_name(getattr(obj, "dean_reviewed_by", None))
+
+    def get_ar_reviewed_by_name(self, obj):
+        return self._reviewer_name(getattr(obj, "ar_reviewed_by", None))
+
+    def get_accounts_reviewed_by_name(self, obj):
+        return self._reviewer_name(getattr(obj, "accounts_reviewed_by", None))
+
     def _request_user_can_view_finance(self) -> bool:
         request = self.context.get("request")
         user = getattr(request, "user", None) if request is not None else None
@@ -1646,12 +1684,14 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
             return bool(obj.form_fee_paid_at)
 
     def get_exemption_course_fee_rate(self, obj):
-        """Flat rate retired — always None; use exemption_billing_lines amounts."""
         if obj.change_type != "exemption":
             return None
         if not self._request_user_can_view_finance():
             return None
-        return None
+        from admissions.exemption_services import exemption_course_fee_rate
+
+        rate = exemption_course_fee_rate(obj)
+        return float(rate) if rate is not None else None
 
     def get_exemption_course_fee_total(self, obj):
         if obj.change_type != "exemption":
@@ -1682,7 +1722,7 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
             return []
 
     def get_suggested_promotion(self, obj):
-        if obj.change_type != "exemption" or obj.status != "approved":
+        if obj.change_type != "exemption" or obj.hod_status != "approved":
             return None
         if self.context.get("list_view"):
             return None
@@ -1694,7 +1734,7 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
             return None
 
     def get_promotion_context(self, obj):
-        if obj.change_type != "exemption" or obj.status != "approved":
+        if obj.change_type != "exemption" or obj.hod_status != "approved":
             return None
         if self.context.get("list_view"):
             return None
@@ -1706,6 +1746,10 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
             return None
 
     def to_representation(self, instance):
+        if instance.change_type == "exemption":
+            from admissions.exemption_services import ensure_exemption_request_stages_synced
+
+            ensure_exemption_request_stages_synced(instance)
         data = super().to_representation(instance)
         if not self._request_user_can_view_finance():
             data["form_fee_charge_id"] = None

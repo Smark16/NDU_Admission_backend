@@ -5762,12 +5762,17 @@ class AdminChangeRequestList(APIView):
         ).order_by('-created_at')
 
         status_filter = request.query_params.get('status')
-        if status_filter:
-            qs = qs.filter(status=status_filter)
-
         change_type = request.query_params.get('change_type')
         if change_type:
             qs = qs.filter(change_type=change_type)
+
+        stage = (request.query_params.get("stage") or "").strip().lower()
+        if change_type == "exemption" and stage:
+            from admissions.exemption_stages import filter_exemption_requests_for_stage
+
+            qs = filter_exemption_requests_for_stage(qs, stage, status_filter or None)
+        elif status_filter:
+            qs = qs.filter(status=status_filter)
 
         search_q = _change_request_search_q(
             request.query_params.get("search") or request.query_params.get("q") or ""
@@ -5886,9 +5891,6 @@ class AdminChangeRequestReview(APIView):
             pk=pk,
         )
 
-        if req_obj.status != 'pending':
-            return Response({'detail': 'This request has already been reviewed.'}, status=400)
-
         action = request.data.get('action')  # 'approve' or 'reject'
         review_notes = request.data.get('review_notes', '')
 
@@ -5896,14 +5898,44 @@ class AdminChangeRequestReview(APIView):
             return Response({'detail': 'action must be "approve" or "reject".'}, status=400)
 
         if req_obj.change_type == "exemption":
-            if not user_can_approve_exemption_requests(request.user):
-                return Response(
-                    {"detail": "You do not have permission to review exemption requests."},
-                    status=403,
-                )
+            from admissions.exemption_stages import (
+                apply_exemption_stage_review,
+                exemption_stage_is_actionable,
+                prior_exemption_stage_approved,
+                sync_exemption_overall_status,
+                user_can_review_exemption_stage,
+            )
             from admissions.exemption_services import exemption_submission_is_unpaid
 
-            if action == "approve" and exemption_submission_is_unpaid(req_obj):
+            stage = (request.data.get("stage") or "hod").strip().lower()
+            if stage not in ("hod", "dean", "ar"):
+                return Response(
+                    {"detail": 'stage must be "hod", "dean", or "ar".'},
+                    status=400,
+                )
+            if not user_can_review_exemption_stage(request.user, stage):
+                return Response(
+                    {"detail": f"You do not have permission to review at the {stage.upper()} stage."},
+                    status=403,
+                )
+            scoped = filter_admission_change_requests_for_user(
+                AdmissionChangeRequest.objects.filter(pk=req_obj.pk),
+                request.user,
+            )
+            if not scoped.exists() and stage in ("hod", "dean"):
+                return Response({"detail": "Not found."}, status=404)
+            if not prior_exemption_stage_approved(req_obj, stage):
+                return Response(
+                    {"detail": "Earlier approval stages must be completed first."},
+                    status=400,
+                )
+            if not exemption_stage_is_actionable(req_obj, stage):
+                return Response(
+                    {"detail": f"This request is no longer pending at the {stage.upper()} stage."},
+                    status=400,
+                )
+
+            if stage == "hod" and action == "approve" and exemption_submission_is_unpaid(req_obj):
                 return Response(
                     {
                         "detail": (
@@ -5915,99 +5947,142 @@ class AdminChangeRequestReview(APIView):
                     },
                     status=400,
                 )
-            # Alumni flag is metadata for Finance; course fees are billed as
-            # semester tuition ÷ curriculum papers. HOD may still confirm it.
-            if "exemption_is_alumnus" in request.data:
-                req_obj.exemption_is_alumnus = bool(request.data.get("exemption_is_alumnus"))
-            if "exemption_attained_at" in request.data:
-                req_obj.exemption_attained_at = (
-                    request.data.get("exemption_attained_at") or ""
-                ).strip()[:255]
-            if "exemption_academic_years" in request.data:
-                req_obj.exemption_academic_years = (
-                    request.data.get("exemption_academic_years") or ""
-                ).strip()[:50]
-        elif not user_can_manage_admission_change_requests(request.user):
-            return Response(
-                {"detail": "You do not have permission to review this change request."},
-                status=403,
-            )
+            if stage == "hod":
+                if "exemption_is_alumnus" in request.data:
+                    req_obj.exemption_is_alumnus = bool(request.data.get("exemption_is_alumnus"))
+                if "exemption_attained_at" in request.data:
+                    req_obj.exemption_attained_at = (
+                        request.data.get("exemption_attained_at") or ""
+                    ).strip()[:255]
+                if "exemption_academic_years" in request.data:
+                    req_obj.exemption_academic_years = (
+                        request.data.get("exemption_academic_years") or ""
+                    ).strip()[:50]
+        else:
+            if req_obj.status != 'pending':
+                return Response({'detail': 'This request has already been reviewed.'}, status=400)
+            if not user_can_manage_admission_change_requests(request.user):
+                return Response(
+                    {"detail": "You do not have permission to review this change request."},
+                    status=403,
+                )
 
         try:
             with transaction.atomic():
-                # Apply curriculum side-effects first so a failed match/override
-                # never leaves the request stuck as approved.
-                if action == 'approve':
-                    admission = req_obj.admitted_student
-                    if req_obj.change_type == 'program' and req_obj.new_program:
-                        from admissions.placement_sync import apply_program_campus_study_mode
-
-                        apply_program_campus_study_mode(
-                            admission,
-                            program=req_obj.new_program,
-                            regenerate_reg_no=True,
-                            charged_by=request.user,
-                        )
-                    elif req_obj.change_type == 'campus' and req_obj.new_campus:
-                        from admissions.placement_sync import apply_program_campus_study_mode
-
-                        apply_program_campus_study_mode(
-                            admission,
-                            campus=req_obj.new_campus,
-                            regenerate_reg_no=True,
-                        )
-                    elif req_obj.change_type == 'study_mode' and req_obj.new_study_mode:
-                        from admissions.placement_sync import apply_program_campus_study_mode
-
-                        apply_program_campus_study_mode(
-                            admission,
-                            study_mode=req_obj.new_study_mode,
-                            regenerate_reg_no=True,
-                        )
-                    elif req_obj.change_type == 'exemption':
+                if req_obj.change_type == "exemption":
+                    stage = (request.data.get("stage") or "hod").strip().lower()
+                    if stage == "hod":
                         from admissions.exemption_services import (
                             apply_exemption_overrides,
                             apply_line_decisions,
                             apply_line_matches,
+                            sync_exemption_request_stages_from_lines,
                         )
                         from admissions.models import ExemptionRequestLine
 
-                        # Preferred: per-paper approve/reject decisions.
-                        # Legacy: line_matches + approve-all still accepted.
+                        if action == "approve":
+                            decisions = request.data.get("line_decisions")
+                            if decisions is not None:
+                                apply_line_decisions(req_obj, decisions, stage="hod")
+                            else:
+                                matches = request.data.get("line_matches") or []
+                                if matches:
+                                    apply_line_matches(req_obj, matches)
+                                for line in req_obj.exemption_lines.all():
+                                    line.decision = ExemptionRequestLine.DECISION_APPROVED
+                                    line.save(update_fields=["decision"])
+                                sync_exemption_request_stages_from_lines(req_obj)
+                            apply_exemption_overrides(req_obj, decided_by=request.user)
+                        else:
+                            for line in req_obj.exemption_lines.all():
+                                line.decision = ExemptionRequestLine.DECISION_REJECTED
+                                line.dean_decision = ExemptionRequestLine.DECISION_REJECTED
+                                line.ar_decision = ExemptionRequestLine.DECISION_REJECTED
+                                line.save(
+                                    update_fields=["decision", "dean_decision", "ar_decision"]
+                                )
+                            sync_exemption_request_stages_from_lines(req_obj)
+                        req_obj.hod_reviewed_by = request.user
+                        req_obj.hod_reviewed_at = timezone.now()
+                        req_obj.hod_notes = review_notes
+                    elif stage in ("dean", "ar"):
+                        from admissions.exemption_services import (
+                            apply_line_decisions,
+                            sync_exemption_request_stages_from_lines,
+                        )
+                        from admissions.models import ExemptionRequestLine
+
                         decisions = request.data.get("line_decisions")
                         if decisions is not None:
-                            apply_line_decisions(req_obj, decisions)
+                            apply_line_decisions(req_obj, decisions, stage=stage)
+                        elif action == "reject":
+                            if stage == "dean":
+                                eligible = req_obj.exemption_lines.filter(
+                                    decision=ExemptionRequestLine.DECISION_APPROVED
+                                )
+                            else:
+                                eligible = req_obj.exemption_lines.filter(
+                                    decision=ExemptionRequestLine.DECISION_APPROVED,
+                                    dean_decision=ExemptionRequestLine.DECISION_APPROVED,
+                                )
+                            for line in eligible:
+                                if stage == "dean":
+                                    line.dean_decision = ExemptionRequestLine.DECISION_REJECTED
+                                    line.save(update_fields=["dean_decision"])
+                                    from admissions.exemption_services import revoke_exemption_override_for_line
+                                    revoke_exemption_override_for_line(line)
+                                else:
+                                    line.ar_decision = ExemptionRequestLine.DECISION_REJECTED
+                                    line.save(update_fields=["ar_decision"])
+                                    from admissions.exemption_services import revoke_exemption_override_for_line
+                                    revoke_exemption_override_for_line(line)
+                            sync_exemption_request_stages_from_lines(req_obj)
                         else:
-                            matches = request.data.get("line_matches") or []
-                            if matches:
-                                apply_line_matches(req_obj, matches)
-                            # Approve every paper when no per-line decisions sent.
-                            for line in req_obj.exemption_lines.all():
-                                line.decision = ExemptionRequestLine.DECISION_APPROVED
-                                line.save(update_fields=["decision"])
-                        apply_exemption_overrides(req_obj, decided_by=request.user)
-
-                if action == "approve" and req_obj.change_type == "exemption":
-                    from admissions.models import ExemptionRequestLine
-
-                    approved_n = req_obj.exemption_lines.filter(
-                        decision=ExemptionRequestLine.DECISION_APPROVED
-                    ).count()
-                    # Partial OK: request is "approved" if any paper passed;
-                    # "rejected" only when every paper was rejected.
-                    req_obj.status = "approved" if approved_n else "rejected"
+                            raise ValueError(
+                                f"Provide a per-paper decision for each eligible paper at {stage.upper()} stage."
+                            )
+                        setattr(req_obj, f"{stage}_reviewed_by", request.user)
+                        setattr(req_obj, f"{stage}_reviewed_at", timezone.now())
+                        setattr(req_obj, f"{stage}_notes", review_notes)
+                    req_obj.reviewed_by = request.user
+                    req_obj.reviewed_at = timezone.now()
+                    req_obj.review_notes = review_notes
+                    req_obj.save()
                 else:
-                    req_obj.status = "approved" if action == "approve" else "rejected"
-                    if action == "reject" and req_obj.change_type == "exemption":
-                        from admissions.models import ExemptionRequestLine
+                    # Apply curriculum side-effects first so a failed match/override
+                    # never leaves the request stuck as approved.
+                    if action == 'approve':
+                        admission = req_obj.admitted_student
+                        if req_obj.change_type == 'program' and req_obj.new_program:
+                            from admissions.placement_sync import apply_program_campus_study_mode
 
-                        req_obj.exemption_lines.update(
-                            decision=ExemptionRequestLine.DECISION_REJECTED,
-                        )
-                req_obj.reviewed_by = request.user
-                req_obj.reviewed_at = timezone.now()
-                req_obj.review_notes = review_notes
-                req_obj.save()
+                            apply_program_campus_study_mode(
+                                admission,
+                                program=req_obj.new_program,
+                                regenerate_reg_no=True,
+                                charged_by=request.user,
+                            )
+                        elif req_obj.change_type == 'campus' and req_obj.new_campus:
+                            from admissions.placement_sync import apply_program_campus_study_mode
+
+                            apply_program_campus_study_mode(
+                                admission,
+                                campus=req_obj.new_campus,
+                                regenerate_reg_no=True,
+                            )
+                        elif req_obj.change_type == 'study_mode' and req_obj.new_study_mode:
+                            from admissions.placement_sync import apply_program_campus_study_mode
+
+                            apply_program_campus_study_mode(
+                                admission,
+                                study_mode=req_obj.new_study_mode,
+                                regenerate_reg_no=True,
+                            )
+                    req_obj.status = "approved" if action == "approve" else "rejected"
+                    req_obj.reviewed_by = request.user
+                    req_obj.reviewed_at = timezone.now()
+                    req_obj.review_notes = review_notes
+                    req_obj.save()
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=400)
 

@@ -11,7 +11,7 @@ def normalize_null_specialization(apps, schema_editor):
 
 # Prod may never have had name unique_curriculum_slot (or it was renamed).
 # Drop by name IF EXISTS, and also any unique constraint on the old 4 columns.
-_DROP_OLD_UNIQUE = """
+_DROP_OLD_UNIQUE_PG = """
 DO $$
 DECLARE
   r RECORD;
@@ -45,6 +45,29 @@ BEGIN
 END $$;
 """
 
+
+def drop_old_unique_curriculum_slot(apps, schema_editor):
+    vendor = schema_editor.connection.vendor
+    if vendor == "postgresql":
+        schema_editor.execute(_DROP_OLD_UNIQUE_PG)
+        return
+    if vendor == "sqlite":
+        with schema_editor.connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type IN ('index', 'table') AND name='unique_curriculum_slot'"
+            )
+            if cursor.fetchone():
+                schema_editor.execute('DROP INDEX IF EXISTS "unique_curriculum_slot"')
+
+
+def restore_old_unique_curriculum_slot(apps, schema_editor):
+    vendor = schema_editor.connection.vendor
+    if vendor == "postgresql":
+        schema_editor.execute(_RESTORE_OLD_UNIQUE)
+        return
+    # SQLite rebuilds constraints via Django state on reverse; no-op here.
+
 _RESTORE_OLD_UNIQUE = """
 ALTER TABLE "Programs_programcurriculumline"
   DROP CONSTRAINT IF EXISTS unique_curriculum_slot;
@@ -73,9 +96,9 @@ class Migration(migrations.Migration):
                 ),
             ],
             database_operations=[
-                migrations.RunSQL(
-                    sql=_DROP_OLD_UNIQUE,
-                    reverse_sql=_RESTORE_OLD_UNIQUE,
+                migrations.RunPython(
+                    drop_old_unique_curriculum_slot,
+                    restore_old_unique_curriculum_slot,
                 ),
             ],
         ),

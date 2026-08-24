@@ -297,7 +297,8 @@ CSRF_TRUSTED_ORIGINS = [
     "https://erp.ndejje.ndu.ac.ug",
     "http://test.ndu.ac.ug",
     "https://test.ndu.ac.ug",
-    "http://137.63.139.78"
+    "http://137.63.139.78",
+    "https://www.schoolpaytest.servicecops.com"
 ]
 
 # Never use '*' with credentialed SPA requests (browser blocks login).
@@ -318,6 +319,7 @@ CORS_ALLOWED_ORIGINS = [
     "https://erp.ndejje.ndu.ac.ug",
     "https://www.schoolpay.co.ug",
     "https://schoolpaytest.servicecops.com",
+    "https://www.schoolpaytest.servicecops.com",
     "http://test.ndu.ac.ug",
     "https://test.ndu.ac.ug",
 ]
