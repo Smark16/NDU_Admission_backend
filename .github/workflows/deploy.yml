@@ -44,6 +44,7 @@ jobs:
           python manage.py migrate Programs 0021_retake_missed_paper_registration --fake
           python manage.py migrate Programs 0026_merge_retake_and_teaching_sections || true
           python manage.py migrate Programs 0030_teaching_section_shared_batches --fake
+          python manage.py migrate Programs 0031_remove_study_groups --fake
           python manage.py migrate
 
           python manage.py ensure_program_choice_confirmation_columns || true
