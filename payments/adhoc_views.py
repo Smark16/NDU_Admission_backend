@@ -1131,6 +1131,17 @@ class ManualAccountCreditDeleteView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
+        reason = str(
+            (request.data or {}).get("reason")
+            or request.query_params.get("reason")
+            or ""
+        ).strip()
+        if len(reason) < 5:
+            return Response(
+                {"detail": "A reason is required (at least 5 characters) to remove an Accounts credit."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         payment = get_object_or_404(
             StudentTuitionPayment.objects.select_related("student", "charged_by"),
             pk=pk,
@@ -1146,6 +1157,11 @@ class ManualAccountCreditDeleteView(APIView):
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        if payment.is_waived:
+            return Response(
+                {"detail": "This Accounts credit was already removed."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         label = (payment.label or payment.transaction_id or f"#{payment.pk}").strip()
         amount = float(payment.amount or 0)
@@ -1154,17 +1170,40 @@ class ManualAccountCreditDeleteView(APIView):
             poster = (
                 payment.charged_by.get_full_name() or payment.charged_by.username or ""
             ).strip()
-        payment.delete()
+
+        # Soft-remove so poster + Super Admin reason remain auditable.
+        actor_name = request.user.get_full_name() or request.user.username
+        prior_notes = (payment.notes or "").strip()
+        payment.is_waived = True
+        payment.waived_by = request.user
+        payment.waived_at = timezone.now()
+        payment.notes = (
+            f"{prior_notes}\n\n[REMOVED by Super Admin {actor_name}] "
+            f"{timezone.now().isoformat()} — Reason: {reason}"
+        ).strip()
+        payment.save(
+            update_fields=[
+                "is_waived",
+                "waived_by",
+                "waived_at",
+                "notes",
+                "updated_at",
+            ]
+        )
+
         return Response(
             {
                 "detail": (
-                    f"Account credit '{label}' ({amount:,.0f}) deleted"
+                    f"Account credit '{label}' ({amount:,.0f}) removed from paid totals"
                     + (f" (was posted by {poster})" if poster else "")
-                    + ". Paid totals will refresh."
+                    + "."
                 ),
-                "deleted_id": pk,
+                "deleted_id": payment.pk,
                 "deleted_amount": amount,
                 "posted_by": poster or None,
+                "reason": reason,
+                "deleted_by": actor_name,
+                "soft_deleted": True,
             },
             status=status.HTTP_200_OK,
         )
