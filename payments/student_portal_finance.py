@@ -894,6 +894,10 @@ def registration_card_payment_history(
             )
             if not desc.lower().startswith("account") and "credit" not in desc.lower():
                 desc = f"Account credit — {desc}"
+            if posted_by:
+                desc = f"{desc} · Posted by {posted_by}"
+            else:
+                desc = f"{desc} · Posted by not recorded"
         else:
             channel = (p.payment_method or "").replace("_", " ").strip() or "Portal"
             if src == "ad_hoc":
