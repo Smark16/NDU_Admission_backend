@@ -52,6 +52,9 @@ def send_account_email(
     login_link = _account_login_link(user, use_erp_portal=use_erp_portal)
     portal_label = "ERP portal" if use_erp_portal else "admissions portal"
     username = (user.username or user.email or "").strip()
+    email = (user.email or "").strip()
+    staff_kind = (getattr(user, "staff_kind", None) or "").strip().upper()
+    is_part_time = staff_kind == "PART_TIME"
     is_activation = "activat" in (subject or "").lower()
     intro = (
         "Your account has been activated successfully."
@@ -59,11 +62,22 @@ def send_account_email(
         else "Your account has been created successfully."
     )
 
+    if is_part_time:
+        login_lines = (
+            f"Login username: {username}\n"
+            f"Password: {password}\n"
+            f"(Your email {email} is for communication only — use the username above to sign in.)\n"
+        )
+    else:
+        login_lines = (
+            f"Login (email): {username}\n"
+            f"Password: {password}\n"
+        )
+
     body = (
         f"Hello {user.first_name or user.email},\n\n"
         f"{intro}\n\n"
-        f"Username: {username}\n"
-        f"Password: {password}\n\n"
+        f"{login_lines}\n"
         f"Log in to the {portal_label}:\n{login_link}\n\n"
         f"Please change your password after signing in.\n"
     )
