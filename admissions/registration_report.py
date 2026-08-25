@@ -63,8 +63,8 @@ def _cleared_student_rows(qs) -> list[dict[str, Any]]:
     return rows
 
 
-def _reported_student_rows(qs) -> list[dict[str, Any]]:
-    """Desk-reported students — same definition as the verified registration roster."""
+def _verified_student_rows(qs) -> list[dict[str, Any]]:
+    """Desk-verified students — same definition as the verified registration roster."""
     students = (
         qs.filter(physical_documents_verified=True)
         .select_related(
@@ -88,6 +88,35 @@ def _reported_student_rows(qs) -> list[dict[str, Any]]:
                 "program": s.admitted_program.name if s.admitted_program_id else "—",
                 "verified_by": _officer_name(s.physical_documents_verified_by),
                 "verified_at": verified_at.isoformat() if verified_at else None,
+                "is_registered": bool(s.is_registered),
+            }
+        )
+    return rows
+
+
+def _total_reported_student_rows(
+    qs, temp_ids: set[int], sch_ids: set[int]
+) -> list[dict[str, Any]]:
+    students = qs.select_related(
+        "application",
+        "admitted_program",
+        "admitted_campus",
+        "accounts_registration_cleared_by",
+    ).order_by("application__last_name", "application__first_name", "id")
+    rows = []
+    for s in students.iterator(chunk_size=500):
+        rows.append(
+            {
+                "student_pk": s.pk,
+                "name": _student_name(s),
+                "student_id": s.student_id or "",
+                "reg_no": s.reg_no or "",
+                "campus": s.admitted_campus.name if s.admitted_campus_id else "—",
+                "program": s.admitted_program.name if s.admitted_program_id else "—",
+                "accounts_cleared": bool(s.accounts_registration_cleared),
+                "cleared_by": _officer_name(s.accounts_registration_cleared_by),
+                "temp_pass": s.pk in temp_ids,
+                "scholarship": s.pk in sch_ids,
                 "is_registered": bool(s.is_registered),
             }
         )
@@ -206,11 +235,12 @@ def _breakdown_rows(qs, group_fields: list[str], reported_qs=None) -> list[dict[
         registered = int(item["registered"] or 0)
         cleared = int(item["cleared"] or 0)
         key = tuple(item[f] for f in group_fields)
-        verified = reported_map.get(key, int(item["verified"] or 0))
+        verified = int(item["verified"] or 0)
+        reported = reported_map.get(key, 0)
         row = {
             "admitted": admitted,
-            "reported": verified,
-            "reported_pct": _pct(verified, admitted),
+            "reported": reported,
+            "reported_pct": _pct(reported, admitted),
             "registered": registered,
             "registered_pct": _pct(registered, admitted),
             "cleared": cleared,
@@ -283,21 +313,19 @@ def build_registration_report(user, params: dict[str, Any], *, include_finance: 
     from payments.models import ScholarshipAward
 
     base = registration_report_queryset(user, params)
-    # Reported is the verified roster count: same slice, no staff campus/faculty
-    # scope and no date window — otherwise 700 on the roster becomes ~680 here.
-    reported_params = {
+    verified_params = {
         "academic_year": params.get("academic_year") or "",
         "admission_period": params.get("admission_period") or "",
         "campus_id": params.get("campus_id"),
         "faculty_id": params.get("faculty_id"),
     }
-    if params.get("batch_id") and not reported_params["admission_period"]:
+    if params.get("batch_id") and not verified_params["admission_period"]:
         batch = Batch.objects.filter(pk=params["batch_id"]).values("name", "academic_year").first()
         if batch:
-            reported_params["admission_period"] = (batch.get("name") or "").strip()
-            if not reported_params["academic_year"]:
-                reported_params["academic_year"] = (batch.get("academic_year") or "").strip()
-    reported_qs = desk_reported_queryset(reported_params)
+            verified_params["admission_period"] = (batch.get("name") or "").strip()
+            if not verified_params["academic_year"]:
+                verified_params["academic_year"] = (batch.get("academic_year") or "").strip()
+    verified_qs = desk_reported_queryset(verified_params)
 
     totals_row = base.aggregate(
         admitted=Count("id"),
@@ -307,8 +335,7 @@ def build_registration_report(user, params: dict[str, Any], *, include_finance: 
     admitted = int(totals_row["admitted"] or 0)
     registered = int(totals_row["registered"] or 0)
     cleared = int(totals_row["cleared"] or 0)
-    reported = reported_qs.count()
-    verified = reported
+    verified = verified_qs.count()
 
     from django.utils import timezone
 
@@ -403,6 +430,15 @@ def build_registration_report(user, params: dict[str, Any], *, include_finance: 
             }
         )
 
+    temp_ids = {p.student_id for p in temp_passes}
+    sch_ids = {a.student_id for a in awards}
+    reported_qs = base.filter(
+        Q(accounts_registration_cleared=True)
+        | Q(pk__in=temp_ids)
+        | Q(pk__in=sch_ids)
+    )
+    reported = reported_qs.count()
+
     return {
         "totals": {
             "admitted": admitted,
@@ -425,7 +461,8 @@ def build_registration_report(user, params: dict[str, Any], *, include_finance: 
         ),
         "temporary_passes": temp_rows,
         "scholarships": scholarship_rows,
-        "reported_students": _reported_student_rows(reported_qs),
+        "reported_students": _total_reported_student_rows(reported_qs, temp_ids, sch_ids),
+        "verified_students": _verified_student_rows(verified_qs),
         "cleared_students": _cleared_student_rows(base),
         "can_view_finance": include_finance,
     }

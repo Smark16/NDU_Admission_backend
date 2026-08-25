@@ -162,7 +162,8 @@ class RegistrationReportExcelView(APIView):
             ["Metric", "Count", "% of admitted"],
             [
                 ["Admitted", t["admitted"], 100 if t["admitted"] else None],
-                ["Reported (verified roster)", t.get("reported", t["verified"]), t.get("reported_pct", t["verified_pct"])],
+                ["Reported (cleared + temp pass + scholarship)", t.get("reported"), t.get("reported_pct")],
+                ["Verified roster", t["verified"], t["verified_pct"]],
                 ["Registered (courses)", t["registered"], t["registered_pct"]],
                 ["Accounts cleared", t["cleared"], t["clearance_pct"]],
                 ["Temporary passes", t["temporary_passes"], None],
@@ -178,8 +179,37 @@ class RegistrationReportExcelView(APIView):
                 "Reg No",
                 "Campus",
                 "Programme",
-                "Reported / verified by",
-                "Reported at",
+                "Accounts cleared",
+                "Temp pass",
+                "Scholarship",
+                "Courses registered",
+            ],
+            [
+                [
+                    r.get("name") or "—",
+                    r.get("student_id") or "",
+                    r.get("reg_no") or "",
+                    r.get("campus") or "—",
+                    r.get("program") or "—",
+                    "Y" if r.get("accounts_cleared") else "N",
+                    "Y" if r.get("temp_pass") else "N",
+                    "Y" if r.get("scholarship") else "N",
+                    "Y" if r.get("is_registered") else "N",
+                ]
+                for r in (data.get("reported_students") or [])
+            ],
+        )
+
+        write_sheet(
+            wb.create_sheet("Verified roster"),
+            [
+                "Student",
+                "Student ID",
+                "Reg No",
+                "Campus",
+                "Programme",
+                "Verified by",
+                "Verified at",
                 "Courses registered",
             ],
             [
@@ -193,7 +223,7 @@ class RegistrationReportExcelView(APIView):
                     (r.get("verified_at") or "")[:19].replace("T", " "),
                     "Y" if r.get("is_registered") else "N",
                 ]
-                for r in (data.get("reported_students") or [])
+                for r in (data.get("verified_students") or [])
             ],
         )
 
@@ -223,17 +253,17 @@ class RegistrationReportExcelView(APIView):
         campus_ws = wb.create_sheet("By campus")
         write_sheet(
             campus_ws,
-            ["Campus", "Admitted", "Reported", "Reported %", "Registered", "Registered %", "Cleared", "Clearance %"],
+            ["Campus", "Admitted", "Reported", "Reported %", "Verified", "Registered", "Registered %", "Cleared"],
             [
                 [
                     r.get("campus") or "—",
                     r["admitted"],
-                    r.get("reported", r.get("verified", 0)),
-                    r.get("reported_pct", r.get("verified_pct")),
+                    r.get("reported", 0),
+                    r.get("reported_pct"),
+                    r.get("verified", 0),
                     r["registered"],
                     r["registered_pct"],
                     r["cleared"],
-                    r["clearance_pct"],
                 ]
                 for r in data["by_campus"]
             ],
@@ -242,18 +272,18 @@ class RegistrationReportExcelView(APIView):
         program_ws = wb.create_sheet("By programme")
         write_sheet(
             program_ws,
-            ["Faculty", "Programme", "Admitted", "Reported", "Reported %", "Registered", "Registered %", "Cleared", "Clearance %"],
+            ["Faculty", "Programme", "Admitted", "Reported", "Reported %", "Verified", "Registered", "Registered %", "Cleared"],
             [
                 [
                     r.get("faculty") or "—",
                     r.get("program") or "—",
                     r["admitted"],
-                    r.get("reported", r.get("verified", 0)),
-                    r.get("reported_pct", r.get("verified_pct")),
+                    r.get("reported", 0),
+                    r.get("reported_pct"),
+                    r.get("verified", 0),
                     r["registered"],
                     r["registered_pct"],
                     r["cleared"],
-                    r["clearance_pct"],
                 ]
                 for r in data["by_program"]
             ],
