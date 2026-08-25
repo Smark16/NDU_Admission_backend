@@ -6,11 +6,6 @@ from typing import Any
 
 from django.db.models import Count, Q, Sum
 
-from admissions.faculty_scope import (
-    filter_admitted_students_for_user,
-    user_has_institution_wide_admissions_access,
-    user_is_faculty_scoped_staff,
-)
 from admissions.models import AdmittedStudent, Batch, TemporaryAccessPass
 
 
@@ -111,6 +106,35 @@ DATE_FIELD_MAP = {
 }
 
 
+def apply_roster_slice(qs, params: dict[str, Any]):
+    """Year / period / campus / faculty / programme slice used by the verified roster."""
+    academic_year = (params.get("academic_year") or "").strip()
+    admission_period = (params.get("admission_period") or "").strip()
+    campus_id = params.get("campus_id")
+    faculty_id = params.get("faculty_id")
+    program_id = params.get("program_id")
+    if academic_year:
+        qs = qs.filter(admitted_batch__academic_year=academic_year)
+    if admission_period:
+        qs = qs.filter(admitted_batch__name__icontains=admission_period)
+    if campus_id:
+        qs = qs.filter(admitted_campus_id=campus_id)
+    if faculty_id:
+        qs = qs.filter(admitted_program__faculty_id=faculty_id)
+    if program_id:
+        qs = qs.filter(admitted_program_id=program_id)
+    return qs
+
+
+def desk_reported_queryset(params: dict[str, Any]):
+    """Verified registration roster: admitted + desk documents verified. No user/date scope."""
+    qs = AdmittedStudent.objects.filter(
+        is_admitted=True,
+        physical_documents_verified=True,
+    )
+    return apply_roster_slice(qs, params).order_by()
+
+
 def _apply_report_filters(qs, params: dict[str, Any]):
     academic_year = (params.get("academic_year") or "").strip()
     batch_id = params.get("batch_id")
@@ -121,24 +145,21 @@ def _apply_report_filters(qs, params: dict[str, Any]):
     to_date = params.get("to_date")
     date_basis = (params.get("date_basis") or "cleared").strip().lower()
     date_field = DATE_FIELD_MAP.get(date_basis, "admission_date")
-    # Same intake match as the verified roster: year + batch name contains,
-    # not a single batch id (one period name can cover more than one batch row).
     if batch_id and not admission_period:
         batch = Batch.objects.filter(pk=batch_id).values("name", "academic_year").first()
         if batch:
             admission_period = (batch.get("name") or "").strip()
             if not academic_year:
                 academic_year = (batch.get("academic_year") or "").strip()
-    if academic_year:
-        qs = qs.filter(admitted_batch__academic_year=academic_year)
-    if admission_period:
-        qs = qs.filter(admitted_batch__name__icontains=admission_period)
-    elif batch_id:
+    slice_params = {
+        "academic_year": academic_year,
+        "admission_period": admission_period,
+        "campus_id": campus_id,
+        "faculty_id": faculty_id,
+    }
+    qs = apply_roster_slice(qs, slice_params)
+    if not admission_period and batch_id:
         qs = qs.filter(admitted_batch_id=batch_id)
-    if campus_id:
-        qs = qs.filter(admitted_campus_id=campus_id)
-    if faculty_id:
-        qs = qs.filter(admitted_program__faculty_id=faculty_id)
     if from_date:
         qs = qs.filter(**{f"{date_field}__date__gte": from_date})
     if to_date:
@@ -161,7 +182,7 @@ def _ledger_paid_by_student(student_ids: list[int]) -> dict[int, Decimal]:
     return {int(r["student_id"]): r["total"] or Decimal("0") for r in rows}
 
 
-def _breakdown_rows(qs, group_fields: list[str]) -> list[dict[str, Any]]:
+def _breakdown_rows(qs, group_fields: list[str], reported_qs=None) -> list[dict[str, Any]]:
     annotated = (
         qs.order_by()
         .values(*group_fields)
@@ -173,12 +194,19 @@ def _breakdown_rows(qs, group_fields: list[str]) -> list[dict[str, Any]]:
         )
         .order_by(*group_fields)
     )
+    reported_map: dict[tuple, int] = {}
+    if reported_qs is not None:
+        for item in (
+            reported_qs.order_by().values(*group_fields).annotate(n=Count("id"))
+        ):
+            reported_map[tuple(item[f] for f in group_fields)] = int(item["n"] or 0)
     rows = []
     for item in annotated:
         admitted = int(item["admitted"] or 0)
         registered = int(item["registered"] or 0)
         cleared = int(item["cleared"] or 0)
-        verified = int(item["verified"] or 0)
+        key = tuple(item[f] for f in group_fields)
+        verified = reported_map.get(key, int(item["verified"] or 0))
         row = {
             "admitted": admitted,
             "reported": verified,
@@ -247,10 +275,7 @@ def registration_report_filter_options(user) -> dict[str, Any]:
 
 
 def registration_report_queryset(user, params: dict[str, Any]):
-    # Same student universe as the verified registration roster.
     qs = AdmittedStudent.objects.filter(is_admitted=True)
-    if user_is_faculty_scoped_staff(user) and not user_has_institution_wide_admissions_access(user):
-        qs = filter_admitted_students_for_user(qs, user)
     return _apply_report_filters(qs, params).order_by()
 
 
@@ -258,18 +283,32 @@ def build_registration_report(user, params: dict[str, Any], *, include_finance: 
     from payments.models import ScholarshipAward
 
     base = registration_report_queryset(user, params)
+    # Reported is the verified roster count: same slice, no staff campus/faculty
+    # scope and no date window — otherwise 700 on the roster becomes ~680 here.
+    reported_params = {
+        "academic_year": params.get("academic_year") or "",
+        "admission_period": params.get("admission_period") or "",
+        "campus_id": params.get("campus_id"),
+        "faculty_id": params.get("faculty_id"),
+    }
+    if params.get("batch_id") and not reported_params["admission_period"]:
+        batch = Batch.objects.filter(pk=params["batch_id"]).values("name", "academic_year").first()
+        if batch:
+            reported_params["admission_period"] = (batch.get("name") or "").strip()
+            if not reported_params["academic_year"]:
+                reported_params["academic_year"] = (batch.get("academic_year") or "").strip()
+    reported_qs = desk_reported_queryset(reported_params)
 
     totals_row = base.aggregate(
         admitted=Count("id"),
         registered=Count("id", filter=Q(is_registered=True)),
         cleared=Count("id", filter=Q(accounts_registration_cleared=True)),
-        verified=Count("id", filter=Q(physical_documents_verified=True)),
     )
     admitted = int(totals_row["admitted"] or 0)
     registered = int(totals_row["registered"] or 0)
     cleared = int(totals_row["cleared"] or 0)
-    verified = int(totals_row["verified"] or 0)
-    reported = verified
+    reported = reported_qs.count()
+    verified = reported
 
     from django.utils import timezone
 
@@ -378,14 +417,15 @@ def build_registration_report(user, params: dict[str, Any], *, include_finance: 
             "temporary_passes": len(temp_rows),
             "scholarships": len(scholarship_rows),
         },
-        "by_campus": _breakdown_rows(base, ["admitted_campus__name"]),
+        "by_campus": _breakdown_rows(base, ["admitted_campus__name"], reported_qs),
         "by_program": _breakdown_rows(
             base,
             ["admitted_program__faculty__name", "admitted_program__name"],
+            reported_qs,
         ),
         "temporary_passes": temp_rows,
         "scholarships": scholarship_rows,
-        "reported_students": _reported_student_rows(base),
+        "reported_students": _reported_student_rows(reported_qs),
         "cleared_students": _cleared_student_rows(base),
         "can_view_finance": include_finance,
     }

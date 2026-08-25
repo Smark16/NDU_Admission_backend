@@ -109,6 +109,8 @@ def _verified_registration_verification_blurb(params):
 
 
 def _verified_registration_roster_queryset(params):
+    from admissions.registration_report import apply_roster_slice
+
     qs = (
         AdmittedStudent.objects.select_related(
             "application",
@@ -122,27 +124,12 @@ def _verified_registration_roster_queryset(params):
         )
         .filter(is_admitted=True)
     )
+    qs = apply_roster_slice(qs, params)
 
-    academic_year = params["academic_year"]
-    admission_period = params["admission_period"]
-    campus_id = params["campus_id"]
-    program_id = params["program_id"]
-    faculty_id = params["faculty_id"]
     documents_verified_raw = params["documents_verified_raw"]
     documents_verified = params["documents_verified"]
     is_registered = params["is_registered"]
     include_all = params["include_all"]
-
-    if academic_year:
-        qs = qs.filter(admitted_batch__academic_year=academic_year)
-    if admission_period:
-        qs = qs.filter(admitted_batch__name__icontains=admission_period)
-    if campus_id:
-        qs = qs.filter(admitted_campus_id=campus_id)
-    if program_id:
-        qs = qs.filter(admitted_program_id=program_id)
-    if faculty_id:
-        qs = qs.filter(admitted_program__faculty_id=faculty_id)
 
     if documents_verified_raw is not None and str(documents_verified_raw).strip() != "":
         if documents_verified in ("1", "true", "yes"):

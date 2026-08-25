@@ -59,15 +59,16 @@ def _report_params(request) -> dict:
     elif raw_year:
         academic_year = raw_year
     elif not batch_id:
-        # Same default as the verified roster: current active intake.
+        # Current academic year, all intakes — same slice as a year on the
+        # verified roster (26/1 and 26/2 students sit in one 700 figure).
         intake = active_intake()
         if intake:
             academic_year = (intake.academic_year or "").strip()
-            batch_id = intake.id
 
     return {
         "academic_year": academic_year,
         "batch_id": batch_id,
+        "admission_period": (request.query_params.get("admission_period") or "").strip(),
         "campus_id": _parse_int(request.query_params.get("campus")),
         "faculty_id": _parse_int(request.query_params.get("faculty")),
         "date_basis": basis,
@@ -104,6 +105,7 @@ class RegistrationReportView(APIView):
         data["applied"] = {
             "academic_year": params["academic_year"] or None,
             "batch": params["batch_id"],
+            "admission_period": params.get("admission_period") or None,
             "campus": params["campus_id"],
             "faculty": params["faculty_id"],
             "date_basis": params["date_basis"],
