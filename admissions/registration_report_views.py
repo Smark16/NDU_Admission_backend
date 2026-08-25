@@ -127,6 +127,23 @@ class RegistrationReportExcelView(APIView):
         params = _report_params(request)
         include_finance = user_can_view_student_finance(request.user)
         data = build_registration_report(request.user, params, include_finance=include_finance)
+        export = (request.query_params.get("export") or "all").strip().lower()
+        allowed = {
+            "all",
+            "summary",
+            "reported",
+            "verified",
+            "enrolled",
+            "cleared",
+            "registered",
+            "temp_passes",
+            "scholarships",
+        }
+        if export not in allowed:
+            export = "all"
+
+        def want(*names: str) -> bool:
+            return export == "all" or export in names
 
         wb = Workbook()
         header_font = Font(bold=True, color="FFFFFF")
@@ -164,15 +181,36 @@ class RegistrationReportExcelView(APIView):
                 ["Admitted", t["admitted"], 100 if t["admitted"] else None],
                 ["Reported (cleared + temp pass + scholarship)", t.get("reported"), t.get("reported_pct")],
                 ["Verified roster", t["verified"], t["verified_pct"]],
+                ["Enrolled (programme)", t.get("enrolled"), t.get("enrolled_pct")],
                 ["Registered (courses)", t["registered"], t["registered_pct"]],
                 ["Accounts cleared", t["cleared"], t["clearance_pct"]],
                 ["Temporary passes", t["temporary_passes"], None],
                 ["Scholarship students", t["scholarships"], None],
             ],
         )
+        summary.auto_filter.ref = "A1:C10"
+        summary["E1"] = "Applied filters"
+        summary["E1"].font = Font(bold=True)
+        filter_rows = [
+            ("Export", export),
+            ("Academic year", params["academic_year"] or "All years"),
+            ("Intake batch id", params["batch_id"] or "All intakes"),
+            ("Admission period", params.get("admission_period") or "—"),
+            ("Campus id", params["campus_id"] or "All campuses"),
+            ("Faculty id", params["faculty_id"] or "All faculties"),
+            ("Date basis", params["date_basis"]),
+            ("From date", params["from_date"].isoformat() if params["from_date"] else "—"),
+            ("To date", params["to_date"].isoformat() if params["to_date"] else "—"),
+        ]
+        for i, (label, value) in enumerate(filter_rows, 2):
+            summary.cell(row=i, column=5, value=label)
+            summary.cell(row=i, column=6, value=str(value))
+        summary.column_dimensions["E"].width = 20
+        summary.column_dimensions["F"].width = 24
 
-        write_sheet(
-            wb.create_sheet("Reported students"),
+        if want("reported"):
+            write_sheet(
+                wb.create_sheet("Reported students"),
             [
                 "Student",
                 "Student ID",
@@ -198,10 +236,11 @@ class RegistrationReportExcelView(APIView):
                 ]
                 for r in (data.get("reported_students") or [])
             ],
-        )
+            )
 
-        write_sheet(
-            wb.create_sheet("Verified roster"),
+        if want("verified"):
+            write_sheet(
+                wb.create_sheet("Verified roster"),
             [
                 "Student",
                 "Student ID",
@@ -225,10 +264,41 @@ class RegistrationReportExcelView(APIView):
                 ]
                 for r in (data.get("verified_students") or [])
             ],
-        )
+            )
 
-        write_sheet(
-            wb.create_sheet("Cleared students"),
+        if want("enrolled"):
+            write_sheet(
+                wb.create_sheet("Enrolled students"),
+                [
+                    "Student",
+                    "Student ID",
+                    "Reg No",
+                    "Campus",
+                    "Programme",
+                    "Year of study",
+                    "Term",
+                    "Cohort",
+                    "Courses registered",
+                ],
+                [
+                    [
+                        r.get("name") or "—",
+                        r.get("student_id") or "",
+                        r.get("reg_no") or "",
+                        r.get("campus") or "—",
+                        r.get("program") or "—",
+                        r.get("year_of_study") or "",
+                        r.get("term") or "",
+                        r.get("cohort") or "—",
+                        "Y" if r.get("is_registered") else "N",
+                    ]
+                    for r in (data.get("enrolled_students") or [])
+                ],
+            )
+
+        if want("cleared"):
+            write_sheet(
+                wb.create_sheet("Cleared students"),
             [
                 "Student",
                 "Student ID",
@@ -248,102 +318,116 @@ class RegistrationReportExcelView(APIView):
                 ]
                 for r in (data.get("cleared_students") or [])
             ],
-        )
+            )
 
-        campus_ws = wb.create_sheet("By campus")
-        write_sheet(
-            campus_ws,
-            ["Campus", "Admitted", "Reported", "Reported %", "Verified", "Registered", "Registered %", "Cleared"],
-            [
+        if want("registered"):
+            write_sheet(
+                wb.create_sheet("Registered students"),
+                ["Student", "Student ID", "Reg No", "Campus", "Programme"],
                 [
-                    r.get("campus") or "—",
-                    r["admitted"],
-                    r.get("reported", 0),
-                    r.get("reported_pct"),
-                    r.get("verified", 0),
-                    r["registered"],
-                    r["registered_pct"],
-                    r["cleared"],
-                ]
-                for r in data["by_campus"]
-            ],
-        )
+                    [
+                        r.get("name") or "—",
+                        r.get("student_id") or "",
+                        r.get("reg_no") or "",
+                        r.get("campus") or "—",
+                        r.get("program") or "—",
+                    ]
+                    for r in (data.get("registered_students") or [])
+                ],
+            )
 
-        program_ws = wb.create_sheet("By programme")
-        write_sheet(
-            program_ws,
-            ["Faculty", "Programme", "Admitted", "Reported", "Reported %", "Verified", "Registered", "Registered %", "Cleared"],
-            [
+        if want("summary"):
+            write_sheet(
+                wb.create_sheet("By campus"),
+                ["Campus", "Admitted", "Reported", "Enrolled", "Verified", "Registered", "Cleared"],
                 [
-                    r.get("faculty") or "—",
-                    r.get("program") or "—",
-                    r["admitted"],
-                    r.get("reported", 0),
-                    r.get("reported_pct"),
-                    r.get("verified", 0),
-                    r["registered"],
-                    r["registered_pct"],
-                    r["cleared"],
+                    [
+                        r.get("campus") or "—",
+                        r["admitted"],
+                        r.get("reported", 0),
+                        r.get("enrolled", 0),
+                        r.get("verified", 0),
+                        r["registered"],
+                        r["cleared"],
+                    ]
+                    for r in data["by_campus"]
+                ],
+            )
+            write_sheet(
+                wb.create_sheet("By programme"),
+                ["Faculty", "Programme", "Admitted", "Reported", "Enrolled", "Verified", "Registered", "Cleared"],
+                [
+                    [
+                        r.get("faculty") or "—",
+                        r.get("program") or "—",
+                        r["admitted"],
+                        r.get("reported", 0),
+                        r.get("enrolled", 0),
+                        r.get("verified", 0),
+                        r["registered"],
+                        r["cleared"],
+                    ]
+                    for r in data["by_program"]
+                ],
+            )
+
+        if want("temp_passes"):
+            pass_headers = ["Name", "Student ID", "Reg No", "Campus", "Programme", "Intake", "Sponsor", "Valid until"]
+            pass_rows = []
+            for r in data["temporary_passes"]:
+                row = [
+                    r["name"],
+                    r["student_id"],
+                    r["reg_no"],
+                    r["campus"],
+                    r["program"],
+                    r["intake"],
+                    r["sponsor"],
+                    r["valid_until"] or "Open",
                 ]
-                for r in data["by_program"]
-            ],
-        )
-
-        pass_headers = ["Name", "Student ID", "Reg No", "Campus", "Programme", "Intake", "Sponsor", "Valid until"]
-        pass_rows = []
-        for r in data["temporary_passes"]:
-            row = [
-                r["name"],
-                r["student_id"],
-                r["reg_no"],
-                r["campus"],
-                r["program"],
-                r["intake"],
-                r["sponsor"],
-                r["valid_until"] or "Open",
-            ]
+                if include_finance:
+                    row.append(_ugx(r.get("tuition_paid_ugx")))
+                pass_rows.append(row)
             if include_finance:
-                row.append(_ugx(r.get("tuition_paid_ugx")))
-            pass_rows.append(row)
-        if include_finance:
-            pass_headers.append("Tuition paid (UGX)")
-        write_sheet(wb.create_sheet("Temporary passes"), pass_headers, pass_rows)
+                pass_headers.append("Tuition paid (UGX)")
+            write_sheet(wb.create_sheet("Temporary passes"), pass_headers, pass_rows)
 
-        sch_headers = [
-            "Name",
-            "Student ID",
-            "Reg No",
-            "Campus",
-            "Programme",
-            "Intake",
-            "Scholarship",
-            "Sponsor",
-            "Award amount",
-        ]
-        sch_rows = []
-        for r in data["scholarships"]:
-            row = [
-                r["name"],
-                r["student_id"],
-                r["reg_no"],
-                r["campus"],
-                r["program"],
-                r["intake"],
-                r["scholarship_name"],
-                r["sponsor"],
-                r.get("award_amount"),
+        if want("scholarships"):
+            sch_headers = [
+                "Name",
+                "Student ID",
+                "Reg No",
+                "Campus",
+                "Programme",
+                "Intake",
+                "Scholarship",
+                "Sponsor",
+                "Award amount",
             ]
+            sch_rows = []
+            for r in data["scholarships"]:
+                row = [
+                    r["name"],
+                    r["student_id"],
+                    r["reg_no"],
+                    r["campus"],
+                    r["program"],
+                    r["intake"],
+                    r["scholarship_name"],
+                    r["sponsor"],
+                    r.get("award_amount"),
+                ]
+                if include_finance:
+                    row.append(_ugx(r.get("tuition_paid_ugx")))
+                sch_rows.append(row)
             if include_finance:
-                row.append(_ugx(r.get("tuition_paid_ugx")))
-            sch_rows.append(row)
-        if include_finance:
-            sch_headers.append("Tuition paid (UGX)")
-        write_sheet(wb.create_sheet("Scholarships"), sch_headers, sch_rows)
+                sch_headers.append("Tuition paid (UGX)")
+            write_sheet(wb.create_sheet("Scholarships"), sch_headers, sch_rows)
 
         buf = BytesIO()
         wb.save(buf)
         buf.seek(0)
-        filename = f"registration_report_{datetime.now().strftime('%Y-%m-%d')}.xlsx"
+        filename = f"registration_report_{export}_{datetime.now().strftime('%Y-%m-%d')}.xlsx"
         response = HttpResponse(
             buf.getvalue(),
             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

@@ -63,6 +63,28 @@ def _cleared_student_rows(qs) -> list[dict[str, Any]]:
     return rows
 
 
+def _identity_student_rows(qs) -> list[dict[str, Any]]:
+    students = qs.select_related(
+        "application",
+        "admitted_program",
+        "admitted_campus",
+    ).order_by("application__last_name", "application__first_name", "id")
+    rows = []
+    for s in students.iterator(chunk_size=500):
+        rows.append(
+            {
+                "student_pk": s.pk,
+                "name": _student_name(s),
+                "student_id": s.student_id or "",
+                "reg_no": s.reg_no or "",
+                "campus": s.admitted_campus.name if s.admitted_campus_id else "—",
+                "program": s.admitted_program.name if s.admitted_program_id else "—",
+                "is_registered": bool(s.is_registered),
+            }
+        )
+    return rows
+
+
 def _verified_student_rows(qs) -> list[dict[str, Any]]:
     """Desk-verified students — same definition as the verified registration roster."""
     students = (
@@ -117,6 +139,42 @@ def _total_reported_student_rows(
                 "cleared_by": _officer_name(s.accounts_registration_cleared_by),
                 "temp_pass": s.pk in temp_ids,
                 "scholarship": s.pk in sch_ids,
+                "is_registered": bool(s.is_registered),
+            }
+        )
+    return rows
+
+
+def _enrolled_student_rows(qs) -> list[dict[str, Any]]:
+    students = (
+        qs.filter(programme_enrollment__status="enrolled")
+        .select_related(
+            "application",
+            "admitted_program",
+            "admitted_campus",
+            "programme_enrollment",
+            "programme_enrollment__program_batch",
+        )
+        .order_by("application__last_name", "application__first_name", "id")
+    )
+    rows = []
+    for s in students.iterator(chunk_size=500):
+        spe = getattr(s, "programme_enrollment", None)
+        rows.append(
+            {
+                "student_pk": s.pk,
+                "name": _student_name(s),
+                "student_id": s.student_id or "",
+                "reg_no": s.reg_no or "",
+                "campus": s.admitted_campus.name if s.admitted_campus_id else "—",
+                "program": s.admitted_program.name if s.admitted_program_id else "—",
+                "year_of_study": int(getattr(spe, "current_year_of_study", 0) or 0),
+                "term": int(getattr(spe, "current_term_number", 0) or 0),
+                "cohort": (
+                    spe.program_batch.name
+                    if spe is not None and spe.program_batch_id
+                    else "—"
+                ),
                 "is_registered": bool(s.is_registered),
             }
         )
@@ -217,6 +275,7 @@ def _breakdown_rows(qs, group_fields: list[str], reported_qs=None) -> list[dict[
         .values(*group_fields)
         .annotate(
             admitted=Count("id"),
+            enrolled=Count("id", filter=Q(programme_enrollment__status="enrolled")),
             registered=Count("id", filter=Q(is_registered=True)),
             cleared=Count("id", filter=Q(accounts_registration_cleared=True)),
             verified=Count("id", filter=Q(physical_documents_verified=True)),
@@ -233,6 +292,7 @@ def _breakdown_rows(qs, group_fields: list[str], reported_qs=None) -> list[dict[
     for item in annotated:
         admitted = int(item["admitted"] or 0)
         registered = int(item["registered"] or 0)
+        enrolled = int(item.get("enrolled") or 0)
         cleared = int(item["cleared"] or 0)
         key = tuple(item[f] for f in group_fields)
         verified = int(item["verified"] or 0)
@@ -241,6 +301,8 @@ def _breakdown_rows(qs, group_fields: list[str], reported_qs=None) -> list[dict[
             "admitted": admitted,
             "reported": reported,
             "reported_pct": _pct(reported, admitted),
+            "enrolled": enrolled,
+            "enrolled_pct": _pct(enrolled, admitted),
             "registered": registered,
             "registered_pct": _pct(registered, admitted),
             "cleared": cleared,
@@ -329,10 +391,12 @@ def build_registration_report(user, params: dict[str, Any], *, include_finance: 
 
     totals_row = base.aggregate(
         admitted=Count("id"),
+        enrolled=Count("id", filter=Q(programme_enrollment__status="enrolled")),
         registered=Count("id", filter=Q(is_registered=True)),
         cleared=Count("id", filter=Q(accounts_registration_cleared=True)),
     )
     admitted = int(totals_row["admitted"] or 0)
+    enrolled = int(totals_row["enrolled"] or 0)
     registered = int(totals_row["registered"] or 0)
     cleared = int(totals_row["cleared"] or 0)
     verified = verified_qs.count()
@@ -444,6 +508,8 @@ def build_registration_report(user, params: dict[str, Any], *, include_finance: 
             "admitted": admitted,
             "reported": reported,
             "reported_pct": _pct(reported, admitted),
+            "enrolled": enrolled,
+            "enrolled_pct": _pct(enrolled, admitted),
             "registered": registered,
             "registered_pct": _pct(registered, admitted),
             "cleared": cleared,
@@ -463,6 +529,8 @@ def build_registration_report(user, params: dict[str, Any], *, include_finance: 
         "scholarships": scholarship_rows,
         "reported_students": _total_reported_student_rows(reported_qs, temp_ids, sch_ids),
         "verified_students": _verified_student_rows(verified_qs),
+        "enrolled_students": _enrolled_student_rows(base),
         "cleared_students": _cleared_student_rows(base),
+        "registered_students": _identity_student_rows(base.filter(is_registered=True)),
         "can_view_finance": include_finance,
     }
