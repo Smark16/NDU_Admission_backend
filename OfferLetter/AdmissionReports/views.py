@@ -121,7 +121,6 @@ def _verified_registration_roster_queryset(params):
             "programme_enrollment",
         )
         .filter(is_admitted=True)
-        .exclude(application__is_revoked=True)
     )
 
     academic_year = params["academic_year"]

@@ -114,15 +114,26 @@ DATE_FIELD_MAP = {
 def _apply_report_filters(qs, params: dict[str, Any]):
     academic_year = (params.get("academic_year") or "").strip()
     batch_id = params.get("batch_id")
+    admission_period = (params.get("admission_period") or "").strip()
     campus_id = params.get("campus_id")
     faculty_id = params.get("faculty_id")
     from_date = params.get("from_date")
     to_date = params.get("to_date")
     date_basis = (params.get("date_basis") or "cleared").strip().lower()
     date_field = DATE_FIELD_MAP.get(date_basis, "admission_date")
+    # Same intake match as the verified roster: year + batch name contains,
+    # not a single batch id (one period name can cover more than one batch row).
+    if batch_id and not admission_period:
+        batch = Batch.objects.filter(pk=batch_id).values("name", "academic_year").first()
+        if batch:
+            admission_period = (batch.get("name") or "").strip()
+            if not academic_year:
+                academic_year = (batch.get("academic_year") or "").strip()
     if academic_year:
         qs = qs.filter(admitted_batch__academic_year=academic_year)
-    if batch_id:
+    if admission_period:
+        qs = qs.filter(admitted_batch__name__icontains=admission_period)
+    elif batch_id:
         qs = qs.filter(admitted_batch_id=batch_id)
     if campus_id:
         qs = qs.filter(admitted_campus_id=campus_id)
@@ -236,11 +247,8 @@ def registration_report_filter_options(user) -> dict[str, Any]:
 
 
 def registration_report_queryset(user, params: dict[str, Any]):
-    # Same student universe as the verified registration roster: admitted,
-    # not revoked. Faculty deans still see only their faculty.
-    qs = AdmittedStudent.objects.filter(is_admitted=True).exclude(
-        application__is_revoked=True
-    )
+    # Same student universe as the verified registration roster.
+    qs = AdmittedStudent.objects.filter(is_admitted=True)
     if user_is_faculty_scoped_staff(user) and not user_has_institution_wide_admissions_access(user):
         qs = filter_admitted_students_for_user(qs, user)
     return _apply_report_filters(qs, params).order_by()
