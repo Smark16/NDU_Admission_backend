@@ -1,4 +1,4 @@
-"""Registration census: admitted vs registered, clearance %, temp passes, scholarships."""
+"""Registration census: admitted vs reported vs registered, clearance, temp passes, scholarships."""
 from __future__ import annotations
 
 from decimal import Decimal
@@ -6,7 +6,11 @@ from typing import Any
 
 from django.db.models import Count, Q, Sum
 
-from admissions.faculty_scope import filter_admitted_students_for_user
+from admissions.faculty_scope import (
+    filter_admitted_students_for_user,
+    user_has_institution_wide_admissions_access,
+    user_is_faculty_scoped_staff,
+)
 from admissions.models import AdmittedStudent, Batch, TemporaryAccessPass
 
 
@@ -62,6 +66,41 @@ def _cleared_student_rows(qs) -> list[dict[str, Any]]:
             }
         )
     return rows
+
+
+def _reported_student_rows(qs) -> list[dict[str, Any]]:
+    """Desk-reported students — same definition as the verified registration roster."""
+    students = (
+        qs.filter(physical_documents_verified=True)
+        .select_related(
+            "application",
+            "admitted_program",
+            "admitted_campus",
+            "physical_documents_verified_by",
+        )
+        .order_by("application__last_name", "application__first_name", "id")
+    )
+    rows = []
+    for s in students.iterator(chunk_size=500):
+        verified_at = s.physical_documents_verified_at
+        rows.append(
+            {
+                "student_pk": s.pk,
+                "name": _student_name(s),
+                "student_id": s.student_id or "",
+                "reg_no": s.reg_no or "",
+                "campus": s.admitted_campus.name if s.admitted_campus_id else "—",
+                "program": s.admitted_program.name if s.admitted_program_id else "—",
+                "verified_by": _officer_name(s.physical_documents_verified_by),
+                "verified_at": verified_at.isoformat() if verified_at else None,
+                "is_registered": bool(s.is_registered),
+            }
+        )
+    return rows
+
+
+def active_intake():
+    return Batch.objects.filter(is_active=True).order_by("-academic_year", "-id").first()
 
 
 DATE_FIELD_MAP = {
@@ -131,6 +170,8 @@ def _breakdown_rows(qs, group_fields: list[str]) -> list[dict[str, Any]]:
         verified = int(item["verified"] or 0)
         row = {
             "admitted": admitted,
+            "reported": verified,
+            "reported_pct": _pct(verified, admitted),
             "registered": registered,
             "registered_pct": _pct(registered, admitted),
             "cleared": cleared,
@@ -195,12 +236,13 @@ def registration_report_filter_options(user) -> dict[str, Any]:
 
 
 def registration_report_queryset(user, params: dict[str, Any]):
-    qs = filter_admitted_students_for_user(
-        AdmittedStudent.objects.filter(is_admitted=True).exclude(
-            application__is_revoked=True
-        ),
-        user,
+    # Same student universe as the verified registration roster: admitted,
+    # not revoked. Faculty deans still see only their faculty.
+    qs = AdmittedStudent.objects.filter(is_admitted=True).exclude(
+        application__is_revoked=True
     )
+    if user_is_faculty_scoped_staff(user) and not user_has_institution_wide_admissions_access(user):
+        qs = filter_admitted_students_for_user(qs, user)
     return _apply_report_filters(qs, params).order_by()
 
 
@@ -219,6 +261,7 @@ def build_registration_report(user, params: dict[str, Any], *, include_finance: 
     registered = int(totals_row["registered"] or 0)
     cleared = int(totals_row["cleared"] or 0)
     verified = int(totals_row["verified"] or 0)
+    reported = verified
 
     from django.utils import timezone
 
@@ -316,6 +359,8 @@ def build_registration_report(user, params: dict[str, Any], *, include_finance: 
     return {
         "totals": {
             "admitted": admitted,
+            "reported": reported,
+            "reported_pct": _pct(reported, admitted),
             "registered": registered,
             "registered_pct": _pct(registered, admitted),
             "cleared": cleared,
@@ -332,6 +377,7 @@ def build_registration_report(user, params: dict[str, Any], *, include_finance: 
         ),
         "temporary_passes": temp_rows,
         "scholarships": scholarship_rows,
+        "reported_students": _reported_student_rows(base),
         "cleared_students": _cleared_student_rows(base),
         "can_view_finance": include_finance,
     }

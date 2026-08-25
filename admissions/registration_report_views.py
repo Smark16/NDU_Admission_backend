@@ -12,6 +12,7 @@ from rest_framework.views import APIView
 from accounts.erp_drf_permissions import user_has_any_erp_perm
 from accounts.super_admin import user_is_super_admin
 from admissions.registration_report import (
+    active_intake,
     build_registration_report,
     registration_report_filter_options,
 )
@@ -46,12 +47,27 @@ def _parse_int(raw) -> int | None:
 def _report_params(request) -> dict:
     from django.utils.dateparse import parse_date
 
-    basis = (request.query_params.get("date_basis") or "cleared").strip().lower()
+    basis = (request.query_params.get("date_basis") or "verified").strip().lower()
     if basis not in ("admission", "registered", "cleared", "verified"):
-        basis = "admission"
+        basis = "verified"
+
+    raw_year = (request.query_params.get("academic_year") or "").strip()
+    batch_id = _parse_int(request.query_params.get("batch"))
+    academic_year = ""
+    if raw_year.lower() == "all":
+        academic_year = ""
+    elif raw_year:
+        academic_year = raw_year
+    elif not batch_id:
+        # Same default as the verified roster: current active intake.
+        intake = active_intake()
+        if intake:
+            academic_year = (intake.academic_year or "").strip()
+            batch_id = intake.id
+
     return {
-        "academic_year": (request.query_params.get("academic_year") or "").strip(),
-        "batch_id": _parse_int(request.query_params.get("batch")),
+        "academic_year": academic_year,
+        "batch_id": batch_id,
         "campus_id": _parse_int(request.query_params.get("campus")),
         "faculty_id": _parse_int(request.query_params.get("faculty")),
         "date_basis": basis,
@@ -144,16 +160,43 @@ class RegistrationReportExcelView(APIView):
             ["Metric", "Count", "% of admitted"],
             [
                 ["Admitted", t["admitted"], 100 if t["admitted"] else None],
-                ["Registered", t["registered"], t["registered_pct"]],
+                ["Reported (verified roster)", t.get("reported", t["verified"]), t.get("reported_pct", t["verified_pct"])],
+                ["Registered (courses)", t["registered"], t["registered_pct"]],
                 ["Accounts cleared", t["cleared"], t["clearance_pct"]],
-                ["Documents verified", t["verified"], t["verified_pct"]],
                 ["Temporary passes", t["temporary_passes"], None],
                 ["Scholarship students", t["scholarships"], None],
             ],
         )
 
         write_sheet(
-            wb.create_sheet("Students"),
+            wb.create_sheet("Reported students"),
+            [
+                "Student",
+                "Student ID",
+                "Reg No",
+                "Campus",
+                "Programme",
+                "Reported / verified by",
+                "Reported at",
+                "Courses registered",
+            ],
+            [
+                [
+                    r.get("name") or "—",
+                    r.get("student_id") or "",
+                    r.get("reg_no") or "",
+                    r.get("campus") or "—",
+                    r.get("program") or "—",
+                    r.get("verified_by") or "",
+                    (r.get("verified_at") or "")[:19].replace("T", " "),
+                    "Y" if r.get("is_registered") else "N",
+                ]
+                for r in (data.get("reported_students") or [])
+            ],
+        )
+
+        write_sheet(
+            wb.create_sheet("Cleared students"),
             [
                 "Student",
                 "Student ID",
@@ -178,17 +221,17 @@ class RegistrationReportExcelView(APIView):
         campus_ws = wb.create_sheet("By campus")
         write_sheet(
             campus_ws,
-            ["Campus", "Admitted", "Registered", "Registered %", "Cleared", "Clearance %", "Verified", "Verified %"],
+            ["Campus", "Admitted", "Reported", "Reported %", "Registered", "Registered %", "Cleared", "Clearance %"],
             [
                 [
                     r.get("campus") or "—",
                     r["admitted"],
+                    r.get("reported", r.get("verified", 0)),
+                    r.get("reported_pct", r.get("verified_pct")),
                     r["registered"],
                     r["registered_pct"],
                     r["cleared"],
                     r["clearance_pct"],
-                    r["verified"],
-                    r["verified_pct"],
                 ]
                 for r in data["by_campus"]
             ],
@@ -197,18 +240,18 @@ class RegistrationReportExcelView(APIView):
         program_ws = wb.create_sheet("By programme")
         write_sheet(
             program_ws,
-            ["Faculty", "Programme", "Admitted", "Registered", "Registered %", "Cleared", "Clearance %", "Verified", "Verified %"],
+            ["Faculty", "Programme", "Admitted", "Reported", "Reported %", "Registered", "Registered %", "Cleared", "Clearance %"],
             [
                 [
                     r.get("faculty") or "—",
                     r.get("program") or "—",
                     r["admitted"],
+                    r.get("reported", r.get("verified", 0)),
+                    r.get("reported_pct", r.get("verified_pct")),
                     r["registered"],
                     r["registered_pct"],
                     r["cleared"],
                     r["clearance_pct"],
-                    r["verified"],
-                    r["verified_pct"],
                 ]
                 for r in data["by_program"]
             ],

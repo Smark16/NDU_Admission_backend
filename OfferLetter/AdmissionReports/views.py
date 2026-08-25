@@ -59,8 +59,18 @@ def _direct_admission_reason(adm):
     return notes
 
 def _parse_verified_registration_roster_params(request):
-    academic_year = request.query_params.get("academic_year") or get_current_academic_year()
+    from admissions.registration_report import active_intake
+
+    academic_year = (request.query_params.get("academic_year") or "").strip()
     admission_period = request.query_params.get("admission_period")
+    if not academic_year:
+        intake = active_intake()
+        if intake:
+            academic_year = (intake.academic_year or "").strip()
+            if not admission_period:
+                admission_period = intake.name
+        else:
+            academic_year = get_current_academic_year()
     campus_id = request.query_params.get("campus")
     program_id = request.query_params.get("program")
     faculty_id = request.query_params.get("faculty")
@@ -111,6 +121,7 @@ def _verified_registration_roster_queryset(params):
             "programme_enrollment",
         )
         .filter(is_admitted=True)
+        .exclude(application__is_revoked=True)
     )
 
     academic_year = params["academic_year"]
@@ -257,7 +268,7 @@ class GeneralOverview(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        batches = Batch.objects.all().order_by("academic_year", "name")
+        batches = Batch.objects.all().order_by("-academic_year", "-is_active", "name")
 
         results = []
 
@@ -278,7 +289,8 @@ class GeneralOverview(APIView):
 
             stats = {
                 "admission_period": batch.name,  
-                "academic_year": batch.academic_year, 
+                "academic_year": batch.academic_year,
+                "is_active": bool(batch.is_active),
                 "total_applications": apps['total_applications'],
                 "accepted": admitted_qs['accepted'],
                 "pending": apps['pending'],
