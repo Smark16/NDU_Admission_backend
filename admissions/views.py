@@ -4581,20 +4581,25 @@ class AdminDashboardStats(APIView):
     permission_classes = [CanViewAdmissionQueues]
 
     def get(self, request):
-        apps_base = filter_applications_for_user(Application.objects.all(), request.user)
+        # Applicant KPIs = active intake only, and never legacy-import shells
+        # (those are continuing-student records, not this period's applicants).
+        apps_base = filter_applications_for_user(
+            Application.objects.filter(batch__is_active=True).exclude(
+                source=Application.SOURCE_LEGACY
+            ),
+            request.user,
+        )
         admitted_base = filter_admitted_students_for_user(
             AdmittedStudent.objects.filter(is_admitted=True),
             request.user,
         )
 
-        # Main applications stats in one query
+        # Main applications stats in one query (active intake, non-legacy only)
         apps_stats = apps_base.aggregate(
             total_applications=Count('id'),
             online_applications=Count('id', filter=Q(is_direct_entry=False)),
             direct_applications=Count('id', filter=Q(is_direct_entry=True)),
             rejected_students=Count('id', filter=Q(status__iexact='rejected')),
-            
-            # Better pending logic - adjust according to your actual business logic
             pending_applications=Count('id', filter=Q(
                 status__in=['submitted', 'under_review', 'pending', 'revoked', 'approved', 'accepted']
             )),
@@ -4644,6 +4649,8 @@ class AdminDashboardStats(APIView):
             "rejectedStudents": apps_stats['rejected_students'],
             "total_batches": batches_stats['total_batches'],
             "activeBatches": batches_stats['active_batches'],
+            # Applicant KPIs are scoped to active intake and exclude legacy shells.
+            "applicationsScope": "active_intake_excluding_legacy",
         }, status=200)
 
 # ===================================================notifications======================================
