@@ -2,6 +2,7 @@ from django.contrib import admin
 
 from .models import (
     CourseCatalogUnit,
+    CourseUnitClassCoordinator,
     Program,
     ProgramBatch,
     ProgramCurriculumLine,
@@ -237,3 +238,24 @@ class TimetableSessionAdmin(admin.ModelAdmin):
     list_filter = ["day_of_week", "session_type", "is_published", "is_active"]
     search_fields = ["course_unit__code", "course_unit__name", "room_label"]
     raw_id_fields = ["course_unit", "venue"]
+
+
+@admin.register(CourseUnitClassCoordinator)
+class CourseUnitClassCoordinatorAdmin(admin.ModelAdmin):
+    list_display = [
+        "id",
+        "course_unit",
+        "student",
+        "teaching_section",
+        "is_active",
+        "assigned_by",
+        "created_at",
+    ]
+    list_filter = ["is_active"]
+    search_fields = [
+        "course_unit__code",
+        "course_unit__name",
+        "student__reg_no",
+        "student__student_id",
+    ]
+    raw_id_fields = ["course_unit", "student", "teaching_section", "assigned_by"]

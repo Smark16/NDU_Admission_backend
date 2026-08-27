@@ -1008,6 +1008,86 @@ class CourseUnitSectionLecturer(models.Model):
                 )
 
 
+class CourseUnitClassCoordinator(models.Model):
+    """Student class coordinator who may open attendance check-in for a course unit.
+
+    Coordinators are admitted students only (not staff). They can start/close the
+    student self-check-in window for classes they are assigned to; lecturers and
+    faculty admins still own roster marking and locking.
+    """
+
+    course_unit = models.ForeignKey(
+        CourseUnit,
+        on_delete=models.CASCADE,
+        related_name="class_coordinators",
+    )
+    student = models.ForeignKey(
+        "admissions.AdmittedStudent",
+        on_delete=models.CASCADE,
+        related_name="class_coordinator_assignments",
+    )
+    teaching_section = models.ForeignKey(
+        "TeachingSection",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="class_coordinators",
+        help_text="Optional section scope. Null = whole course unit / cohort.",
+    )
+    is_active = models.BooleanField(default=True)
+    assigned_by = models.ForeignKey(
+        "accounts.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="class_coordinators_assigned",
+    )
+    notes = models.CharField(max_length=255, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["course_unit__code", "student__reg_no"]
+        verbose_name = "Course unit class coordinator"
+        verbose_name_plural = "Course unit class coordinators"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["course_unit", "student"],
+                condition=models.Q(teaching_section__isnull=True),
+                name="programs_cu_class_coord_all_unique",
+            ),
+            models.UniqueConstraint(
+                fields=["course_unit", "teaching_section", "student"],
+                condition=models.Q(teaching_section__isnull=False),
+                name="programs_cu_class_coord_section_unique",
+            ),
+        ]
+
+    def __str__(self):
+        sec = self.teaching_section.code if self.teaching_section_id else "ALL"
+        return f"{self.course_unit.code} · {sec} · {self.student_id}"
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        if self.teaching_section_id and self.course_unit_id:
+            from Programs.teaching_sections import section_covers_batch
+
+            batch_id = self.course_unit.program_batch_id
+            if batch_id is None and self.course_unit.semester_id:
+                sem = getattr(self.course_unit, "semester", None)
+                batch_id = getattr(sem, "program_batch_id", None) if sem else None
+            if batch_id and not section_covers_batch(self.teaching_section, batch_id):
+                raise ValidationError(
+                    {
+                        "teaching_section": (
+                            "Teaching section must belong to this course unit's cohort "
+                            "(or be a shared section linked to it)."
+                        )
+                    }
+                )
+
+
 class CourseMaterial(models.Model):
     """Teaching materials attached to a course unit (outline first; notes later)."""
 

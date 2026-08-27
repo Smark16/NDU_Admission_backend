@@ -104,6 +104,16 @@ from .attendance_views import (
     StudentAttendanceOpenSessionsView,
     StudentAttendanceSummaryView,
 )
+from .class_coordinator_views import (
+    AdminClassCoordinatorCandidatesView,
+    AdminClassCoordinatorDetailView,
+    AdminClassCoordinatorListCreateView,
+    StudentCoordinatorCheckInCodeView,
+    StudentCoordinatorCloseCheckInView,
+    StudentCoordinatorMeView,
+    StudentCoordinatorOpenCheckInView,
+    StudentCoordinatorScheduleView,
+)
 from .course_enrollment_views import (
     AdminDeregisterStudentFromCourses,
     AdminRegisterStudentForCourses,
@@ -327,6 +337,14 @@ urlpatterns = [
     path('student/attendance/sessions', StudentAttendanceOpenSessionsView.as_view(), name='student_attendance_sessions'),
     path('student/attendance/summary', StudentAttendanceSummaryView.as_view(), name='student_attendance_summary'),
     path('student/attendance/check_in', StudentAttendanceCheckInView.as_view(), name='student_attendance_check_in'),
+    path('student/attendance/coordinator/me', StudentCoordinatorMeView.as_view(), name='student_coordinator_me'),
+    path('student/attendance/coordinator/schedule', StudentCoordinatorScheduleView.as_view(), name='student_coordinator_schedule'),
+    path('student/attendance/coordinator/check_in/open', StudentCoordinatorOpenCheckInView.as_view(), name='student_coordinator_open_check_in'),
+    path('student/attendance/coordinator/check_in/code', StudentCoordinatorCheckInCodeView.as_view(), name='student_coordinator_check_in_code'),
+    path('student/attendance/coordinator/check_in/close', StudentCoordinatorCloseCheckInView.as_view(), name='student_coordinator_close_check_in'),
+    path('admin/attendance/class-coordinators', AdminClassCoordinatorListCreateView.as_view(), name='admin_class_coordinators'),
+    path('admin/attendance/class-coordinators/candidates', AdminClassCoordinatorCandidatesView.as_view(), name='admin_class_coordinator_candidates'),
+    path('admin/attendance/class-coordinators/<int:pk>', AdminClassCoordinatorDetailView.as_view(), name='admin_class_coordinator_detail'),
     path('admin/attendance/batches', AdminAttendanceBatchesView.as_view(), name='admin_attendance_batches'),
     path('admin/attendance/courses', AdminAttendanceCoursesView.as_view(), name='admin_attendance_courses'),
     path('admin/attendance/sessions', AdminAttendanceSessionsView.as_view(), name='admin_attendance_sessions'),

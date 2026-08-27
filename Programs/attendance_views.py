@@ -284,51 +284,11 @@ def _lecturer_assigned_course_unit_ids(user) -> list[int]:
     )
 
 
-def _get_lecturer_timetable_slot(user, timetable_session_id) -> TimetableSession:
-    try:
-        tid = int(timetable_session_id)
-    except (TypeError, ValueError):
-        raise ValueError("timetable_session_id is required.")
-    assigned_ids = _lecturer_assigned_course_unit_ids(user)
-    slot = (
-        TimetableSession.objects.filter(
-            pk=tid,
-            is_active=True,
-            course_unit_id__in=assigned_ids,
-        )
-        .select_related(
-            "course_unit",
-            "course_unit__semester",
-            "venue",
-            "venue__campus",
-        )
-        .prefetch_related("course_unit__lecturers")
-        .first()
-    )
-    if not slot:
-        raise ValueError("Timetable class not found or not assigned to you.")
-    _assert_lecturer_course_access(user, slot.course_unit)
-    return slot
-
-
-def _meeting_date_for_slot(slot: TimetableSession, preferred_date=None):
-    """Resolve the calendar date for attendance from a timetable slot."""
-    if preferred_date:
-        return preferred_date
-    if slot.session_date:
-        return slot.session_date
-    today = dj_tz.localdate()
-    if slot.day_of_week == today.weekday() + 1:
-        return today
-    raise ValueError(
-        "This timetable class has no fixed date. Pick a scheduled date from the list, "
-        "or ask admin to set session dates on the timetable."
-    )
-
-
-def _lecturer_schedule_meetings(user, *, from_date=None, to_date=None) -> list[dict]:
+def _schedule_meetings_for_course_units(
+    assigned_ids: list[int], *, from_date=None, to_date=None
+) -> list[dict]:
     """
-    Build attendance meetings for this lecturer on the selected day(s).
+    Build attendance meetings for the given course units on the selected day(s).
 
     Default is today only (date-sensitive). Weekly timetable templates only
     expand onto dates that match their day_of_week within the range.
@@ -340,7 +300,6 @@ def _lecturer_schedule_meetings(user, *, from_date=None, to_date=None) -> list[d
     if end < start:
         start, end = end, start
 
-    assigned_ids = _lecturer_assigned_course_unit_ids(user)
     if not assigned_ids:
         return []
 
@@ -408,6 +367,57 @@ def _lecturer_schedule_meetings(user, *, from_date=None, to_date=None) -> list[d
 
     meetings.sort(key=lambda m: (m["session_date"], m["start_time"], m["course_code"]))
     return meetings
+
+
+def _lecturer_schedule_meetings(user, *, from_date=None, to_date=None) -> list[dict]:
+    """Build attendance meetings for this lecturer on the selected day(s)."""
+    return _schedule_meetings_for_course_units(
+        _lecturer_assigned_course_unit_ids(user),
+        from_date=from_date,
+        to_date=to_date,
+    )
+
+
+def _get_lecturer_timetable_slot(user, timetable_session_id) -> TimetableSession:
+    try:
+        tid = int(timetable_session_id)
+    except (TypeError, ValueError):
+        raise ValueError("timetable_session_id is required.")
+    assigned_ids = _lecturer_assigned_course_unit_ids(user)
+    slot = (
+        TimetableSession.objects.filter(
+            pk=tid,
+            is_active=True,
+            course_unit_id__in=assigned_ids,
+        )
+        .select_related(
+            "course_unit",
+            "course_unit__semester",
+            "venue",
+            "venue__campus",
+        )
+        .prefetch_related("course_unit__lecturers")
+        .first()
+    )
+    if not slot:
+        raise ValueError("Timetable class not found or not assigned to you.")
+    _assert_lecturer_course_access(user, slot.course_unit)
+    return slot
+
+
+def _meeting_date_for_slot(slot: TimetableSession, preferred_date=None):
+    """Resolve the calendar date for attendance from a timetable slot."""
+    if preferred_date:
+        return preferred_date
+    if slot.session_date:
+        return slot.session_date
+    today = dj_tz.localdate()
+    if slot.day_of_week == today.weekday() + 1:
+        return today
+    raise ValueError(
+        "This timetable class has no fixed date. Pick a scheduled date from the list, "
+        "or ask admin to set session dates on the timetable."
+    )
 
 
 def _resolve_timetable_from_request(user, data_or_params) -> TimetableSession | None:
