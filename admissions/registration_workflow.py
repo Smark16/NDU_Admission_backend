@@ -23,13 +23,46 @@ def requires_physical_document_verification(student: AdmittedStudent) -> bool:
     return year == 1 and term == 1
 
 
+def registration_clearance_block_reason(student: AdmittedStudent) -> str | None:
+    """
+    Hard gate before course registration / registration card.
+
+    - All students: Accounts registration clearance required.
+    - Year 1 Term 1: AR physical-document verification also required.
+    """
+    accounts_ok = bool(getattr(student, "accounts_registration_cleared", False))
+    if not accounts_ok:
+        from admissions.temporary_access import student_temporary_access
+
+        temp_access = student_temporary_access(student)
+        if temp_access.get("has_active_pass"):
+            return (
+                "You have a temporary access pass (lectures/hostel/meals only). "
+                "Course registration and your registration card stay locked until Accounts "
+                "gives full registration clearance after sponsorship/fee settlement."
+            )
+        return (
+            "Accounts has not cleared you yet. Course registration (and your registration card) "
+            "open only after Accounts confirms payment — for new and continuing students."
+        )
+
+    if requires_physical_document_verification(student) and not bool(
+        getattr(student, "physical_documents_verified", False)
+    ):
+        return (
+            "Academic Registrar has not verified your physical documents yet. "
+            "Year 1 Semester 1 students must complete Accounts clearance and AR document "
+            "verification before course registration."
+        )
+    return None
+
+
 def registration_stage_for_student(student: AdmittedStudent) -> str:
     """
     Desk / Bonafide workflow stages.
 
-    Course registration opens after Accounts clearance for every student.
-    Year 1 Term 1 also has an AR document-verification step (does not block
-    registration by itself — tracked for AR / ID workflows).
+    Course registration opens only after Accounts clearance, and for Year 1
+    Term 1 also after AR physical-document verification.
     """
     requires_docs = requires_physical_document_verification(student)
     accounts_ok = bool(getattr(student, "accounts_registration_cleared", False))
@@ -42,8 +75,7 @@ def registration_stage_for_student(student: AdmittedStudent) -> str:
             return "unpaid"
     if not accounts_ok:
         return "awaiting_accounts"
-    # Accounts cleared → ready to register (all students).
-    # Y1T1 may still be awaiting AR docs as a parallel desk step.
+    # Y1T1: Accounts alone is not enough — AR docs must be verified first.
     if requires_docs and not docs_ok:
         return "awaiting_docs"
     return "ready"
@@ -52,8 +84,8 @@ def registration_stage_for_student(student: AdmittedStudent) -> str:
 REGISTRATION_STAGE_LABELS = {
     "unpaid": "1. Payment pending",
     "awaiting_accounts": "2. Awaiting Accounts clear",
-    "awaiting_docs": "Accounts cleared — AR docs pending (Y1 Sem 1)",
-    "ready": "Cleared — ready to register",
+    "awaiting_docs": "3. Awaiting AR document verification (blocks registration)",
+    "ready": "Cleared by Accounts + AR — ready to register",
     # Legacy alias used by older clients / filters
     "docs_verified": "Cleared — ready to register",
 }

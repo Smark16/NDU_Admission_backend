@@ -175,29 +175,24 @@ def build_registration_eligibility_payload(student: AdmittedStudent) -> dict:
     if enroll_msg:
         block_messages.append(enroll_msg)
 
-    from admissions.registration_workflow import requires_physical_document_verification
+    from admissions.registration_workflow import (
+        registration_clearance_block_reason,
+        requires_physical_document_verification,
+    )
     from admissions.temporary_access import student_temporary_access
 
     accounts_cleared = bool(getattr(student, "accounts_registration_cleared", False))
     temp_access = student_temporary_access(student)
-    if not accounts_cleared:
-        if temp_access.get("has_active_pass"):
-            block_messages.append(
-                "You have a temporary access pass (lectures/hostel/meals only). "
-                "Course registration and your registration card stay locked until Accounts "
-                "gives full registration clearance after sponsorship/fee settlement."
-            )
-        else:
-            block_messages.append(
-                "Accounts has not cleared you yet. Course registration (and your registration card) "
-                "open only after Accounts confirms payment — for new and continuing students."
-            )
+    clearance_block = registration_clearance_block_reason(student)
+    if clearance_block:
+        block_messages.append(clearance_block)
 
     requires_docs = requires_physical_document_verification(student)
     docs_verified = bool(getattr(student, "physical_documents_verified", False))
 
-    # Accounts clearance is the registration gate. Scholarship / temp-pass
+    # Accounts clearance is the fee gate. Scholarship / temp-pass
     # students are cleared without meeting the tuition %; do not re-block them.
+    # AR document verification is a separate hard gate for Y1T1 (see clearance_block).
     if not tuition["tuition_eligible"] and not accounts_cleared:
         block_messages.append(tuition["tuition_message"])
 

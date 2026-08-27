@@ -407,15 +407,20 @@ def verify_registration_card_public(request, student_id: str):
             status=status.HTTP_404_NOT_FOUND,
         )
 
-    if not getattr(student, "accounts_registration_cleared", False):
+    from admissions.registration_workflow import registration_clearance_block_reason
+
+    block_reason = registration_clearance_block_reason(student)
+    if block_reason:
         return Response(
             {
                 "valid": False,
-                "detail": (
-                    "This registration card is not valid until Accounts has cleared "
-                    "the student (new and continuing students)."
+                "detail": block_reason,
+                "accounts_registration_cleared": bool(
+                    getattr(student, "accounts_registration_cleared", False)
                 ),
-                "accounts_registration_cleared": False,
+                "physical_documents_verified": bool(
+                    getattr(student, "physical_documents_verified", False)
+                ),
             },
             status=status.HTTP_403_FORBIDDEN,
         )

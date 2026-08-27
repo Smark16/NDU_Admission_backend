@@ -183,18 +183,22 @@ def build_id_gate_payload(student: AdmittedStudent, request=None) -> dict:
 
 
 def build_registration_gate_payload(student: AdmittedStudent, request=None) -> dict:
+    from admissions.registration_workflow import registration_clearance_block_reason
     from payments.registration_lookup import build_public_verify_payload
 
-    if not getattr(student, "accounts_registration_cleared", False):
+    block_reason = registration_clearance_block_reason(student)
+    if block_reason:
         return {
             "valid": False,
             "purpose": PURPOSE_REGISTRATION,
             "verdict": "deny",
-            "detail": (
-                "DENY — Accounts has not cleared this student for registration "
-                "(new and continuing students)."
+            "detail": f"DENY — {block_reason}",
+            "accounts_registration_cleared": bool(
+                getattr(student, "accounts_registration_cleared", False)
             ),
-            "accounts_registration_cleared": False,
+            "physical_documents_verified": bool(
+                getattr(student, "physical_documents_verified", False)
+            ),
             "student_id": student.student_id,
             "reg_no": student.reg_no,
             "student_name": student.full_name,
@@ -203,7 +207,7 @@ def build_registration_gate_payload(student: AdmittedStudent, request=None) -> d
     payload = build_public_verify_payload(student, request)
     payload["purpose"] = PURPOSE_REGISTRATION
     payload["verdict"] = "pass"
-    payload["message"] = "ALLOW — Accounts cleared · registration recognised"
+    payload["message"] = "ALLOW — Accounts + AR cleared · registration recognised"
     return payload
 
 

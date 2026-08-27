@@ -1060,16 +1060,23 @@ class GetStudentEnrolledCourses(APIView):
             'accounts_registration_cleared': bool(
                 getattr(admitted_student, "accounts_registration_cleared", False)
             ),
-            'registration_card_available': bool(
-                getattr(admitted_student, "accounts_registration_cleared", False)
+            'requires_document_verification': registration.get(
+                "requires_document_verification"
             ),
+            'physical_documents_verified': registration.get(
+                "physical_documents_verified"
+            ),
+            'registration_card_available': bool(registration.get("is_eligible")),
             'registration_card_message': (
                 None
-                if getattr(admitted_student, "accounts_registration_cleared", False)
+                if registration.get("is_eligible")
                 else (
-                    "Your registration card is not available yet. "
-                    "Accounts must clear you after payment confirmation "
-                    "(applies to new and continuing students)."
+                    registration.get("message")
+                    or (
+                        "Your registration card is not available yet. "
+                        "Accounts clearance is required for all students; "
+                        "Year 1 Semester 1 also needs AR document verification."
+                    )
                 )
             ),
             **offer_fields,
@@ -1238,16 +1245,22 @@ class AdminRegisterStudentForCourses(APIView):
         if err:
             return err
         accounts_cleared = bool(getattr(student, "accounts_registration_cleared", False))
+        from admissions.registration_workflow import (
+            registration_clearance_block_reason,
+            requires_physical_document_verification,
+        )
+
+        block_reason = registration_clearance_block_reason(student)
+        docs_required = requires_physical_document_verification(student)
+        docs_verified = bool(getattr(student, "physical_documents_verified", False))
         pending = _pending_course_rows_for_student(student)
         return Response(
             {
                 "accounts_registration_cleared": accounts_cleared,
-                "can_register": accounts_cleared,
-                "block_reason": (
-                    None
-                    if accounts_cleared
-                    else "Accounts has not cleared this student. Staff can register only after Accounts clearance."
-                ),
+                "requires_document_verification": docs_required,
+                "physical_documents_verified": docs_verified,
+                "can_register": block_reason is None,
+                "block_reason": block_reason,
                 "pending_courses": pending,
                 "pending_count": len(pending),
             }
@@ -1255,15 +1268,15 @@ class AdminRegisterStudentForCourses(APIView):
 
     def post(self, request, student_id):
         from payments.course_registration_actions import register_student_for_course_units
+        from admissions.registration_workflow import registration_clearance_block_reason
 
         student, err = self._student(request, student_id)
         if err:
             return err
-        if not getattr(student, "accounts_registration_cleared", False):
+        block_reason = registration_clearance_block_reason(student)
+        if block_reason:
             return Response(
-                {
-                    "detail": "Accounts has not cleared this student. Complete Accounts clearance before registering courses."
-                },
+                {"detail": block_reason},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
