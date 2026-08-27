@@ -32,8 +32,65 @@ from .attendance_views import (
     _serialize_session,
 )
 from .enrollment_cohort import admitted_students_for_program_batch, student_belongs_to_program_batch
-from .models import CourseUnit, CourseUnitClassCoordinator, TimetableSession
+from .models import CourseUnit, CourseUnitClassCoordinator, SharedTeachingOffering, TimetableSession
 from .permissions import LectureAttendanceAdminPermission
+from .shared_teaching import linked_course_unit_ids, resolve_parent_course_unit
+
+
+def _get_course_unit_with_shared(course_unit_id: int) -> CourseUnit | None:
+    """Load course unit; prefer shared/parent joins when schema supports them."""
+    base = CourseUnit.objects.select_related(
+        "semester",
+        "semester__program_batch",
+        "program_batch",
+        "program_batch__program",
+        "shared_teaching_offering",
+    )
+    try:
+        return base.select_related(
+            "shared_teaching_offering__parent_course_unit",
+        ).get(pk=course_unit_id, is_active=True)
+    except CourseUnit.DoesNotExist:
+        return None
+    except Exception:
+        # Local DBs may lag behind shared-parent migration; still load the unit.
+        try:
+            return base.get(pk=course_unit_id, is_active=True)
+        except CourseUnit.DoesNotExist:
+            return None
+
+
+def _canonical_coordinator_course_unit(course_unit: CourseUnit) -> CourseUnit:
+    """Shared programme offerings use the parent course unit for coordinators."""
+    if not course_unit.shared_teaching_offering_id:
+        return course_unit
+    try:
+        sto = getattr(course_unit, "shared_teaching_offering", None)
+        if sto is None:
+            sto = SharedTeachingOffering.objects.filter(
+                pk=course_unit.shared_teaching_offering_id
+            ).first()
+        if not sto:
+            return course_unit
+        parent = resolve_parent_course_unit(sto)
+        return parent or course_unit
+    except Exception:
+        # Missing parent_course_unit column or related schema — use selected unit.
+        return course_unit
+
+
+def _coordinator_resolution_meta(selected: CourseUnit, canonical: CourseUnit) -> dict:
+    if selected.pk == canonical.pk:
+        return {"is_shared_child": False}
+    return {
+        "is_shared_child": True,
+        "selected_course_unit_id": selected.pk,
+        "selected_course_code": selected.code,
+        "selected_course_name": selected.name,
+        "parent_course_unit_id": canonical.pk,
+        "parent_course_code": canonical.code,
+        "parent_course_name": canonical.name,
+    }
 
 
 def _student_display(student) -> dict:
@@ -59,28 +116,30 @@ def _student_display(student) -> dict:
 
 
 def _enrolled_cohort_students_for_course_unit(course_unit: CourseUnit):
-    """All programme-enrolled students on the course unit's cohort (not course-unit SPE only)."""
+    """All programme-enrolled students on the canonical course unit's cohort."""
     from admissions.models import AdmittedStudent
 
-    program_batch = _programme_batch(course_unit)
+    canonical = _canonical_coordinator_course_unit(course_unit)
+    program_batch = _programme_batch(canonical)
     if not program_batch or not program_batch.program_id:
-        return AdmittedStudent.objects.none(), None
+        return AdmittedStudent.objects.none(), None, canonical
     qs = (
         admitted_students_for_program_batch(program_batch.program, program_batch)
         .filter(programme_enrollment__status="enrolled")
         .select_related("application", "programme_enrollment__teaching_section")
         .order_by("reg_no", "student_id")
     )
-    return qs, program_batch
+    return qs, program_batch, canonical
 
 
 def _assert_student_eligible_coordinator(student, course_unit: CourseUnit) -> str | None:
     """Return error message if student cannot be coordinator; None if OK."""
-    program_batch = _programme_batch(course_unit)
+    canonical = _canonical_coordinator_course_unit(course_unit)
+    program_batch = _programme_batch(canonical)
     if not program_batch:
         return "Course unit is not linked to a programme batch."
     if not student_belongs_to_program_batch(student, program_batch):
-        return "Student must belong to this course's programme batch."
+        return "Student must belong to the parent course's programme batch."
     enrollment = getattr(student, "programme_enrollment", None)
     if not enrollment or enrollment.status != "enrolled":
         return "Student must have programme enrollment status Enrolled."
@@ -137,17 +196,25 @@ def _coordinator_assignments_qs(student):
 
 
 def _coordinator_course_unit_ids(student) -> list[int]:
-    return list(
+    assigned_ids = list(
         CourseUnitClassCoordinator.objects.filter(student=student, is_active=True)
         .values_list("course_unit_id", flat=True)
         .distinct()
     )
+    expanded: set[int] = set()
+    for cu_id in assigned_ids:
+        cu = CourseUnit.objects.filter(pk=cu_id).only("id", "shared_teaching_offering_id").first()
+        if not cu:
+            continue
+        expanded.update(linked_course_unit_ids(cu))
+    return list(expanded)
 
 
 def _assert_student_is_coordinator(student, course_unit: CourseUnit) -> None:
+    canonical = _canonical_coordinator_course_unit(course_unit)
     ok = CourseUnitClassCoordinator.objects.filter(
         student=student,
-        course_unit=course_unit,
+        course_unit=canonical,
         is_active=True,
     ).exists()
     if not ok:
@@ -228,10 +295,11 @@ class AdminClassCoordinatorListCreateView(APIView):
             "student__application",
         ).order_by("course_unit__code", "student__reg_no")
         if course_unit_id:
-            qs = qs.filter(course_unit_id=course_unit_id)
-            cu = _get_course_unit(course_unit_id)
-            if cu:
-                _assert_admin_course_access(request.user, cu)
+            selected = _get_course_unit_with_shared(course_unit_id)
+            if selected:
+                _assert_admin_course_access(request.user, selected)
+                canonical = _canonical_coordinator_course_unit(selected)
+                qs = qs.filter(course_unit=canonical)
         else:
             from admissions.faculty_scope import filter_course_units_for_user
 
@@ -273,10 +341,11 @@ class AdminClassCoordinatorListCreateView(APIView):
                 {"detail": "course_unit_id and student_id are required."},
                 status=400,
             )
-        course_unit = _get_course_unit(course_unit_id)
+        course_unit = _get_course_unit_with_shared(course_unit_id)
         if not course_unit:
             return Response({"detail": "Course unit not found."}, status=404)
         _assert_admin_course_access(request.user, course_unit)
+        canonical = _canonical_coordinator_course_unit(course_unit)
 
         from admissions.models import AdmittedStudent
 
@@ -296,7 +365,7 @@ class AdminClassCoordinatorListCreateView(APIView):
         notes = str(request.data.get("notes") or "").strip()[:255]
 
         existing = CourseUnitClassCoordinator.objects.filter(
-            course_unit=course_unit,
+            course_unit=canonical,
             student=student,
             teaching_section_id=teaching_section_id,
         ).first()
@@ -311,7 +380,7 @@ class AdminClassCoordinatorListCreateView(APIView):
             row = existing
         else:
             row = CourseUnitClassCoordinator.objects.create(
-                course_unit=course_unit,
+                course_unit=canonical,
                 student=student,
                 teaching_section_id=teaching_section_id,
                 is_active=True,
@@ -334,6 +403,7 @@ class AdminClassCoordinatorListCreateView(APIView):
             {
                 "created": created,
                 "coordinator": _serialize_assignment(row),
+                **_coordinator_resolution_meta(course_unit, canonical),
             },
             status=201 if created else 200,
         )
@@ -371,12 +441,12 @@ class AdminClassCoordinatorCandidatesView(APIView):
         course_unit_id = _parse_int(request.query_params.get("course_unit_id"))
         if not course_unit_id:
             return Response({"detail": "course_unit_id is required."}, status=400)
-        course_unit = _get_course_unit(course_unit_id)
+        course_unit = _get_course_unit_with_shared(course_unit_id)
         if not course_unit:
             return Response({"detail": "Course unit not found."}, status=404)
         _assert_admin_course_access(request.user, course_unit)
 
-        qs, program_batch = _enrolled_cohort_students_for_course_unit(course_unit)
+        qs, program_batch, canonical = _enrolled_cohort_students_for_course_unit(course_unit)
         if program_batch is None:
             return Response(
                 {"detail": "Course unit is not linked to a programme batch."},
@@ -393,7 +463,7 @@ class AdminClassCoordinatorCandidatesView(APIView):
             )
         already = set(
             CourseUnitClassCoordinator.objects.filter(
-                course_unit=course_unit, is_active=True
+                course_unit=canonical, is_active=True
             ).values_list("student_id", flat=True)
         )
         students = []
@@ -411,6 +481,7 @@ class AdminClassCoordinatorCandidatesView(APIView):
                 "program_batch_name": program_batch.name,
                 "students": students,
                 "count": len(students),
+                **_coordinator_resolution_meta(course_unit, canonical),
             }
         )
 
@@ -511,7 +582,7 @@ class StudentCoordinatorOpenCheckInView(APIView):
                     {"detail": "Pick a scheduled class from your coordinator timetable."},
                     status=400,
                 )
-            course_unit = _get_course_unit(course_unit_id)
+            course_unit = _get_course_unit_with_shared(course_unit_id)
             if not course_unit:
                 return Response({"detail": "Course unit not found."}, status=404)
             try:
