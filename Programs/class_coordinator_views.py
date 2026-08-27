@@ -24,13 +24,15 @@ from .attendance_views import (
     _open_check_in,
     _parse_date,
     _parse_int,
+    _programme_batch,
     _reload_session,
     _resolve_timetable_slot_id,
     _schedule_meetings_for_course_units,
     _serialize_course_unit,
     _serialize_session,
 )
-from .models import CourseUnit, CourseUnitClassCoordinator, StudentCourseUnitEnrollment, TimetableSession
+from .enrollment_cohort import admitted_students_for_program_batch, student_belongs_to_program_batch
+from .models import CourseUnit, CourseUnitClassCoordinator, TimetableSession
 from .permissions import LectureAttendanceAdminPermission
 
 
@@ -41,12 +43,48 @@ def _student_display(student) -> dict:
         name = f"{getattr(app, 'first_name', '') or ''} {getattr(app, 'last_name', '') or ''}".strip()
     if not name:
         name = getattr(student, "full_name", None) or ""
+    section = None
+    try:
+        section = student.programme_enrollment.teaching_section
+    except Exception:
+        section = None
     return {
         "id": student.id,
         "reg_no": student.reg_no or "",
         "student_id": student.student_id or "",
         "name": name or student.reg_no or student.student_id or f"Student {student.id}",
+        "teaching_section_code": section.code if section else "",
+        "teaching_section_name": section.name if section else "",
     }
+
+
+def _enrolled_cohort_students_for_course_unit(course_unit: CourseUnit):
+    """All programme-enrolled students on the course unit's cohort (not course-unit SPE only)."""
+    from admissions.models import AdmittedStudent
+
+    program_batch = _programme_batch(course_unit)
+    if not program_batch or not program_batch.program_id:
+        return AdmittedStudent.objects.none(), None
+    qs = (
+        admitted_students_for_program_batch(program_batch.program, program_batch)
+        .filter(programme_enrollment__status="enrolled")
+        .select_related("application", "programme_enrollment__teaching_section")
+        .order_by("reg_no", "student_id")
+    )
+    return qs, program_batch
+
+
+def _assert_student_eligible_coordinator(student, course_unit: CourseUnit) -> str | None:
+    """Return error message if student cannot be coordinator; None if OK."""
+    program_batch = _programme_batch(course_unit)
+    if not program_batch:
+        return "Course unit is not linked to a programme batch."
+    if not student_belongs_to_program_batch(student, program_batch):
+        return "Student must belong to this course's programme batch."
+    enrollment = getattr(student, "programme_enrollment", None)
+    if not enrollment or enrollment.status != "enrolled":
+        return "Student must have programme enrollment status Enrolled."
+    return None
 
 
 def _serialize_assignment(row: CourseUnitClassCoordinator) -> dict:
@@ -242,25 +280,17 @@ class AdminClassCoordinatorListCreateView(APIView):
 
         from admissions.models import AdmittedStudent
 
-        student = AdmittedStudent.objects.filter(pk=student_id).select_related("application").first()
+        student = (
+            AdmittedStudent.objects.filter(pk=student_id)
+            .select_related("application", "programme_enrollment")
+            .first()
+        )
         if not student:
             return Response({"detail": "Student not found."}, status=404)
 
-        enrolled = StudentCourseUnitEnrollment.objects.filter(
-            course_unit=course_unit,
-            student=student,
-            status="enrolled",
-        ).exists()
-        if not enrolled:
-            return Response(
-                {
-                    "detail": (
-                        "Student must be enrolled on this course unit before they can "
-                        "be assigned as class coordinator."
-                    )
-                },
-                status=400,
-            )
+        eligibility_error = _assert_student_eligible_coordinator(student, course_unit)
+        if eligibility_error:
+            return Response({"detail": eligibility_error}, status=400)
 
         teaching_section_id = _parse_int(request.data.get("teaching_section_id"))
         notes = str(request.data.get("notes") or "").strip()[:255]
@@ -332,7 +362,7 @@ class AdminClassCoordinatorDetailView(APIView):
 
 
 class AdminClassCoordinatorCandidatesView(APIView):
-    """Search enrolled students on a course unit for coordinator assignment."""
+    """Search programme-enrolled students on the course cohort for coordinator assignment."""
 
     permission_classes = [IsAuthenticated, LectureAttendanceAdminPermission]
 
@@ -346,21 +376,20 @@ class AdminClassCoordinatorCandidatesView(APIView):
             return Response({"detail": "Course unit not found."}, status=404)
         _assert_admin_course_access(request.user, course_unit)
 
-        search = (request.query_params.get("search") or "").strip()
-        qs = (
-            StudentCourseUnitEnrollment.objects.filter(
-                course_unit=course_unit,
-                status="enrolled",
+        qs, program_batch = _enrolled_cohort_students_for_course_unit(course_unit)
+        if program_batch is None:
+            return Response(
+                {"detail": "Course unit is not linked to a programme batch."},
+                status=400,
             )
-            .select_related("student", "student__application")
-            .order_by("student__reg_no", "student__student_id")
-        )
+
+        search = (request.query_params.get("search") or "").strip()
         if search:
             qs = qs.filter(
-                Q(student__reg_no__icontains=search)
-                | Q(student__student_id__icontains=search)
-                | Q(student__application__first_name__icontains=search)
-                | Q(student__application__last_name__icontains=search)
+                Q(reg_no__icontains=search)
+                | Q(student_id__icontains=search)
+                | Q(application__first_name__icontains=search)
+                | Q(application__last_name__icontains=search)
             )
         already = set(
             CourseUnitClassCoordinator.objects.filter(
@@ -368,15 +397,22 @@ class AdminClassCoordinatorCandidatesView(APIView):
             ).values_list("student_id", flat=True)
         )
         students = []
-        for enr in qs[:50]:
-            s = enr.student
+        for s in qs[:100]:
             students.append(
                 {
                     **_student_display(s),
                     "already_coordinator": s.id in already,
                 }
             )
-        return Response({"course_unit_id": course_unit_id, "students": students})
+        return Response(
+            {
+                "course_unit_id": course_unit_id,
+                "program_batch_id": program_batch.id,
+                "program_batch_name": program_batch.name,
+                "students": students,
+                "count": len(students),
+            }
+        )
 
 
 # ----- Student coordinator: schedule + open/close check-in -----
