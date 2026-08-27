@@ -607,15 +607,18 @@ class AdmittedStudentSerializer(serializers.ModelSerializer):
             campus = self.instance.admitted_campus
 
         if application is not None and program is not None:
-            allowed_ids = {
-                p.id for p in ordered_programs_for_application(application)
-            }
-            if allowed_ids and program.id not in allowed_ids:
-                raise serializers.ValidationError({
-                    'admitted_program': (
-                        'Programme must be one of the applicant\'s choices on the application.'
-                    ),
-                })
+            # Initial admit: programme must be one of the application choices.
+            # Later staff placement changes (change of course) may use any offered programme.
+            if self.instance is None:
+                allowed_ids = {
+                    p.id for p in ordered_programs_for_application(application)
+                }
+                if allowed_ids and program.id not in allowed_ids:
+                    raise serializers.ValidationError({
+                        'admitted_program': (
+                            'Programme must be one of the applicant\'s choices on the application.'
+                        ),
+                    })
 
             if campus is not None and program.campuses.exists():
                 if not program.campuses.filter(id=campus.id).exists():
