@@ -512,6 +512,12 @@ class MySelfEnrollView(APIView):
             **StudentProgrammeEnrollmentReadSerializer(enrollment).data,
             **{k: v for k, v in result.items() if k not in ('ok',)},
         }
+        if enrollment.status == "enrolled":
+            from integrations.services import registered_courses_for_student
+
+            courses = registered_courses_for_student(student)
+            payload["course_units"] = courses
+            payload["course_units_count"] = len(courses)
         return Response(payload, status=status.HTTP_201_CREATED if result.get('created') else status.HTTP_200_OK)
 
 

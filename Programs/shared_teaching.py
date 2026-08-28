@@ -651,11 +651,16 @@ def registered_enrollments_for_course_unit(
         if merge_shared
         else [course_unit.pk]
     )
+    from django.db.models import Q
+
     return (
         StudentCourseUnitEnrollment.objects.filter(
             course_unit_id__in=cu_ids,
             status__in=statuses,
-            registration_date__isnull=False,
+        )
+        .filter(
+            Q(registration_date__isnull=False)
+            | Q(student__programme_enrollment__status="enrolled")
         )
         .select_related(
             "student",

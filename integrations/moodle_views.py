@@ -23,6 +23,7 @@ from .services import (
     shared_course_units_registry,
     student_profile_payload,
     verify_student_credentials,
+    programme_enrollment_status_for_student,
 )
 
 
@@ -154,7 +155,7 @@ class MoodleFinanceStatusView(APIView):
 
 
 class MoodleRegisteredCoursesView(APIView):
-    """Courses this student registered in Steward — use this for Moodle enrolment, not the catalogue."""
+    """Course units for Moodle — assigned at programme enrollment or formally registered."""
 
     authentication_classes = []
     permission_classes = [HasMoodleApiKey]
@@ -185,6 +186,7 @@ class MoodleRegisteredCoursesView(APIView):
             "reg_no": student.reg_no or "",
             "student_id": student.student_id or "",
             "programme": student.admitted_program.name if student.admitted_program_id else None,
+            "programme_enrollment_status": programme_enrollment_status_for_student(student),
             "courses": courses,
         }
         payload.update(academic_batch_payload(student))

@@ -205,16 +205,42 @@ def finance_status_for_student(student: AdmittedStudent) -> dict:
     return payload
 
 
+def programme_enrollment_status_for_student(student: AdmittedStudent) -> str | None:
+    try:
+        spe = student.programme_enrollment
+    except Exception:
+        return None
+    return getattr(spe, "status", None) if spe is not None else None
+
+
+def student_is_programme_enrolled(student: AdmittedStudent) -> bool:
+    return programme_enrollment_status_for_student(student) == "enrolled"
+
+
+def lms_course_unit_enrollments_qs(student: AdmittedStudent):
+    """
+    Course units Moodle should sync for this student.
+
+    - Programme **Enrolled** (commitment met): assigned course units count, even
+      before formal semester registration (registration_date may be null).
+    - Otherwise: only course units the student formally registered for.
+    """
+    from django.db.models import Q
+
+    from Programs.models import StudentCourseUnitEnrollment
+
+    base = StudentCourseUnitEnrollment.objects.filter(student=student, status="enrolled")
+    if student_is_programme_enrolled(student):
+        return base
+    return base.filter(registration_date__isnull=False)
+
+
 def registered_courses_for_student(student: AdmittedStudent) -> list[dict]:
-    """Course units this student has registered in Steward (same gate as Moodle rosters)."""
+    """Course units for Moodle — programme-enrolled or formally registered."""
     from Programs.models import StudentCourseUnitEnrollment
 
     enrollments = (
-        StudentCourseUnitEnrollment.objects.filter(
-            student=student,
-            status="enrolled",
-            registration_date__isnull=False,
-        )
+        lms_course_unit_enrollments_qs(student)
         .select_related(
             "course_unit",
             "course_unit__semester",
@@ -240,6 +266,8 @@ def registered_courses_for_student(student: AdmittedStudent) -> list[dict]:
             continue
         row = moodle_course_unit_payload(cu, parent_ids=parent_ids)
         row["registration_kind"] = enr.registration_kind
+        row["formally_registered"] = enr.registration_date is not None
+        row["enrollment_source"] = enr.source or ""
         row["registration_date"] = (
             enr.registration_date.isoformat() if enr.registration_date else None
         )
