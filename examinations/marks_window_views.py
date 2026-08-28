@@ -158,3 +158,61 @@ class MarksEntryWindowCloseView(APIView):
             ]
         )
         return Response(MarksEntryWindowSerializer(window).data)
+
+
+class MarksEntryWindowBulkPreviewView(APIView):
+    """Preview batch-level marks windows to create/open for many intakes at once."""
+
+    permission_classes = [IsAuthenticated, CanManageMarksWindows]
+
+    def get(self, request):
+        from .services.marks_window_bulk import parse_bulk_filters, preview_bulk_marks_windows
+
+        filters = parse_bulk_filters(request.query_params)
+        skip_open = request.query_params.get("skip_open", "1").lower() in ("1", "true", "yes")
+        try:
+            payload = preview_bulk_marks_windows(request.user, filters, skip_open=skip_open)
+            return Response(payload)
+        except Exception as exc:
+            logger.exception("Marks window bulk preview failed")
+            return Response(
+                {"detail": f"Could not preview bulk marks windows: {exc}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+
+class MarksEntryWindowBulkApplyView(APIView):
+    """Create/open batch-level marks windows for all batches matching filters."""
+
+    permission_classes = [IsAuthenticated, CanManageMarksWindows]
+
+    def post(self, request):
+        from django.utils.dateparse import parse_datetime
+
+        from .services.marks_window_bulk import apply_bulk_marks_windows, parse_bulk_filters
+
+        filters = parse_bulk_filters(request.data)
+        skip_open = request.data.get("skip_open", True)
+        if isinstance(skip_open, str):
+            skip_open = skip_open.lower() in ("1", "true", "yes")
+
+        opens_at = parse_datetime(request.data.get("opens_at") or "")
+        closes_at = parse_datetime(request.data.get("closes_at") or "")
+
+        try:
+            result = apply_bulk_marks_windows(
+                request.user,
+                filters,
+                name_prefix=(request.data.get("name_prefix") or "").strip() or None,
+                opens_at=opens_at,
+                closes_at=closes_at,
+                notes=(request.data.get("notes") or "").strip(),
+                skip_open=bool(skip_open),
+            )
+            return Response(result, status=status.HTTP_200_OK)
+        except Exception as exc:
+            logger.exception("Marks window bulk apply failed")
+            return Response(
+                {"detail": f"Could not apply bulk marks windows: {exc}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
