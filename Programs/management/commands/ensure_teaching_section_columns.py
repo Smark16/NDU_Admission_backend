@@ -16,7 +16,9 @@ def _pg_column_exists(cursor, table: str, column: str) -> bool:
         """
         SELECT 1
         FROM information_schema.columns
-        WHERE table_name = %s AND column_name = %s
+        WHERE table_schema = current_schema()
+          AND table_name = %s
+          AND column_name = %s
         """,
         [table, column],
     )
@@ -28,7 +30,8 @@ def _pg_table_exists(cursor, table: str) -> bool:
         """
         SELECT 1
         FROM information_schema.tables
-        WHERE table_name = %s
+        WHERE table_schema = current_schema()
+          AND table_name = %s
         """,
         [table],
     )
@@ -47,18 +50,26 @@ class Command(BaseCommand):
         with connection.cursor() as cursor:
             # Programs.0021 — often faked after a false DuplicateColumn, leaving no column.
             scue = "Programs_studentcourseunitenrollment"
-            if _pg_table_exists(cursor, scue) and not _pg_column_exists(
-                cursor, scue, "registration_kind"
-            ):
+            if _pg_table_exists(cursor, scue):
+                # IF NOT EXISTS: safe when migrate was faked / prior ensure lied.
                 cursor.execute(
                     f'ALTER TABLE "{scue}" '
-                    "ADD COLUMN \"registration_kind\" varchar(16) NOT NULL DEFAULT 'normal'"
+                    "ADD COLUMN IF NOT EXISTS \"registration_kind\" "
+                    "varchar(16) NOT NULL DEFAULT 'normal'"
                 )
                 cursor.execute(
                     f'CREATE INDEX IF NOT EXISTS "{scue}_registration_kind_idx" '
                     f'ON "{scue}" ("registration_kind")'
                 )
-                added.append(f"{scue}.registration_kind")
+                if _pg_column_exists(cursor, scue, "registration_kind"):
+                    added.append(f"{scue}.registration_kind")
+                else:
+                    self.stdout.write(
+                        self.style.ERROR(
+                            f"Failed to create {scue}.registration_kind — "
+                            "check DB permissions / connection target."
+                        )
+                    )
 
             if not _pg_table_exists(cursor, "Programs_teachingsection"):
                 if added:

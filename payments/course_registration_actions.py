@@ -41,6 +41,12 @@ def _unit_allowed_for_self_register(student, cu, spe) -> tuple[bool, str]:
     if spe.program_batch_id and sem.program_batch_id != spe.program_batch_id:
         return False, f"{cu.code} is not on your academic cohort."
 
+    from Programs.calendar_utils import program_is_modular
+    from Programs.modular_registration import modular_unit_allowed_for_register
+
+    if program_is_modular(spe.program):
+        return modular_unit_allowed_for_register(student, cu, spe)
+
     if (
         sem.year_of_study == spe.current_year_of_study
         and sem.term_number == spe.current_term_number
@@ -97,6 +103,23 @@ def register_student_for_course_units(
             ids.append(int(x))
         except (TypeError, ValueError):
             errors.append(f"Invalid course id: {x}")
+
+    course_units_for_credit_check = []
+    if ids:
+        course_units_for_credit_check = list(
+            CourseUnit.objects.filter(id__in=ids, is_active=True)
+        )
+    if spe and course_units_for_credit_check:
+        from Programs.modular_registration import validate_modular_registration_credits
+
+        ok, reason = validate_modular_registration_credits(
+            student=student,
+            spe=spe,
+            course_units=course_units_for_credit_check,
+        )
+        if not ok:
+            return {"registered": [], "errors": [reason], "registration_time": None}
+
     with transaction.atomic():
         for cid in ids:
             try:

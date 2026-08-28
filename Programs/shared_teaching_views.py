@@ -282,7 +282,10 @@ class SuggestCommonCourseUnitsView(APIView):
 
 
 class SearchCourseUnitsForShareView(APIView):
-    """Search course units on other programmes to add to a shared / cross-cutting class."""
+    """Search course units on other programmes to add to a shared / cross-cutting class.
+
+    ``study_mode`` query param ranks same-mode results first; all modes are returned.
+    """
 
     permission_classes = [ProgramSchedulingAPIPermission]
 

@@ -563,118 +563,132 @@ class GetAvailableCoursesForRegistration(APIView):
             selected_specialization = normalize_specialization(spe.specialization)
             curriculum_version = ensure_enrollment_curriculum_version(spe)
 
-            # ── Step 1: Load all overrides for this enrollment ────────────────
-            overrides = {
-                o.curriculum_line_id: o
-                for o in StudentCurriculumOverride.objects.filter(enrollment=spe)
-            }
-            excluded_line_ids = {
-                lid for lid, o in overrides.items()
-                if o.override_type in ('exempted', 'transferred', 'deferred')
-            }
-
-            # ── Step 1b: specialization requirement (same rule as expected courses) ──
-            gate = compute_specialization_course_gate(
-                spe.program,
-                curriculum_version,
-                curr_year,
-                curr_term,
-                spe.specialization,
+            from Programs.calendar_utils import program_is_modular
+            from Programs.modular_registration import (
+                modular_available_course_unit_ids,
+                modular_credit_limits,
+                modular_session_registered_credits,
             )
-            if gate['requires_specialization']:
-                sel = normalize_specialization(spe.specialization)
-                detail = (
-                    'This term has specialization-specific courses. Choose your specialization first.'
-                    if not sel
-                    else (
-                        f"Your selected specialization '{sel}' is not valid for this programme. "
-                        'Please update your specialization.'
-                    )
-                )
-                return Response(
-                    {
-                        'detail': detail,
-                        'requires_specialization': True,
-                        'available_specializations': gate['available_specializations'],
-                    },
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
 
-            # ── Step 2: Standard courses (blueprint year/term = current) ──────
-            # Curriculum lines at current position with no blocking override
-            standard_lines = ProgramCurriculumLine.objects.filter(
-                program=curriculum_owner_program(spe.program),
-                curriculum_version=curriculum_version,
-                year_of_study=curr_year,
-                term_number=curr_term,
-                is_active=True,
-            ).exclude(id__in=excluded_line_ids)
-            if selected_specialization:
-                standard_lines = standard_lines.filter(
-                    Q(specialization__isnull=True)
-                    | Q(specialization='')
-                    | Q(specialization__iexact=selected_specialization)
+            if program_is_modular(spe.program):
+                available_course_unit_ids = modular_available_course_unit_ids(
+                    spe=spe,
+                    student=student,
+                    registered_course_ids=registered_course_ids,
                 )
-
-            # Find the operational Semester for current position
-            current_semester = Semester.objects.filter(
-                program_batch=spe.program_batch,
-                year_of_study=curr_year,
-                term_number=curr_term,
-                is_active=True,
-            ).first()
-
-            if current_semester:
-                # Map code → CourseUnit for fast lookup
-                cu_map = {
-                    cu.code: cu.id
-                    for cu in CourseUnit.objects.filter(
-                        semester=current_semester, is_active=True
-                    )
+            else:
+                # ── Step 1: Load all overrides for this enrollment ────────────────
+                overrides = {
+                    o.curriculum_line_id: o
+                    for o in StudentCurriculumOverride.objects.filter(enrollment=spe)
                 }
-                for line in standard_lines:
-                    cid = cu_map.get(line.catalog_course.code)
-                    if cid:
-                        available_course_unit_ids.add(cid)
+                excluded_line_ids = {
+                    lid for lid, o in overrides.items()
+                    if o.override_type in ('exempted', 'transferred', 'deferred')
+                }
 
-            # ── Step 3: Deferred / backlog overrides effective NOW ────────────
-            active_overrides = [
-                o for o in overrides.values()
-                if o.override_type in ('deferred', 'backlog')
-                and o.effective_year_of_study == curr_year
-                and o.effective_term_number == curr_term
-            ]
-            for override in active_overrides:
-                # Find operational semester for the override's blueprint position
-                blueprint_year = override.curriculum_line.year_of_study
-                blueprint_term = override.curriculum_line.term_number
-                target_semester = Semester.objects.filter(
+                # ── Step 1b: specialization requirement (same rule as expected courses) ──
+                gate = compute_specialization_course_gate(
+                    spe.program,
+                    curriculum_version,
+                    curr_year,
+                    curr_term,
+                    spe.specialization,
+                )
+                if gate['requires_specialization']:
+                    sel = normalize_specialization(spe.specialization)
+                    detail = (
+                        'This term has specialization-specific courses. Choose your specialization first.'
+                        if not sel
+                        else (
+                            f"Your selected specialization '{sel}' is not valid for this programme. "
+                            'Please update your specialization.'
+                        )
+                    )
+                    return Response(
+                        {
+                            'detail': detail,
+                            'requires_specialization': True,
+                            'available_specializations': gate['available_specializations'],
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+                # ── Step 2: Standard courses (blueprint year/term = current) ──────
+                # Curriculum lines at current position with no blocking override
+                standard_lines = ProgramCurriculumLine.objects.filter(
+                    program=curriculum_owner_program(spe.program),
+                    curriculum_version=curriculum_version,
+                    year_of_study=curr_year,
+                    term_number=curr_term,
+                    is_active=True,
+                ).exclude(id__in=excluded_line_ids)
+                if selected_specialization:
+                    standard_lines = standard_lines.filter(
+                        Q(specialization__isnull=True)
+                        | Q(specialization='')
+                        | Q(specialization__iexact=selected_specialization)
+                    )
+
+                # Find the operational Semester for current position
+                current_semester = Semester.objects.filter(
                     program_batch=spe.program_batch,
-                    year_of_study=blueprint_year,
-                    term_number=blueprint_term,
+                    year_of_study=curr_year,
+                    term_number=curr_term,
                     is_active=True,
                 ).first()
-                if target_semester:
-                    cu = CourseUnit.objects.filter(
-                        code=override.curriculum_line.catalog_course.code,
-                        semester=target_semester,
+
+                if current_semester:
+                    # Map code → CourseUnit for fast lookup
+                    cu_map = {
+                        cu.code: cu.id
+                        for cu in CourseUnit.objects.filter(
+                            semester=current_semester, is_active=True
+                        )
+                    }
+                    for line in standard_lines:
+                        cid = cu_map.get(line.catalog_course.code)
+                        if cid:
+                            available_course_unit_ids.add(cid)
+
+                # ── Step 3: Deferred / backlog overrides effective NOW ────────────
+                active_overrides = [
+                    o for o in overrides.values()
+                    if o.override_type in ('deferred', 'backlog')
+                    and o.effective_year_of_study == curr_year
+                    and o.effective_term_number == curr_term
+                ]
+                for override in active_overrides:
+                    # Find operational semester for the override's blueprint position
+                    blueprint_year = override.curriculum_line.year_of_study
+                    blueprint_term = override.curriculum_line.term_number
+                    target_semester = Semester.objects.filter(
+                        program_batch=spe.program_batch,
+                        year_of_study=blueprint_year,
+                        term_number=blueprint_term,
                         is_active=True,
                     ).first()
-                    if cu:
-                        available_course_unit_ids.add(cu.id)
-                else:
-                    # No semester for the original blueprint term — look in current semester
-                    if current_semester:
+                    if target_semester:
                         cu = CourseUnit.objects.filter(
                             code=override.curriculum_line.catalog_course.code,
-                            semester=current_semester,
+                            semester=target_semester,
                             is_active=True,
                         ).first()
                         if cu:
                             available_course_unit_ids.add(cu.id)
+                    else:
+                        # No semester for the original blueprint term — look in current semester
+                        if current_semester:
+                            cu = CourseUnit.objects.filter(
+                                code=override.curriculum_line.catalog_course.code,
+                                semester=current_semester,
+                                is_active=True,
+                            ).first()
+                            if cu:
+                                available_course_unit_ids.add(cu.id)
 
-            # No whole-batch dump when the current semester is missing — that
-            # leaked Year 3+ / other-term units. Sync offerings instead.
+                # No whole-batch dump when the current semester is missing — that
+                # leaked Year 3+ / other-term units. Sync offerings instead.
 
         else:
             # ── Legacy fallback (no SPE): use old StudentSemesterProgression ──
@@ -766,10 +780,28 @@ class GetAvailableCoursesForRegistration(APIView):
                 'retake_offerings': len(retake_by_cu),
             }
 
+        modular_payload: dict = {"delivery_model": "cohort"}
+        if using_spe and spe:
+            from Programs.calendar_utils import program_is_modular
+            from Programs.modular_registration import (
+                modular_credit_limits,
+                modular_session_registered_credits,
+            )
+
+            if program_is_modular(spe.program):
+                modular_payload = {
+                    "delivery_model": "modular",
+                    "session_registered_credits": float(
+                        modular_session_registered_credits(student, spe)
+                    ),
+                    **modular_credit_limits(spe.program),
+                }
+
         return Response({
             'available_courses': courses_data,
             'retake_missed_offerings': retake_offerings,
             'total_available': len(courses_data),
+            'modular': modular_payload,
             'debug': debug_info,
         }, status=status.HTTP_200_OK)
 
@@ -1141,25 +1173,31 @@ class GetLecturerCourses(APIView):
             semester = course_unit.semester
             program_batch = course_unit.program_batch or (semester.program_batch if semester else None)
             
-            # Get enrolled students count
-            enrollments = StudentCourseUnitEnrollment.objects.filter(
-                course_unit=course_unit,
-                status='enrolled'
-            ).select_related('student')
-            
+            # All enrolled students on this course (registered and not-yet-registered).
+            enrollments = (
+                StudentCourseUnitEnrollment.objects.filter(
+                    course_unit=course_unit,
+                    status="enrolled",
+                )
+                .select_related("student", "student__application")
+                .order_by("student__reg_no", "student__student_id")
+            )
+
             students_count = enrollments.count()
             total_students += students_count
-            
-            # Get student details
+
             students = []
-            for enrollment in enrollments[:50]:  # Limit to first 50 for performance
+            for enrollment in enrollments:
                 student = enrollment.student
                 students.append({
-                    'student_id': student.student_id,
-                    'reg_no': student.reg_no,
-                    'name': student.full_name,
-                    'enrollment_date': enrollment.enrollment_date,
-                    'status': enrollment.status,
+                    "student_id": student.student_id,
+                    "reg_no": student.reg_no,
+                    "name": student.full_name,
+                    "enrollment_date": enrollment.enrollment_date,
+                    "registration_date": enrollment.registration_date,
+                    "is_registered": enrollment.registration_date is not None,
+                    "registration_kind": enrollment.registration_kind,
+                    "status": enrollment.status,
                 })
             
             assigned_courses.append({

@@ -38,12 +38,13 @@ def months_per_term_for_program(program) -> int:
 
 
 def period_unit_for_calendar(calendar_type: str | None = None, program=None) -> str:
-    """Human label for one academic period: Semester or Trimester (never 'Term')."""
+    """Human label for one academic period: Semester, Trimester, or Session."""
     cal = calendar_type
     if not cal and program is not None:
         cal = getattr(program, "calendar_type", None)
-    cal = (cal or "semester").strip().lower()
-    return "Trimester" if cal == "trimester" else "Semester"
+    from Programs.calendar_utils import period_unit_label
+
+    return period_unit_label(cal)
 
 
 def curriculum_period_label(

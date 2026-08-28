@@ -134,17 +134,16 @@ def build_marks_entry_csv(course_unit) -> tuple[str, str]:
     """
     CSV template for marks entry: reg_no, student_name, ca_mark, exam_mark.
     Pre-fills existing marks when present.
+    Only includes registered students (registration_date set), including
+    shared-teaching linked offerings.
     Returns (filename, csv_text).
     """
-    enrollments = (
-        StudentCourseUnitEnrollment.objects.filter(
-            course_unit=course_unit,
-            status="enrolled",
-            registration_date__isnull=False,
-        )
-        .select_related("student", "student__application", "course_result")
-        .order_by("student__reg_no")
-    )
+    from Programs.shared_teaching import registered_enrollments_for_course_unit
+
+    enrollments = registered_enrollments_for_course_unit(
+        course_unit,
+        statuses=["enrolled"],
+    ).select_related("student", "student__application", "course_result")
 
     buf = io.StringIO()
     writer = csv.writer(buf)

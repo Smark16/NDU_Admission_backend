@@ -823,6 +823,36 @@ def _add_months(d: date, n: int) -> date:
     return date(year, month, day)
 
 
+def _ensure_starter_batch(program: Program) -> tuple[ProgramBatch, bool]:
+    """Create a starter intake batch when a programme has none (for auto-create terms)."""
+    existing = (
+        ProgramBatch.objects.filter(program=program, is_active=True)
+        .order_by("-start_date", "id")
+        .first()
+    )
+    if existing:
+        return existing, False
+
+    from admissions.utils.academic_year import get_current_academic_year
+
+    ay = get_current_academic_year()
+    start_year = int(ay.split("/")[0])
+    name = f"Intake {start_year}"
+    suffix = 1
+    while ProgramBatch.objects.filter(program=program, name=name).exists():
+        suffix += 1
+        name = f"Intake {start_year} ({suffix})"
+
+    batch = ProgramBatch.objects.create(
+        program=program,
+        name=name,
+        academic_year=ay,
+        start_date=date(start_year, 8, 1),
+        is_active=True,
+    )
+    return batch, True
+
+
 def _auto_create_semesters(batch: "ProgramBatch", program: "Program") -> int:
     """
     Ensure the batch has the full minimum-duration term structure.
@@ -840,9 +870,18 @@ def _auto_create_semesters(batch: "ProgramBatch", program: "Program") -> int:
     Returns the number of Semester rows newly created (0 if already complete).
     """
     cal_type = getattr(program, "calendar_type", None) or "semester"
-    terms_per_year = 3 if cal_type == "trimester" else 2
-    label = "Trimester" if cal_type == "trimester" else "Semester"
-    months_each = 4 if cal_type == "trimester" else 6
+    if cal_type == "modular":
+        terms_per_year = 2
+        label = "Session"
+        months_each = 6
+    elif cal_type == "trimester":
+        terms_per_year = 3
+        label = "Trimester"
+        months_each = 4
+    else:
+        terms_per_year = 2
+        label = "Semester"
+        months_each = 6
 
     raw_min = getattr(program, "min_years", None)
     min_years = max(int(raw_min), 1) if raw_min else 1
@@ -885,14 +924,15 @@ def _auto_create_semesters(batch: "ProgramBatch", program: "Program") -> int:
             created += 1
 
     # Instantiate curriculum offerings on every positioned semester (new + existing).
-    try:
-        from Programs.curriculum_offerings import sync_batch_curriculum_offerings
+    if cal_type != "modular":
+        try:
+            from Programs.curriculum_offerings import sync_batch_curriculum_offerings
 
-        sync_batch_curriculum_offerings(batch)
-    except Exception:
-        logger.exception(
-            "Failed to sync curriculum offerings for ProgramBatch %s", batch.pk
-        )
+            sync_batch_curriculum_offerings(batch)
+        except Exception:
+            logger.exception(
+                "Failed to sync curriculum offerings for ProgramBatch %s", batch.pk
+            )
 
     return created
 
@@ -1620,21 +1660,51 @@ class AutoCreateSemestersView(_BatchUnavailableMixin, APIView):
             ProgramBatch.objects.select_related("program").prefetch_related("semesters"),
             request.user,
         )
+        batches_created = 0
+        notes: list[str] = []
+
         if program_id:
             qs = qs.filter(program_id=program_id)
             if not qs.exists():
                 program = Program.objects.filter(pk=program_id).first()
-                if program:
-                    assert_can_modify_program_structure(request.user, program)
-                return Response(
-                    {"detail": "No batches found for this programme in your faculty scope."},
-                    status=status.HTTP_404_NOT_FOUND,
-                )
+                if not program:
+                    return Response(
+                        {"detail": "Programme not found."},
+                        status=status.HTTP_404_NOT_FOUND,
+                    )
+                assert_can_modify_program_structure(request.user, program)
+
+                if ProgramBatch.objects.filter(
+                    program_id=program_id, is_active=True
+                ).exists():
+                    return Response(
+                        {
+                            "detail": (
+                                "This programme has batches outside your faculty scope. "
+                                "Open Program Batch for that programme or ask registry."
+                            ),
+                            "batches_processed": 0,
+                            "semesters_created": 0,
+                            "batches_created": 0,
+                            "skipped_already_have_semesters": 0,
+                            "batches_already_complete": 0,
+                            "errors": [],
+                        },
+                        status=status.HTTP_200_OK,
+                    )
+
+                batch, created = _ensure_starter_batch(program)
+                if created:
+                    batches_created += 1
+                    notes.append(f"Created starter batch '{batch.name}'.")
+                qs = ProgramBatch.objects.filter(pk=batch.pk).select_related(
+                    "program"
+                ).prefetch_related("semesters")
 
         batches_processed = 0
         semesters_created = 0
         skipped = 0
-        errors = []
+        errors: list[str] = []
 
         for batch in qs:
             try:
@@ -1650,12 +1720,19 @@ class AutoCreateSemestersView(_BatchUnavailableMixin, APIView):
                     f"Batch '{batch.name}' ({batch.program.code}): {exc}"
                 )
 
+        detail = notes[0] if notes else None
+        if not batches_processed and not semesters_created and not errors:
+            if skipped and not detail:
+                detail = "All batches already have the full term structure."
+
         return Response(
             {
                 "batches_processed": batches_processed,
                 "semesters_created": semesters_created,
+                "batches_created": batches_created,
                 "skipped_already_have_semesters": skipped,
                 "batches_already_complete": skipped,
+                "detail": detail,
                 "errors": errors,
             },
             status=status.HTTP_200_OK,

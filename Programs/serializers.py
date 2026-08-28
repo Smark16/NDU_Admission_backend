@@ -193,6 +193,7 @@ class ListProgramsSerializer(serializers.ModelSerializer):
             'academic_level', 'academic_level_id',
             'campuses', 'min_years', 'max_years',
             'calendar_type', 'minimum_graduation_load',
+            'modular_min_credits_per_session', 'modular_max_credits_per_session',
             'has_specialization', 'specialization_entry_year', 'specialization_entry_term',
             'curriculum_mode', 'curriculum_source_program',
             'is_active','is_hec', 'created_at', 'updated_at',

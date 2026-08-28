@@ -11,6 +11,7 @@ class Program(models.Model):
     CALENDAR_TYPE_CHOICES = [
         ('semester', 'Semester'),
         ('trimester', 'Trimester'),
+        ('modular', 'Modular'),
     ]
 
     name = models.CharField(max_length=200)
@@ -40,7 +41,24 @@ class Program(models.Model):
         max_length=20,
         choices=CALENDAR_TYPE_CHOICES,
         default='semester',
-        help_text="Academic calendar structure: semester (2 terms/year) or trimester (3 terms/year).",
+        help_text=(
+            "Academic calendar structure: semester (2 terms/year), trimester (3 terms/year), "
+            "or modular (session / credit-based module registration)."
+        ),
+    )
+    modular_min_credits_per_session = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Modular programmes only: minimum credit units per session (optional).",
+    )
+    modular_max_credits_per_session = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Modular programmes only: maximum credit units per session (optional).",
     )
     minimum_graduation_load = models.DecimalField(
         max_digits=6,
@@ -126,7 +144,15 @@ class Program(models.Model):
     @property
     def max_terms_per_year(self):
         """Returns the number of valid terms per year based on calendar_type."""
-        return 3 if self.calendar_type == 'trimester' else 2
+        from Programs.calendar_utils import max_terms_for_calendar
+
+        return max_terms_for_calendar(self.calendar_type)
+
+    @property
+    def is_modular(self) -> bool:
+        from Programs.calendar_utils import program_is_modular
+
+        return program_is_modular(self)
 
     def credit_summary(self, curriculum_version=None):
         """Compute curriculum completeness against effective minimum graduation load.

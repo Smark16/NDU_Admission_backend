@@ -252,7 +252,10 @@ def find_peer_course_units(
     same_number_limit: int = 40,
 ) -> list[dict]:
     """
-    Peers across programmes (same study mode + campus) by code / similar name / number.
+    Peers across programmes (same campus) by code / similar name / number.
+
+    Includes Day, Weekend, Main, etc. ``same_study_mode`` flags peers that match
+    the source programme's study mode (preferred for shared-slot mirroring).
     """
     code = (source.code or "").strip()
     number = course_code_number(code)
@@ -313,15 +316,16 @@ def find_peer_course_units(
             required_campus_id=required_campus_id,
         ):
             continue
-        # Exact study mode from programme name (Day ≠ Main campus stream)
-        if preferred_mode and preferred_mode != "Other":
-            if (row.get("study_mode") or "Other") != preferred_mode:
-                continue
+        peer_mode = row.get("study_mode") or "Other"
         row["already_linked"] = bool(
             source.shared_teaching_offering_id
             and peer.shared_teaching_offering_id == source.shared_teaching_offering_id
         )
-        row["same_study_mode"] = True
+        row["same_study_mode"] = bool(
+            preferred_mode
+            and preferred_mode != "Other"
+            and peer_mode == preferred_mode
+        )
         row["same_campus"] = True
         if match_kind in ("exact_code", "similar_name"):
             strong.append(row)
@@ -368,7 +372,10 @@ def search_course_units_for_share(
     source_campus_ids: list[int] | None = None,
     limit: int = 60,
 ) -> list[dict]:
-    """Search units filtered by study mode and campus when provided."""
+    """Search units on other programmes; campus filter optional.
+
+    ``study_mode`` is a preference for ranking (same mode first), not a hard filter.
+    """
     q = (query or "").strip()
     if len(q) < 2:
         return []
@@ -403,8 +410,6 @@ def search_course_units_for_share(
         row = serialize_peer_course_unit(cu, match_kind="search")
         mode = row.get("study_mode") or "Other"
         peer_campus_ids = set(row.get("campus_ids") or [])
-        if preferred and preferred != "Other" and mode != preferred:
-            continue
         if not campuses_compatible(
             source_ids,
             peer_campus_ids,

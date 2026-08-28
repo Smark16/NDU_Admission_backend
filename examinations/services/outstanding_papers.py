@@ -27,7 +27,9 @@ class OutstandingPaper:
 
 
 def _period_unit(calendar_type: str | None) -> str:
-    return "Trimester" if (calendar_type or "").lower() == "trimester" else "Semester"
+    from Programs.calendar_utils import period_unit_label
+
+    return period_unit_label(calendar_type)
 
 
 def curriculum_period_label(

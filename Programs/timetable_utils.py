@@ -487,9 +487,13 @@ def find_clashes_for_session(session: TimetableSession, *, exclude_pk: int | Non
 def mirror_session_to_linked_units(session: TimetableSession) -> dict:
     """Copy this slot onto other CourseUnits linked to the same SharedTeachingOffering.
 
+    Only mirrors onto siblings with the same study mode (Day, Weekend, etc.) so
+    cross-mode shared offerings keep separate timetables per mode.
+
     Returns {created: [...serialize], skipped: [...], warnings: [...]}.
     """
     from Programs.models import CourseUnit, TimetableSession as TS
+    from Programs.shared_teaching import study_mode_for_course_unit
 
     result = {"created": [], "skipped": [], "warnings": []}
     cu = session.course_unit
@@ -497,6 +501,8 @@ def mirror_session_to_linked_units(session: TimetableSession) -> dict:
     if not sto_id:
         result["warnings"].append("Course unit is not on a shared teaching offering.")
         return result
+
+    source_mode = study_mode_for_course_unit(cu) if cu else "Other"
 
     siblings = list(
         CourseUnit.objects.filter(shared_teaching_offering_id=sto_id, is_active=True)
@@ -508,6 +514,23 @@ def mirror_session_to_linked_units(session: TimetableSession) -> dict:
         return result
 
     for sibling in siblings:
+        sibling_mode = study_mode_for_course_unit(sibling)
+        if sibling_mode != source_mode:
+            result["skipped"].append(
+                {
+                    "course_unit_id": sibling.id,
+                    "program": (
+                        sibling.program_batch.program.name
+                        if sibling.program_batch_id and sibling.program_batch.program_id
+                        else None
+                    ),
+                    "reason": (
+                        f"different study mode ({sibling_mode} — only {source_mode} "
+                        "programmes receive a mirrored slot)"
+                    ),
+                }
+            )
+            continue
         # Skip if an identical slot already exists on the sibling.
         exists = TS.objects.filter(
             course_unit=sibling,

@@ -49,6 +49,10 @@ def sync_semester_curriculum_offerings(semester) -> dict:
     if program is None:
         return result
 
+    if getattr(program, "calendar_type", None) == "modular":
+        result["modular_skipped"] = True
+        return result
+
     owner = curriculum_owner_program(program)
     curriculum_version = resolve_effective_curriculum_version(program, batch)
     if not curriculum_version:
