@@ -17,6 +17,7 @@ STUDENT endpoints (require IsAuthenticated; must be the enrolled student):
   POST   my_enrollment/select_specialization           — save chosen track
   GET    my_enrollment/expected_courses                — curriculum lines for current term
          ?include_operational=true                     — also show CourseUnit availability
+  POST   my_enrollment/enroll                          — student self-enrolls (pending or enrolled)
 """
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
@@ -438,8 +439,17 @@ class MyEnrollmentView(APIView):
                 'program', 'program_batch', 'curriculum_version'
             ).get(student=student)
         except StudentProgrammeEnrollment.DoesNotExist:
+            from payments.student_portal_finance import commitment_payment_summary
+
+            program_name = student.admitted_program.name if student.admitted_program_id else None
+            summary = commitment_payment_summary(student)
             return Response(
-                {'detail': 'No academic enrollment found. Please contact the admissions office.'},
+                {
+                    'detail': 'You have not enrolled yet. Use Enroll to register your interest.',
+                    'can_self_enroll': True,
+                    'program_name': program_name,
+                    'commitment_met': summary.get('commitment_met', False),
+                },
                 status=status.HTTP_404_NOT_FOUND,
             )
 
@@ -454,6 +464,55 @@ class MyEnrollmentView(APIView):
                 enrollment.save(update_fields=['curriculum_version', 'updated_at'])
 
         return Response(StudentProgrammeEnrollmentReadSerializer(enrollment).data)
+
+
+class MySelfEnrollView(APIView):
+    """Student enrolls themselves — Pending if unpaid, Enrolled if commitment met."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        try:
+            student = AdmittedStudent.objects.select_related(
+                'admitted_program',
+                'admitted_specialization',
+                'application',
+                'intended_program_batch',
+                'admitted_batch',
+                'programme_enrollment',
+            ).get(
+                Q(application__applicant=request.user)
+                | Q(student_user=request.user)
+                | Q(reg_no=request.user.username),
+                is_admitted=True,
+            )
+        except AdmittedStudent.DoesNotExist:
+            return Response(
+                {'detail': 'No admitted student record found for this user.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        from .student_self_enrollment import student_self_enroll
+
+        result = student_self_enroll(student)
+        if not result.get('ok'):
+            return Response(
+                {'detail': result.get('detail') or 'Could not enroll.', **result},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            enrollment = StudentProgrammeEnrollment.objects.select_related(
+                'program', 'program_batch', 'curriculum_version'
+            ).get(student=student)
+        except StudentProgrammeEnrollment.DoesNotExist:
+            return Response(result, status=status.HTTP_200_OK)
+
+        payload = {
+            **StudentProgrammeEnrollmentReadSerializer(enrollment).data,
+            **{k: v for k, v in result.items() if k not in ('ok',)},
+        }
+        return Response(payload, status=status.HTTP_201_CREATED if result.get('created') else status.HTTP_200_OK)
 
 
 class MyAvailableSpecializationsView(APIView):

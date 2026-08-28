@@ -47,6 +47,7 @@ from .enrollment_views import (
     MyEnrollmentView,
     MyExpectedCoursesView,
     MySelectSpecializationView,
+    MySelfEnrollView,
 )
 from .enrollment_report_views import EnrollmentReportExcelView, EnrollmentReportListView
 from .override_views import (
@@ -430,6 +431,11 @@ urlpatterns = [
         'my_enrollment',
         MyEnrollmentView.as_view(),
         name='my_enrollment',
+    ),
+    path(
+        'my_enrollment/enroll',
+        MySelfEnrollView.as_view(),
+        name='my_self_enroll',
     ),
     path(
         'my_enrollment/specializations',
