@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import logging
 
-from django.utils import timezone
-
 logger = logging.getLogger(__name__)
 
 
@@ -13,46 +11,36 @@ class StudentPortalProvisioningError(Exception):
 
 
 def auto_enroll_admitted_student(admission, acting_user_id: int | None) -> None:
-    from Programs.models import StudentProgrammeEnrollment
-    from Programs.program_batch_resolution import resolve_default_program_batch_for_program
-    from payments.admin_enrollment_requirements import (
-        admin_programme_enrollment_activation_block,
+    """
+    Auto-enroll only when the commitment fee is already met.
+
+    Unpaid admitted students are NOT enrolled here — they self-enroll on the
+    student portal (Pending) via POST /api/program/my_enrollment/enroll/.
+    """
+    from django.contrib.auth import get_user_model
+
+    from payments.programme_enrollment_activation import (
+        activate_programme_enrollment_after_commitment_payment,
     )
+    from payments.student_portal_finance import commitment_payment_summary
 
     try:
-        today = timezone.now().date()
-        program_batch = admission.intended_program_batch or resolve_default_program_batch_for_program(
-            admission.admitted_program,
-            today=today,
-            admission_batch=admission.admitted_batch,
-        )
-        if not program_batch:
+        if not admission.admitted_program_id:
             return
 
-        from django.contrib.auth import get_user_model
+        if not commitment_payment_summary(admission)["commitment_met"]:
+            logger.info(
+                "Skipping auto-enrollment for admission %s — commitment not met; "
+                "student should self-enroll on the portal.",
+                admission.pk,
+            )
+            return
 
         User = get_user_model()
         acting_user = User.objects.filter(pk=acting_user_id).first() if acting_user_id else None
-
-        from admissions.admission_specialization import admitted_subject_combination_label
-
-        activation_block = admin_programme_enrollment_activation_block(
-            admission, target_status="enrolled"
-        )
-        enroll_status = "enrolled" if activation_block is None else "pending"
-
-        StudentProgrammeEnrollment.objects.get_or_create(
-            student=admission,
-            defaults={
-                "program": admission.admitted_program,
-                "program_batch": program_batch,
-                "current_year_of_study": 1,
-                "current_term_number": 1,
-                "specialization": admitted_subject_combination_label(admission) or "",
-                "status": enroll_status,
-                "enrolled_by": acting_user if enroll_status == "enrolled" else None,
-                "enrolled_at": timezone.now() if enroll_status == "enrolled" else None,
-            },
+        activate_programme_enrollment_after_commitment_payment(
+            admission,
+            activated_by=acting_user,
         )
     except Exception:
         logger.exception("Auto-enrollment failed for admission %s", admission.pk)
