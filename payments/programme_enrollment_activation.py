@@ -56,8 +56,9 @@ def _default_program_batch(student: AdmittedStudent):
 
 
 def _auto_assign_current_semester_course_units(enrollment) -> dict:
-    """Auto-assign course units in student's current active semester when enabled."""
-    from Programs.models import CourseUnit, Semester, StudentCourseUnitEnrollment
+    """Auto-assign course units for the student's current term (combination-aware)."""
+    from Programs.enrollment_course_assignment import course_unit_ids_for_enrollment_current_term
+    from Programs.models import StudentCourseUnitEnrollment, StudentProgrammeEnrollment
 
     def _zero(reason: str) -> dict:
         return {
@@ -70,31 +71,21 @@ def _auto_assign_current_semester_course_units(enrollment) -> dict:
     if not getattr(settings, "auto_assign_course_units_after_commitment", True):
         return _zero("toggle_disabled")
 
-    if not enrollment.program_batch_id:
-        return _zero("no_program_batch")
-
-    semester = (
-        Semester.objects.filter(
-            program_batch_id=enrollment.program_batch_id,
-            year_of_study=enrollment.current_year_of_study,
-            term_number=enrollment.current_term_number,
-            is_active=True,
-        )
-        .order_by("order", "id")
-        .first()
+    enrollment = (
+        StudentProgrammeEnrollment.objects.select_related(
+            "student",
+            "student__admitted_specialization",
+            "program",
+            "program_batch",
+        ).get(pk=enrollment.pk)
     )
-    if semester is None:
-        return _zero(
-            f"no_active_semester_y{enrollment.current_year_of_study}_t{enrollment.current_term_number}"
-        )
 
-    units = list(
-        CourseUnit.objects.filter(semester=semester, is_active=True).only("id")
-    )
-    if not units:
-        return _zero(f"no_active_course_units_semester_{semester.id}")
+    unit_ids, skip_reason = course_unit_ids_for_enrollment_current_term(enrollment)
+    if skip_reason:
+        return _zero(skip_reason)
+    if not unit_ids:
+        return _zero("no_course_units")
 
-    unit_ids = [u.id for u in units]
     existing_ids = set(
         StudentCourseUnitEnrollment.objects.filter(
             student=enrollment.student, course_unit_id__in=unit_ids
