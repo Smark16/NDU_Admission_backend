@@ -1,8 +1,13 @@
-"""Faculty-scoped access for staff (e.g. Faculty Dean, Faculty Admin).
+﻿"""Faculty- and department-scoped access for staff (Dean, Faculty Admin, HOD).
 
 Users may hold multiple roles (e.g. AR Data Clerk + Faculty Admin). Admissions
 work uses institution-wide access when the user has edit permissions; programme
 /timetable/enrollment work stays faculty-scoped when they hold a faculty role.
+
+Heads of Department (HOD group, without Faculty Dean / Faculty Admin) are further
+limited to programmes owned by the academic departments they head
+(``AcademicDepartment.head_of_department`` â†’ ``Program.department``).
+Faculty Dean and Faculty Admin remain faculty-wide.
 """
 from __future__ import annotations
 
@@ -85,14 +90,85 @@ def user_faculty_ids(user, *, context: str = "programs") -> list[int] | None:
     return list(user.faculties.filter(is_active=True).values_list("pk", flat=True))
 
 
+def user_is_hod(user) -> bool:
+    if not user.is_authenticated or user_is_super_admin(user):
+        return False
+    return user_has_group(user, "HOD")
+
+
+def user_is_faculty_dean(user) -> bool:
+    if not user.is_authenticated or user_is_super_admin(user):
+        return False
+    return user_has_group(user, "Faculty Dean")
+
+
+def user_is_faculty_admin(user) -> bool:
+    if not user.is_authenticated or user_is_super_admin(user):
+        return False
+    return user_has_group(user, "Faculty Admin")
+
+
+def user_requires_department_scope(user) -> bool:
+    """
+    Pure HoDs (HOD group without Faculty Dean / Faculty Admin) are limited to
+    the academic departments they head. Deans and Faculty Admins stay faculty-wide.
+    """
+    if not user.is_authenticated or user_is_super_admin(user):
+        return False
+    if not user_is_hod(user):
+        return False
+    if user_is_faculty_dean(user) or user_is_faculty_admin(user):
+        return False
+    return True
+
+
+def user_headed_department_ids(user) -> list[int] | None:
+    """
+    Academic department ids an HOD may access.
+
+    ``None`` = do not apply department narrowing.
+    ``[]`` = department-scoped HOD with no head assignment (no access).
+    ``[ids]`` = restrict to these departments' programmes.
+    """
+    if not user_requires_department_scope(user):
+        return None
+    return list(
+        user.headed_academic_departments.filter(is_active=True).values_list("pk", flat=True)
+    )
+
+
+def _apply_department_scope_to_programs(queryset: QuerySet, user, *, program_field: str = "") -> QuerySet:
+    """
+    Narrow a queryset to programmes owned by departments the user heads.
+
+    ``program_field`` is the ORM path to Program, e.g. ``""`` (queryset is Program),
+    ``"admitted_program"``, ``"program"``, ``"program_batch__program"``.
+    """
+    dept_ids = user_headed_department_ids(user)
+    if dept_ids is None:
+        return queryset
+    if not dept_ids:
+        return queryset.none()
+    prefix = f"{program_field}__" if program_field else ""
+    return queryset.filter(**{f"{prefix}department_id__in": dept_ids})
+
+
 def filter_applications_for_user(queryset: QuerySet, user) -> QuerySet:
     faculty_ids = user_faculty_ids(user, context="admissions")
     if faculty_ids is None:
         return queryset
     if not faculty_ids:
         return queryset.none()
-    return queryset.filter(
+    queryset = queryset.filter(
         program_choices__program__faculty_id__in=faculty_ids
+    ).distinct()
+    dept_ids = user_headed_department_ids(user)
+    if dept_ids is None:
+        return queryset
+    if not dept_ids:
+        return queryset.none()
+    return queryset.filter(
+        program_choices__program__department_id__in=dept_ids
     ).distinct()
 
 
@@ -102,6 +178,10 @@ def filter_admitted_students_for_user(queryset: QuerySet, user) -> QuerySet:
         if not faculty_ids:
             return queryset.none()
         queryset = queryset.filter(admitted_program__faculty_id__in=faculty_ids)
+
+    queryset = _apply_department_scope_to_programs(
+        queryset, user, program_field="admitted_program"
+    )
 
     # Campus scope for non-finance staff who have campuses assigned.
     # Bursar / Finance see every campus; faculty-scoped staff may also be
@@ -138,10 +218,22 @@ def filter_admission_change_requests_for_user(queryset: QuerySet, user) -> Query
         return queryset
     if not faculty_ids:
         return queryset.none()
-    return queryset.filter(
+    queryset = queryset.filter(
         Q(admitted_student__admitted_program__faculty_id__in=faculty_ids)
         | Q(current_program__faculty_id__in=faculty_ids)
         | Q(new_program__faculty_id__in=faculty_ids)
+    ).distinct()
+
+    dept_ids = user_headed_department_ids(user)
+    if dept_ids is None:
+        return queryset
+    if not dept_ids:
+        return queryset.none()
+    # HoD sees exemptions / change requests for programmes in their department only.
+    return queryset.filter(
+        Q(admitted_student__admitted_program__department_id__in=dept_ids)
+        | Q(current_program__department_id__in=dept_ids)
+        | Q(new_program__department_id__in=dept_ids)
     ).distinct()
 
 
@@ -151,9 +243,13 @@ def user_can_access_application(user, application) -> bool:
         return True
     if not faculty_ids:
         return False
-    return application.program_choices.filter(
-        program__faculty_id__in=faculty_ids
-    ).exists()
+    choices = application.program_choices.filter(program__faculty_id__in=faculty_ids)
+    dept_ids = user_headed_department_ids(user)
+    if dept_ids is not None:
+        if not dept_ids:
+            return False
+        choices = choices.filter(program__department_id__in=dept_ids)
+    return choices.exists()
 
 
 def user_can_access_admitted_student(user, admitted) -> bool:
@@ -165,6 +261,14 @@ def user_can_access_admitted_student(user, admitted) -> bool:
         if prog is None or not prog.faculty_id:
             return False
         if prog.faculty_id not in faculty_ids:
+            return False
+
+    dept_ids = user_headed_department_ids(user)
+    if dept_ids is not None:
+        if not dept_ids:
+            return False
+        prog = getattr(admitted, "admitted_program", None)
+        if prog is None or prog.department_id not in dept_ids:
             return False
 
     from accounts.finance_access import user_is_finance_directory_unscoped
@@ -200,7 +304,7 @@ def assert_admitted_student_access(user, admitted) -> None:
 
     if not user_can_access_admitted_student(user, admitted):
         raise PermissionDenied(
-            "You can only access admitted students in your assigned faculty / campus."
+            "You can only access admitted students in your assigned faculty, department, or campus."
         )
 
 
@@ -210,7 +314,8 @@ def filter_programs_for_user(queryset: QuerySet, user) -> QuerySet:
         return queryset
     if not faculty_ids:
         return queryset.none()
-    return queryset.filter(faculty_id__in=faculty_ids)
+    queryset = queryset.filter(faculty_id__in=faculty_ids)
+    return _apply_department_scope_to_programs(queryset, user)
 
 
 def filter_programme_enrollments_for_user(queryset: QuerySet, user) -> QuerySet:
@@ -219,7 +324,8 @@ def filter_programme_enrollments_for_user(queryset: QuerySet, user) -> QuerySet:
         return queryset
     if not faculty_ids:
         return queryset.none()
-    return queryset.filter(program__faculty_id__in=faculty_ids)
+    queryset = queryset.filter(program__faculty_id__in=faculty_ids)
+    return _apply_department_scope_to_programs(queryset, user, program_field="program")
 
 
 def assert_program_in_user_faculties(user, program) -> None:
@@ -235,6 +341,16 @@ def assert_program_in_user_faculties(user, program) -> None:
         raise PermissionDenied(
             "You can only access programmes in your assigned faculty."
         )
+    dept_ids = user_headed_department_ids(user)
+    if dept_ids is not None:
+        if not dept_ids:
+            raise PermissionDenied(
+                "No academic department is assigned to you as Head of Department."
+            )
+        if getattr(program, "department_id", None) not in dept_ids:
+            raise PermissionDenied(
+                "You can only access programmes in your assigned department."
+            )
 
 
 def assert_program_batch_access(user, program_batch) -> None:
@@ -258,15 +374,24 @@ def assert_course_unit_access(user, course_unit) -> None:
 
 
 def filter_course_units_for_user(queryset: QuerySet, user) -> QuerySet:
-    """Limit course units to the user's assigned faculties (Faculty Admin/Dean)."""
+    """Limit course units to the user's assigned faculties (and HOD department)."""
     faculty_ids = user_faculty_ids(user, context="programs")
     if faculty_ids is None:
         return queryset
     if not faculty_ids:
         return queryset.none()
-    return queryset.filter(
+    queryset = queryset.filter(
         Q(program_batch__program__faculty_id__in=faculty_ids)
         | Q(semester__program_batch__program__faculty_id__in=faculty_ids)
+    ).distinct()
+    dept_ids = user_headed_department_ids(user)
+    if dept_ids is None:
+        return queryset
+    if not dept_ids:
+        return queryset.none()
+    return queryset.filter(
+        Q(program_batch__program__department_id__in=dept_ids)
+        | Q(semester__program_batch__program__department_id__in=dept_ids)
     ).distinct()
 
 
@@ -276,9 +401,18 @@ def filter_lecture_attendance_sessions_for_user(queryset: QuerySet, user) -> Que
         return queryset
     if not faculty_ids:
         return queryset.none()
-    return queryset.filter(
+    queryset = queryset.filter(
         Q(course_unit__program_batch__program__faculty_id__in=faculty_ids)
         | Q(course_unit__semester__program_batch__program__faculty_id__in=faculty_ids)
+    ).distinct()
+    dept_ids = user_headed_department_ids(user)
+    if dept_ids is None:
+        return queryset
+    if not dept_ids:
+        return queryset.none()
+    return queryset.filter(
+        Q(course_unit__program_batch__program__department_id__in=dept_ids)
+        | Q(course_unit__semester__program_batch__program__department_id__in=dept_ids)
     ).distinct()
 
 
@@ -307,24 +441,16 @@ def assert_admitted_student_program_access(user, student) -> None:
         raise PermissionDenied(
             "You can only manage students in programmes for your assigned faculty."
         )
-
-
-def user_is_faculty_dean(user) -> bool:
-    if not user.is_authenticated or user_is_super_admin(user):
-        return False
-    return user_has_group(user, "Faculty Dean")
-
-
-def user_is_faculty_admin(user) -> bool:
-    if not user.is_authenticated or user_is_super_admin(user):
-        return False
-    return user_has_group(user, "Faculty Admin")
-
-
-def user_is_hod(user) -> bool:
-    if not user.is_authenticated or user_is_super_admin(user):
-        return False
-    return user_has_group(user, "HOD")
+    dept_ids = user_headed_department_ids(user)
+    if dept_ids is not None:
+        if not dept_ids:
+            raise PermissionDenied(
+                "No academic department is assigned to you as Head of Department."
+            )
+        if program.department_id not in dept_ids:
+            raise PermissionDenied(
+                "You can only manage students in programmes for your assigned department."
+            )
 
 
 def assert_program_structure_modify_access(user) -> None:
@@ -353,7 +479,8 @@ def filter_program_batches_for_user(queryset: QuerySet, user) -> QuerySet:
         return queryset
     if not faculty_ids:
         return queryset.none()
-    return queryset.filter(program__faculty_id__in=faculty_ids)
+    queryset = queryset.filter(program__faculty_id__in=faculty_ids)
+    return _apply_department_scope_to_programs(queryset, user, program_field="program")
 
 
 def user_can_access_program_batch(user, program_batch) -> bool:
@@ -363,7 +490,16 @@ def user_can_access_program_batch(user, program_batch) -> bool:
         return True
     if not faculty_ids:
         return False
-    return getattr(program_batch, "program_id", None) is not None and program_batch.program.faculty_id in faculty_ids
+    if getattr(program_batch, "program_id", None) is None:
+        return False
+    if program_batch.program.faculty_id not in faculty_ids:
+        return False
+    dept_ids = user_headed_department_ids(user)
+    if dept_ids is not None:
+        if not dept_ids:
+            return False
+        return program_batch.program.department_id in dept_ids
+    return True
 
 
 def user_can_access_course_unit(user, course_unit) -> bool:
@@ -382,7 +518,7 @@ def user_can_access_course_unit(user, course_unit) -> bool:
     return user_can_access_program_batch(user, program_batch)
 
 
-# ── Examinations faculty scoping (exam sessions, results, retakes) ─────────
+# â”€â”€ Examinations faculty scoping (exam sessions, results, retakes) â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Exam data hangs off Programs.CourseUnit, so it follows the same dual
 # program_batch / semester->program_batch path as filter_course_units_for_user.
 
@@ -392,9 +528,18 @@ def filter_exam_sessions_for_user(queryset: QuerySet, user) -> QuerySet:
         return queryset
     if not faculty_ids:
         return queryset.none()
-    return queryset.filter(
+    queryset = queryset.filter(
         Q(course_unit__program_batch__program__faculty_id__in=faculty_ids)
         | Q(course_unit__semester__program_batch__program__faculty_id__in=faculty_ids)
+    ).distinct()
+    dept_ids = user_headed_department_ids(user)
+    if dept_ids is None:
+        return queryset
+    if not dept_ids:
+        return queryset.none()
+    return queryset.filter(
+        Q(course_unit__program_batch__program__department_id__in=dept_ids)
+        | Q(course_unit__semester__program_batch__program__department_id__in=dept_ids)
     ).distinct()
 
 
@@ -404,9 +549,18 @@ def filter_course_unit_results_for_user(queryset: QuerySet, user) -> QuerySet:
         return queryset
     if not faculty_ids:
         return queryset.none()
-    return queryset.filter(
+    queryset = queryset.filter(
         Q(enrollment__course_unit__program_batch__program__faculty_id__in=faculty_ids)
         | Q(enrollment__course_unit__semester__program_batch__program__faculty_id__in=faculty_ids)
+    ).distinct()
+    dept_ids = user_headed_department_ids(user)
+    if dept_ids is None:
+        return queryset
+    if not dept_ids:
+        return queryset.none()
+    return queryset.filter(
+        Q(enrollment__course_unit__program_batch__program__department_id__in=dept_ids)
+        | Q(enrollment__course_unit__semester__program_batch__program__department_id__in=dept_ids)
     ).distinct()
 
 
@@ -416,9 +570,18 @@ def filter_retake_registrations_for_user(queryset: QuerySet, user) -> QuerySet:
         return queryset
     if not faculty_ids:
         return queryset.none()
-    return queryset.filter(
+    queryset = queryset.filter(
         Q(enrollment__course_unit__program_batch__program__faculty_id__in=faculty_ids)
         | Q(enrollment__course_unit__semester__program_batch__program__faculty_id__in=faculty_ids)
+    ).distinct()
+    dept_ids = user_headed_department_ids(user)
+    if dept_ids is None:
+        return queryset
+    if not dept_ids:
+        return queryset.none()
+    return queryset.filter(
+        Q(enrollment__course_unit__program_batch__program__department_id__in=dept_ids)
+        | Q(enrollment__course_unit__semester__program_batch__program__department_id__in=dept_ids)
     ).distinct()
 
 
@@ -428,4 +591,7 @@ def filter_marks_entry_windows_for_user(queryset: QuerySet, user) -> QuerySet:
         return queryset
     if not faculty_ids:
         return queryset.none()
-    return queryset.filter(program_batch__program__faculty_id__in=faculty_ids)
+    queryset = queryset.filter(program_batch__program__faculty_id__in=faculty_ids)
+    return _apply_department_scope_to_programs(
+        queryset, user, program_field="program_batch__program"
+    )

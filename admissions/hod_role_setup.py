@@ -1,8 +1,13 @@
-"""HOD (Head of Department) role — faculty-scoped technical lead.
+"""HOD (Head of Department) role — department-scoped technical lead.
 
 Combines: exemption request approval, exam publishing/scheduling/retakes,
-and programme timetabling/enrollment — all scoped to the HOD's assigned
-faculty (faculties assigned the same way as Faculty Dean / Faculty Admin).
+and programme timetabling/enrollment.
+
+Scope:
+- Assign the HOD as ``AcademicDepartment.head_of_department`` (Academic Departments UI).
+- That grants the HOD group and the department's faculty.
+- Access is limited to programmes whose ``Program.department`` is a department they head.
+- Faculty Dean / Faculty Admin remain faculty-wide (not narrowed by department).
 """
 
 from admissions.faculty_dean_role_setup import get_permission
