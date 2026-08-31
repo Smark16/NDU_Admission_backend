@@ -363,7 +363,26 @@ class Application(models.Model):
 
     @property
     def full_name(self):
-        return f"{self.first_name} {self.middle_name} {self.last_name}".strip()
+        from admissions.utils.person_name import format_person_name
+
+        return format_person_name(self.first_name, self.middle_name, self.last_name)
+
+    def save(self, *args, **kwargs):
+        from admissions.utils.person_name import normalize_name_part
+
+        for field in (
+            "title",
+            "first_name",
+            "middle_name",
+            "last_name",
+            "next_of_kin_name",
+        ):
+            val = getattr(self, field, None)
+            if val:
+                normalized = normalize_name_part(val)
+                if normalized != val:
+                    setattr(self, field, normalized)
+        super().save(*args, **kwargs)
 
 # program choices
 class ApplicationProgramChoice(models.Model):

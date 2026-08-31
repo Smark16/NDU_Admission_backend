@@ -4,7 +4,7 @@ import re
 import requests
 from django.conf import settings
 
-from admissions.models import AdmittedStudent
+from admissions.utils.person_name import format_person_name
 from .schoolpay_auth import build_schoolpay_hash, schoolpay_api_root
 
 logger = logging.getLogger(__name__)
@@ -79,10 +79,14 @@ def _schoolpay_student_matches(application, gateway_name: str) -> bool:
         return False
 
     full_name = _normalize_person_name(
-        f"{application.first_name or ''} {application.middle_name or ''} {application.last_name or ''}"
+        format_person_name(
+            application.first_name,
+            application.middle_name,
+            application.last_name,
+        )
     )
     short_name = _normalize_person_name(
-        f"{application.first_name or ''} {application.last_name or ''}"
+        format_person_name(application.first_name, application.last_name)
     )
     return gateway in {full_name, short_name}
 
