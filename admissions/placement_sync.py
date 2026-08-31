@@ -8,6 +8,8 @@ from __future__ import annotations
 import logging
 from decimal import Decimal
 
+from django.db import IntegrityError
+
 logger = logging.getLogger(__name__)
 
 PROGRAMME_CHANGE_FEE_CODE = "PROGRAMME_CHANGE"
@@ -42,13 +44,30 @@ def regenerate_reg_no_for_admission(admission, *, sync_portal: bool = True) -> s
         program=program,
         study_mode=study_mode,
         batch=_intake_batch_for_reg(admission),
+        exclude_admission_id=admission.pk,
     )
     old_reg = (admission.reg_no or "").strip()
     if new_reg == old_reg:
         return old_reg or None
 
     admission.reg_no = new_reg
-    admission.save(update_fields=["reg_no", "updated_at"])
+    for attempt in range(5):
+        try:
+            admission.save(update_fields=["reg_no", "updated_at"])
+            break
+        except IntegrityError:
+            if attempt >= 4:
+                raise
+            from admissions.utils.reg_no import generate_reg_no
+
+            new_reg = generate_reg_no(
+                campus=campus,
+                program=program,
+                study_mode=study_mode,
+                batch=_intake_batch_for_reg(admission),
+                exclude_admission_id=admission.pk,
+            )
+            admission.reg_no = new_reg
 
     if sync_portal:
         try:

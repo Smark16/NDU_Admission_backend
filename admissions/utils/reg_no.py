@@ -139,8 +139,42 @@ def _reg_no_prefix(year,campus_number, program_code, study_mode, *, is_hec, inta
     )
 
 # generate reg no
+def _next_reg_no_serial(prefix: str, *, exclude_admission_id: int | None = None) -> int:
+    """Next unused serial for a reg-no prefix (global counter kept as fallback)."""
+    prefix_serial = 0
+    qs = AdmittedStudent.objects.filter(reg_no__startswith=prefix).exclude(reg_no="")
+    if exclude_admission_id:
+        qs = qs.exclude(pk=exclude_admission_id)
+    for reg in qs.values_list("reg_no", flat=True).iterator(chunk_size=500):
+        match = re.search(r"(\d+)$", reg or "")
+        if match:
+            prefix_serial = max(prefix_serial, int(match.group(1)))
+
+    last_student = (
+        AdmittedStudent.objects.select_for_update()
+        .exclude(reg_no__isnull=True)
+        .exclude(reg_no="")
+        .order_by("-id")
+        .first()
+    )
+    global_serial = 0
+    if last_student and last_student.reg_no:
+        match = re.search(r"(\d+)$", last_student.reg_no)
+        if match:
+            global_serial = int(match.group(1))
+
+    return max(prefix_serial, global_serial) + 1
+
+
 @transaction.atomic
-def generate_reg_no(campus,program,study_mode,batch=None):
+def generate_reg_no(
+    campus,
+    program,
+    study_mode,
+    batch=None,
+    *,
+    exclude_admission_id: int | None = None,
+):
     year = str(datetime.now().year)[-2:]
 
     campus_number = (
@@ -176,28 +210,16 @@ def generate_reg_no(campus,program,study_mode,batch=None):
         intake_letter=intake_letter,
     )
 
-    last_student = (
-        AdmittedStudent.objects
-        .select_for_update()
-        .exclude(reg_no__isnull=True)
-        .exclude(reg_no="")
-        .order_by("-id")
-        .first()
-    )
+    serial = _next_reg_no_serial(prefix, exclude_admission_id=exclude_admission_id)
+    candidate = f"{prefix}{serial:03d}"
+    taken = AdmittedStudent.objects.filter(reg_no=candidate)
+    if exclude_admission_id:
+        taken = taken.exclude(pk=exclude_admission_id)
+    while taken.exists():
+        serial += 1
+        candidate = f"{prefix}{serial:03d}"
+        taken = AdmittedStudent.objects.filter(reg_no=candidate)
+        if exclude_admission_id:
+            taken = taken.exclude(pk=exclude_admission_id)
 
-    if not last_student:
-        serial = 1
-
-    else:
-        match = re.search(
-            r"(\d+)$",
-            last_student.reg_no
-        )
-
-        serial = (
-            int(match.group(1)) + 1
-            if match
-            else 1
-        )
-
-    return f"{prefix}{serial:03d}"
+    return candidate

@@ -4511,10 +4511,22 @@ class UpdateAdmittedStudent(generics.UpdateAPIView):
 
     @transaction.atomic
     def perform_update(self, serializer):
+        from rest_framework.exceptions import ValidationError
+
         assert_admissions_modify_access(self.request.user)
         admission = serializer.instance
         assert_admitted_student_access(self.request.user, admission)
-        admission = serializer.save()   # This saves the AdmittedStudent instance
+        try:
+            admission = serializer.save()
+        except IntegrityError as exc:
+            raise ValidationError(
+                {
+                    "detail": (
+                        "Could not save placement — registration number or payment "
+                        "code conflict. Regenerate the reg. number and try again."
+                    )
+                }
+            ) from exc
 
         from payments.utils.tuition_ledger_linking import relink_tuition_ledgers_for_student
 
@@ -6246,6 +6258,7 @@ def generate_reg_no_view(request):
         study_mode = request.data.get("study_mode")
         batch_id = request.data.get("batch")
         application_id = request.data.get("application_id") or request.data.get("application")
+        admission_id = request.data.get("admission_id")
 
         if not campus_id or not program_id or not study_mode:
             return Response(
@@ -6265,6 +6278,16 @@ def generate_reg_no_view(request):
         except (TypeError, ValueError):
             return Response(
                 {"error": "application_id must be an integer when provided"},
+                status=400,
+            )
+
+        try:
+            parsed_admission_id = (
+                int(admission_id) if admission_id not in (None, "") else None
+            )
+        except (TypeError, ValueError):
+            return Response(
+                {"error": "admission_id must be an integer when provided"},
                 status=400,
             )
 
@@ -6294,6 +6317,7 @@ def generate_reg_no_view(request):
             program=program,
             study_mode=study_mode,
             batch=batch,
+            exclude_admission_id=parsed_admission_id,
         )
 
         return Response(

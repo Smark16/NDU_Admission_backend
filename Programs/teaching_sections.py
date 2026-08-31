@@ -132,17 +132,33 @@ def ensure_default_teaching_section(program_batch, *, max_capacity: int = DEFAUL
             existing.save(update_fields=["max_capacity", "updated_at"])
         return existing
 
-    section, created = TeachingSection.objects.get_or_create(
-        program_batch_id=program_batch.pk,
-        code=DEFAULT_SECTION_CODE,
-        defaults={
-            "name": DEFAULT_SECTION_NAME,
-            "is_default": True,
-            "is_shared": False,
-            "max_capacity": max_capacity,
-            "is_active": True,
-        },
-    )
+    from django.core.exceptions import MultipleObjectsReturned
+
+    try:
+        section, created = TeachingSection.objects.get_or_create(
+            program_batch_id=program_batch.pk,
+            code=DEFAULT_SECTION_CODE,
+            defaults={
+                "name": DEFAULT_SECTION_NAME,
+                "is_default": True,
+                "is_shared": False,
+                "max_capacity": max_capacity,
+                "is_active": True,
+            },
+        )
+    except MultipleObjectsReturned:
+        # Legacy duplicates — pick the default row instead of failing placement saves.
+        section = (
+            TeachingSection.objects.filter(
+                program_batch_id=program_batch.pk,
+                code=DEFAULT_SECTION_CODE,
+            )
+            .order_by("-is_default", "id")
+            .first()
+        )
+        created = False
+        if section is None:
+            return None
     if not section.is_default:
         if not TeachingSection.objects.filter(
             program_batch_id=program_batch.pk, is_default=True

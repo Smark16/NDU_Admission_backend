@@ -452,10 +452,14 @@ class AdmittedStudentSerializer(serializers.ModelSerializer):
 
     @staticmethod
     def _sync_programme_enrollment_batch(admitted):
-        """Keep academic enrollment cohort and specialization aligned with admission."""
-        from Programs.models import StudentProgrammeEnrollment
+        """Keep academic enrollment cohort, curriculum, and specialization aligned with admission."""
+        from Programs.models import (
+            StudentProgrammeEnrollment,
+            resolve_program_default_curriculum_version,
+        )
+        from Programs.program_batch_resolution import resolve_default_program_batch_for_program
+        from Programs.teaching_sections import ensure_enrollment_teaching_section
 
-        intended_id = admitted.intended_program_batch_id
         spec_name = (
             admitted.admitted_specialization.name
             if admitted.admitted_specialization_id
@@ -465,25 +469,52 @@ class AdmittedStudentSerializer(serializers.ModelSerializer):
             spe = StudentProgrammeEnrollment.objects.get(student=admitted)
         except StudentProgrammeEnrollment.DoesNotExist:
             return
-        update_fields = []
-        if intended_id and (
-            spe.program_batch_id != intended_id
-            or spe.program_id != admitted.admitted_program_id
-        ):
-            spe.program_batch_id = intended_id
+
+        intended = admitted.intended_program_batch
+        if intended is not None and intended.program_id != admitted.admitted_program_id:
+            intended = None
+        if intended is None and admitted.admitted_program_id:
+            intended = resolve_default_program_batch_for_program(
+                admitted.admitted_program,
+                admission_batch=admitted.admitted_batch,
+            )
+
+        update_fields: list[str] = []
+        placement_changed = False
+
+        if intended is not None:
+            if spe.program_batch_id != intended.id:
+                spe.program_batch_id = intended.id
+                update_fields.append("program_batch")
+                placement_changed = True
             if spe.program_id != admitted.admitted_program_id:
                 spe.program_id = admitted.admitted_program_id
-            update_fields.extend(["program_batch", "program"])
+                update_fields.append("program")
+                placement_changed = True
+
+            if placement_changed and admitted.admitted_program_id:
+                cv = (
+                    intended.curriculum_version
+                    if intended.curriculum_version_id
+                    else resolve_program_default_curriculum_version(
+                        admitted.admitted_program
+                    )
+                )
+                if cv is not None and spe.curriculum_version_id != cv.id:
+                    spe.curriculum_version_id = cv.id
+                    update_fields.append("curriculum_version")
+                if spe.teaching_section_id is not None:
+                    spe.teaching_section_id = None
+                    update_fields.append("teaching_section")
+
         if spec_name and spe.specialization != spec_name:
             spe.specialization = spec_name
             update_fields.append("specialization")
+
         if update_fields:
             update_fields.append("updated_at")
-            spe.save(update_fields=update_fields)
+            spe.save(update_fields=list(dict.fromkeys(update_fields)))
         else:
-            # Still ensure teaching section if SPE exists with null/mismatched section.
-            from Programs.teaching_sections import ensure_enrollment_teaching_section
-
             ensure_enrollment_teaching_section(spe, assign_only=False)
 
     def create(self, validated_data):
@@ -512,17 +543,17 @@ class AdmittedStudentSerializer(serializers.ModelSerializer):
         old_program_id = instance.admitted_program_id
         old_campus_id = instance.admitted_campus_id
         old_study_mode = (instance.study_mode or "").strip()
-        old_reg_no = (instance.reg_no or "").strip()
-        reg_no_provided = "reg_no" in validated_data
 
         placement_touch = any(
             key in validated_data
             for key in ("admitted_program", "admitted_campus", "study_mode")
         )
-        # Placement changes must never rewrite SchoolPay codes.
+        # Placement changes must never rewrite SchoolPay codes or accept a client
+        # reg. number — the server assigns the next free number for the new prefix.
         if placement_touch:
             validated_data.pop("schoolpay_code", None)
             validated_data.pop("is_registered_with_schoolpay", None)
+            validated_data.pop("reg_no", None)
 
         prog = validated_data.get('admitted_program', instance.admitted_program)
 
@@ -551,11 +582,8 @@ class AdmittedStudentSerializer(serializers.ModelSerializer):
             or admitted.admitted_campus_id != old_campus_id
             or (admitted.study_mode or "").strip() != old_study_mode
         )
-        # Reg numbers encode campus / programme / study mode. Regenerate when
-        # placement changed and the client did not already supply a new reg_no.
-        if placement_changed and (
-            not reg_no_provided or (admitted.reg_no or "").strip() == old_reg_no
-        ):
+        # Reg numbers encode campus / programme / study mode — always regenerate on placement change.
+        if placement_changed:
             regenerate_reg_no_for_admission(admitted, sync_portal=True)
             admitted.refresh_from_db(fields=["reg_no"])
 
@@ -676,6 +704,35 @@ class AdmittedStudentSerializer(serializers.ModelSerializer):
                     raise serializers.ValidationError({
                         "is_registered_with_schoolpay": locked_msg,
                     })
+
+            program_changing = (
+                program is not None
+                and self.instance.admitted_program_id is not None
+                and program.id != self.instance.admitted_program_id
+            )
+            if program_changing:
+                from Programs.models import StudentProgrammeEnrollment
+                from Programs.program_batch_resolution import (
+                    resolve_default_program_batch_for_program,
+                )
+
+                if StudentProgrammeEnrollment.objects.filter(
+                    student_id=self.instance.pk
+                ).exists():
+                    intake = attrs.get("admitted_batch", self.instance.admitted_batch)
+                    resolved_batch = intended
+                    if resolved_batch is None and program is not None:
+                        resolved_batch = resolve_default_program_batch_for_program(
+                            program, admission_batch=intake
+                        )
+                    if resolved_batch is None:
+                        raise serializers.ValidationError({
+                            "admitted_program": (
+                                "This programme has no academic batch configured. "
+                                "Create a ProgramBatch under Academic Setup before "
+                                "moving the student."
+                            ),
+                        })
 
         return attrs
 
