@@ -339,9 +339,23 @@ class UpdateRegistrationSettings(APIView):
 
             backfill = None
             if s.auto_enroll_on_admission and not prev_auto_enroll:
-                from .programme_enrollment_activation import activate_all_pending_programme_enrollments
+                from .programme_enrollment_activation import (
+                    enroll_all_admitted_skipping_commitment,
+                )
 
-                backfill = activate_all_pending_programme_enrollments(activated_by=request.user)
+                backfill = enroll_all_admitted_skipping_commitment(
+                    activated_by=request.user
+                )
+
+            catchup = None
+            if _parse_optional_bool(request.data.get("run_commitment_catchup")):
+                from .programme_enrollment_activation import (
+                    activate_all_pending_programme_enrollments,
+                )
+
+                catchup = activate_all_pending_programme_enrollments(
+                    activated_by=request.user
+                )
 
             response_body = {
                 "message": "Settings updated successfully",
@@ -360,7 +374,11 @@ class UpdateRegistrationSettings(APIView):
                 "tuition_pct_cache": "invalidated_recomputing",
             }
             if backfill:
+                response_body["admitted_enrollments_activated"] = backfill
+                # Keep legacy key for older UI clients.
                 response_body["pending_enrollments_activated"] = backfill
+            if catchup:
+                response_body["commitment_catchup"] = catchup
 
             return Response(response_body)
         except Exception as e:

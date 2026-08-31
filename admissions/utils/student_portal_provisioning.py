@@ -12,23 +12,26 @@ class StudentPortalProvisioningError(Exception):
 
 def auto_enroll_admitted_student(admission, acting_user_id: int | None) -> None:
     """
-    Auto-enroll only when the commitment fee is already met.
+    Auto-enroll when commitment is met, or when RegistrationSettings
+    auto_enroll_on_admission is ON (skips commitment gate).
 
-    Unpaid admitted students are NOT enrolled here — they self-enroll on the
-    student portal (Pending) via POST /api/program/my_enrollment/enroll/.
+    Otherwise unpaid students stay without SPE / Pending until they pay or
+    self-enroll on the portal.
     """
     from django.contrib.auth import get_user_model
 
-    from payments.programme_enrollment_activation import (
-        activate_programme_enrollment_after_commitment_payment,
-    )
+    from payments.models import RegistrationSettings
+    from payments.programme_enrollment_activation import activate_programme_enrollment
     from payments.student_portal_finance import commitment_payment_summary
 
     try:
         if not admission.admitted_program_id:
             return
 
-        if not commitment_payment_summary(admission)["commitment_met"]:
+        skip_commitment = bool(
+            getattr(RegistrationSettings.get_settings(), "auto_enroll_on_admission", False)
+        )
+        if not skip_commitment and not commitment_payment_summary(admission)["commitment_met"]:
             logger.info(
                 "Skipping auto-enrollment for admission %s — commitment not met; "
                 "student should self-enroll on the portal.",
@@ -38,9 +41,11 @@ def auto_enroll_admitted_student(admission, acting_user_id: int | None) -> None:
 
         User = get_user_model()
         acting_user = User.objects.filter(pk=acting_user_id).first() if acting_user_id else None
-        activate_programme_enrollment_after_commitment_payment(
+        activate_programme_enrollment(
             admission,
             activated_by=acting_user,
+            require_commitment=not skip_commitment,
+            mark_admission_fee_paid=not skip_commitment,
         )
     except Exception:
         logger.exception("Auto-enrollment failed for admission %s", admission.pk)

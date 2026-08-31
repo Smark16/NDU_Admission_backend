@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 
 from django.db import transaction
+from django.db.models import Exists, OuterRef, Q
 from django.utils import timezone
 
 from admissions.models import AdmittedStudent
@@ -112,14 +113,20 @@ def _auto_assign_current_semester_course_units(enrollment) -> dict:
     }
 
 
-def activate_programme_enrollment_after_commitment_payment(
+def activate_programme_enrollment(
     student: AdmittedStudent,
     *,
     activated_by=None,
+    require_commitment: bool = True,
+    mark_admission_fee_paid: bool | None = None,
+    note: str | None = None,
 ) -> dict:
     """
-    Move StudentProgrammeEnrollment to status='enrolled' once completed UGX
-    tuition payments meet the commitment threshold.
+    Move StudentProgrammeEnrollment to status='enrolled'.
+
+    When ``require_commitment`` is True (default), commitment fee must be met.
+    When False (RegistrationSettings.auto_enroll_on_admission), unpaid admitted
+    students can still be academically enrolled.
     """
     from Programs.models import (
         StudentProgrammeEnrollment,
@@ -130,19 +137,27 @@ def activate_programme_enrollment_after_commitment_payment(
         return {"activated": False, "reason": "not_admitted"}
 
     summary = commitment_payment_summary(student)
-    if not summary["commitment_met"]:
+    if require_commitment and not summary["commitment_met"]:
         return {"activated": False, "reason": "commitment_not_met", **summary}
+
+    if mark_admission_fee_paid is None:
+        mark_admission_fee_paid = bool(require_commitment and summary["commitment_met"])
+
+    default_note = (
+        "Auto-enrolled after commitment fee payment."
+        if require_commitment
+        else "Auto-enrolled on admission (commitment gate skipped by registration settings)."
+    )
+    activation_note = (note or default_note).strip()
 
     with transaction.atomic():
         # Avoid select_related() on nullable relations with FOR UPDATE:
         # PostgreSQL rejects row locks on the nullable side of outer joins.
         locked_student = AdmittedStudent.objects.select_for_update().get(pk=student.pk)
 
-        # Keep the denormalized bonafide flag in sync with the real commitment math,
-        # regardless of payment channel (portal, SchoolPay ledger, or manual bank
-        # reconciliation all route through here via the payment post_save signals).
-        # Without this, bank-paid students silently never appear under Bonafide.
-        if not locked_student.admission_fee_paid:
+        # Keep the denormalized bonafide flag in sync when commitment is actually met.
+        # Do not fake admission_fee_paid when skipping the commitment gate.
+        if mark_admission_fee_paid and not locked_student.admission_fee_paid:
             locked_student.admission_fee_paid = True
             locked_student.admission_fee_paid_at = timezone.now()
             locked_student.save(
@@ -180,11 +195,12 @@ def activate_programme_enrollment_after_commitment_payment(
                 status="enrolled",
                 enrolled_by=activated_by,
                 enrolled_at=timezone.now(),
-                notes="Auto-enrolled after commitment fee payment.",
+                notes=activation_note,
             )
             logger.info(
-                "Created enrolled SPE for student %s after commitment payment",
+                "Created enrolled SPE for student %s (%s)",
                 locked_student.student_id,
+                "commitment" if require_commitment else "auto_enroll_on_admission",
             )
             auto_assign_result = _auto_assign_current_semester_course_units(enrollment)
             return {
@@ -213,14 +229,20 @@ def activate_programme_enrollment_after_commitment_payment(
         enrollment.status = "enrolled"
         if activated_by is not None:
             enrollment.enrolled_by = activated_by
-        note = "Auto-enrolled after commitment fee payment."
-        enrollment.notes = f"{enrollment.notes}\n{note}".strip() if enrollment.notes else note
+        if not enrollment.enrolled_at:
+            enrollment.enrolled_at = timezone.now()
+        enrollment.notes = (
+            f"{enrollment.notes}\n{activation_note}".strip()
+            if enrollment.notes
+            else activation_note
+        )
         enrollment.save()
 
         logger.info(
-            "Activated SPE %s for student %s after commitment payment",
+            "Activated SPE %s for student %s (%s)",
             enrollment.id,
             locked_student.student_id,
+            "commitment" if require_commitment else "auto_enroll_on_admission",
         )
         auto_assign_result = _auto_assign_current_semester_course_units(enrollment)
         return {
@@ -231,11 +253,29 @@ def activate_programme_enrollment_after_commitment_payment(
         }
 
 
+def activate_programme_enrollment_after_commitment_payment(
+    student: AdmittedStudent,
+    *,
+    activated_by=None,
+) -> dict:
+    """Move SPE to enrolled once commitment fee threshold is met."""
+    return activate_programme_enrollment(
+        student,
+        activated_by=activated_by,
+        require_commitment=True,
+    )
+
+
 def activate_all_pending_programme_enrollments(*, activated_by=None) -> dict:
     """Promote pending enrollments to enrolled only when commitment fee is met."""
     from Programs.models import StudentProgrammeEnrollment
 
-    pending = StudentProgrammeEnrollment.objects.filter(status="pending").select_related("student")
+    pending = StudentProgrammeEnrollment.objects.filter(status="pending").select_related(
+        "student",
+        "student__admitted_program",
+        "student__admitted_batch",
+        "student__intended_program_batch",
+    )
     activated = 0
     skipped = 0
     course_units_assigned = 0
@@ -254,4 +294,64 @@ def activate_all_pending_programme_enrollments(*, activated_by=None) -> dict:
         "activated_count": activated,
         "skipped_count": skipped,
         "course_units_auto_assigned": course_units_assigned,
+    }
+
+
+def enroll_all_admitted_skipping_commitment(*, activated_by=None) -> dict:
+    """
+    Academically enroll every admitted student (create SPE or promote pending).
+
+    Used when RegistrationSettings.auto_enroll_on_admission is turned ON.
+    Does not mark unpaid students as admission_fee_paid.
+    """
+    from Programs.models import StudentProgrammeEnrollment
+
+    spe_enrolled = StudentProgrammeEnrollment.objects.filter(
+        student_id=OuterRef("pk"), status="enrolled"
+    )
+    candidates = (
+        AdmittedStudent.objects.filter(is_admitted=True)
+        .filter(Q(admitted_program_id__isnull=False))
+        .exclude(Exists(spe_enrolled))
+        .select_related(
+            "admitted_program",
+            "admitted_batch",
+            "intended_program_batch",
+        )
+        .order_by("pk")
+    )
+
+    activated = 0
+    skipped = 0
+    course_units_assigned = 0
+    skip_reasons: dict[str, int] = {}
+
+    # Avoid .iterator() — breaks on some remote Postgres / PgBouncer setups.
+    last_pk = 0
+    while True:
+        batch = list(candidates.filter(pk__gt=last_pk).order_by("pk")[:200])
+        if not batch:
+            break
+        for student in batch:
+            result = activate_programme_enrollment(
+                student,
+                activated_by=activated_by,
+                require_commitment=False,
+                mark_admission_fee_paid=False,
+            )
+            if result.get("activated"):
+                activated += 1
+                course_units_assigned += result.get("course_units_auto_assigned", 0) or 0
+            else:
+                skipped += 1
+                reason = str(result.get("reason") or "unknown")
+                skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
+        last_pk = batch[-1].pk
+
+    return {
+        "activated_count": activated,
+        "skipped_count": skipped,
+        "course_units_auto_assigned": course_units_assigned,
+        "skip_reasons": skip_reasons,
+        "candidates": activated + skipped,
     }

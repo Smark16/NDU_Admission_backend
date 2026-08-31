@@ -81,6 +81,10 @@ def admin_programme_enrollment_activation_block(
     if app and getattr(app, "is_revoked", False):
         return "Cannot activate enrollment for a student whose admission has been revoked."
 
+    # Policy override: Registration settings → auto-enroll on admission.
+    if getattr(RegistrationSettings.get_settings(), "auto_enroll_on_admission", False):
+        return None
+
     summary = commitment_payment_summary(student)
     if summary["commitment_met"]:
         return None

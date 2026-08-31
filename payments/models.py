@@ -474,8 +474,10 @@ class RegistrationSettings(models.Model):
     auto_enroll_on_admission = models.BooleanField(
         default=False,
         help_text=(
-            "When enabled, students are automatically academically enrolled on admission "
-            "(skips commitment fee gate)."
+            "When enabled, admitted students are academically enrolled (SPE status=enrolled) "
+            "immediately on admission without waiting for the commitment fee. Turning this ON "
+            "also backfills existing admitted students who are still pending / missing SPE. "
+            "Course registration still uses the tuition % and other gates below."
         ),
     )
     auto_assign_course_units_after_commitment = models.BooleanField(
