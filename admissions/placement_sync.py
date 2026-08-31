@@ -151,6 +151,105 @@ def bill_programme_change_if_required(
     )
 
 
+def _course_units_for_program_q(program_id: int):
+    from django.db.models import Q
+
+    return Q(course_unit__program_batch__program_id=program_id) | Q(
+        course_unit__semester__program_batch__program_id=program_id
+    )
+
+
+def reset_academic_registration_for_programme_change(
+    admission,
+    *,
+    old_program_id: int | None,
+    new_program_id: int | None,
+) -> dict:
+    """
+    On programme change: withdraw old-programme course rows, clear official
+    registration, reset SPE to Y1T1, drop stale curriculum overrides, and
+    auto-assign the new programme's current-term courses.
+    """
+    from django.utils import timezone
+
+    from Programs.models import (
+        StudentCourseUnitEnrollment,
+        StudentCurriculumOverride,
+        StudentProgrammeEnrollment,
+    )
+    from payments.programme_enrollment_activation import (
+        _auto_assign_current_semester_course_units,
+    )
+
+    if not old_program_id or not new_program_id or old_program_id == new_program_id:
+        return {"reset": False, "reason": "no_program_change"}
+
+    now = timezone.now()
+    withdrawn_old = StudentCourseUnitEnrollment.objects.filter(
+        student=admission,
+        status="enrolled",
+    ).filter(_course_units_for_program_q(old_program_id)).update(
+        status="withdrawn",
+        registration_date=None,
+        updated_at=now,
+    )
+
+    withdrawn_other = (
+        StudentCourseUnitEnrollment.objects.filter(
+            student=admission,
+            status="enrolled",
+        )
+        .exclude(_course_units_for_program_q(new_program_id))
+        .update(
+            status="withdrawn",
+            registration_date=None,
+            updated_at=now,
+        )
+    )
+
+    student_updates: list[str] = []
+    if admission.is_registered:
+        admission.is_registered = False
+        student_updates.append("is_registered")
+    if admission.registration_date is not None:
+        admission.registration_date = None
+        student_updates.append("registration_date")
+    if student_updates:
+        student_updates.append("updated_at")
+        admission.save(update_fields=student_updates)
+
+    try:
+        spe = StudentProgrammeEnrollment.objects.get(student=admission)
+    except StudentProgrammeEnrollment.DoesNotExist:
+        return {
+            "reset": True,
+            "withdrawn_old_program_courses": withdrawn_old,
+            "withdrawn_other_courses": withdrawn_other,
+            "spe_reset": False,
+            "reason": "no_spe",
+        }
+
+    overrides_deleted, _ = StudentCurriculumOverride.objects.filter(
+        enrollment=spe
+    ).delete()
+
+    spe.current_year_of_study = 1
+    spe.current_term_number = 1
+    spe.save(
+        update_fields=["current_year_of_study", "current_term_number", "updated_at"]
+    )
+
+    auto = _auto_assign_current_semester_course_units(spe)
+    return {
+        "reset": True,
+        "withdrawn_old_program_courses": withdrawn_old,
+        "withdrawn_other_courses": withdrawn_other,
+        "curriculum_overrides_deleted": overrides_deleted,
+        "spe_reset": True,
+        **auto,
+    }
+
+
 def apply_program_campus_study_mode(
     admission,
     *,
@@ -191,6 +290,15 @@ def apply_program_campus_study_mode(
         update_fields.append("updated_at")
         admission.save(update_fields=update_fields)
         if program_changed:
+            from admissions.serializers import AdmittedStudentSerializer
+
+            old_program_id = getattr(old_program, "id", old_program)
+            AdmittedStudentSerializer._sync_programme_enrollment_batch(admission)
+            reset_academic_registration_for_programme_change(
+                admission,
+                old_program_id=old_program_id,
+                new_program_id=admission.admitted_program_id,
+            )
             bill_programme_change_if_required(
                 admission,
                 old_program=old_program,

@@ -538,6 +538,7 @@ class AdmittedStudentSerializer(serializers.ModelSerializer):
         from admissions.placement_sync import (
             bill_programme_change_if_required,
             regenerate_reg_no_for_admission,
+            reset_academic_registration_for_programme_change,
         )
 
         old_program_id = instance.admitted_program_id
@@ -588,6 +589,11 @@ class AdmittedStudentSerializer(serializers.ModelSerializer):
             admitted.refresh_from_db(fields=["reg_no"])
 
         if admitted.admitted_program_id != old_program_id:
+            reset_academic_registration_for_programme_change(
+                admitted,
+                old_program_id=old_program_id,
+                new_program_id=admitted.admitted_program_id,
+            )
             bill_programme_change_if_required(
                 admitted,
                 old_program=old_program_id,
