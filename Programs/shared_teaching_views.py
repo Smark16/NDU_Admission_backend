@@ -133,6 +133,36 @@ class SharedTeachingOfferingDetailView(APIView):
             return Response({"detail": "Shared teaching offering not found."}, status=404)
 
         data = request.data
+
+        # Validate add conflicts before any writes so a rejected request is a no-op.
+        add_ids: list[int] = []
+        if "add_course_unit_ids" in data:
+            add_ids = _parse_int_list(data.get("add_course_unit_ids"))
+            if add_ids:
+                conflict = (
+                    CourseUnit.objects.filter(id__in=add_ids, is_active=True)
+                    .exclude(shared_teaching_offering_id__isnull=True)
+                    .exclude(shared_teaching_offering_id=offering.id)
+                    .values_list("id", "code", "shared_teaching_offering_id")[:5]
+                )
+                conflict_list = list(conflict)
+                if conflict_list:
+                    detail_parts = [
+                        f"CU#{cid} ({code or '—'}) already on shared #{sto_id}"
+                        for cid, code, sto_id in conflict_list
+                    ]
+                    return Response(
+                        {
+                            "detail": (
+                                "Cannot add course units that are already linked to "
+                                "another shared teaching offering. Unlink them first, "
+                                "or pick unlinked units. "
+                                + "; ".join(detail_parts)
+                            )
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
         for field in ("code", "name", "academic_year_label", "exam_paper_code", "notes"):
             if field in data:
                 setattr(offering, field, (data.get(field) or "").strip())
@@ -154,6 +184,32 @@ class SharedTeachingOfferingDetailView(APIView):
         if "catalog_unit_id" in data:
             raw = data.get("catalog_unit_id")
             offering.catalog_unit_id = int(raw) if raw not in (None, "") else None
+        # Save scalar fields first; parent is applied after link/unlink so a new
+        # parent can be added in the same request as add_course_unit_ids.
+        offering.save()
+
+        if "lecturer_ids" in data:
+            offering.lecturers.set(_parse_int_list(data.get("lecturer_ids")))
+
+        # Link / unlink course units BEFORE parent validation
+        if add_ids:
+            CourseUnit.objects.filter(id__in=add_ids, is_active=True).update(
+                shared_teaching_offering_id=offering.id
+            )
+        if "remove_course_unit_ids" in data:
+            remove_ids = _parse_int_list(data.get("remove_course_unit_ids"))
+            if remove_ids:
+                CourseUnit.objects.filter(
+                    id__in=remove_ids,
+                    shared_teaching_offering_id=offering.id,
+                ).update(shared_teaching_offering_id=None)
+                if (
+                    offering.parent_course_unit_id
+                    and offering.parent_course_unit_id in remove_ids
+                ):
+                    offering.parent_course_unit_id = None
+                    offering.save(update_fields=["parent_course_unit_id", "updated_at"])
+
         if "parent_course_unit_id" in data:
             raw = data.get("parent_course_unit_id")
             if raw in (None, ""):
@@ -181,23 +237,7 @@ class SharedTeachingOfferingDetailView(APIView):
                         status=status.HTTP_400_BAD_REQUEST,
                     )
                 offering.parent_course_unit_id = parent_id
-        offering.save()
-
-        if "lecturer_ids" in data:
-            offering.lecturers.set(_parse_int_list(data.get("lecturer_ids")))
-
-        # Link / unlink course units
-        if "add_course_unit_ids" in data:
-            add_ids = _parse_int_list(data.get("add_course_unit_ids"))
-            CourseUnit.objects.filter(id__in=add_ids, is_active=True).update(
-                shared_teaching_offering_id=offering.id
-            )
-        if "remove_course_unit_ids" in data:
-            remove_ids = _parse_int_list(data.get("remove_course_unit_ids"))
-            CourseUnit.objects.filter(
-                id__in=remove_ids,
-                shared_teaching_offering_id=offering.id,
-            ).update(shared_teaching_offering_id=None)
+            offering.save(update_fields=["parent_course_unit_id", "updated_at"])
 
         offering = (
             SharedTeachingOffering.objects.filter(pk=offering.pk)

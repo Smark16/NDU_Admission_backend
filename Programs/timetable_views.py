@@ -605,6 +605,14 @@ class SemesterTimetableView(APIView):
                     "shared_teaching_offering_id": cu.shared_teaching_offering_id,
                     "shared_teaching_code": sto.code if sto else "",
                     "shared_teaching_linked_count": linked_count,
+                    "parent_course_unit_id": (
+                        sto.parent_course_unit_id if sto else None
+                    ),
+                    "is_moodle_parent": bool(
+                        sto
+                        and sto.parent_course_unit_id
+                        and sto.parent_course_unit_id == cu.id
+                    ),
                     "peer_course_units": peer_rows,
                     "linked_peer_course_units": linked_peers,
                     "lecturers": [serialize_lecturer_brief(lec) for lec in cu.lecturers.all()],
