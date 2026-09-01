@@ -4,6 +4,7 @@ import re
 import requests
 from django.conf import settings
 
+from admissions.models import AdmittedStudent
 from admissions.utils.person_name import format_person_name
 from .schoolpay_auth import build_schoolpay_hash, schoolpay_api_root
 
