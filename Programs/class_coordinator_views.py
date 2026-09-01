@@ -93,6 +93,65 @@ def _coordinator_resolution_meta(selected: CourseUnit, canonical: CourseUnit) ->
     }
 
 
+def _coordinator_program_batch_id(student) -> int | None:
+    try:
+        enrollment = getattr(student, "programme_enrollment", None)
+        if enrollment and enrollment.program_batch_id:
+            return int(enrollment.program_batch_id)
+    except Exception:
+        pass
+    return None
+
+
+def _course_unit_on_program_batch(course_unit: CourseUnit, batch_id: int) -> bool:
+    if course_unit.program_batch_id == batch_id:
+        return True
+    sem = getattr(course_unit, "semester", None)
+    return bool(sem and sem.program_batch_id == batch_id)
+
+
+def _attached_course_units_for_coordinator(student, canonical: CourseUnit) -> list[CourseUnit]:
+    """
+    Operational units a coordinator may open attendance for.
+
+    Shared offerings store the assignment on the parent unit; coordinators only
+    act on linked units for their own programme batch (not every programme on
+    the shared slot).
+    """
+    if not canonical.shared_teaching_offering_id:
+        return [canonical]
+
+    linked_ids = linked_course_unit_ids(canonical)
+    units = list(
+        CourseUnit.objects.filter(pk__in=linked_ids, is_active=True)
+        .select_related("program_batch", "program_batch__program", "semester")
+        .order_by("code", "id")
+    )
+    batch_id = _coordinator_program_batch_id(student)
+    if batch_id:
+        filtered = [cu for cu in units if _course_unit_on_program_batch(cu, batch_id)]
+        if filtered:
+            return filtered
+        if _course_unit_on_program_batch(canonical, batch_id):
+            return [canonical]
+        return []
+
+    return units
+
+
+def _parent_course_unit_for_assignment(canonical: CourseUnit) -> CourseUnit:
+    if not canonical.shared_teaching_offering_id:
+        return canonical
+    sto = getattr(canonical, "shared_teaching_offering", None)
+    if sto is None:
+        sto = SharedTeachingOffering.objects.filter(
+            pk=canonical.shared_teaching_offering_id
+        ).first()
+    if sto:
+        return resolve_parent_course_unit(sto) or canonical
+    return canonical
+
+
 def _student_display(student) -> dict:
     app = getattr(student, "application", None)
     name = ""
@@ -146,9 +205,11 @@ def _assert_student_eligible_coordinator(student, course_unit: CourseUnit) -> st
     return None
 
 
-def _serialize_assignment(row: CourseUnitClassCoordinator) -> dict:
+def _serialize_assignment(row: CourseUnitClassCoordinator, *, student=None) -> dict:
     cu = row.course_unit
-    return {
+    parent = _parent_course_unit_for_assignment(cu)
+    attached = _attached_course_units_for_coordinator(student or row.student, cu)
+    payload = {
         "id": row.id,
         "is_active": row.is_active,
         "notes": row.notes or "",
@@ -156,6 +217,13 @@ def _serialize_assignment(row: CourseUnitClassCoordinator) -> dict:
         "course_unit_id": cu.id,
         "course_code": cu.code,
         "course_name": cu.name,
+        "is_shared_offering": bool(cu.shared_teaching_offering_id),
+        "parent_course_unit": _serialize_course_unit(parent),
+        "parent_course_unit_id": parent.id,
+        "parent_course_code": parent.code,
+        "parent_course_name": parent.name,
+        "attached_course_units": [_serialize_course_unit(u) for u in attached],
+        "attached_course_unit_ids": [u.id for u in attached],
         "student": _student_display(row.student),
         "teaching_section": (
             {
@@ -168,6 +236,7 @@ def _serialize_assignment(row: CourseUnitClassCoordinator) -> dict:
         ),
         "assigned_at": row.created_at.isoformat() if row.created_at else None,
     }
+    return payload
 
 
 def _get_admitted_or_404(user):
@@ -187,26 +256,25 @@ def _coordinator_assignments_qs(student):
             "course_unit__semester",
             "course_unit__program_batch",
             "course_unit__program_batch__program",
+            "course_unit__shared_teaching_offering",
+            "course_unit__shared_teaching_offering__parent_course_unit",
             "teaching_section",
             "student",
             "student__application",
+            "student__programme_enrollment",
         )
         .order_by("course_unit__code")
     )
 
 
 def _coordinator_course_unit_ids(student) -> list[int]:
-    assigned_ids = list(
-        CourseUnitClassCoordinator.objects.filter(student=student, is_active=True)
-        .values_list("course_unit_id", flat=True)
-        .distinct()
-    )
     expanded: set[int] = set()
-    for cu_id in assigned_ids:
-        cu = CourseUnit.objects.filter(pk=cu_id).only("id", "shared_teaching_offering_id").first()
-        if not cu:
-            continue
-        expanded.update(linked_course_unit_ids(cu))
+    rows = CourseUnitClassCoordinator.objects.filter(
+        student=student, is_active=True
+    ).select_related("course_unit")
+    for row in rows:
+        for cu in _attached_course_units_for_coordinator(student, row.course_unit):
+            expanded.add(cu.pk)
     return list(expanded)
 
 
@@ -328,7 +396,7 @@ class AdminClassCoordinatorListCreateView(APIView):
         return Response(
             {
                 "count": len(rows),
-                "coordinators": [_serialize_assignment(r) for r in rows],
+                "coordinators": [_serialize_assignment(r, student=r.student) for r in rows],
             }
         )
 
@@ -402,7 +470,7 @@ class AdminClassCoordinatorListCreateView(APIView):
         return Response(
             {
                 "created": created,
-                "coordinator": _serialize_assignment(row),
+                "coordinator": _serialize_assignment(row, student=student),
                 **_coordinator_resolution_meta(course_unit, canonical),
             },
             status=201 if created else 200,
@@ -502,7 +570,7 @@ class StudentCoordinatorMeView(APIView):
         return Response(
             {
                 "is_class_coordinator": bool(rows),
-                "assignments": [_serialize_assignment(r) for r in rows],
+                "assignments": [_serialize_assignment(r, student=admitted) for r in rows],
                 "count": len(rows),
             }
         )
@@ -519,13 +587,14 @@ class StudentCoordinatorScheduleView(APIView):
             return Response({"detail": "Admitted student profile not found."}, status=404)
 
         today = dj_tz.localdate()
-        assigned_ids = _coordinator_course_unit_ids(admitted)
-        if not assigned_ids:
+        rows = list(_coordinator_assignments_qs(admitted))
+        if not rows:
             return Response(
                 {
                     "today": today.isoformat(),
                     "date": today.isoformat(),
                     "meetings": [],
+                    "assignment_groups": [],
                     "meetings_count": 0,
                     "detail": "You are not assigned as a class coordinator on any course.",
                 }
@@ -535,16 +604,44 @@ class StudentCoordinatorScheduleView(APIView):
             _parse_date(request.query_params.get("date") or request.query_params.get("session_date"))
             or today
         )
-        meetings = _schedule_meetings_for_course_units(
-            assigned_ids, from_date=capture_date, to_date=capture_date
-        )
+
+        assignment_groups = []
+        all_meetings: list[dict] = []
+        assigned_ids: set[int] = set()
+
+        for row in rows:
+            canonical = row.course_unit
+            parent = _parent_course_unit_for_assignment(canonical)
+            attached = _attached_course_units_for_coordinator(admitted, canonical)
+            attached_ids = [cu.id for cu in attached]
+            assigned_ids.update(attached_ids)
+            group_meetings = _schedule_meetings_for_course_units(
+                attached_ids, from_date=capture_date, to_date=capture_date
+            )
+            all_meetings.extend(group_meetings)
+            assignment_groups.append(
+                {
+                    "assignment_id": row.id,
+                    "parent_course_unit_id": parent.id,
+                    "parent_course_code": parent.code,
+                    "parent_course_name": parent.name,
+                    "parent_course_unit": _serialize_course_unit(parent),
+                    "attached_course_units": [_serialize_course_unit(cu) for cu in attached],
+                    "attached_course_unit_ids": attached_ids,
+                    "meetings": group_meetings,
+                    "meetings_count": len(group_meetings),
+                }
+            )
+
+        all_meetings.sort(key=lambda m: (m["session_date"], m["start_time"], m["course_code"]))
         return Response(
             {
                 "today": today.isoformat(),
                 "date": capture_date.isoformat(),
-                "meetings": meetings,
-                "meetings_count": len(meetings),
-                "assigned_course_unit_ids": assigned_ids,
+                "assignment_groups": assignment_groups,
+                "meetings": all_meetings,
+                "meetings_count": len(all_meetings),
+                "assigned_course_unit_ids": list(assigned_ids),
             }
         )
 
