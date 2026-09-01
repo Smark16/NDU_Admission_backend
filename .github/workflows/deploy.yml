@@ -51,6 +51,7 @@ jobs:
           #python manage.py migrate Programs 0036_sharedteachingoffering_parent_course_unit --fake
           #python manage.py migrate Programs 0037_curriculum_slot_includes_specialization --fake
           python manage.py migrate Programs 0039_course_unit_class_coordinator --fake
+          python manage.py migrate Programs 0040_program_modular_calendar --fake
           python manage.py migrate
 
           python manage.py ensure_program_choice_confirmation_columns || true
