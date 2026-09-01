@@ -142,10 +142,17 @@ def register_student_for_course_units(
                     )
                     continue
                 if line_spec and selected_specialization.lower() != line_spec.lower():
-                    errors.append(
-                        f"{cu.code} belongs to '{line_spec}' specialization, not '{selected_specialization}'."
+                    from Programs.enrollment_course_assignment import (
+                        student_curriculum_includes_operational_unit,
                     )
-                    continue
+
+                    if not student_curriculum_includes_operational_unit(
+                        spe, cu, selected_specialization=selected_specialization
+                    ):
+                        errors.append(
+                            f"{cu.code} belongs to '{line_spec}' specialization, not '{selected_specialization}'."
+                        )
+                        continue
 
             en = StudentCourseUnitEnrollment.objects.filter(student=student, course_unit=cu).first()
             if not en:

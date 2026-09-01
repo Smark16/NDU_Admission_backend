@@ -560,8 +560,13 @@ class GetAvailableCoursesForRegistration(APIView):
 
             curr_year = spe.current_year_of_study
             curr_term = spe.current_term_number
-            selected_specialization = normalize_specialization(spe.specialization)
             curriculum_version = ensure_enrollment_curriculum_version(spe)
+
+            from .enrollment_course_assignment import ensure_enrollment_specialization_from_admission
+
+            ensure_enrollment_specialization_from_admission(spe)
+            spe.refresh_from_db(fields=['specialization'])
+            selected_specialization = normalize_specialization(spe.specialization)
 
             from Programs.calendar_utils import program_is_modular
             from Programs.modular_registration import (
@@ -587,6 +592,11 @@ class GetAvailableCoursesForRegistration(APIView):
                     if o.override_type in ('exempted', 'transferred', 'deferred')
                 }
 
+                from admissions.admission_specialization import (
+                    admitted_subject_combination_label,
+                    student_portal_specialization_locked,
+                )
+
                 # ── Step 1b: specialization requirement (same rule as expected courses) ──
                 gate = compute_specialization_course_gate(
                     spe.program,
@@ -596,20 +606,28 @@ class GetAvailableCoursesForRegistration(APIView):
                     spe.specialization,
                 )
                 if gate['requires_specialization']:
-                    sel = normalize_specialization(spe.specialization)
-                    detail = (
-                        'This term has specialization-specific courses. Choose your specialization first.'
-                        if not sel
-                        else (
-                            f"Your selected specialization '{sel}' is not valid for this programme. "
-                            'Please update your specialization.'
-                        )
+                    spec_locked, spec_locked_message = student_portal_specialization_locked(
+                        student, spe
                     )
+                    if spec_locked:
+                        detail = spec_locked_message
+                    elif not selected_specialization:
+                        detail = (
+                            'This term has specialization-specific courses. '
+                            'Choose your specialization first.'
+                        )
+                    else:
+                        detail = (
+                            f"Your selected specialization '{selected_specialization}' is not valid "
+                            'for this programme. Please update your specialization.'
+                        )
                     return Response(
                         {
                             'detail': detail,
                             'requires_specialization': True,
+                            'specialization_locked': spec_locked,
                             'available_specializations': gate['available_specializations'],
+                            'admitted_specialization': admitted_subject_combination_label(student) or None,
                         },
                         status=status.HTTP_400_BAD_REQUEST,
                     )
@@ -884,8 +902,10 @@ class GetStudentEnrolledCourses(APIView):
         try:
             enrollments = list(
                 StudentCourseUnitEnrollment.objects.filter(
-                    student=admitted_student
-                ).select_related(
+                    student=admitted_student,
+                )
+                .exclude(status="withdrawn")
+                .select_related(
                     'course_unit',
                     'course_unit__semester',
                     'course_unit__semester__program_batch',
@@ -998,7 +1018,10 @@ class GetStudentEnrolledCourses(APIView):
                     admitted_student.pk,
                 )
 
-        registered_courses = [c for c in active_courses if c['is_registered']]
+        registered_courses = [
+            c for c in active_courses
+            if c["is_registered"] and c.get("status") != "withdrawn"
+        ]
 
         # Build passport photo URL if available (application photo, else profile photo)
         from admissions.student_photo import admitted_student_photo_url

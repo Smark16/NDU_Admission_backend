@@ -6181,10 +6181,9 @@ class AdminExemptionLineAddView(APIView):
 
 class ExemptionAdvancePositionView(APIView):
     """
-    HOD/Dean-confirmed action: set the student's current academic position
-    (StudentProgrammeEnrollment year/term) after an approved course exemption.
-    Accepts any valid year/term within the programme; suggested_promotion is
-    optional guidance when a full consecutive term is covered.
+    HOD action: set the student's current academic position
+    (StudentProgrammeEnrollment year/term) after HOD has approved exemption
+    papers. Dean / AR / Accounts review continues independently afterward.
 
     POST /api/admissions/change_requests/<pk>/advance_position/
     Body: { "year_of_study": int, "term_number": int }
@@ -6196,6 +6195,7 @@ class ExemptionAdvancePositionView(APIView):
         from admissions.exemption_services import (
             advance_student_position_for_exemption,
             enrollment_promotion_context,
+            exemption_ready_for_hod_promotion,
             suggest_promotion_after_exemption,
         )
 
@@ -6206,9 +6206,14 @@ class ExemptionAdvancePositionView(APIView):
                 {"detail": "You do not have permission to advance a student's academic position."},
                 status=403,
             )
-        if req_obj.status != "approved":
+        if not exemption_ready_for_hod_promotion(req_obj):
             return Response(
-                {"detail": "The exemption request must be approved before advancing the student."},
+                {
+                    "detail": (
+                        "The HOD must approve at least one exemption paper before "
+                        "advancing the student's year/semester."
+                    ),
+                },
                 status=400,
             )
 

@@ -33,6 +33,67 @@ def ensure_enrollment_specialization_from_admission(enrollment) -> bool:
     return True
 
 
+def student_curriculum_includes_operational_unit(
+    enrollment,
+    course_unit,
+    *,
+    selected_specialization: str | None = None,
+) -> bool:
+    """
+    True when the student's curriculum blueprint includes this operational unit's
+    catalog course at their current term for their combination (or core).
+
+    Education programmes often share one CourseUnit per code per semester across
+    subject combinations; the unit's curriculum_line may point at another track.
+    """
+    if enrollment is None or course_unit is None:
+        return False
+
+    sem = course_unit.semester
+    if sem is None:
+        return False
+
+    catalog_id = course_unit.catalog_unit_id
+    code = (course_unit.code or "").strip()
+    if not catalog_id and code:
+        from .models import CourseCatalogUnit
+
+        catalog_id = (
+            CourseCatalogUnit.objects.filter(code__iexact=code)
+            .values_list("id", flat=True)
+            .first()
+        )
+    if not catalog_id:
+        return False
+
+    selected = normalize_specialization(
+        selected_specialization if selected_specialization is not None else enrollment.specialization
+    )
+    program = enrollment.program
+    curr_year = enrollment.current_year_of_study
+    curr_term = enrollment.current_term_number
+    curriculum_version = ensure_enrollment_curriculum_version(enrollment)
+
+    lines = ProgramCurriculumLine.objects.filter(
+        program=curriculum_owner_program(program),
+        curriculum_version=curriculum_version,
+        catalog_course_id=catalog_id,
+        year_of_study=curr_year,
+        term_number=curr_term,
+        is_active=True,
+    )
+    if selected:
+        lines = lines.filter(
+            Q(specialization__isnull=True)
+            | Q(specialization="")
+            | Q(specialization__iexact=selected)
+        )
+    else:
+        lines = lines.filter(Q(specialization__isnull=True) | Q(specialization=""))
+
+    return lines.exists()
+
+
 def course_unit_ids_for_enrollment_current_term(enrollment) -> tuple[list[int], str | None]:
     """
     Course units the student should receive for their current year/term, using the

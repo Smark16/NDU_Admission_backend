@@ -2143,6 +2143,19 @@ def enrollment_promotion_context(student: AdmittedStudent) -> dict | None:
     }
 
 
+def exemption_ready_for_hod_promotion(change_request: AdmissionChangeRequest) -> bool:
+    """True when HOD has approved at least one paper (promotion can proceed)."""
+    from admissions.models import ExemptionRequestLine
+
+    if change_request.change_type != "exemption":
+        return False
+    if change_request.hod_status != "approved":
+        return False
+    return change_request.exemption_lines.filter(
+        decision=ExemptionRequestLine.DECISION_APPROVED,
+    ).exists()
+
+
 def validate_advance_position(
     student: AdmittedStudent,
     *,

@@ -39,7 +39,7 @@ def _course_rows_for_student(student: AdmittedStudent) -> list[dict]:
     try:
         qs = StudentCourseUnitEnrollment.objects.filter(
             student=student, registration_date__isnull=False
-        ).select_related(
+        ).exclude(status="withdrawn").select_related(
             "course_unit",
             "course_unit__semester",
             "course_unit__program_batch",

@@ -62,3 +62,36 @@ def validate_offer_letter_admission(admitted: AdmittedStudent) -> str | None:
         program,
         getattr(admitted, "admitted_specialization", None),
     )
+
+
+MSG_SPECIALIZATION_LOCKED_AT_ADMISSION = (
+    "Your teaching subject combination was set at admission and cannot be changed "
+    "in the student portal. Contact the registrar if this is incorrect."
+)
+
+MSG_SPECIALIZATION_LOCKED_AFTER_ENROLLMENT = (
+    "Your combination was fixed when you enrolled and cannot be changed here. "
+    "Contact the registrar if you need an amendment."
+)
+
+MSG_SPECIALIZATION_MISSING_AT_ADMISSION = (
+    "Your teaching subject combination should have been set at admission. "
+    "Contact the registrar to confirm your combination before registering for courses."
+)
+
+
+def student_portal_specialization_locked(student, enrollment) -> tuple[bool, str]:
+    """True when the student portal must not offer specialization change."""
+    from Programs.specialization_rules import normalize_specialization
+
+    program = getattr(enrollment, "program", None)
+    if not program_requires_admission_specialization(program):
+        return False, ""
+
+    if getattr(student, "admitted_specialization_id", None):
+        return True, MSG_SPECIALIZATION_LOCKED_AT_ADMISSION
+
+    if normalize_specialization(getattr(enrollment, "specialization", None)):
+        return True, MSG_SPECIALIZATION_LOCKED_AFTER_ENROLLMENT
+
+    return True, MSG_SPECIALIZATION_MISSING_AT_ADMISSION

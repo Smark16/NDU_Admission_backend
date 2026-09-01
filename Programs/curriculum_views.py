@@ -64,10 +64,22 @@ class ListCreateCurriculumView(APIView):
         version_id = request.query_params.get('curriculum_version') or request.data.get('curriculum_version')
         if version_id:
             try:
-                version = ProgramCurriculumVersion.objects.get(pk=int(version_id), program=owner)
-            except (ValueError, ProgramCurriculumVersion.DoesNotExist):
+                vid = int(version_id)
+            except (TypeError, ValueError):
                 return None, Response(
-                    {'detail': 'Invalid curriculum_version for this programme.'},
+                    {'detail': 'curriculum_version must be an integer.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            version = curriculum_versions_queryset(program).filter(pk=vid).first()
+            if not version:
+                return None, Response(
+                    {
+                        'detail': (
+                            f'Invalid curriculum_version {vid} for this programme. '
+                            f'Use a version belonging to the curriculum owner '
+                            f'(programme id {owner.id if owner else "?"}).'
+                        )
+                    },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
             return version, None

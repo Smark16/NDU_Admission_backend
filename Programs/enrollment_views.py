@@ -56,6 +56,11 @@ from .serializers import (
     StudentProgrammeEnrollmentReadSerializer,
     StudentProgrammeEnrollmentSerializer,
 )
+from admissions.admission_specialization import (
+    admitted_subject_combination_label,
+    student_portal_specialization_locked,
+)
+from .enrollment_course_assignment import ensure_enrollment_specialization_from_admission
 from .specialization_rules import (
     MSG_EARLY_SPECIALIZATION,
     allowed_specialization_names_for_validation,
@@ -558,6 +563,9 @@ class MyAvailableSpecializationsView(APIView):
                 enrollment.curriculum_version = fallback_version
                 enrollment.save(update_fields=['curriculum_version', 'updated_at'])
 
+        ensure_enrollment_specialization_from_admission(enrollment)
+        enrollment.refresh_from_db(fields=['specialization'])
+
         gate = compute_specialization_course_gate(
             enrollment.program,
             enrollment.curriculum_version,
@@ -567,6 +575,10 @@ class MyAvailableSpecializationsView(APIView):
         )
         selected = normalize_specialization(enrollment.specialization) or None
         program = enrollment.program
+        spec_locked, spec_locked_message = student_portal_specialization_locked(
+            student, enrollment
+        )
+        admitted_combo = admitted_subject_combination_label(student) or None
         return Response(
             {
                 'enrollment_id': enrollment.id,
@@ -578,6 +590,9 @@ class MyAvailableSpecializationsView(APIView):
                 'available_specializations': gate['available_specializations'],
                 'requires_specialization': gate['requires_specialization'],
                 'before_specialization_entry': gate['before_entry'],
+                'specialization_locked': spec_locked,
+                'specialization_locked_message': spec_locked_message if spec_locked else '',
+                'admitted_specialization': admitted_combo,
                 # Programme-level config
                 'program_has_specialization': program.has_specialization,
                 'specialization_entry_year': program.specialization_entry_year,
@@ -622,6 +637,19 @@ class MySelectSpecializationView(APIView):
             if fallback_version:
                 enrollment.curriculum_version = fallback_version
                 enrollment.save(update_fields=['curriculum_version', 'updated_at'])
+
+        spec_locked, spec_locked_message = student_portal_specialization_locked(
+            student, enrollment
+        )
+        if spec_locked:
+            return Response(
+                {
+                    'detail': spec_locked_message,
+                    'specialization_locked': True,
+                    'admitted_specialization': admitted_subject_combination_label(student) or None,
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         requested = normalize_specialization(request.data.get('specialization'))
         if not requested:
@@ -734,6 +762,8 @@ class MyExpectedCoursesView(APIView):
             )
 
         ensure_enrollment_curriculum_version(enrollment)
+        ensure_enrollment_specialization_from_admission(enrollment)
+        enrollment.refresh_from_db(fields=['specialization'])
 
         gate = compute_specialization_course_gate(
             enrollment.program,
@@ -745,20 +775,29 @@ class MyExpectedCoursesView(APIView):
         selected_specialization = normalize_specialization(enrollment.specialization)
         available_specializations = gate['available_specializations']
         requires_specialization = gate['requires_specialization']
+        spec_locked, spec_locked_message = student_portal_specialization_locked(
+            student, enrollment
+        )
         if gate['requires_specialization']:
-            detail = (
-                'This term has specialization-specific courses. Choose your specialization first.'
-                if not selected_specialization
-                else (
-                    f"Your selected specialization '{selected_specialization}' is not valid for this programme. "
-                    'Please update your specialization.'
+            if spec_locked:
+                detail = spec_locked_message
+            elif not selected_specialization:
+                detail = (
+                    'This term has specialization-specific courses. '
+                    'Choose your specialization first.'
                 )
-            )
+            else:
+                detail = (
+                    f"Your selected specialization '{selected_specialization}' is not valid "
+                    'for this programme. Please update your specialization.'
+                )
             return Response(
                 {
                     'detail': detail,
                     'requires_specialization': True,
+                    'specialization_locked': spec_locked,
                     'available_specializations': available_specializations,
+                    'admitted_specialization': admitted_subject_combination_label(student) or None,
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
