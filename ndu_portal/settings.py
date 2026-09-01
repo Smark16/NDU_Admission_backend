@@ -278,6 +278,10 @@ ERP_FRONTEND_URL=env('ERP_FRONTEND_URL')
 # backend url
 BACKEND_URL=env('BACKEND_URL')
 
+# E-voting (myvote) — server-to-server. Same PORTAL_API_KEY as NDU-Election-backend.
+EVOTING_BASE_URL = env("EVOTING_BASE_URL", default="")
+EVOTING_API_KEY = env("EVOTING_API_KEY", default="")
+
 # Public careers / applicant portal (used in interview & application emails)
 CAREERS_PORTAL_URL = env('CAREERS_PORTAL_URL', default='http://localhost:5174')
 HR_RECRUITMENT_EMAIL = env('HR_RECRUITMENT_EMAIL', default='')

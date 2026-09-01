@@ -16,11 +16,21 @@ from .utils.excel import create_workbook
 
 import io
 import zipfile
-from weasyprint import HTML
 from django.shortcuts import get_object_or_404
 from django.utils.text import slugify
 from django.http import HttpResponse
 from django.template.loader import render_to_string
+
+def _html_to_pdf(html_string: str) -> bytes:
+    """Lazy-import WeasyPrint so missing GTK libs on Windows do not block runserver."""
+    try:
+        from weasyprint import HTML
+    except OSError as exc:
+        raise RuntimeError(
+            "PDF export needs WeasyPrint system libraries (GTK/Pango). "
+            "The API server can run without them; install GTK only if you need PDFs."
+        ) from exc
+    return HTML(string=html_string).write_pdf()
 
 # email
 from hr.hiring.tasks import (
@@ -515,7 +525,7 @@ class DownloadJobApplicationPDF(APIView):
             }
         )
 
-        pdf_file = HTML(string=html_string).write_pdf()
+        pdf_file = _html_to_pdf(html_string)
 
         response = HttpResponse(pdf_file, content_type='application/pdf')
         response['Content-Disposition'] = f'attachment; filename="{application.first_name}_{application.last_name}_resume.pdf"'
@@ -579,7 +589,7 @@ class BulkJobApplicationPDFDownloadView(APIView):
                     'references': references
             }
                 )
-                pdf_file = HTML(string=html_string).write_pdf()
+                pdf_file = _html_to_pdf(html_string)
 
                 # Create a file name: lastname_firstname_job.pdf
                 filename = f"{slugify(application.last_name)}_{slugify(application.first_name)}_{slugify(application.job_opening.title)}.pdf"

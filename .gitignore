@@ -12,6 +12,7 @@ env/
 ENV/
 .venv/
 venv*/
+erp/
 
 # Environment variables
 .env

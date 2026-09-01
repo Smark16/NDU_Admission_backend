@@ -6,6 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
+        ("admissions", "0027_application_program_choice_confirmation"),
         ("admissions", "0030_application_program_choices_confirmed_by"),
     ]
 
