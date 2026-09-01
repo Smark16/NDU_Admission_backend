@@ -1652,6 +1652,8 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
             'exemption_course_fee_rate', 'exemption_course_fee_total',
             'exemption_billing_lines',
             'suggested_promotion', 'promotion_context',
+            'exemption_promotion_year', 'exemption_promotion_term',
+            'exemption_promotion_at', 'exemption_effects_applied_at',
         ]
 
     def get_supporting_documents(self, obj):

@@ -1737,7 +1737,10 @@ def apply_line_decisions(
 
 
 def revoke_exemption_override_for_line(line) -> None:
-    """Remove curriculum exemption when Dean/AR rejects a paper HOD had approved."""
+    """Remove curriculum exemption when a paper is rejected after effects were applied."""
+    change_request = line.change_request
+    if not exemption_effects_applied(change_request):
+        return
     from Programs.models import StudentCurriculumOverride
 
     if not line.curriculum_line_id:
@@ -1806,7 +1809,7 @@ def ensure_exemption_request_stages_synced(
 
 
 def apply_exemption_overrides(change_request: AdmissionChangeRequest, decided_by) -> int:
-    """Create exempted StudentCurriculumOverride rows for approved papers only."""
+    """Create exempted StudentCurriculumOverride rows for fully approved papers only."""
     from admissions.models import ExemptionRequestLine
     from Programs.models import StudentCurriculumOverride
 
@@ -1822,9 +1825,12 @@ def apply_exemption_overrides(change_request: AdmissionChangeRequest, decided_by
             "Student has no programme enrollment; cannot apply curriculum exemptions."
         )
 
+    approved = ExemptionRequestLine.DECISION_APPROVED
     lines = list(
         change_request.exemption_lines.select_related("curriculum_line").filter(
-            decision=ExemptionRequestLine.DECISION_APPROVED
+            decision=approved,
+            dean_decision=approved,
+            ar_decision=approved,
         )
     )
     if not lines:
@@ -2144,16 +2150,114 @@ def enrollment_promotion_context(student: AdmittedStudent) -> dict | None:
 
 
 def exemption_ready_for_hod_promotion(change_request: AdmissionChangeRequest) -> bool:
-    """True when HOD has approved at least one paper (promotion can proceed)."""
+    """True when HOD has approved at least one paper and effects are not yet applied."""
     from admissions.models import ExemptionRequestLine
 
     if change_request.change_type != "exemption":
+        return False
+    if change_request.exemption_effects_applied_at:
         return False
     if change_request.hod_status != "approved":
         return False
     return change_request.exemption_lines.filter(
         decision=ExemptionRequestLine.DECISION_APPROVED,
     ).exists()
+
+
+def exemption_effects_applied(change_request: AdmissionChangeRequest) -> bool:
+    return bool(getattr(change_request, "exemption_effects_applied_at", None))
+
+
+def propose_exemption_promotion(
+    change_request: AdmissionChangeRequest,
+    *,
+    to_year: int,
+    to_term: int,
+    decided_by,
+) -> dict:
+    """
+    HOD or Dean proposes a year/semester move. Stored on the request until AR
+    final approval applies it together with curriculum exemptions.
+    """
+    if not exemption_ready_for_hod_promotion(change_request):
+        raise ValueError(
+            "The HOD must approve at least one exemption paper before proposing promotion."
+        )
+
+    student = change_request.admitted_student
+    validate_advance_position(student, to_year=to_year, to_term=to_term)
+    try:
+        enrollment = student.programme_enrollment
+    except Exception as exc:
+        raise ValueError("Student has no programme enrollment to advance.") from exc
+
+    from_year, from_term = enrollment.current_year_of_study, enrollment.current_term_number
+    if (int(to_year), int(to_term)) == (int(from_year), int(from_term)):
+        raise ValueError("Student is already at that year/term.")
+
+    change_request.exemption_promotion_year = int(to_year)
+    change_request.exemption_promotion_term = int(to_term)
+    change_request.exemption_promotion_by = decided_by
+    change_request.exemption_promotion_at = timezone.now()
+    note = (
+        f"[{timezone.now():%Y-%m-%d %H:%M}] Proposed promotion Y{from_year}T{from_term} -> "
+        f"Y{to_year}T{to_term} (pending AR final approval), by "
+        f"{getattr(decided_by, 'get_full_name', lambda: decided_by)() or decided_by}."
+    )
+    change_request.review_notes = "\n".join(
+        filter(None, [change_request.review_notes, note])
+    )[:20000]
+    change_request.save(
+        update_fields=[
+            "exemption_promotion_year",
+            "exemption_promotion_term",
+            "exemption_promotion_by",
+            "exemption_promotion_at",
+            "review_notes",
+            "updated_at",
+        ]
+    )
+    return {
+        "proposed": True,
+        "pending_ar_approval": True,
+        "from_year_of_study": from_year,
+        "from_term_number": from_term,
+        "to_year_of_study": to_year,
+        "to_term_number": to_term,
+    }
+
+
+def finalize_exemption_effects(change_request: AdmissionChangeRequest, *, decided_by) -> dict:
+    """
+    Apply curriculum exemptions and any proposed promotion after AR final approval.
+    """
+    if change_request.change_type != "exemption":
+        return {"applied": False, "reason": "not_exemption"}
+    if change_request.ar_status != "approved":
+        raise ValueError("AR must approve the exemption before effects can be applied.")
+    if exemption_effects_applied(change_request):
+        return {"applied": False, "reason": "already_applied"}
+
+    overrides_created = apply_exemption_overrides(change_request, decided_by=decided_by)
+    promotion = None
+    if (
+        change_request.exemption_promotion_year is not None
+        and change_request.exemption_promotion_term is not None
+    ):
+        promotion = advance_student_position_for_exemption(
+            change_request,
+            to_year=int(change_request.exemption_promotion_year),
+            to_term=int(change_request.exemption_promotion_term),
+            decided_by=change_request.exemption_promotion_by or decided_by,
+        )
+
+    change_request.exemption_effects_applied_at = timezone.now()
+    change_request.save(update_fields=["exemption_effects_applied_at", "updated_at"])
+    return {
+        "applied": True,
+        "overrides_created": overrides_created,
+        "promotion": promotion,
+    }
 
 
 def validate_advance_position(
@@ -2218,7 +2322,6 @@ def add_exemption_line_from_curriculum(
     )
 
     course = cl.catalog_course
-    auto_approve = change_request.status == "approved"
     line = ExemptionRequestLine.objects.create(
         change_request=change_request,
         curriculum_line=cl,
@@ -2227,14 +2330,8 @@ def add_exemption_line_from_curriculum(
         year_of_study=cl.year_of_study,
         term_number=cl.term_number,
         score_obtained=(score_obtained or "").strip()[:20],
-        decision=(
-            ExemptionRequestLine.DECISION_APPROVED
-            if auto_approve
-            else ExemptionRequestLine.DECISION_PENDING
-        ),
+        decision=ExemptionRequestLine.DECISION_PENDING,
     )
-    if auto_approve:
-        apply_exemption_overrides(change_request, decided_by=decided_by)
     return line
 
 
