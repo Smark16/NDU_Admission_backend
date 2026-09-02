@@ -42,6 +42,26 @@ OK on all courses (defaults resolve).
 4. **Assign lecturers** on papers with enrollments.
 5. Pilot one paper → verify → publish, then continue.
 
+## Server commands (legacy Y1 Sem 1 + Sem 2 pilot on #259)
+
+```bash
+# One-shot: enroll all 16 on Y1S1+Y1S2 papers, stamp registration, open windows
+python manage.py prepare_legacy_y1_marks_pilot --batch-id 259 --dry-run
+python manage.py prepare_legacy_y1_marks_pilot --batch-id 259
+
+# Clear any leftover test marks first (optional)
+python manage.py clear_batch_test_marks --batch-id 259 \
+  --include-published --i-understand-published
+
+# Confirm — expect ~16 students on LLB1101 and LLB1201
+python manage.py audit_batch_marks_readiness --batch-id 259
+
+# Missing lecturers (assign in Admin before lecturers enter marks)
+python manage.py prepare_batch_marks_readiness --batch-id 259 --report-lecturers
+```
+
+Then in the portal: **Enter marks** on Y1 Sem 1 papers (LLB1101–1107), verify, publish; repeat for Y1 Sem 2 (LLB1201–1207).
+
 ## Server commands (next)
 
 ```bash
