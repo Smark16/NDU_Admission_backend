@@ -37,6 +37,7 @@ urlpatterns = [
     path('api/offer_letter/', include('OfferLetter.AdmissionLetter.urls')),
     path('api/admission_reports/', include('OfferLetter.AdmissionReports.urls')),
     path('api/hr/', include('hr.urls')),
+    path('api/messaging/', include('messaging.urls')),
 ]
 
 if settings.DEBUG:

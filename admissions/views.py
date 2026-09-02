@@ -6114,6 +6114,71 @@ class AdminChangeRequestReview(APIView):
         return Response(AdmissionChangeRequestSerializer(req_obj, context={"request": request}).data)
 
 
+class AdminExemptionStageReopenView(APIView):
+    """
+    HOD / Dean / AR: undo stage decisions after a mistake, before the next stage acts.
+
+    POST /api/admissions/change_requests/<pk>/reopen_stage
+    Body: { "stage": "hod"|"dean"|"ar", "reason"?: str }
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        from admissions.exemption_services import reopen_exemption_stage_review
+        from admissions.exemption_stages import user_can_review_exemption_stage
+        from admissions.serializers import AdmissionChangeRequestSerializer
+
+        req_obj = get_object_or_404(
+            AdmissionChangeRequest.objects.prefetch_related("exemption_lines"),
+            pk=pk,
+            change_type="exemption",
+        )
+        stage = (request.data.get("stage") or "").strip().lower()
+        if stage not in ("hod", "dean", "ar"):
+            return Response(
+                {"detail": 'stage must be "hod", "dean", or "ar".'},
+                status=400,
+            )
+        if not user_can_review_exemption_stage(request.user, stage):
+            return Response(
+                {"detail": f"You do not have permission to reopen the {stage.upper()} stage."},
+                status=403,
+            )
+        scoped = filter_admission_change_requests_for_user(
+            AdmissionChangeRequest.objects.filter(pk=req_obj.pk),
+            request.user,
+        )
+        if not scoped.exists() and stage in ("hod", "dean"):
+            return Response({"detail": "Not found."}, status=404)
+
+        reason = (request.data.get("reason") or request.data.get("review_notes") or "").strip()
+        try:
+            with transaction.atomic():
+                result = reopen_exemption_stage_review(
+                    req_obj,
+                    stage=stage,
+                    actor=request.user,
+                    reason=reason,
+                )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
+
+        req_obj = (
+            AdmissionChangeRequest.objects.select_related("reviewed_by")
+            .prefetch_related("exemption_lines", "supporting_documents")
+            .get(pk=req_obj.pk)
+        )
+        return Response(
+            {
+                **result,
+                "change_request": AdmissionChangeRequestSerializer(
+                    req_obj, context={"request": request}
+                ).data,
+            }
+        )
+
+
 class AdminExemptionLineAddView(APIView):
     """
     HOD/Dean: add another curriculum paper to an exemption request.

@@ -60,6 +60,7 @@ LOCAL_APPS = [
     'hr.hiring.apps.HiringConfig',
     'hr.leave.apps.LeaveConfig',
     'hr.appraisal.apps.AppraisalConfig',
+    'messaging.apps.MessagingConfig',
 ]
 
 MIDDLEWARE = [

@@ -1213,6 +1213,7 @@ class GetLecturerCourses(APIView):
             for enrollment in enrollments:
                 student = enrollment.student
                 students.append({
+                    "id": student.id,
                     "student_id": student.student_id,
                     "reg_no": student.reg_no,
                     "name": student.full_name,
