@@ -5992,8 +5992,10 @@ class AdminChangeRequestReview(APIView):
                     stage = (request.data.get("stage") or "hod").strip().lower()
                     if stage == "hod":
                         from admissions.exemption_services import (
+                            apply_hod_exemption_overrides,
                             apply_line_decisions,
                             apply_line_matches,
+                            revoke_exemption_override_for_line,
                             sync_exemption_request_stages_from_lines,
                         )
                         from admissions.models import ExemptionRequestLine
@@ -6001,7 +6003,9 @@ class AdminChangeRequestReview(APIView):
                         if action == "approve":
                             decisions = request.data.get("line_decisions")
                             if decisions is not None:
-                                apply_line_decisions(req_obj, decisions, stage="hod")
+                                apply_line_decisions(
+                                    req_obj, decisions, stage="hod", decided_by=request.user
+                                )
                             else:
                                 matches = request.data.get("line_matches") or []
                                 if matches:
@@ -6010,6 +6014,7 @@ class AdminChangeRequestReview(APIView):
                                     line.decision = ExemptionRequestLine.DECISION_APPROVED
                                     line.save(update_fields=["decision"])
                                 sync_exemption_request_stages_from_lines(req_obj)
+                                apply_hod_exemption_overrides(req_obj, decided_by=request.user)
                         else:
                             for line in req_obj.exemption_lines.all():
                                 line.decision = ExemptionRequestLine.DECISION_REJECTED
@@ -6018,6 +6023,7 @@ class AdminChangeRequestReview(APIView):
                                 line.save(
                                     update_fields=["decision", "dean_decision", "ar_decision"]
                                 )
+                                revoke_exemption_override_for_line(line)
                             sync_exemption_request_stages_from_lines(req_obj)
                         req_obj.hod_reviewed_by = request.user
                         req_obj.hod_reviewed_at = timezone.now()
@@ -6032,7 +6038,9 @@ class AdminChangeRequestReview(APIView):
 
                         decisions = request.data.get("line_decisions")
                         if decisions is not None:
-                            apply_line_decisions(req_obj, decisions, stage=stage)
+                            apply_line_decisions(
+                                req_obj, decisions, stage=stage, decided_by=request.user
+                            )
                         elif action == "reject":
                             if stage == "dean":
                                 eligible = req_obj.exemption_lines.filter(
@@ -6254,8 +6262,8 @@ class AdminExemptionLineAddView(APIView):
 
 class ExemptionAdvancePositionView(APIView):
     """
-    HOD or Dean proposes the student's year/semester after HOD paper approval.
-    The move is stored on the request and applied only after AR final approval.
+    HOD or Dean confirms the student's year/semester after HOD paper approval.
+    The move is applied immediately; Dean and AR continue as verification only.
 
     POST /api/admissions/change_requests/<pk>/advance_position/
     Body: { "year_of_study": int, "term_number": int }

@@ -1599,11 +1599,128 @@ def apply_line_matches(change_request: AdmissionChangeRequest, matches: list[dic
         )
 
 
+def _exemption_override_note(change_request: AdmissionChangeRequest, line) -> str:
+    notes = (
+        f"Approved via change request #{change_request.id}. "
+        f"{(change_request.reason or '').strip()}"
+    ).strip()
+    if line.decision_note:
+        notes = f"{notes} Paper note: {line.decision_note}".strip()
+    return notes[:2000]
+
+
+def _upsert_exemption_override(
+    enrollment,
+    line,
+    *,
+    change_request: AdmissionChangeRequest,
+    decided_by,
+) -> bool:
+    """Ensure an exempted StudentCurriculumOverride exists for this paper."""
+    from Programs.models import StudentCurriculumOverride
+
+    line_notes = _exemption_override_note(change_request, line)
+    _, was_created = StudentCurriculumOverride.objects.get_or_create(
+        enrollment=enrollment,
+        curriculum_line_id=line.curriculum_line_id,
+        defaults={
+            "override_type": "exempted",
+            "notes": line_notes,
+            "decided_by": decided_by,
+        },
+    )
+    if was_created:
+        return True
+    existing = StudentCurriculumOverride.objects.filter(
+        enrollment=enrollment,
+        curriculum_line_id=line.curriculum_line_id,
+    ).first()
+    if existing and existing.override_type != "exempted":
+        existing.override_type = "exempted"
+        existing.notes = line_notes
+        existing.decided_by = decided_by
+        existing.save(
+            update_fields=["override_type", "notes", "decided_by", "updated_at"]
+        )
+        return True
+    return False
+
+
+def apply_hod_exemption_overrides(
+    change_request: AdmissionChangeRequest,
+    decided_by,
+) -> int:
+    """
+    Create exempted StudentCurriculumOverride rows for HOD-approved papers.
+
+    Students see exempted courses in Academic Tracker and Enrolment as soon as
+    HOD approves; Dean/AR stages do not need to finish first.
+    """
+    from admissions.models import ExemptionRequestLine
+
+    if change_request.change_type != "exemption":
+        return 0
+    student = change_request.admitted_student
+    try:
+        enrollment = student.programme_enrollment
+    except Exception:
+        enrollment = None
+    if enrollment is None:
+        raise ValueError(
+            "Student has no programme enrollment; cannot apply curriculum exemptions."
+        )
+
+    approved = ExemptionRequestLine.DECISION_APPROVED
+    rejected = ExemptionRequestLine.DECISION_REJECTED
+    lines = list(change_request.exemption_lines.select_related("curriculum_line").all())
+
+    for line in lines:
+        if line.decision == rejected:
+            revoke_exemption_override_for_line(line)
+
+    hod_approved = [l for l in lines if l.decision == approved and l.curriculum_line_id]
+    if not hod_approved:
+        return 0
+
+    extra: set[tuple[int, int]] = set()
+    for line in hod_approved:
+        key = _term_key(line.year_of_study, line.term_number)
+        if key is None and line.curriculum_line_id:
+            cl = line.curriculum_line
+            key = _term_key(
+                getattr(cl, "year_of_study", None),
+                getattr(cl, "term_number", None),
+            )
+        if key:
+            extra.add(key)
+    assert_exemption_term_cap(student, extra)
+
+    unmapped = [l for l in lines if l.decision == approved and not l.curriculum_line_id]
+    if unmapped:
+        codes = ", ".join((l.course_code or f"#{l.id}") for l in unmapped[:8])
+        raise ValueError(
+            "Match each HOD-approved paper to a programme curriculum unit. "
+            f"Unmatched: {codes}."
+        )
+
+    synced = 0
+    for line in hod_approved:
+        if _upsert_exemption_override(
+            enrollment,
+            line,
+            change_request=change_request,
+            decided_by=decided_by,
+        ):
+            synced += 1
+    return synced
+
+
 def apply_line_decisions(
     change_request: AdmissionChangeRequest,
     decisions: list[dict],
     *,
     stage: str = "hod",
+    decided_by=None,
 ) -> None:
     """
     Record per-paper approve/reject at HOD, Dean, or AR stage.
@@ -1715,6 +1832,8 @@ def apply_line_decisions(
                 line.decision_note = note or line.decision_note
             line.decision = decision_val
             line.save(update_fields=update_fields)
+            if decision_val == ExemptionRequestLine.DECISION_REJECTED:
+                revoke_exemption_override_for_line(line)
         elif stage == "dean":
             line.dean_decision = decision_val
             line.dean_decision_note = note or line.dean_decision_note
@@ -1737,12 +1856,12 @@ def apply_line_decisions(
 
     sync_exemption_request_stages_from_lines(change_request)
 
+    if stage == "hod":
+        apply_hod_exemption_overrides(change_request, decided_by=decided_by)
+
 
 def revoke_exemption_override_for_line(line) -> None:
-    """Remove curriculum exemption when a paper is rejected after effects were applied."""
-    change_request = line.change_request
-    if not exemption_effects_applied(change_request):
-        return
+    """Remove curriculum exemption when a paper is rejected or HOD reopens decisions."""
     from Programs.models import StudentCurriculumOverride
 
     if not line.curriculum_line_id:
@@ -1861,38 +1980,14 @@ def apply_exemption_overrides(change_request: AdmissionChangeRequest, decided_by
         )
 
     created = 0
-    notes = (
-        f"Approved via change request #{change_request.id}. "
-        f"{(change_request.reason or '').strip()}"
-    ).strip()
     for line in lines:
-        line_notes = notes
-        if line.decision_note:
-            line_notes = f"{notes} Paper note: {line.decision_note}".strip()
-        _, was_created = StudentCurriculumOverride.objects.get_or_create(
-            enrollment=enrollment,
-            curriculum_line_id=line.curriculum_line_id,
-            defaults={
-                "override_type": "exempted",
-                "notes": line_notes[:2000],
-                "decided_by": decided_by,
-            },
-        )
-        if was_created:
+        if _upsert_exemption_override(
+            enrollment,
+            line,
+            change_request=change_request,
+            decided_by=decided_by,
+        ):
             created += 1
-        else:
-            existing = StudentCurriculumOverride.objects.filter(
-                enrollment=enrollment,
-                curriculum_line_id=line.curriculum_line_id,
-            ).first()
-            if existing and existing.override_type != "exempted":
-                existing.override_type = "exempted"
-                existing.notes = line_notes[:2000]
-                existing.decided_by = decided_by
-                existing.save(
-                    update_fields=["override_type", "notes", "decided_by", "updated_at"]
-                )
-                created += 1
     return created
 
 
@@ -2151,15 +2246,37 @@ def enrollment_promotion_context(student: AdmittedStudent) -> dict | None:
     }
 
 
+def exemption_promotion_applied(change_request: AdmissionChangeRequest) -> bool:
+    """True when the student's SPE position matches the HOD-confirmed promotion."""
+    if (
+        change_request.exemption_promotion_year is None
+        or change_request.exemption_promotion_term is None
+    ):
+        return False
+    try:
+        enrollment = change_request.admitted_student.programme_enrollment
+    except Exception:
+        return False
+    if enrollment is None:
+        return False
+    return (
+        int(enrollment.current_year_of_study or 0),
+        int(enrollment.current_term_number or 0),
+    ) == (
+        int(change_request.exemption_promotion_year),
+        int(change_request.exemption_promotion_term),
+    )
+
+
 def exemption_ready_for_hod_promotion(change_request: AdmissionChangeRequest) -> bool:
-    """True when HOD has approved at least one paper and effects are not yet applied."""
+    """True when HOD has approved at least one paper and promotion is not yet applied."""
     from admissions.models import ExemptionRequestLine
 
     if change_request.change_type != "exemption":
         return False
-    if change_request.exemption_effects_applied_at:
-        return False
     if change_request.hod_status != "approved":
+        return False
+    if exemption_promotion_applied(change_request):
         return False
     return change_request.exemption_lines.filter(
         decision=ExemptionRequestLine.DECISION_APPROVED,
@@ -2184,6 +2301,11 @@ def exemption_stage_can_reopen(change_request: AdmissionChangeRequest, stage: st
         return False, (
             "Curriculum exemptions and promotion already applied after AR approval. "
             "Contact Academic Registry / system admin to reverse effects."
+        )
+    if stage == "hod" and exemption_promotion_applied(change_request):
+        return False, (
+            "The student has already been promoted following HOD approval. "
+            "Contact Academic Registry / system admin to reverse the promotion."
         )
     if change_request.accounts_status in ("billed", "confirmed"):
         return False, "Accounts has already billed this exemption — cannot reopen earlier stages."
@@ -2272,6 +2394,8 @@ def reopen_exemption_stage_review(
     for line in lines:
         update_fields: list[str] = []
         if stage == "hod":
+            if line.decision == ExemptionRequestLine.DECISION_APPROVED:
+                revoke_exemption_override_for_line(line)
             if line.decision != pending or line.dean_decision != pending or line.ar_decision != pending:
                 line.decision = pending
                 line.decision_note = ""
@@ -2386,10 +2510,12 @@ def propose_exemption_promotion(
     decided_by,
 ) -> dict:
     """
-    HOD or Dean proposes a year/semester move. Stored on the request until AR
-    final approval applies it together with curriculum exemptions.
+    HOD or Dean confirms the student's year/semester after HOD paper approval.
+    The move is applied immediately on the student record; Dean and AR verify only.
     """
     if not exemption_ready_for_hod_promotion(change_request):
+        if exemption_promotion_applied(change_request):
+            raise ValueError("Student promotion from this exemption has already been applied.")
         raise ValueError(
             "The HOD must approve at least one exemption paper before proposing promotion."
         )
@@ -2409,37 +2535,60 @@ def propose_exemption_promotion(
     change_request.exemption_promotion_term = int(to_term)
     change_request.exemption_promotion_by = decided_by
     change_request.exemption_promotion_at = timezone.now()
-    note = (
-        f"[{timezone.now():%Y-%m-%d %H:%M}] Proposed promotion Y{from_year}T{from_term} -> "
-        f"Y{to_year}T{to_term} (pending AR final approval), by "
-        f"{getattr(decided_by, 'get_full_name', lambda: decided_by)() or decided_by}."
-    )
-    change_request.review_notes = "\n".join(
-        filter(None, [change_request.review_notes, note])
-    )[:20000]
     change_request.save(
         update_fields=[
             "exemption_promotion_year",
             "exemption_promotion_term",
             "exemption_promotion_by",
             "exemption_promotion_at",
-            "review_notes",
             "updated_at",
         ]
     )
+
+    promotion = advance_student_position_for_exemption(
+        change_request,
+        to_year=int(to_year),
+        to_term=int(to_term),
+        decided_by=decided_by,
+    )
+
     return {
         "proposed": True,
-        "pending_ar_approval": True,
-        "from_year_of_study": from_year,
-        "from_term_number": from_term,
-        "to_year_of_study": to_year,
-        "to_term_number": to_term,
+        "applied": True,
+        "pending_ar_approval": False,
+        "from_year_of_study": promotion["from_year_of_study"],
+        "from_term_number": promotion["from_term_number"],
+        "to_year_of_study": promotion["to_year_of_study"],
+        "to_term_number": promotion["to_term_number"],
     }
+
+
+def apply_stored_exemption_promotion(
+    change_request: AdmissionChangeRequest,
+    *,
+    decided_by=None,
+) -> bool:
+    """Apply a stored HOD promotion if the student is not yet at the target position."""
+    if (
+        change_request.exemption_promotion_year is None
+        or change_request.exemption_promotion_term is None
+    ):
+        return False
+    if exemption_promotion_applied(change_request):
+        return False
+    advance_student_position_for_exemption(
+        change_request,
+        to_year=int(change_request.exemption_promotion_year),
+        to_term=int(change_request.exemption_promotion_term),
+        decided_by=decided_by or change_request.exemption_promotion_by,
+    )
+    return True
 
 
 def finalize_exemption_effects(change_request: AdmissionChangeRequest, *, decided_by) -> dict:
     """
-    Apply curriculum exemptions and any proposed promotion after AR final approval.
+    Mark AR verification complete and sync fully-approved curriculum overrides.
+    Promotion and HOD-visible overrides are already on the student record.
     """
     if change_request.change_type != "exemption":
         return {"applied": False, "reason": "not_exemption"}
@@ -2453,6 +2602,7 @@ def finalize_exemption_effects(change_request: AdmissionChangeRequest, *, decide
     if (
         change_request.exemption_promotion_year is not None
         and change_request.exemption_promotion_term is not None
+        and not exemption_promotion_applied(change_request)
     ):
         promotion = advance_student_position_for_exemption(
             change_request,
