@@ -5343,6 +5343,71 @@ class ExemptionFormFeeReportView(APIView):
         )
 
 
+class AdminExemptionReturnToHodView(APIView):
+    """
+    Dean or AR: send a HOD-approved exemption back for full HOD re-review.
+
+    POST /api/admissions/change_requests/<pk>/return_to_hod
+    Body: { "from_stage": "dean"|"ar", "reason": str }
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        from admissions.exemption_services import return_exemption_to_hod_for_review
+        from admissions.exemption_stages import user_can_review_exemption_stage
+        from admissions.serializers import AdmissionChangeRequestSerializer
+
+        req_obj = get_object_or_404(
+            AdmissionChangeRequest.objects.prefetch_related("exemption_lines"),
+            pk=pk,
+            change_type="exemption",
+        )
+        from_stage = (request.data.get("from_stage") or "").strip().lower()
+        if from_stage not in ("dean", "ar"):
+            return Response(
+                {"detail": 'from_stage must be "dean" or "ar".'},
+                status=400,
+            )
+        if not user_can_review_exemption_stage(request.user, from_stage):
+            return Response(
+                {"detail": f"You do not have permission to return this request from the {from_stage.upper()} stage."},
+                status=403,
+            )
+        scoped = filter_admission_change_requests_for_user(
+            AdmissionChangeRequest.objects.filter(pk=req_obj.pk),
+            request.user,
+        )
+        if not scoped.exists() and from_stage == "dean":
+            return Response({"detail": "Not found."}, status=404)
+
+        reason = (request.data.get("reason") or request.data.get("review_notes") or "").strip()
+        try:
+            with transaction.atomic():
+                result = return_exemption_to_hod_for_review(
+                    req_obj,
+                    from_stage=from_stage,
+                    actor=request.user,
+                    reason=reason,
+                )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
+
+        req_obj = (
+            AdmissionChangeRequest.objects.select_related("reviewed_by")
+            .prefetch_related("exemption_lines", "supporting_documents")
+            .get(pk=req_obj.pk)
+        )
+        return Response(
+            {
+                **result,
+                "change_request": AdmissionChangeRequestSerializer(
+                    req_obj, context={"request": request}
+                ).data,
+            }
+        )
+
+
 class AdminReturnUnpaidExemptionView(APIView):
     """Finance / HOD: return an exemption that was submitted without the form fee."""
 
@@ -6166,6 +6231,76 @@ class AdminExemptionStageReopenView(APIView):
                 result = reopen_exemption_stage_review(
                     req_obj,
                     stage=stage,
+                    actor=request.user,
+                    reason=reason,
+                )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
+
+        req_obj = (
+            AdmissionChangeRequest.objects.select_related("reviewed_by")
+            .prefetch_related("exemption_lines", "supporting_documents")
+            .get(pk=req_obj.pk)
+        )
+        return Response(
+            {
+                **result,
+                "change_request": AdmissionChangeRequestSerializer(
+                    req_obj, context={"request": request}
+                ).data,
+            }
+        )
+
+
+class AdminExemptionReturnToHodView(APIView):
+    """
+    Dean or AR: send a HOD-approved exemption back for full HOD re-review.
+
+    POST /api/admissions/change_requests/<pk>/return_to_hod
+    Body: { "from_stage": "dean"|"ar", "reason": str }
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        from admissions.exemption_services import return_exemption_to_hod_for_review
+        from admissions.exemption_stages import user_can_review_exemption_stage
+        from admissions.serializers import AdmissionChangeRequestSerializer
+
+        req_obj = get_object_or_404(
+            AdmissionChangeRequest.objects.prefetch_related("exemption_lines"),
+            pk=pk,
+            change_type="exemption",
+        )
+        from_stage = (request.data.get("from_stage") or "").strip().lower()
+        if from_stage not in ("dean", "ar"):
+            return Response(
+                {"detail": 'from_stage must be "dean" or "ar".'},
+                status=400,
+            )
+        if not user_can_review_exemption_stage(request.user, from_stage):
+            return Response(
+                {
+                    "detail": (
+                        f"You do not have permission to return this request "
+                        f"from the {from_stage.upper()} stage."
+                    ),
+                },
+                status=403,
+            )
+        scoped = filter_admission_change_requests_for_user(
+            AdmissionChangeRequest.objects.filter(pk=req_obj.pk),
+            request.user,
+        )
+        if not scoped.exists() and from_stage == "dean":
+            return Response({"detail": "Not found."}, status=404)
+
+        reason = (request.data.get("reason") or request.data.get("review_notes") or "").strip()
+        try:
+            with transaction.atomic():
+                result = return_exemption_to_hod_for_review(
+                    req_obj,
+                    from_stage=from_stage,
                     actor=request.user,
                     reason=reason,
                 )
