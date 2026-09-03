@@ -5343,6 +5343,71 @@ class ExemptionFormFeeReportView(APIView):
         )
 
 
+class AdminExemptionReturnToHodView(APIView):
+    """
+    Dean or AR: send a HOD-approved exemption back for full HOD re-review.
+
+    POST /api/admissions/change_requests/<pk>/return_to_hod
+    Body: { "from_stage": "dean"|"ar", "reason": str }
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        from admissions.exemption_services import return_exemption_to_hod_for_review
+        from admissions.exemption_stages import user_can_review_exemption_stage
+        from admissions.serializers import AdmissionChangeRequestSerializer
+
+        req_obj = get_object_or_404(
+            AdmissionChangeRequest.objects.prefetch_related("exemption_lines"),
+            pk=pk,
+            change_type="exemption",
+        )
+        from_stage = (request.data.get("from_stage") or "").strip().lower()
+        if from_stage not in ("dean", "ar"):
+            return Response(
+                {"detail": 'from_stage must be "dean" or "ar".'},
+                status=400,
+            )
+        if not user_can_review_exemption_stage(request.user, from_stage):
+            return Response(
+                {"detail": f"You do not have permission to return this request from the {from_stage.upper()} stage."},
+                status=403,
+            )
+        scoped = filter_admission_change_requests_for_user(
+            AdmissionChangeRequest.objects.filter(pk=req_obj.pk),
+            request.user,
+        )
+        if not scoped.exists() and from_stage == "dean":
+            return Response({"detail": "Not found."}, status=404)
+
+        reason = (request.data.get("reason") or request.data.get("review_notes") or "").strip()
+        try:
+            with transaction.atomic():
+                result = return_exemption_to_hod_for_review(
+                    req_obj,
+                    from_stage=from_stage,
+                    actor=request.user,
+                    reason=reason,
+                )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
+
+        req_obj = (
+            AdmissionChangeRequest.objects.select_related("reviewed_by")
+            .prefetch_related("exemption_lines", "supporting_documents")
+            .get(pk=req_obj.pk)
+        )
+        return Response(
+            {
+                **result,
+                "change_request": AdmissionChangeRequestSerializer(
+                    req_obj, context={"request": request}
+                ).data,
+            }
+        )
+
+
 class AdminReturnUnpaidExemptionView(APIView):
     """Finance / HOD: return an exemption that was submitted without the form fee."""
 
@@ -5992,9 +6057,10 @@ class AdminChangeRequestReview(APIView):
                     stage = (request.data.get("stage") or "hod").strip().lower()
                     if stage == "hod":
                         from admissions.exemption_services import (
-                            apply_exemption_overrides,
+                            apply_hod_exemption_overrides,
                             apply_line_decisions,
                             apply_line_matches,
+                            revoke_exemption_override_for_line,
                             sync_exemption_request_stages_from_lines,
                         )
                         from admissions.models import ExemptionRequestLine
@@ -6002,7 +6068,9 @@ class AdminChangeRequestReview(APIView):
                         if action == "approve":
                             decisions = request.data.get("line_decisions")
                             if decisions is not None:
-                                apply_line_decisions(req_obj, decisions, stage="hod")
+                                apply_line_decisions(
+                                    req_obj, decisions, stage="hod", decided_by=request.user
+                                )
                             else:
                                 matches = request.data.get("line_matches") or []
                                 if matches:
@@ -6011,7 +6079,7 @@ class AdminChangeRequestReview(APIView):
                                     line.decision = ExemptionRequestLine.DECISION_APPROVED
                                     line.save(update_fields=["decision"])
                                 sync_exemption_request_stages_from_lines(req_obj)
-                            apply_exemption_overrides(req_obj, decided_by=request.user)
+                                apply_hod_exemption_overrides(req_obj, decided_by=request.user)
                         else:
                             for line in req_obj.exemption_lines.all():
                                 line.decision = ExemptionRequestLine.DECISION_REJECTED
@@ -6020,6 +6088,7 @@ class AdminChangeRequestReview(APIView):
                                 line.save(
                                     update_fields=["decision", "dean_decision", "ar_decision"]
                                 )
+                                revoke_exemption_override_for_line(line)
                             sync_exemption_request_stages_from_lines(req_obj)
                         req_obj.hod_reviewed_by = request.user
                         req_obj.hod_reviewed_at = timezone.now()
@@ -6027,13 +6096,16 @@ class AdminChangeRequestReview(APIView):
                     elif stage in ("dean", "ar"):
                         from admissions.exemption_services import (
                             apply_line_decisions,
+                            finalize_exemption_effects,
                             sync_exemption_request_stages_from_lines,
                         )
                         from admissions.models import ExemptionRequestLine
 
                         decisions = request.data.get("line_decisions")
                         if decisions is not None:
-                            apply_line_decisions(req_obj, decisions, stage=stage)
+                            apply_line_decisions(
+                                req_obj, decisions, stage=stage, decided_by=request.user
+                            )
                         elif action == "reject":
                             if stage == "dean":
                                 eligible = req_obj.exemption_lines.filter(
@@ -6060,6 +6132,8 @@ class AdminChangeRequestReview(APIView):
                             raise ValueError(
                                 f"Provide a per-paper decision for each eligible paper at {stage.upper()} stage."
                             )
+                        if stage == "ar" and action == "approve" and req_obj.ar_status == "approved":
+                            finalize_exemption_effects(req_obj, decided_by=request.user)
                         setattr(req_obj, f"{stage}_reviewed_by", request.user)
                         setattr(req_obj, f"{stage}_reviewed_at", timezone.now())
                         setattr(req_obj, f"{stage}_notes", review_notes)
@@ -6113,6 +6187,141 @@ class AdminChangeRequestReview(APIView):
         return Response(AdmissionChangeRequestSerializer(req_obj, context={"request": request}).data)
 
 
+class AdminExemptionStageReopenView(APIView):
+    """
+    HOD / Dean / AR: undo stage decisions after a mistake, before the next stage acts.
+
+    POST /api/admissions/change_requests/<pk>/reopen_stage
+    Body: { "stage": "hod"|"dean"|"ar", "reason"?: str }
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        from admissions.exemption_services import reopen_exemption_stage_review
+        from admissions.exemption_stages import user_can_review_exemption_stage
+        from admissions.serializers import AdmissionChangeRequestSerializer
+
+        req_obj = get_object_or_404(
+            AdmissionChangeRequest.objects.prefetch_related("exemption_lines"),
+            pk=pk,
+            change_type="exemption",
+        )
+        stage = (request.data.get("stage") or "").strip().lower()
+        if stage not in ("hod", "dean", "ar"):
+            return Response(
+                {"detail": 'stage must be "hod", "dean", or "ar".'},
+                status=400,
+            )
+        if not user_can_review_exemption_stage(request.user, stage):
+            return Response(
+                {"detail": f"You do not have permission to reopen the {stage.upper()} stage."},
+                status=403,
+            )
+        scoped = filter_admission_change_requests_for_user(
+            AdmissionChangeRequest.objects.filter(pk=req_obj.pk),
+            request.user,
+        )
+        if not scoped.exists() and stage in ("hod", "dean"):
+            return Response({"detail": "Not found."}, status=404)
+
+        reason = (request.data.get("reason") or request.data.get("review_notes") or "").strip()
+        try:
+            with transaction.atomic():
+                result = reopen_exemption_stage_review(
+                    req_obj,
+                    stage=stage,
+                    actor=request.user,
+                    reason=reason,
+                )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
+
+        req_obj = (
+            AdmissionChangeRequest.objects.select_related("reviewed_by")
+            .prefetch_related("exemption_lines", "supporting_documents")
+            .get(pk=req_obj.pk)
+        )
+        return Response(
+            {
+                **result,
+                "change_request": AdmissionChangeRequestSerializer(
+                    req_obj, context={"request": request}
+                ).data,
+            }
+        )
+
+
+class AdminExemptionReturnToHodView(APIView):
+    """
+    Dean or AR: send a HOD-approved exemption back for full HOD re-review.
+
+    POST /api/admissions/change_requests/<pk>/return_to_hod
+    Body: { "from_stage": "dean"|"ar", "reason": str }
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        from admissions.exemption_services import return_exemption_to_hod_for_review
+        from admissions.exemption_stages import user_can_review_exemption_stage
+        from admissions.serializers import AdmissionChangeRequestSerializer
+
+        req_obj = get_object_or_404(
+            AdmissionChangeRequest.objects.prefetch_related("exemption_lines"),
+            pk=pk,
+            change_type="exemption",
+        )
+        from_stage = (request.data.get("from_stage") or "").strip().lower()
+        if from_stage not in ("dean", "ar"):
+            return Response(
+                {"detail": 'from_stage must be "dean" or "ar".'},
+                status=400,
+            )
+        if not user_can_review_exemption_stage(request.user, from_stage):
+            return Response(
+                {
+                    "detail": (
+                        f"You do not have permission to return this request "
+                        f"from the {from_stage.upper()} stage."
+                    ),
+                },
+                status=403,
+            )
+        scoped = filter_admission_change_requests_for_user(
+            AdmissionChangeRequest.objects.filter(pk=req_obj.pk),
+            request.user,
+        )
+        if not scoped.exists() and from_stage == "dean":
+            return Response({"detail": "Not found."}, status=404)
+
+        reason = (request.data.get("reason") or request.data.get("review_notes") or "").strip()
+        try:
+            with transaction.atomic():
+                result = return_exemption_to_hod_for_review(
+                    req_obj,
+                    from_stage=from_stage,
+                    actor=request.user,
+                    reason=reason,
+                )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
+
+        req_obj = (
+            AdmissionChangeRequest.objects.select_related("reviewed_by")
+            .prefetch_related("exemption_lines", "supporting_documents")
+            .get(pk=req_obj.pk)
+        )
+        return Response(
+            {
+                **result,
+                "change_request": AdmissionChangeRequestSerializer(
+                    req_obj, context={"request": request}
+                ).data,
+            }
+        )
+
+
 class AdminExemptionLineAddView(APIView):
     """
     HOD/Dean: add another curriculum paper to an exemption request.
@@ -6126,13 +6335,20 @@ class AdminExemptionLineAddView(APIView):
     def post(self, request, pk):
         from admissions.exemption_services import add_exemption_line_from_curriculum
         from admissions.serializers import ExemptionRequestLineSerializer
+        from admissions.permissions import (
+            user_can_approve_exemption_requests,
+            user_can_review_exemption_dean,
+        )
 
         req_obj = get_object_or_404(
             AdmissionChangeRequest.objects.select_related("admitted_student"),
             pk=pk,
             change_type="exemption",
         )
-        if not user_can_approve_exemption_requests(request.user):
+        if not (
+            user_can_approve_exemption_requests(request.user)
+            or user_can_review_exemption_dean(request.user)
+        ):
             return Response(
                 {"detail": "You do not have permission to add exemption papers."},
                 status=403,
@@ -6181,9 +6397,8 @@ class AdminExemptionLineAddView(APIView):
 
 class ExemptionAdvancePositionView(APIView):
     """
-    HOD action: set the student's current academic position
-    (StudentProgrammeEnrollment year/term) after HOD has approved exemption
-    papers. Dean / AR / Accounts review continues independently afterward.
+    HOD or Dean confirms the student's year/semester after HOD paper approval.
+    The move is applied immediately; Dean and AR continue as verification only.
 
     POST /api/admissions/change_requests/<pk>/advance_position/
     Body: { "year_of_study": int, "term_number": int }
@@ -6193,17 +6408,24 @@ class ExemptionAdvancePositionView(APIView):
 
     def post(self, request, pk):
         from admissions.exemption_services import (
-            advance_student_position_for_exemption,
             enrollment_promotion_context,
             exemption_ready_for_hod_promotion,
+            propose_exemption_promotion,
             suggest_promotion_after_exemption,
+        )
+        from admissions.permissions import (
+            user_can_approve_exemption_requests,
+            user_can_review_exemption_dean,
         )
 
         req_obj = get_object_or_404(AdmissionChangeRequest, pk=pk, change_type="exemption")
 
-        if not user_can_approve_exemption_requests(request.user):
+        if not (
+            user_can_approve_exemption_requests(request.user)
+            or user_can_review_exemption_dean(request.user)
+        ):
             return Response(
-                {"detail": "You do not have permission to advance a student's academic position."},
+                {"detail": "You do not have permission to propose student promotion."},
                 status=403,
             )
         if not exemption_ready_for_hod_promotion(req_obj):
@@ -6211,7 +6433,7 @@ class ExemptionAdvancePositionView(APIView):
                 {
                     "detail": (
                         "The HOD must approve at least one exemption paper before "
-                        "advancing the student's year/semester."
+                        "proposing the student's year/semester."
                     ),
                 },
                 status=400,
@@ -6227,7 +6449,7 @@ class ExemptionAdvancePositionView(APIView):
             )
 
         try:
-            result = advance_student_position_for_exemption(
+            result = propose_exemption_promotion(
                 req_obj, to_year=to_year, to_term=to_term, decided_by=request.user
             )
         except ValueError as exc:
@@ -6249,6 +6471,13 @@ class ExemptionAdvancePositionView(APIView):
                 "review_notes": req_obj.review_notes,
                 "promotion_context": enrollment_promotion_context(
                     req_obj.admitted_student
+                ),
+                "exemption_promotion_year": req_obj.exemption_promotion_year,
+                "exemption_promotion_term": req_obj.exemption_promotion_term,
+                "exemption_effects_applied_at": (
+                    req_obj.exemption_effects_applied_at.isoformat()
+                    if req_obj.exemption_effects_applied_at
+                    else None
                 ),
             }
         )

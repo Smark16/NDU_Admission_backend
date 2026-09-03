@@ -8,11 +8,13 @@ from Programs.curriculum_inheritance import resolve_curriculum_version_with_line
 
 
 class ExemptionEligibleYearTests(SimpleTestCase):
-    def test_only_year_one_and_two(self):
+    def test_years_one_through_three(self):
         self.assertTrue(is_exemption_eligible_year(1))
         self.assertTrue(is_exemption_eligible_year(2))
+        self.assertTrue(is_exemption_eligible_year(3))
         self.assertTrue(is_exemption_eligible_year("1"))
-        self.assertFalse(is_exemption_eligible_year(3))
+        self.assertTrue(is_exemption_eligible_year("3"))
+        self.assertFalse(is_exemption_eligible_year(4))
         self.assertFalse(is_exemption_eligible_year(0))
         self.assertFalse(is_exemption_eligible_year(None))
         self.assertFalse(is_exemption_eligible_year("x"))

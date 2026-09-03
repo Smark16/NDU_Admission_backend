@@ -1067,6 +1067,33 @@ class AdmissionChangeRequest(models.Model):
     accounts_reviewed_at = models.DateTimeField(null=True, blank=True)
     accounts_notes = models.TextField(blank=True, default="")
 
+    # Year/semester promotion (HOD or Dean). Applied immediately on confirmation.
+    exemption_promotion_year = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        help_text="Target year/semester after HOD-confirmed promotion.",
+    )
+    exemption_promotion_term = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        help_text="Target semester after HOD-confirmed promotion.",
+    )
+    exemption_promotion_from_year = models.PositiveSmallIntegerField(null=True, blank=True)
+    exemption_promotion_from_term = models.PositiveSmallIntegerField(null=True, blank=True)
+    exemption_promotion_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="proposed_exemption_promotions",
+    )
+    exemption_promotion_at = models.DateTimeField(null=True, blank=True)
+    exemption_effects_applied_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When curriculum exemptions and promotion were applied to the student record.",
+    )
+
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     reviewed_by = models.ForeignKey(
         User, on_delete=models.SET_NULL, null=True, blank=True, related_name='reviewed_change_requests'

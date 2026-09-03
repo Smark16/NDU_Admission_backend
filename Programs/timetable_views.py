@@ -1169,8 +1169,34 @@ class TimetableSessionDetailView(APIView):
         session.full_clean()
         session.save()
 
+        warnings = list(validation.warnings)
+        raw_lecturer_ids = request.data.get("lecturer_ids", None)
+        if raw_lecturer_ids is not None:
+            if not isinstance(raw_lecturer_ids, list):
+                warnings.append(
+                    "lecturer_ids must be a list — session saved without updating lecturers."
+                )
+            else:
+                try:
+                    from Programs.section_lecturers import assign_lecturers_to_section
+
+                    assign_lecturers_to_section(
+                        session.course_unit,
+                        [int(x) for x in raw_lecturer_ids],
+                        teaching_section=session.teaching_section,
+                    )
+                    session = (
+                        TimetableSession.objects.select_related(
+                            "course_unit", "venue", "venue__campus", "teaching_section"
+                        )
+                        .prefetch_related(*timetable_lecturer_prefetch())
+                        .get(pk=session.pk)
+                    )
+                except Exception as exc:
+                    warnings.append(f"Session saved, but lecturers were not updated: {exc}")
+
         data = serialize_session(session)
-        data["warnings"] = validation.warnings
+        data["warnings"] = warnings
         data["clashes"] = validation.clashes
         return Response(data)
 

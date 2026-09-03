@@ -55,7 +55,7 @@ PERSONAS = (
 FIRST_NAMES = ["Amina", "Brian", "Carol", "David", "Esther", "Fred"]
 LAST_NAMES = ["Nalubega", "Otim", "Namutebi", "Mugisha", "Achieng", "Ssemakula"]
 
-# Papers for the exemption picker (max 4 terms on an application).
+# Papers for the exemption picker (max 6 terms / 3 years on an application).
 EXEMPTION_PAPERS = (
     ("EXMQA101", "Introduction to University Studies", 1, 1),
     ("EXMQA102", "Communication Skills", 1, 1),
