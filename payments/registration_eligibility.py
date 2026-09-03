@@ -28,9 +28,15 @@ def _bucket_meets_threshold(paid: Decimal, required: Decimal, min_required_pct: 
     return _rounded_payment_pct(paid, required) >= Decimal(str(min_required_pct))
 
 
-def _compute_tuition_eligibility(student: AdmittedStudent, settings: RegistrationSettings) -> dict:
+def _compute_tuition_eligibility(
+    student: AdmittedStudent,
+    settings: RegistrationSettings,
+    min_required_pct: float | None = None,
+) -> dict:
     """Tuition % gate only — independent of commitment / programme enrollment gates."""
-    min_required_pct = float(settings.min_tuition_payment_percentage)
+    if min_required_pct is None:
+        min_required_pct = float(settings.min_tuition_payment_percentage)
+    min_required_pct = float(min_required_pct)
 
     if settings.skip_tuition_check:
         international = is_international_student(student)
@@ -159,6 +165,16 @@ def student_tuition_eligible(student: AdmittedStudent) -> bool:
     """True when current-term tuition payment meets RegistrationSettings minimum %."""
     settings = RegistrationSettings.get_settings()
     return bool(_compute_tuition_eligibility(student, settings)["tuition_eligible"])
+
+
+def student_meets_min_tuition_pct(student: AdmittedStudent, min_pct: float) -> bool:
+    """True when current-term tuition payment meets the given minimum %."""
+    settings = RegistrationSettings.get_settings()
+    return bool(
+        _compute_tuition_eligibility(
+            student, settings, min_required_pct=float(min_pct)
+        )["tuition_eligible"]
+    )
 
 
 def build_registration_eligibility_payload(student: AdmittedStudent) -> dict:

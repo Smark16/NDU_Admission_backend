@@ -1,7 +1,23 @@
+import hmac
+
+from django.conf import settings
 from rest_framework.permissions import BasePermission
 
 from .api_keys import api_keys_match
 from .models import MoodleIntegrationConfig
+
+
+class HasEvotingApiKey(BasePermission):
+    """E-voting server-to-server: X-API-Key must match EVOTING_API_KEY."""
+
+    message = "Invalid or missing e-voting API key."
+
+    def has_permission(self, request, view):
+        expected = (getattr(settings, "EVOTING_API_KEY", None) or "").strip()
+        raw = (request.headers.get("X-API-Key") or request.META.get("HTTP_X_API_KEY") or "").strip()
+        if not expected or not raw:
+            return False
+        return hmac.compare_digest(raw, expected)
 
 
 class HasMoodleApiKey(BasePermission):

@@ -1,6 +1,6 @@
 from django.urls import path
 
-from . import admin_views, election_views, moodle_attendance_views, moodle_launch_views, moodle_views
+from . import admin_views, election_views, eligible_voter_views, moodle_attendance_views, moodle_launch_views, moodle_views
 
 urlpatterns = [
     # Super Admin (JWT)
@@ -21,6 +21,11 @@ urlpatterns = [
     path("election/window", election_views.ElectionWindowView.as_view(), name="election_window"),
     path("election/ballot", election_views.ElectionBallotView.as_view(), name="election_ballot"),
     path("election/cast", election_views.ElectionCastView.as_view(), name="election_cast"),
+    path(
+        "evoting/eligible-voters",
+        eligible_voter_views.EvotingEligibleVotersView.as_view(),
+        name="evoting_eligible_voters",
+    ),
     # Moodle service (X-API-Key)
     path(
         "moodle/auth/verify",
