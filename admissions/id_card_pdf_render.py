@@ -277,17 +277,28 @@ def _passport_photo_path(card: StudentIdCard) -> str | None:
 
 def build_id_card_qr_payload(card: StudentIdCard) -> str:
     """
-    Short paycode / student number only — dense URLs on a CR80 QR fail laptop cameras.
-    The scan desk accepts this value and still resolves the student when on file.
+    Staff verify URL (never a bare numeric paycode).
+
+    Phone cameras treat bare SchoolPay / student numbers as phone numbers and
+    offer to place a call. Encoding an https verify URL opens the portal instead,
+    where staff must sign in once; the card scan desk still parses this URL.
     """
+    from urllib.parse import quote
+
+    from accounts.portal_branding import get_erp_frontend_url
+
     if card.admitted_student_id:
         st = card.admitted_student
         lookup = (st.student_id or st.reg_no or "").strip()
         if not lookup:
             lookup = str(st.pk)
-        return lookup
-    lookup = (card.walk_in_student_no or card.walk_in_reg_no or card.card_number or "").strip()
-    return lookup or str(card.pk)
+    else:
+        lookup = (
+            card.walk_in_student_no or card.walk_in_reg_no or card.card_number or ""
+        ).strip() or str(card.pk)
+
+    base = get_erp_frontend_url()
+    return f"{base}/verify-registration/{quote(str(lookup), safe='')}"
 
 
 def _qr_png_bytes(payload: str) -> bytes | None:
