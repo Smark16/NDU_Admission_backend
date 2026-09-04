@@ -18,6 +18,7 @@ _CAMPUS_ALIASES = {
     "MN": ("MN", "LWE", "MAIN"),
     "MAIN": ("MN", "LWE", "MAIN"),
     "KLA": ("KLA",),
+    "KAMPALA": ("KLA",),
 }
 
 
@@ -40,6 +41,29 @@ def _campus_codes(request) -> list[str]:
     return list(dict.fromkeys(codes))
 
 
+def _campus_q(campus_codes: list[str]) -> Q:
+    """Match ERP campuses by code or name. myvote codes (KLA/LWE) often differ from ERP codes."""
+    q = Q(admitted_campus__code__in=campus_codes)
+    codes = {code.upper() for code in campus_codes}
+    if codes & {"KLA", "KAMPALA"}:
+        q |= Q(admitted_campus__name__icontains="kampala")
+        q |= Q(admitted_campus__code__icontains="kla")
+        q |= Q(admitted_campus__code__icontains="kampala")
+    if codes & {"MN", "LWE", "MAIN"}:
+        main_q = (
+            Q(admitted_campus__name__icontains="main")
+            | Q(admitted_campus__name__icontains="lwe")
+            | Q(admitted_campus__name__icontains="ndejje")
+            | Q(admitted_campus__code__icontains="main")
+            | Q(admitted_campus__code__icontains="lwe")
+            | Q(admitted_campus__code__iexact="mn")
+        )
+        q |= main_q & ~Q(admitted_campus__name__icontains="kampala") & ~Q(
+            admitted_campus__code__icontains="kla"
+        )
+    return q
+
+
 def _eligible_queryset(campus_codes: list[str], skip_tuition: bool):
     qs = (
         AdmittedStudent.objects.filter(is_admitted=True)
@@ -54,10 +78,7 @@ def _eligible_queryset(campus_codes: list[str], skip_tuition: bool):
         )
     )
     if campus_codes:
-        qs = qs.filter(
-            Q(admitted_campus__code__in=campus_codes)
-            | Q(admitted_campus__name__in=campus_codes)
-        )
+        qs = qs.filter(_campus_q(campus_codes))
     if skip_tuition:
         return qs
     return filter_by_tuition_pct_met(qs, True)
