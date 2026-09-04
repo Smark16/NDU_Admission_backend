@@ -246,12 +246,16 @@ class EnrollStudentsInCourseUnit(APIView):
                         errors.append(f"Student {student.student_id} is already enrolled")
                         continue
                     
+                    # Enrol only — do NOT stamp registration_date here.
+                    # Course registration (green "Registered") requires Accounts clearance
+                    # (+ AR docs for Y1S1) via student portal or Enrol → Register courses.
+                    # Super Admin may force-register past clearance on that endpoint only.
                     enrollment = StudentCourseUnitEnrollment.objects.create(
                         student=student,
                         course_unit=course_unit,
                         status="enrolled",
                         source="admin_assigned",
-                        registration_date=timezone.now(),
+                        registration_date=None,
                     )
                     enrolled.append({
                         'id': enrollment.id,
@@ -266,7 +270,11 @@ class EnrollStudentsInCourseUnit(APIView):
         return Response({
             'enrolled': enrolled,
             'errors': errors,
-            'message': f'Successfully enrolled {len(enrolled)} student(s)'
+            'message': (
+                f'Successfully enrolled {len(enrolled)} student(s). '
+                'They are Enrolled only — Register still needs Accounts clearance '
+                '(Enrol → Register courses, or the student portal).'
+            ),
         }, status=status.HTTP_201_CREATED)
 
 class AssignLecturersToCourseUnit(APIView):
@@ -1303,6 +1311,8 @@ class AdminRegisterStudentForCourses(APIView):
         return student, None
 
     def get(self, request, student_id):
+        from accounts.super_admin import user_is_super_admin
+
         student, err = self._student(request, student_id)
         if err:
             return err
@@ -1323,6 +1333,7 @@ class AdminRegisterStudentForCourses(APIView):
                 "physical_documents_verified": docs_verified,
                 "can_register": block_reason is None,
                 "block_reason": block_reason,
+                "can_force": user_is_super_admin(request.user),
                 "pending_courses": pending,
                 "pending_count": len(pending),
             }
@@ -1331,14 +1342,33 @@ class AdminRegisterStudentForCourses(APIView):
     def post(self, request, student_id):
         from payments.course_registration_actions import register_student_for_course_units
         from admissions.registration_workflow import registration_clearance_block_reason
+        from accounts.super_admin import user_is_super_admin
 
         student, err = self._student(request, student_id)
         if err:
             return err
-        block_reason = registration_clearance_block_reason(student)
-        if block_reason:
+
+        force = bool(request.data.get("force"))
+        if force and not user_is_super_admin(request.user):
             return Response(
-                {"detail": block_reason},
+                {
+                    "detail": (
+                        "Only Super Admin can force-register past Accounts / AR clearance."
+                    )
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        block_reason = registration_clearance_block_reason(student)
+        if block_reason and not force:
+            return Response(
+                {
+                    "detail": block_reason,
+                    "accounts_registration_cleared": bool(
+                        getattr(student, "accounts_registration_cleared", False)
+                    ),
+                    "can_force": user_is_super_admin(request.user),
+                },
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -1366,11 +1396,15 @@ class AdminRegisterStudentForCourses(APIView):
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        msg = f"Registered {len(result['registered'])} course(s) for this student."
+        if force and block_reason:
+            msg += " (forced past clearance by Super Admin)."
         return Response(
             {
-                "message": f"Registered {len(result['registered'])} course(s) for this student.",
+                "message": msg,
                 "registered": result["registered"],
                 "errors": result["errors"],
+                "forced": bool(force and block_reason),
             },
             status=status.HTTP_201_CREATED,
         )
