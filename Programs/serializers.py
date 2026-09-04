@@ -303,6 +303,13 @@ class ProgramCurriculumLineSerializer(serializers.ModelSerializer):
     program_name = serializers.CharField(source='program.name', read_only=True)
     program_short_form = serializers.CharField(source='program.short_form', read_only=True)
     curriculum_version_name = serializers.CharField(source='curriculum_version.name', read_only=True)
+    # Shared/core lines are sent as JSON null from the UI; DB column is blank="" not NULL.
+    specialization = serializers.CharField(
+        allow_blank=True,
+        allow_null=True,
+        required=False,
+        default='',
+    )
 
     class Meta:
         model = ProgramCurriculumLine
@@ -326,6 +333,11 @@ class ProgramCurriculumLineSerializer(serializers.ModelSerializer):
             'updated_at',
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
+
+    def validate_specialization(self, value):
+        if value is None:
+            return ''
+        return value
 
     def validate_year_of_study(self, value):
         if value < 1:
