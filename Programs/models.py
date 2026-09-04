@@ -394,6 +394,21 @@ class CourseCatalogUnit(models.Model):
         blank=True,
         help_text="Total contact hours; left blank to auto-sum L+P+T on save.",
     )
+    is_cross_cutting = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text=(
+            "True when this paper commonly runs as one sitting across programmes/faculties "
+            "(Ethics, Comm Skills, CISCO, Literacy, etc.). Programme CourseUnits stay separate; "
+            "use Shared Teaching when they share time/room/lecturer."
+        ),
+    )
+    cross_cutting_note = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="Optional hint for staff (e.g. often shared Main Day + Weekend).",
+    )
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

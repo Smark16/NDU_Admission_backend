@@ -600,6 +600,8 @@ class SemesterTimetableView(APIView):
                     "credit_units": float(cu.credit_units) if cu.credit_units else None,
                     "catalog_unit_id": cat.id if cat else None,
                     "catalog_code": cat.code if cat else "",
+                    "is_cross_cutting": bool(cat.is_cross_cutting) if cat else False,
+                    "cross_cutting_note": (cat.cross_cutting_note or "") if cat else "",
                     "code_number": course_code_number(cu.code),
                     "study_mode": study_mode_for_course_unit(cu),
                     "shared_teaching_offering_id": cu.shared_teaching_offering_id,

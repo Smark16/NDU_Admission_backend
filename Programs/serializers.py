@@ -226,6 +226,8 @@ class CourseCatalogUnitSerializer(serializers.ModelSerializer):
             "practical_hours",
             "tutorial_hours",
             "contact_hours",
+            "is_cross_cutting",
+            "cross_cutting_note",
             "is_active",
             "created_at",
             "updated_at",

@@ -35,6 +35,12 @@ class CourseCatalogUnitListCreateView(generics.ListCreateAPIView):
                 qs = qs.filter(is_active=True)
             elif str(active).lower() in ("0", "false", "no"):
                 qs = qs.filter(is_active=False)
+        cross = self.request.query_params.get("is_cross_cutting")
+        if cross is not None and cross != "":
+            if str(cross).lower() in ("1", "true", "yes"):
+                qs = qs.filter(is_cross_cutting=True)
+            elif str(cross).lower() in ("0", "false", "no"):
+                qs = qs.filter(is_cross_cutting=False)
         return qs
 
     def list(self, request, *args, **kwargs):
@@ -99,6 +105,8 @@ class BulkUploadCourseCatalogUnitsView(APIView):
       - tutorial_hours
       - contact_hours
       - is_active
+      - is_cross_cutting
+      - cross_cutting_note
 
     Optional form field:
       - update_existing: true/false (default false)
@@ -196,6 +204,10 @@ class BulkUploadCourseCatalogUnitsView(APIView):
             "contact_hours": "contact_hours",
             "is_active": "is_active",
             "active": "is_active",
+            "is_cross_cutting": "is_cross_cutting",
+            "cross_cutting": "is_cross_cutting",
+            "cross_cutting_note": "cross_cutting_note",
+            "cross_cutting_notes": "cross_cutting_note",
         }
 
         normalized = {}
@@ -239,6 +251,13 @@ class BulkUploadCourseCatalogUnitsView(APIView):
             is_active = self._as_bool(row.get(normalized.get("is_active")))
             if is_active is not None:
                 payload["is_active"] = is_active
+            is_cross = self._as_bool(row.get(normalized.get("is_cross_cutting")))
+            if is_cross is not None:
+                payload["is_cross_cutting"] = is_cross
+            if "cross_cutting_note" in normalized:
+                payload["cross_cutting_note"] = str(
+                    row.get(normalized["cross_cutting_note"], "") or ""
+                ).strip()
 
             existing = CourseCatalogUnit.objects.filter(code__iexact=code).first()
             if existing and not update_existing:
@@ -302,6 +321,8 @@ class CourseCatalogUnitTemplateDownloadView(APIView):
             "tutorial_hours",
             "contact_hours",
             "is_active",
+            "is_cross_cutting",
+            "cross_cutting_note",
         ]
 
         ws.append(headers)
@@ -316,12 +337,14 @@ class CourseCatalogUnitTemplateDownloadView(APIView):
                 0,
                 "",
                 True,
+                False,
+                "",
             ]
         )
         ws.append(
             [
-                "MAT110",
-                "Basic Mathematics",
+                "CEV1101",
+                "Christian Ethics and Values I",
                 3,
                 "",
                 30,
@@ -329,6 +352,8 @@ class CourseCatalogUnitTemplateDownloadView(APIView):
                 0,
                 "",
                 True,
+                True,
+                "Often shared across programmes/faculties; use Shared Teaching when same sitting.",
             ]
         )
 
@@ -342,7 +367,7 @@ class CourseCatalogUnitTemplateDownloadView(APIView):
             cell.alignment = header_align
 
         ws.freeze_panes = "A2"
-        ws.auto_filter.ref = f"A1:I{ws.max_row}"
+        ws.auto_filter.ref = f"A1:K{ws.max_row}"
 
         # Column widths
         widths = {
@@ -355,6 +380,8 @@ class CourseCatalogUnitTemplateDownloadView(APIView):
             "G": 14,  # tutorial_hours
             "H": 14,  # contact_hours
             "I": 10,  # is_active
+            "J": 14,  # is_cross_cutting
+            "K": 48,  # cross_cutting_note
         }
         for col, w in widths.items():
             ws.column_dimensions[col].width = w
@@ -362,8 +389,22 @@ class CourseCatalogUnitTemplateDownloadView(APIView):
         # Notes sheet
         ns = wb.create_sheet("notes")
         ns.append(["Required columns:", "code, title, credit_units"])
-        ns.append(["Optional columns:", "description, lecture_hours, practical_hours, tutorial_hours, contact_hours, is_active"])
-        ns.append(["Notes:", "is_active accepts true/false, 1/0, yes/no"])
+        ns.append(
+            [
+                "Optional columns:",
+                "description, lecture_hours, practical_hours, tutorial_hours, contact_hours, "
+                "is_active, is_cross_cutting, cross_cutting_note",
+            ]
+        )
+        ns.append(["Notes:", "is_active / is_cross_cutting accept true/false, 1/0, yes/no"])
+        ns.append(
+            [
+                "Cross-cutting:",
+                "Mark papers that commonly share one sitting across programmes "
+                "(Ethics, Comm Skills, CISCO, Literacy). Use Shared Teaching for the sitting; "
+                "Engineering streams stay programme-only (Teaching Sections).",
+            ]
+        )
         ns.append(["Update behavior:", "If upload with update_existing=true, existing rows match by code (case-insensitive)."])
 
         from django.http import HttpResponse
