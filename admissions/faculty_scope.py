@@ -213,6 +213,12 @@ def filter_faculties_for_user(queryset: QuerySet, user) -> QuerySet:
 
 
 def filter_admission_change_requests_for_user(queryset: QuerySet, user) -> QuerySet:
+    # Finance bills exemptions across all faculties/campuses.
+    from accounts.finance_access import user_is_finance_directory_unscoped
+
+    if user_is_super_admin(user) or user_is_finance_directory_unscoped(user):
+        return queryset
+
     faculty_ids = user_faculty_ids(user, context="admissions")
     if faculty_ids is None:
         return queryset
