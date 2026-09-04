@@ -29,17 +29,23 @@ class ProgramStructureView(APIView):
             ).prefetch_related('campuses').get(id=program_id)
             assert_program_in_user_faculties(request.user, program)
 
-            # Auto-instantiate missing curriculum offerings onto batch semesters
-            # so staff do not need a separate "Load from curriculum" click.
-            try:
-                from Programs.curriculum_offerings import sync_program_curriculum_offerings
+            # Do NOT auto-sync curriculum → CourseUnits on every structure GET.
+            # That resurrected offerings staff just deleted (e.g. BCS 1102).
+            # Sync only when explicitly requested: ?sync_offerings=1 (or Load from curriculum).
+            if str(request.query_params.get("sync_offerings", "")).lower() in (
+                "1",
+                "true",
+                "yes",
+            ):
+                try:
+                    from Programs.curriculum_offerings import sync_program_curriculum_offerings
 
-                sync_program_curriculum_offerings(program)
-            except Exception:
-                logger.exception(
-                    "Failed to auto-sync curriculum offerings for program %s",
-                    program_id,
-                )
+                    sync_program_curriculum_offerings(program)
+                except Exception:
+                    logger.exception(
+                        "Failed to sync curriculum offerings for program %s",
+                        program_id,
+                    )
 
             # Fetch program batches with semesters and course units
             batches = ProgramBatch.objects.filter(
