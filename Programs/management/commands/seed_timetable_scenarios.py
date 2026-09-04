@@ -53,6 +53,8 @@ class Command(BaseCommand):
             self._purge()
             return
 
+        self._ensure_section_lecturer_table()
+
         with transaction.atomic():
             campus_main, campus_kla = self._campuses()
             faculty_sci, faculty_eng = self._faculties(campus_main, campus_kla)
@@ -117,13 +119,26 @@ class Command(BaseCommand):
             f"Purge later: python manage.py seed_timetable_scenarios --purge"
         ))
 
+    def _ensure_section_lecturer_table(self):
+        """Local DBs sometimes have migration 0025 recorded without the table."""
+        from django.db import connection
+        from Programs.models import CourseUnitSectionLecturer
+        from Programs.section_lecturers import section_lecturer_table_exists
+
+        if section_lecturer_table_exists():
+            return
+        with connection.schema_editor() as schema_editor:
+            schema_editor.create_model(CourseUnitSectionLecturer)
+        self.stdout.write(self.style.WARNING(
+            "Created missing Programs_courseunitsectionlecturer table (migration was recorded without it)."
+        ))
+
     # ── purge ────────────────────────────────────────────────────────────────
 
     def _purge(self):
         from Programs.models import (
             CourseCatalogUnit,
             CourseUnit,
-            CourseUnitSectionLecturer,
             Program,
             ProgramBatch,
             ProgramCurriculumLine,
@@ -134,11 +149,17 @@ class Command(BaseCommand):
             Venue,
         )
         from admissions.models import Faculty
+        from Programs.section_lecturers import section_lecturer_table_exists
 
         with transaction.atomic():
             TimetableSession.objects.filter(notes__startswith=TAG).delete()
             TimetableSession.objects.filter(course_unit__name__startswith=TAG).delete()
-            CourseUnitSectionLecturer.objects.filter(course_unit__name__startswith=TAG).delete()
+            if section_lecturer_table_exists():
+                from Programs.models import CourseUnitSectionLecturer
+
+                CourseUnitSectionLecturer.objects.filter(
+                    course_unit__name__startswith=TAG
+                ).delete()
             SharedTeachingOffering.objects.filter(notes__startswith=TAG).delete()
             SharedTeachingOffering.objects.filter(name__startswith=TAG).delete()
             CourseUnit.objects.filter(name__startswith=TAG).delete()
