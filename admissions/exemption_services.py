@@ -2339,8 +2339,9 @@ def suggest_promotion_after_exemption(change_request: AdmissionChangeRequest) ->
     the first term that still has non-exempted work — the position she should
     actually be advanced to. Returns None if no advancement is warranted.
 
-    This is advisory only: nothing is changed until an HOD/Dean explicitly
-    confirms via advance_student_position_for_exemption().
+    This is advisory only: nothing is changed until an HOD/Dean confirms the
+    target year/term (stored on the request). The SPE move itself waits until
+    Accounts bills the exemption charges.
     """
     from Programs.models import ProgramCurriculumLine, StudentCurriculumOverride
 
@@ -2434,12 +2435,17 @@ def enrollment_promotion_context(student: AdmittedStudent) -> dict | None:
     }
 
 
+def exemption_promotion_proposed(change_request: AdmissionChangeRequest) -> bool:
+    """True when HOD/Dean has confirmed a target year/term on the request."""
+    return (
+        change_request.exemption_promotion_year is not None
+        and change_request.exemption_promotion_term is not None
+    )
+
+
 def exemption_promotion_applied(change_request: AdmissionChangeRequest) -> bool:
-    """True when the student's SPE position matches the HOD-confirmed promotion."""
-    if (
-        change_request.exemption_promotion_year is None
-        or change_request.exemption_promotion_term is None
-    ):
+    """True when the student's SPE position matches the confirmed promotion target."""
+    if not exemption_promotion_proposed(change_request):
         return False
     try:
         enrollment = change_request.admitted_student.programme_enrollment
@@ -2456,15 +2462,24 @@ def exemption_promotion_applied(change_request: AdmissionChangeRequest) -> bool:
     )
 
 
+def exemption_promotion_pending_accounts(change_request: AdmissionChangeRequest) -> bool:
+    """Proposed target exists, but SPE has not moved yet (waits for Accounts billing)."""
+    if not exemption_promotion_proposed(change_request):
+        return False
+    if exemption_promotion_applied(change_request):
+        return False
+    return change_request.accounts_status not in ("billed", "confirmed")
+
+
 def exemption_ready_for_hod_promotion(change_request: AdmissionChangeRequest) -> bool:
-    """True when HOD has approved at least one paper and promotion is not yet applied."""
+    """True when HOD has approved papers and no promotion target is stored yet."""
     from admissions.models import ExemptionRequestLine
 
     if change_request.change_type != "exemption":
         return False
     if change_request.hod_status != "approved":
         return False
-    if exemption_promotion_applied(change_request):
+    if exemption_promotion_proposed(change_request):
         return False
     return change_request.exemption_lines.filter(
         decision=ExemptionRequestLine.DECISION_APPROVED,
@@ -2492,9 +2507,11 @@ def exemption_stage_can_reopen(change_request: AdmissionChangeRequest, stage: st
         )
     if stage == "hod" and exemption_promotion_applied(change_request):
         return False, (
-            "The student has already been promoted following HOD approval. "
+            "The student has already been promoted after Accounts billing. "
             "Contact Academic Registry / system admin to reverse the promotion."
         )
+    if stage == "hod" and change_request.accounts_status in ("billed", "confirmed"):
+        return False, "Accounts has already billed this exemption — cannot reopen HOD."
     if change_request.accounts_status in ("billed", "confirmed"):
         return False, "Accounts has already billed this exemption — cannot reopen earlier stages."
 
@@ -2640,6 +2657,11 @@ def reopen_exemption_stage_review(
             change_request.exemption_promotion_year is not None
             or change_request.exemption_promotion_term is not None
         ):
+            # Reverse SPE if Accounts (or legacy HOD-immediate) already moved them.
+            try:
+                reverse_exemption_promotion_if_applied(change_request)
+            except ValueError:
+                pass
             change_request.exemption_promotion_year = None
             change_request.exemption_promotion_term = None
             change_request.exemption_promotion_by = None
@@ -2885,11 +2907,19 @@ def propose_exemption_promotion(
 ) -> dict:
     """
     HOD or Dean confirms the student's year/semester after HOD paper approval.
-    The move is applied immediately on the student record; Dean and AR verify only.
+
+    The target is stored on the change request only. SPE current/entry position
+    moves when Accounts bills (apply_stored_exemption_promotion), so Y2 tuition
+    does not open before exemption charges exist.
     """
     if not exemption_ready_for_hod_promotion(change_request):
-        if exemption_promotion_applied(change_request):
-            raise ValueError("Student promotion from this exemption has already been applied.")
+        if exemption_promotion_proposed(change_request):
+            raise ValueError(
+                "A year/semester promotion is already confirmed for this exemption. "
+                "It will apply when Accounts bills."
+                if not exemption_promotion_applied(change_request)
+                else "Student promotion from this exemption has already been applied."
+            )
         raise ValueError(
             "The HOD must approve at least one exemption paper before proposing promotion."
         )
@@ -2907,33 +2937,42 @@ def propose_exemption_promotion(
 
     change_request.exemption_promotion_year = int(to_year)
     change_request.exemption_promotion_term = int(to_term)
+    change_request.exemption_promotion_from_year = int(from_year)
+    change_request.exemption_promotion_from_term = int(from_term)
     change_request.exemption_promotion_by = decided_by
     change_request.exemption_promotion_at = timezone.now()
+
+    note = (
+        f"[{timezone.now():%Y-%m-%d %H:%M}] Promotion confirmed "
+        f"Y{from_year}T{from_term} -> Y{to_year}T{to_term} "
+        f"(applies when Accounts bills exemption CR #{change_request.id}), "
+        f"by {getattr(decided_by, 'get_full_name', lambda: decided_by)() or decided_by}."
+    )
+    change_request.review_notes = "\n".join(
+        filter(None, [change_request.review_notes, note])
+    )[:20000]
     change_request.save(
         update_fields=[
             "exemption_promotion_year",
             "exemption_promotion_term",
+            "exemption_promotion_from_year",
+            "exemption_promotion_from_term",
             "exemption_promotion_by",
             "exemption_promotion_at",
+            "review_notes",
             "updated_at",
         ]
     )
 
-    promotion = advance_student_position_for_exemption(
-        change_request,
-        to_year=int(to_year),
-        to_term=int(to_term),
-        decided_by=decided_by,
-    )
-
     return {
         "proposed": True,
-        "applied": True,
+        "applied": False,
+        "pending_accounts_billing": True,
         "pending_ar_approval": False,
-        "from_year_of_study": promotion["from_year_of_study"],
-        "from_term_number": promotion["from_term_number"],
-        "to_year_of_study": promotion["to_year_of_study"],
-        "to_term_number": promotion["to_term_number"],
+        "from_year_of_study": int(from_year),
+        "from_term_number": int(from_term),
+        "to_year_of_study": int(to_year),
+        "to_term_number": int(to_term),
     }
 
 
@@ -2962,7 +3001,9 @@ def apply_stored_exemption_promotion(
 def finalize_exemption_effects(change_request: AdmissionChangeRequest, *, decided_by) -> dict:
     """
     Mark AR verification complete and sync fully-approved curriculum overrides.
-    Promotion and HOD-visible overrides are already on the student record.
+
+    Year/semester promotion is applied later when Accounts bills — not here —
+    so fee structure does not open before exemption charges exist.
     """
     if change_request.change_type != "exemption":
         return {"applied": False, "reason": "not_exemption"}
@@ -2972,26 +3013,16 @@ def finalize_exemption_effects(change_request: AdmissionChangeRequest, *, decide
         return {"applied": False, "reason": "already_applied"}
 
     overrides_created = apply_exemption_overrides(change_request, decided_by=decided_by)
-    promotion = None
-    if (
-        change_request.exemption_promotion_year is not None
-        and change_request.exemption_promotion_term is not None
-        and not exemption_promotion_applied(change_request)
-    ):
-        promotion = advance_student_position_for_exemption(
-            change_request,
-            to_year=int(change_request.exemption_promotion_year),
-            to_term=int(change_request.exemption_promotion_term),
-            decided_by=change_request.exemption_promotion_by or decided_by,
-        )
 
     change_request.exemption_effects_applied_at = timezone.now()
     change_request.save(update_fields=["exemption_effects_applied_at", "updated_at"])
     return {
         "applied": True,
         "overrides_created": overrides_created,
-        "promotion": promotion,
+        "promotion": None,
+        "promotion_pending_accounts": exemption_promotion_pending_accounts(change_request),
     }
+
 
 
 def validate_advance_position(

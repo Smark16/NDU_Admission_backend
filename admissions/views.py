@@ -6398,7 +6398,7 @@ class AdminExemptionLineAddView(APIView):
 class ExemptionAdvancePositionView(APIView):
     """
     HOD or Dean confirms the student's year/semester after HOD paper approval.
-    The move is applied immediately; Dean and AR continue as verification only.
+    Target is stored now; SPE moves when Accounts bills the exemption.
 
     POST /api/admissions/change_requests/<pk>/advance_position/
     Body: { "year_of_study": int, "term_number": int }

@@ -1139,6 +1139,7 @@ class StudentExemptionChargesCreateView(APIView):
 
         created = []
         deleted_count = 0
+        promotion_applied = False
         try:
             with transaction.atomic():
                 if replace_pending:
@@ -1208,6 +1209,7 @@ class StudentExemptionChargesCreateView(APIView):
                     created.append(_charge_to_dict(charge))
 
                 from django.utils import timezone
+                from admissions.exemption_services import apply_stored_exemption_promotion
 
                 req.accounts_status = "billed"
                 req.accounts_reviewed_by = request.user
@@ -1219,6 +1221,16 @@ class StudentExemptionChargesCreateView(APIView):
                         "accounts_reviewed_at",
                     ]
                 )
+                # Cutover: move SPE to confirmed year/term so new tuition structure opens
+                # only after exemption charges exist.
+                try:
+                    promotion_applied = apply_stored_exemption_promotion(
+                        req, decided_by=request.user
+                    )
+                except ValueError as promo_exc:
+                    raise ValueError(
+                        f"Exemption charges were prepared but promotion failed: {promo_exc}"
+                    ) from promo_exc
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -1237,6 +1249,11 @@ class StudentExemptionChargesCreateView(APIView):
         detail = "Posted " + "; ".join(parts) + "."
         if deleted_count:
             detail = f"Removed {deleted_count} pending charge(s). {detail}"
+        if promotion_applied:
+            detail += (
+                f" Student promoted to Year {req.exemption_promotion_year} "
+                f"Term {req.exemption_promotion_term} (new fee structure now applies)."
+            )
         return Response(
             {
                 "detail": detail,
@@ -1248,6 +1265,7 @@ class StudentExemptionChargesCreateView(APIView):
                     sum((a for _, _, a in remaining_resolved), Decimal("0.00"))
                 ),
                 "deleted_pending": deleted_count,
+                "promotion_applied": promotion_applied,
                 "charges": created,
             },
             status=status.HTTP_201_CREATED,
