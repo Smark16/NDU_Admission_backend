@@ -884,9 +884,14 @@ class StudentExemptionChargesCreateView(APIView):
             admitted_student=student,
             change_type="exemption",
         )
-        if req.ar_status != "approved":
+        if req.hod_status != "approved":
             return Response(
-                {"detail": "Exemption request must be AR-approved before billing."},
+                {
+                    "detail": (
+                        "Exemption request must be HOD-approved before billing. "
+                        "Dean/AR confirmation can continue in parallel."
+                    )
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 

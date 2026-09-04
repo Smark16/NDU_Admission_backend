@@ -501,6 +501,12 @@ def exemption_course_fee_for_paper(
 
 
 def _billable_exemption_lines(change_request: "AdmissionChangeRequest"):
+    """
+    Papers Accounts may charge.
+
+    Prefer the fully AR-confirmed set when AR has finished; otherwise bill
+    HOD-approved papers so Accounts can invoice right after HOD approval.
+    """
     from admissions.models import ExemptionRequestLine
 
     qs = change_request.exemption_lines.all()
@@ -512,8 +518,6 @@ def _billable_exemption_lines(change_request: "AdmissionChangeRequest"):
                 ar_decision=ExemptionRequestLine.DECISION_APPROVED,
             )
         )
-    if change_request.status == "pending":
-        return list(qs.filter(decision=ExemptionRequestLine.DECISION_APPROVED))
     return list(qs.filter(decision=ExemptionRequestLine.DECISION_APPROVED))
 
 
