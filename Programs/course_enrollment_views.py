@@ -56,6 +56,12 @@ class ListCourseUnitEnrollments(generics.ListAPIView):
                 "reg_no": student.reg_no,
                 "name": student.full_name,
                 "enrollment_date": enrollment.enrollment_date,
+                "registration_date": (
+                    enrollment.registration_date.isoformat()
+                    if enrollment.registration_date
+                    else None
+                ),
+                "is_registered": enrollment.registration_date is not None,
                 "status": enrollment.status,
                 "grade": enrollment.grade,
                 "teaching_section_id": section.id if section else None,
@@ -1406,25 +1412,48 @@ class RemoveStudentFromCourseUnit(APIView):
     permission_classes = [AcademicEnrollmentAdminPermission]
     
     def delete(self, request, enrollment_id):
+        from accounts.super_admin import user_is_super_admin
+
+        from .course_unit_marks_guards import enrollment_has_entered_marks
         from .models import StudentCourseUnitEnrollment
         
         try:
             enrollment = StudentCourseUnitEnrollment.objects.select_related(
-                "course_unit__program_batch__program"
+                "course_unit__program_batch__program",
+                "course_result",
             ).get(id=enrollment_id)
             assert_course_unit_enrollment_access(request.user, enrollment)
-            if enrollment.registration_date:
+
+            if enrollment_has_entered_marks(enrollment):
                 return Response(
                     {
-                        "detail": "This student is already registered for this course. Registered units cannot be removed or revoked."
+                        "detail": (
+                            "Cannot remove this student: marks have already been entered "
+                            "for this course unit."
+                        )
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+            if enrollment.registration_date and not user_is_super_admin(request.user):
+                return Response(
+                    {
+                        "detail": (
+                            "This student is already registered for this course. "
+                            "Only Super Admin may remove a registered unit when no marks "
+                            "have been entered."
+                        )
                     },
                     status=status.HTTP_403_FORBIDDEN,
                 )
+
             student_id = enrollment.student.student_id
+            was_registered = enrollment.registration_date is not None
             enrollment.delete()
-            return Response({
-                'message': f'Student {student_id} removed from course unit'
-            }, status=status.HTTP_200_OK)
+            msg = f"Student {student_id} removed from course unit"
+            if was_registered:
+                msg += " (registered; no marks)"
+            return Response({"message": msg}, status=status.HTTP_200_OK)
         except StudentCourseUnitEnrollment.DoesNotExist:
             return Response({'detail': 'Enrollment not found'}, status=status.HTTP_404_NOT_FOUND)
 
