@@ -285,13 +285,17 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
         prorate_tuition_for_course_exemptions,
         semester_paper_counts_for_exemptions,
         year_fully_course_exempted,
+        exemption_tuition_finance_unlocked,
     )
 
     # Cache full-year / full-term exemption checks (tuition + functional waived).
     year_fully_exempt_cache: dict[int, bool] = {}
     term_fully_exempt_cache: dict[tuple[int, int], bool] = {}
+    finance_unlocked = exemption_tuition_finance_unlocked(student)
 
     def _year_fully_exempt(year: int) -> bool:
+        if not finance_unlocked:
+            return False
         if year not in year_fully_exempt_cache:
             year_fully_exempt_cache[year] = year_fully_course_exempted(
                 student, year_of_study=year
@@ -299,6 +303,8 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
         return year_fully_exempt_cache[year]
 
     def _term_fully_exempt(year: int, term: int) -> bool:
+        if not finance_unlocked:
+            return False
         key = (year, term)
         if key not in term_fully_exempt_cache:
             counts = semester_paper_counts_for_exemptions(

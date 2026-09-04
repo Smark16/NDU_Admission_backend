@@ -2100,6 +2100,21 @@ def year_fully_course_exempted(
     return exempted >= total
 
 
+def exemption_tuition_finance_unlocked(student: AdmittedStudent) -> bool:
+    """
+    Tuition proration / full-term waiver apply only after Accounts has billed
+    the exemption (per-paper EXEMPTION_COURSE charges).
+
+    Until then the student keeps the full fee schedule (tuition + functional +
+    practical) so HOD academic approval does not make them look fully paid.
+    """
+    return AdmissionChangeRequest.objects.filter(
+        admitted_student=student,
+        change_type="exemption",
+        accounts_status__in=("billed", "confirmed"),
+    ).exists()
+
+
 def prorate_tuition_for_course_exemptions(
     student: AdmittedStudent,
     tuition_amount: Decimal,
@@ -2109,26 +2124,33 @@ def prorate_tuition_for_course_exemptions(
 ) -> tuple[Decimal, dict | None]:
     """
     Replace full semester tuition with Accounts' paper-based amount when the
-    student has any course exemptions in that semester:
+    student has any course exemptions in that semester *and* Accounts has
+    already billed the exemption:
 
         amount = (semester_tuition / total_papers) * non_exempted_papers
+
+    Before Accounts bills, return the full tuition amount so the portal still
+    shows the normal semester requirement.
 
     If every paper in the year is exempted, callers should omit tuition and
     functional entirely (see year_fully_course_exempted). For a fully exempted
     term within a partial year, tuition becomes 0 here; functional is handled
     separately by the allocator.
     """
-    if year_fully_course_exempted(student, year_of_study=year_of_study):
-        counts = semester_paper_counts_for_exemptions(
-            student, year_of_study=year_of_study, term_number=term_number
-        )
-        return Decimal("0.00"), counts
-
     counts = semester_paper_counts_for_exemptions(
         student, year_of_study=year_of_study, term_number=term_number
     )
     if counts is None or counts["exempted_papers"] <= 0:
         return tuition_amount, counts
+
+    if not exemption_tuition_finance_unlocked(student):
+        return tuition_amount, {
+            **counts,
+            "deferred_until_accounts_billed": True,
+        }
+
+    if year_fully_course_exempted(student, year_of_study=year_of_study):
+        return Decimal("0.00"), counts
 
     total = Decimal(counts["total_papers"])
     remaining = Decimal(counts["non_exempted_papers"])
