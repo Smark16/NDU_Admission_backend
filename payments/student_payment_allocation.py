@@ -282,7 +282,6 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
     student_pb_id = _student_program_batch_id(student)
 
     from admissions.exemption_services import (
-        prorate_tuition_for_course_exemptions,
         semester_paper_counts_for_exemptions,
         year_fully_course_exempted,
         exemption_tuition_finance_unlocked,
@@ -347,13 +346,11 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
         if amt <= 0:
             continue
         sem = rule.semester
-        # Partial exemptions: prorate TUITION only.
-        # Full term / full year / pre-entry terms: omit TUITION + FUNCTIONAL —
-        # student pays only per-paper EXEMPTION_COURSE charges for those papers.
+        # Full term / full year / pre-entry terms: omit TUITION + FUNCTIONAL.
+        # Partial exemptions: Accounts posts remaining tuition manually after billing.
         fee_code = (rule.fee_head.code or "").upper() if rule.fee_head_id else ""
         is_tuition_head = fee_code == "TUITION_FEE"
         is_functional_head = fee_code == "FUNCTIONAL_FEE" or "FUNCTIONAL" in fee_code
-        proration_meta: dict[str, Any] | None = None
 
         sem_year = int(sem.year_of_study) if sem is not None and sem.year_of_study else None
         sem_term = int(sem.term_number) if sem is not None and sem.term_number else None
@@ -385,19 +382,21 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
             if _term_fully_exempt(sem_year, sem_term):
                 continue
 
+        # After Accounts bills exemptions, schedule TUITION for that term is
+        # omitted — remaining tuition is posted manually by Accounts as
+        # (tuition ÷ papers) × non-exempted. Functional fees stay on schedule.
         if (
             is_tuition_head
+            and finance_unlocked
             and sem_year is not None
             and sem_term is not None
         ):
-            amt, proration_meta = prorate_tuition_for_course_exemptions(
-                student,
-                amt,
-                year_of_study=sem_year,
-                term_number=sem_term,
+            counts = semester_paper_counts_for_exemptions(
+                student, year_of_study=sem_year, term_number=sem_term
             )
-            if amt <= 0:
+            if counts and counts.get("exempted_papers", 0) > 0:
                 continue
+
         line = DemandLine(
             kind="tuition_structure",
             rule_id=rule.id,
@@ -428,18 +427,6 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
                 "fee_head_id": rule.fee_head_id,
                 "calendar_type": (
                     getattr(program, "calendar_type", None) or "semester"
-                ),
-                **(
-                    {
-                        "tuition_prorated_for_exemptions": True,
-                        "exemption_total_papers": proration_meta["total_papers"],
-                        "exemption_exempted_papers": proration_meta["exempted_papers"],
-                        "exemption_non_exempted_papers": proration_meta[
-                            "non_exempted_papers"
-                        ],
-                    }
-                    if proration_meta and proration_meta.get("exempted_papers", 0) > 0
-                    else {}
                 ),
             },
         )

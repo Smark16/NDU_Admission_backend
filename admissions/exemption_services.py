@@ -15,6 +15,7 @@ from payments.student_payment_allocation import build_finance_allocation
 
 EXEMPTION_FORM_FEE_CODE = "EXEMPTION_FORM"
 EXEMPTION_COURSE_FEE_CODE = "EXEMPTION_COURSE"
+EXEMPTION_REMAINING_TUITION_CODE = "EXEMPTION_REMAINING_TUITION"
 EXEMPTION_FORM_FEE_UGX = Decimal(
     str(getattr(settings, "EXEMPTION_FORM_FEE_UGX", "50000"))
 )
@@ -582,10 +583,13 @@ def exemption_remaining_curriculum_lines_for_request(
     change_request: "AdmissionChangeRequest",
 ) -> list[dict]:
     """
-    Non-exempted curriculum papers in the same year/terms as HOD-approved
-    exemptions — shown to Accounts with the default tuition share
-    (semester tuition ÷ papers). Not posted as EXEMPTION_COURSE charges;
-    those papers stay on the normal fee schedule.
+    Remaining (non-exempted) tuition for each semester touched by HOD-approved
+    exemptions. Accounts bills this manually:
+
+        amount = (semester tuition ÷ papers in semester) × non-exempted papers
+
+    Functional fees are not included. After Accounts bills, the fee-schedule
+    TUITION_FEE for that term is omitted so this charge is not double-counted.
     """
     from Programs.models import ProgramCurriculumLine, StudentCurriculumOverride
     from payments.billing_visibility import resolve_semester_for_year_term
@@ -632,7 +636,6 @@ def exemption_remaining_curriculum_lines_for_request(
             curriculum_line__is_active=True,
         ).values_list("curriculum_line_id", flat=True)
     )
-    # Also treat this request's approved papers as exempted even before overrides.
     for line in billable:
         if line.curriculum_line_id:
             exempted_line_ids.add(line.curriculum_line_id)
@@ -653,54 +656,70 @@ def exemption_remaining_curriculum_lines_for_request(
         if not papers:
             continue
         total = len(papers)
+        remaining_papers = [cl for cl in papers if cl.id not in exempted_line_ids]
+        non_exempted = len(remaining_papers)
+        if non_exempted <= 0:
+            continue
+
         tuition = semester_tuition_amount_for_student(
             student, year_of_study=year, term_number=term
         )
-        per_paper = (
-            (tuition / Decimal(total)).quantize(Decimal("0.01"))
-            if tuition is not None and total > 0
-            else None
-        )
+        amount = None
+        error = None
+        if tuition is None:
+            error = "No TUITION_FEE rule for this term — enter amount manually."
+        else:
+            amount = (tuition / Decimal(total) * Decimal(non_exempted)).quantize(
+                Decimal("0.01")
+            )
+
         semester = resolve_semester_for_year_term(
             program_batch_id=pb_id,
             year_of_study=year,
             term_number=term,
         )
-        for cl in papers:
-            if cl.id in exempted_line_ids:
-                continue
+        codes = []
+        for cl in remaining_papers:
             catalog = cl.catalog_course
-            code = (catalog.code if catalog else "") or ""
-            name = (catalog.title if catalog else "") or ""
-            error = None
-            if per_paper is None:
-                error = "No TUITION_FEE rule for this term — amount unknown."
-            out.append(
-                {
-                    "line_kind": "remaining_tuition",
-                    "exemption_line_id": None,
-                    "curriculum_line_id": cl.id,
-                    "course_code": code,
-                    "course_name": name,
-                    "score_obtained": "",
-                    "year_of_study": year,
-                    "term_number": term,
-                    "amount": float(per_paper) if per_paper is not None else None,
-                    "semester_id": semester.id if semester is not None else None,
-                    "semester_label": (
-                        f"Year {semester.year_of_study}, Term {semester.term_number}"
-                        f" — {semester.name}"
-                        if semester is not None
-                        else None
-                    ),
-                    "error": error,
-                    "note": (
-                        f"Default tuition share (UGX {tuition:,.0f} ÷ {total} papers)"
-                        if tuition is not None
-                        else "Stays on normal semester tuition schedule"
-                    ),
-                }
-            )
+            code = (catalog.code if catalog else "") or f"#{cl.id}"
+            codes.append(code)
+
+        out.append(
+            {
+                "line_kind": "remaining_tuition",
+                "exemption_line_id": None,
+                "curriculum_line_id": None,
+                "course_code": f"REMAINING-Y{year}S{term}",
+                "course_name": (
+                    f"Remaining tuition ({non_exempted} of {total} papers): "
+                    + ", ".join(codes[:12])
+                    + ("…" if len(codes) > 12 else "")
+                ),
+                "score_obtained": "",
+                "year_of_study": year,
+                "term_number": term,
+                "amount": float(amount) if amount is not None else None,
+                "semester_id": semester.id if semester is not None else None,
+                "semester_label": (
+                    f"Year {semester.year_of_study}, Term {semester.term_number}"
+                    f" — {semester.name}"
+                    if semester is not None
+                    else None
+                ),
+                "error": error,
+                "total_papers": total,
+                "exempted_papers": total - non_exempted,
+                "non_exempted_papers": non_exempted,
+                "full_tuition": float(tuition) if tuition is not None else None,
+                "note": (
+                    f"(UGX {tuition:,.0f} ÷ {total}) × {non_exempted} — tuition only, "
+                    f"not functional fees. Posted by Accounts (not automatic)."
+                    if tuition is not None
+                    else "Accounts must set the amount."
+                ),
+                "remaining_paper_codes": codes,
+            }
+        )
     return out
 
 
@@ -728,11 +747,27 @@ def ensure_exemption_fee_heads() -> tuple[FeeHead, FeeHead]:
         defaults={
             "name": "Course exemption fee",
             "category": "tuition",
-            "description": "Per-course exemption fee billed by Accounts after Dean approval.",
+            "description": "Per-course exemption fee billed by Accounts after HOD approval.",
             "is_active": True,
         },
     )
     return form_head, course_head
+
+
+def ensure_exemption_remaining_tuition_fee_head() -> FeeHead:
+    head, _ = FeeHead.objects.get_or_create(
+        code=EXEMPTION_REMAINING_TUITION_CODE,
+        defaults={
+            "name": "Remaining tuition (after exemptions)",
+            "category": "tuition",
+            "description": (
+                "Tuition for non-exempted papers: "
+                "(semester tuition ÷ papers) × non-exempted. Posted by Accounts."
+            ),
+            "is_active": True,
+        },
+    )
+    return head
 
 
 def _open_form_fee_charge(student: AdmittedStudent) -> StudentTuitionPayment | None:
