@@ -1629,6 +1629,7 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
     exemption_course_fee_rate = serializers.SerializerMethodField()
     exemption_course_fee_total = serializers.SerializerMethodField()
     exemption_billing_lines = serializers.SerializerMethodField()
+    exemption_remaining_curriculum_lines = serializers.SerializerMethodField()
     suggested_promotion = serializers.SerializerMethodField()
     promotion_context = serializers.SerializerMethodField()
 
@@ -1651,6 +1652,7 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
             'exemption_attained_at', 'exemption_academic_years', 'exemption_is_alumnus',
             'exemption_course_fee_rate', 'exemption_course_fee_total',
             'exemption_billing_lines',
+            'exemption_remaining_curriculum_lines',
             'suggested_promotion', 'promotion_context',
             'exemption_promotion_year', 'exemption_promotion_term',
             'exemption_promotion_at', 'exemption_effects_applied_at',
@@ -1789,6 +1791,22 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
         except Exception:
             return []
 
+    def get_exemption_remaining_curriculum_lines(self, obj):
+        if obj.change_type != "exemption":
+            return None
+        if self.context.get("list_view"):
+            return None
+        if not self._request_user_can_view_finance():
+            return None
+        from admissions.exemption_services import (
+            exemption_remaining_curriculum_lines_for_request,
+        )
+
+        try:
+            return exemption_remaining_curriculum_lines_for_request(obj)
+        except Exception:
+            return []
+
     def get_suggested_promotion(self, obj):
         if obj.change_type != "exemption" or obj.hod_status != "approved":
             return None
@@ -1826,6 +1844,7 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
             data["exemption_course_fee_rate"] = None
             data["exemption_course_fee_total"] = None
             data["exemption_billing_lines"] = None
+            data["exemption_remaining_curriculum_lines"] = None
         return data
 
 

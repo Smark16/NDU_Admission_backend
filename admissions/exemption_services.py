@@ -556,6 +556,7 @@ def exemption_billing_lines_for_request(
             error = "Paper has no year/term — match it to a curriculum unit first."
         out.append(
             {
+                "line_kind": "exemption_fee",
                 "exemption_line_id": line.id,
                 "curriculum_line_id": line.curriculum_line_id,
                 "course_code": line.course_code or "",
@@ -574,6 +575,132 @@ def exemption_billing_lines_for_request(
                 "error": error,
             }
         )
+    return out
+
+
+def exemption_remaining_curriculum_lines_for_request(
+    change_request: "AdmissionChangeRequest",
+) -> list[dict]:
+    """
+    Non-exempted curriculum papers in the same year/terms as HOD-approved
+    exemptions — shown to Accounts with the default tuition share
+    (semester tuition ÷ papers). Not posted as EXEMPTION_COURSE charges;
+    those papers stay on the normal fee schedule.
+    """
+    from Programs.models import ProgramCurriculumLine, StudentCurriculumOverride
+    from payments.billing_visibility import resolve_semester_for_year_term
+    from payments.student_portal_finance import _student_program_batch_id
+
+    student = change_request.admitted_student
+    billable = _billable_exemption_lines(change_request)
+    if not billable:
+        return []
+
+    try:
+        enrollment = student.programme_enrollment
+    except Exception:
+        return []
+
+    version = _resolve_curriculum_version(enrollment)
+    if version is None:
+        return []
+
+    owner_program_id = _curriculum_line_program_id(enrollment)
+    pb_id = _student_program_batch_id(student)
+
+    terms: set[tuple[int, int]] = set()
+    for line in billable:
+        year = line.year_of_study
+        term = line.term_number
+        if (year is None or term is None) and line.curriculum_line_id:
+            cl = line.curriculum_line
+            if cl is not None:
+                year = cl.year_of_study
+                term = cl.term_number
+        if year is not None and term is not None:
+            terms.add((int(year), int(term)))
+
+    if not terms:
+        return []
+
+    exempted_line_ids = set(
+        StudentCurriculumOverride.objects.filter(
+            enrollment=enrollment,
+            override_type="exempted",
+            curriculum_line__curriculum_version=version,
+            curriculum_line__program_id=owner_program_id,
+            curriculum_line__is_active=True,
+        ).values_list("curriculum_line_id", flat=True)
+    )
+    # Also treat this request's approved papers as exempted even before overrides.
+    for line in billable:
+        if line.curriculum_line_id:
+            exempted_line_ids.add(line.curriculum_line_id)
+
+    out: list[dict] = []
+    for year, term in sorted(terms):
+        papers = list(
+            ProgramCurriculumLine.objects.filter(
+                curriculum_version=version,
+                program_id=owner_program_id,
+                year_of_study=year,
+                term_number=term,
+                is_active=True,
+            )
+            .select_related("catalog_course")
+            .order_by("sort_order", "catalog_course__code", "id")
+        )
+        if not papers:
+            continue
+        total = len(papers)
+        tuition = semester_tuition_amount_for_student(
+            student, year_of_study=year, term_number=term
+        )
+        per_paper = (
+            (tuition / Decimal(total)).quantize(Decimal("0.01"))
+            if tuition is not None and total > 0
+            else None
+        )
+        semester = resolve_semester_for_year_term(
+            program_batch_id=pb_id,
+            year_of_study=year,
+            term_number=term,
+        )
+        for cl in papers:
+            if cl.id in exempted_line_ids:
+                continue
+            catalog = cl.catalog_course
+            code = (catalog.code if catalog else "") or ""
+            name = (catalog.title if catalog else "") or ""
+            error = None
+            if per_paper is None:
+                error = "No TUITION_FEE rule for this term — amount unknown."
+            out.append(
+                {
+                    "line_kind": "remaining_tuition",
+                    "exemption_line_id": None,
+                    "curriculum_line_id": cl.id,
+                    "course_code": code,
+                    "course_name": name,
+                    "score_obtained": "",
+                    "year_of_study": year,
+                    "term_number": term,
+                    "amount": float(per_paper) if per_paper is not None else None,
+                    "semester_id": semester.id if semester is not None else None,
+                    "semester_label": (
+                        f"Year {semester.year_of_study}, Term {semester.term_number}"
+                        f" — {semester.name}"
+                        if semester is not None
+                        else None
+                    ),
+                    "error": error,
+                    "note": (
+                        f"Default tuition share (UGX {tuition:,.0f} ÷ {total} papers)"
+                        if tuition is not None
+                        else "Stays on normal semester tuition schedule"
+                    ),
+                }
+            )
     return out
 
 
