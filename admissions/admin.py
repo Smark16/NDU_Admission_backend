@@ -99,9 +99,12 @@ class BatchAdmin(admin.ModelAdmin):
 
 @admin.register(Application)
 class ApplicationAdmin(admin.ModelAdmin):
-    list_display = ['id', 'full_name', 'batch', 'campus', 'status', 'application_fee_paid', 'created_at']
-    list_filter = ['status', 'application_fee_paid', 'campus', 'batch', 'created_at']
-    search_fields = ['first_name', 'last_name', 'email', 'phone']
+    list_display = [
+        'id', 'full_name', 'applicant_category', 'nationality', 'batch', 'campus',
+        'status', 'application_fee_paid', 'created_at',
+    ]
+    list_filter = ['applicant_category', 'status', 'application_fee_paid', 'campus', 'batch', 'created_at']
+    search_fields = ['first_name', 'last_name', 'email', 'phone', 'nationality']
     readonly_fields = ['created_at', 'updated_at']
     fieldsets = (
         (None, {
@@ -109,6 +112,10 @@ class ApplicationAdmin(admin.ModelAdmin):
                 'applicant', 'first_name', 'last_name', 'middle_name', 'email', 'phone',
                 'status', 'batch', 'campus', 'academic_level',
             ),
+        }),
+        ('Applicant type', {
+            'fields': ('applicant_category', 'nationality', 'nin', 'passport_number'),
+            'description': 'Local = Uganda / Kenya / Tanzania tuition. International = all other applicants.',
         }),
         ('Payment', {
             'fields': ('application_fee_paid', 'application_fee_amount', 'application_reference', 'payment_proof'),
