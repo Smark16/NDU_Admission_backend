@@ -252,7 +252,7 @@ class Command(BaseCommand):
             w(f"  {k}: {v}")
 
         w("\n--- Tuition proration from course exemptions (Accounts rule) ---")
-        w("  Rule: semester TUITION only ÷ papers in semester × papers still taken.")
+        w("  Rule: semester TUITION only ÷ 6 per remaining (non-exempted) paper.")
         w("  Functional fees are never prorated. Exempted papers billed separately at")
         w("  UGX 150,000 (non-Ndejje) / UGX 100,000 (Ndejje alumni) each.")
         from admissions.exemption_services import (

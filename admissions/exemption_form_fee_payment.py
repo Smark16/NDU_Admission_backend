@@ -217,21 +217,28 @@ class InitiateExemptionFormFeePaymentView(APIView):
                 charge.refresh_from_db()
             elif outcome == "pending":
                 age = timezone.now() - (charge.updated_at or charge.created_at)
-                if age.total_seconds() < STALE_STK_MINUTES * 60:
+                force = bool(
+                    request.data.get("force")
+                    or request.data.get("retry")
+                    or request.data.get("cancel_pending")
+                )
+                if force or age.total_seconds() >= STALE_STK_MINUTES * 60:
+                    clear_exemption_form_stk_attempt(charge)
+                    charge.refresh_from_db()
+                else:
                     return Response(
                         {
                             "detail": (
                                 "A payment prompt was already sent. Approve it on "
-                                "your phone, or wait a few minutes to retry."
+                                "your phone, or tap Cancel prompt and try again."
                             ),
                             "status": "PENDING",
                             "payment_reference": charge.payment_reference,
                             "form_fee": _form_fee_status_dict(student, charge),
+                            "can_cancel": True,
                         },
                         status=status.HTTP_400_BAD_REQUEST,
                     )
-                clear_exemption_form_stk_attempt(charge)
-                charge.refresh_from_db()
 
         if not student.is_registered_with_schoolpay or not student.student_id:
             reg = register_student_with_schoolpay(student)
@@ -412,5 +419,62 @@ class ExemptionFormFeePaymentStatusView(APIView):
                 "receipt_number": payment.receipt_number or "",
                 "transaction_id": payment.transaction_id or "",
                 "form_fee": _form_fee_status_dict(student, payment),
+            }
+        )
+
+
+class CancelExemptionFormFeePaymentView(APIView):
+    """
+    POST /api/admissions/change_requests/exemption/form_fee/pay/cancel
+    Clears a stuck pending MoMo prompt so the student can try again.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        student = get_admitted_student_for_user(request.user)
+        if not student:
+            return Response(
+                {"detail": "Admitted student profile not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        charge = _ensure_form_fee_charge(student, charged_by=None)
+        if form_fee_paid_for_charge(student, charge):
+            return Response(
+                {
+                    "detail": "Exemption form fee is already paid.",
+                    "status": "PAID",
+                    "form_fee": _form_fee_status_dict(student, charge),
+                }
+            )
+
+        ref = (request.data.get("payment_reference") or "").strip()
+        if ref and (charge.payment_reference or "").strip() and ref != (
+            charge.payment_reference or ""
+        ).strip():
+            return Response(
+                {"detail": "Payment reference does not match the open form-fee charge."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if charge.status == "completed":
+            return Response(
+                {
+                    "detail": "This charge is already completed.",
+                    "form_fee": _form_fee_status_dict(student, charge),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if (charge.payment_reference or "").strip() or charge.payment_method:
+            clear_exemption_form_stk_attempt(charge)
+            charge.refresh_from_db()
+
+        return Response(
+            {
+                "detail": "Payment prompt cancelled. You can try again with a mobile money number.",
+                "status": "CANCELLED",
+                "form_fee": _form_fee_status_dict(student, charge),
             }
         )

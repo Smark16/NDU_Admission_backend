@@ -87,7 +87,18 @@ def user_faculty_ids(user, *, context: str = "programs") -> list[int] | None:
         return None
     if not user_requires_faculty_scope(user, context=context):
         return None
-    return list(user.faculties.filter(is_active=True).values_list("pk", flat=True))
+    ids = list(user.faculties.filter(is_active=True).values_list("pk", flat=True))
+    # HOD may be set as department head without an explicit User↔Faculty link.
+    if user_requires_department_scope(user):
+        headed = user_headed_department_ids(user) or []
+        if headed:
+            from admissions.models import AcademicDepartment
+
+            from_headed = AcademicDepartment.objects.filter(
+                pk__in=headed, is_active=True
+            ).values_list("faculty_id", flat=True)
+            ids = sorted({*ids, *[fid for fid in from_headed if fid]})
+    return ids
 
 
 def user_is_hod(user) -> bool:
@@ -235,11 +246,26 @@ def filter_admission_change_requests_for_user(queryset: QuerySet, user) -> Query
         return queryset
     if not dept_ids:
         return queryset.none()
-    # HoD sees exemptions / change requests for programmes in their department only.
+    # Course exemptions: faculty-wide for HOD. Many Business (and other) programmes
+    # still have Program.department unset, so department-only filtering hid most
+    # applicants. Other change-request types stay department-scoped.
     return queryset.filter(
-        Q(admitted_student__admitted_program__department_id__in=dept_ids)
+        Q(change_type="exemption")
+        | Q(admitted_student__admitted_program__department_id__in=dept_ids)
         | Q(current_program__department_id__in=dept_ids)
         | Q(new_program__department_id__in=dept_ids)
+        | (
+            Q(admitted_student__admitted_program__department__isnull=True)
+            & Q(admitted_student__admitted_program__faculty_id__in=faculty_ids)
+        )
+        | (
+            Q(current_program__department__isnull=True)
+            & Q(current_program__faculty_id__in=faculty_ids)
+        )
+        | (
+            Q(new_program__department__isnull=True)
+            & Q(new_program__faculty_id__in=faculty_ids)
+        )
     ).distinct()
 
 

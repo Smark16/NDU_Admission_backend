@@ -835,8 +835,8 @@ class StudentExemptionChargesCreateView(APIView):
       replace_pending: bool — delete pending charges for this change request
 
     Exempted papers → EXEMPTION_COURSE (flat alumnus/external fee), spread.
-    Remaining tuition → EXEMPTION_REMAINING_TUITION on each term:
-      (semester tuition ÷ papers) × non-exempted papers — posted by Accounts.
+    Remaining tuition → EXEMPTION_REMAINING_TUITION one charge per remaining paper:
+      semester tuition ÷ 6 — posted by Accounts.
     """
 
     permission_classes = [StudentChargesPermission]
@@ -1244,7 +1244,7 @@ class StudentExemptionChargesCreateView(APIView):
             rem_total = sum((a for _, _, a in remaining_resolved), Decimal("0.00"))
             parts.append(
                 f"remaining tuition UGX {rem_total:,.2f} "
-                f"({len(remaining_resolved)} term(s))"
+                f"({len(remaining_resolved)} paper(s))"
             )
         detail = "Posted " + "; ".join(parts) + "."
         if deleted_count:

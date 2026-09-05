@@ -16,6 +16,9 @@ from payments.student_payment_allocation import build_finance_allocation
 EXEMPTION_FORM_FEE_CODE = "EXEMPTION_FORM"
 EXEMPTION_COURSE_FEE_CODE = "EXEMPTION_COURSE"
 EXEMPTION_REMAINING_TUITION_CODE = "EXEMPTION_REMAINING_TUITION"
+# Accounts policy: remaining non-exempted papers are billed as
+# (semester tuition ÷ 6) each — not ÷ actual paper count in the term.
+EXEMPTION_REMAINING_TUITION_DENOMINATOR = 6
 EXEMPTION_FORM_FEE_UGX = Decimal(
     str(getattr(settings, "EXEMPTION_FORM_FEE_UGX", "50000"))
 )
@@ -583,11 +586,12 @@ def exemption_remaining_curriculum_lines_for_request(
     change_request: "AdmissionChangeRequest",
 ) -> list[dict]:
     """
-    Remaining (non-exempted) tuition for each semester touched by HOD-approved
-    exemptions. Accounts bills this manually:
+    Remaining (non-exempted) papers for each semester touched by HOD-approved
+    exemptions — one billable row per paper. Accounts bills manually:
 
-        amount = (semester tuition ÷ papers in semester) × non-exempted papers
+        amount per paper = semester tuition ÷ 6
 
+    (Common denominator fixed by Accounts; not the actual paper count.)
     Functional fees are not included. After Accounts bills, the fee-schedule
     TUITION_FEE for that term is omitted so this charge is not double-counted.
     """
@@ -611,6 +615,7 @@ def exemption_remaining_curriculum_lines_for_request(
 
     owner_program_id = _curriculum_line_program_id(enrollment)
     pb_id = _student_program_batch_id(student)
+    denom = Decimal(EXEMPTION_REMAINING_TUITION_DENOMINATOR)
 
     terms: set[tuple[int, int]] = set()
     for line in billable:
@@ -664,62 +669,55 @@ def exemption_remaining_curriculum_lines_for_request(
         tuition = semester_tuition_amount_for_student(
             student, year_of_study=year, term_number=term
         )
-        amount = None
+        per_paper = None
         error = None
         if tuition is None:
             error = "No TUITION_FEE rule for this term — enter amount manually."
         else:
-            amount = (tuition / Decimal(total) * Decimal(non_exempted)).quantize(
-                Decimal("0.01")
-            )
+            per_paper = (tuition / denom).quantize(Decimal("0.01"))
 
         semester = resolve_semester_for_year_term(
             program_batch_id=pb_id,
             year_of_study=year,
             term_number=term,
         )
-        codes = []
         for cl in remaining_papers:
             catalog = cl.catalog_course
             code = (catalog.code if catalog else "") or f"#{cl.id}"
-            codes.append(code)
-
-        out.append(
-            {
-                "line_kind": "remaining_tuition",
-                "exemption_line_id": None,
-                "curriculum_line_id": None,
-                "course_code": f"REMAINING-Y{year}S{term}",
-                "course_name": (
-                    f"Remaining tuition ({non_exempted} of {total} papers): "
-                    + ", ".join(codes[:12])
-                    + ("…" if len(codes) > 12 else "")
-                ),
-                "score_obtained": "",
-                "year_of_study": year,
-                "term_number": term,
-                "amount": float(amount) if amount is not None else None,
-                "semester_id": semester.id if semester is not None else None,
-                "semester_label": (
-                    f"Year {semester.year_of_study}, Term {semester.term_number}"
-                    f" — {semester.name}"
-                    if semester is not None
-                    else None
-                ),
-                "error": error,
-                "total_papers": total,
-                "exempted_papers": total - non_exempted,
-                "non_exempted_papers": non_exempted,
-                "full_tuition": float(tuition) if tuition is not None else None,
-                "note": (
-                    f"(UGX {tuition:,.0f} ÷ {total}) × {non_exempted} — tuition only, "
-                    f"not functional fees. Posted by Accounts (not automatic)."
-                    if tuition is not None
-                    else "Accounts must set the amount."
-                ),
-                "remaining_paper_codes": codes,
-            }
-        )
+            title = (catalog.title if catalog else "") or code
+            out.append(
+                {
+                    "line_kind": "remaining_tuition",
+                    "exemption_line_id": None,
+                    "curriculum_line_id": cl.id,
+                    "course_code": code,
+                    "course_name": title or code,
+                    "score_obtained": "",
+                    "year_of_study": year,
+                    "term_number": term,
+                    "amount": float(per_paper) if per_paper is not None else None,
+                    "semester_id": semester.id if semester is not None else None,
+                    "semester_label": (
+                        f"Year {semester.year_of_study}, Term {semester.term_number}"
+                        f" — {semester.name}"
+                        if semester is not None
+                        else None
+                    ),
+                    "error": error,
+                    "total_papers": total,
+                    "exempted_papers": total - non_exempted,
+                    "non_exempted_papers": non_exempted,
+                    "billing_denominator": EXEMPTION_REMAINING_TUITION_DENOMINATOR,
+                    "full_tuition": float(tuition) if tuition is not None else None,
+                    "note": (
+                        f"(UGX {tuition:,.0f} ÷ {EXEMPTION_REMAINING_TUITION_DENOMINATOR}) "
+                        f"— tuition only, not functional fees. Posted by Accounts."
+                        if tuition is not None
+                        else "Accounts must set the amount."
+                    ),
+                    "remaining_paper_codes": [code],
+                }
+            )
     return out
 
 
@@ -762,7 +760,7 @@ def ensure_exemption_remaining_tuition_fee_head() -> FeeHead:
             "category": "tuition",
             "description": (
                 "Tuition for non-exempted papers: "
-                "(semester tuition ÷ papers) × non-exempted. Posted by Accounts."
+                "(semester tuition ÷ 6) per remaining paper. Posted by Accounts."
             ),
             "is_active": True,
         },

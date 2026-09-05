@@ -341,6 +341,11 @@ urlpatterns = [
         name='exemption_form_fee_pay',
     ),
     path(
+        'change_requests/exemption/form_fee/pay/cancel',
+        exemption_form_fee_payment.CancelExemptionFormFeePaymentView.as_view(),
+        name='exemption_form_fee_pay_cancel',
+    ),
+    path(
         'change_requests/exemption/form_fee/pay/<str:payment_ref>',
         exemption_form_fee_payment.ExemptionFormFeePaymentStatusView.as_view(),
         name='exemption_form_fee_pay_status',
