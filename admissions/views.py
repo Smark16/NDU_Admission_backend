@@ -6417,6 +6417,75 @@ class AdminExemptionLineAddView(APIView):
         )
 
 
+class AdminExemptionLineScoreView(APIView):
+    """
+    HOD/Dean/Admin: set or correct prior score on an existing exemption paper.
+
+    PATCH /api/admissions/change_requests/<pk>/exemption_lines/<line_id>
+    Body: { "score_obtained": "63" }
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, pk, line_id):
+        from admissions.exemption_services import update_exemption_line_score
+        from admissions.serializers import ExemptionRequestLineSerializer
+        from admissions.permissions import (
+            user_can_approve_exemption_requests,
+            user_can_review_exemption_dean,
+        )
+
+        req_obj = get_object_or_404(
+            AdmissionChangeRequest.objects.select_related("admitted_student"),
+            pk=pk,
+            change_type="exemption",
+        )
+        if not (
+            user_can_approve_exemption_requests(request.user)
+            or user_can_review_exemption_dean(request.user)
+        ):
+            return Response(
+                {"detail": "You do not have permission to edit exemption scores."},
+                status=403,
+            )
+        qs = filter_admission_change_requests_for_user(
+            AdmissionChangeRequest.objects.filter(pk=req_obj.pk),
+            request.user,
+        )
+        if not qs.exists():
+            return Response({"detail": "Not found."}, status=404)
+
+        score = request.data.get("score_obtained")
+        if score is None:
+            return Response(
+                {"detail": "score_obtained is required."},
+                status=400,
+            )
+        try:
+            line = update_exemption_line_score(
+                req_obj,
+                line_id=int(line_id),
+                score_obtained=str(score),
+            )
+        except (TypeError, ValueError) as exc:
+            return Response({"detail": str(exc)}, status=400)
+
+        req_obj = (
+            AdmissionChangeRequest.objects.select_related("reviewed_by")
+            .prefetch_related("exemption_lines", "supporting_documents")
+            .get(pk=req_obj.pk)
+        )
+        return Response(
+            {
+                "detail": "Score updated.",
+                "line": ExemptionRequestLineSerializer(line).data,
+                "change_request": AdmissionChangeRequestSerializer(
+                    req_obj, context={"request": request}
+                ).data,
+            }
+        )
+
+
 class ExemptionAdvancePositionView(APIView):
     """
     HOD or Dean confirms the student's year/semester after HOD paper approval.

@@ -393,6 +393,11 @@ urlpatterns = [
         name='exemption_request_add_line',
     ),
     path(
+        'change_requests/<int:pk>/exemption_lines/<int:line_id>',
+        views.AdminExemptionLineScoreView.as_view(),
+        name='exemption_request_update_line_score',
+    ),
+    path(
         'change_requests/<int:pk>/advance_position',
         views.ExemptionAdvancePositionView.as_view(),
         name='exemption_advance_position',

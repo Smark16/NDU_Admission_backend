@@ -383,7 +383,7 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
                 continue
 
         # After Accounts bills exemptions, schedule TUITION for that term is
-        # omitted — remaining papers are posted manually as EXEMPTION_REMAINING_TUITION
+        # omitted — remaining papers are posted manually as EXEMPT_REMAIN_TUIT
         # (semester tuition ÷ 6 each, on that semester). Functional fees stay on schedule.
         # The flat EXEMPTION_COURSE fee is the only amount Accounts may split across semesters.
         if (

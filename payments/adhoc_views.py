@@ -835,14 +835,15 @@ class StudentExemptionChargesCreateView(APIView):
       replace_pending: bool — delete pending charges for this change request
 
     Exempted papers → EXEMPTION_COURSE (flat alumnus/external fee), spread.
-    Remaining tuition → EXEMPTION_REMAINING_TUITION one charge per remaining paper:
+    Remaining tuition → EXEMPT_REMAIN_TUIT one charge per remaining paper:
       semester tuition ÷ 6 — posted by Accounts.
     """
 
     permission_classes = [StudentChargesPermission]
 
     def post(self, request, student_id):
-        from decimal import Decimal, ROUND_HALF_UP
+        from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+        import logging
 
         from admissions.exemption_services import (
             EXEMPTION_COURSE_FEE_CODE,
@@ -854,7 +855,22 @@ class StudentExemptionChargesCreateView(APIView):
             exemption_remaining_curriculum_lines_for_request,
         )
         from admissions.models import AdmissionChangeRequest, ExemptionRequestLine
-        from django.db import transaction
+        from django.db import DataError, DatabaseError, IntegrityError, transaction
+
+        logger = logging.getLogger(__name__)
+
+        def _text(value, default: str = "") -> str:
+            if value is None:
+                return default
+            return str(value).strip() or default
+
+        def _safe_int(value):
+            if value in (None, ""):
+                return None
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return None
 
         student = get_object_or_404(
             AdmittedStudent.objects.select_related(
@@ -951,35 +967,35 @@ class StudentExemptionChargesCreateView(APIView):
         paper_labels: list[str] = []
 
         for raw in exemption_raw:
-            code = (raw.get("course_code") or "").strip()
-            name = (raw.get("course_name") or "").strip()
-            line_id = raw.get("curriculum_line_id")
-            exemption_line_id = raw.get("exemption_line_id")
+            code = _text(raw.get("course_code"))
+            name = _text(raw.get("course_name"))
+            line_id = _safe_int(raw.get("curriculum_line_id"))
+            exemption_line_id = _safe_int(raw.get("exemption_line_id"))
             year = raw.get("year_of_study")
             term = raw.get("term_number")
 
             match = None
-            if exemption_line_id:
+            if exemption_line_id is not None:
                 match = next(
                     (
                         el
                         for el in req.exemption_lines.all()
-                        if el.id == int(exemption_line_id)
+                        if el.id == exemption_line_id
                     ),
                     None,
                 )
-            elif line_id:
+            elif line_id is not None:
                 match = next(
                     (
                         el
                         for el in req.exemption_lines.all()
-                        if el.curriculum_line_id == int(line_id)
+                        if el.curriculum_line_id == line_id
                     ),
                     None,
                 )
             if match:
-                code = code or match.course_code
-                name = name or match.course_name
+                code = code or _text(match.course_code)
+                name = name or _text(match.course_name)
                 if year in (None, ""):
                     year = match.year_of_study
                 if term in (None, ""):
@@ -995,10 +1011,10 @@ class StudentExemptionChargesCreateView(APIView):
                     continue
 
             preview = None
-            if exemption_line_id:
-                preview = preview_by_key.get(f"line:{int(exemption_line_id)}")
-            if preview is None and line_id:
-                preview = preview_by_key.get(str(int(line_id)))
+            if exemption_line_id is not None:
+                preview = preview_by_key.get(f"line:{exemption_line_id}")
+            if preview is None and line_id is not None:
+                preview = preview_by_key.get(str(line_id))
             if preview is None and code:
                 preview = preview_by_key.get(code)
 
@@ -1033,7 +1049,7 @@ class StudentExemptionChargesCreateView(APIView):
                     amount = Decimal(str(raw_amount)).quantize(
                         Decimal("0.01"), rounding=ROUND_HALF_UP
                     )
-            except (TypeError, ValueError) as exc:
+            except (TypeError, ValueError, InvalidOperation) as exc:
                 return Response(
                     {"detail": f"Invalid amount for {code or 'unit'}: {exc}"},
                     status=status.HTTP_400_BAD_REQUEST,
@@ -1080,7 +1096,10 @@ class StudentExemptionChargesCreateView(APIView):
 
         remaining_resolved: list[tuple[dict, Semester, Decimal]] = []
         for raw in remaining_raw:
-            code = (raw.get("course_code") or raw.get("paper_code") or "Remaining").strip()
+            code = _text(
+                raw.get("course_code") or raw.get("paper_code"),
+                default="Remaining",
+            )
             raw_amount = raw.get("amount")
             try:
                 if raw_amount in (None, ""):
@@ -1088,7 +1107,7 @@ class StudentExemptionChargesCreateView(APIView):
                 amount = Decimal(str(raw_amount)).quantize(
                     Decimal("0.01"), rounding=ROUND_HALF_UP
                 )
-            except (TypeError, ValueError) as exc:
+            except (TypeError, ValueError, InvalidOperation) as exc:
                 return Response(
                     {"detail": f"Invalid remaining tuition amount for {code}: {exc}"},
                     status=status.HTTP_400_BAD_REQUEST,
@@ -1133,8 +1152,20 @@ class StudentExemptionChargesCreateView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-        _, course_head = ensure_exemption_fee_heads()
-        remaining_head = ensure_exemption_remaining_tuition_fee_head()
+        try:
+            _, course_head = ensure_exemption_fee_heads()
+            remaining_head = (
+                ensure_exemption_remaining_tuition_fee_head()
+                if remaining_resolved
+                else None
+            )
+        except (DataError, IntegrityError, ValueError) as exc:
+            logger.exception("Exemption fee-head setup failed for student %s", student_id)
+            return Response(
+                {"detail": f"Could not prepare exemption fee heads: {exc}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
         note_marker = f"Exemption change request #{req.id}"
 
         created = []
@@ -1143,12 +1174,15 @@ class StudentExemptionChargesCreateView(APIView):
         try:
             with transaction.atomic():
                 if replace_pending:
+                    head_ids = [course_head.id]
+                    if remaining_head is not None:
+                        head_ids.append(remaining_head.id)
                     doomed = StudentTuitionPayment.objects.filter(
                         student=student,
                         source="ad_hoc",
                         status="pending",
                         is_waived=False,
-                        fee_head_id__in=[course_head.id, remaining_head.id],
+                        fee_head_id__in=head_ids,
                         notes__icontains=note_marker,
                     )
                     deleted_count = doomed.count()
@@ -1177,12 +1211,17 @@ class StudentExemptionChargesCreateView(APIView):
                     )
 
                 for raw, sem, amount in remaining_resolved:
-                    code = (
-                        raw.get("course_code") or raw.get("paper_code") or "Remaining"
-                    ).strip()
-                    name = (raw.get("course_name") or raw.get("paper_name") or "").strip()
+                    if remaining_head is None:
+                        raise ValueError(
+                            "Remaining tuition fee head is missing — cannot bill remaining papers."
+                        )
+                    code = _text(
+                        raw.get("course_code") or raw.get("paper_code"),
+                        default="Remaining",
+                    )
+                    name = _text(raw.get("course_name") or raw.get("paper_name"))
                     label = (
-                        str(raw.get("label") or "").strip()
+                        _text(raw.get("label"))
                         or (
                             f"Remaining tuition — {name}"
                             if name
@@ -1192,7 +1231,7 @@ class StudentExemptionChargesCreateView(APIView):
                     notes = (
                         f"{note_marker}; fee head {EXEMPTION_REMAINING_TUITION_CODE}; "
                         f"remaining_tuition; papers={code}; "
-                        f"{str(raw.get('notes') or raw.get('note') or '').strip()}"
+                        f"{_text(raw.get('notes') or raw.get('note'))}"
                     ).strip()[:2000]
                     charge = StudentTuitionPayment.objects.create(
                         student=student,
@@ -1233,6 +1272,31 @@ class StudentExemptionChargesCreateView(APIView):
                     ) from promo_exc
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except (DataError, IntegrityError, DatabaseError) as exc:
+            logger.exception(
+                "Exemption charge create failed for student %s request %s",
+                student_id,
+                change_request_id,
+            )
+            return Response(
+                {"detail": f"Could not create exemption charges: {exc}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        except Exception as exc:
+            logger.exception(
+                "Unexpected exemption charge failure for student %s request %s",
+                student_id,
+                change_request_id,
+            )
+            return Response(
+                {
+                    "detail": (
+                        f"Could not create exemption charges "
+                        f"({exc.__class__.__name__}: {exc})."
+                    )
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
         parts = []
         if paper_count > 0:

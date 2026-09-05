@@ -11,6 +11,7 @@ import uuid
 from decimal import Decimal
 
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
@@ -80,12 +81,18 @@ def sync_exemption_form_fee_paid_at(payment: StudentTuitionPayment) -> None:
     if payment.status != "completed" or not is_exemption_form_fee_charge(payment):
         return
     paid_at = payment.paid_at or timezone.now()
+    # Stamp the linked request and any other open exemption for this student
+    # (SchoolPay→tuition mis-allocations often leave form_fee_charge_id unset).
     AdmissionChangeRequest.objects.filter(
         admitted_student_id=payment.student_id,
         change_type="exemption",
-        form_fee_charge_id=payment.pk,
         form_fee_paid_at__isnull=True,
-    ).update(form_fee_paid_at=paid_at)
+    ).filter(
+        Q(form_fee_charge_id=payment.pk) | Q(form_fee_charge_id__isnull=True)
+    ).update(
+        form_fee_paid_at=paid_at,
+        form_fee_charge_id=payment.pk,
+    )
 
 
 def manually_complete_exemption_form_fee(payment: StudentTuitionPayment, *, actor=None):

@@ -1,10 +1,13 @@
 """
-Mark the UGX 50,000 exemption form fee as paid (local QA / desk testing).
+Mark the UGX 50,000 exemption form fee as paid (desk / finance correction).
+
+Use when SchoolPay student-code money hit tuition, or a MoMo receipt exists
+but the portal still shows "submitted without paying".
 
 Usage:
+  python manage.py mark_exemption_form_fee_paid --student-id 1012326815
   python manage.py mark_exemption_form_fee_paid --reg-no "26/2/000/D/5668"
-  python manage.py mark_exemption_form_fee_paid --student-id 1011026018
-  python manage.py mark_exemption_form_fee_paid --reg-no "26/2/000/D/5668" --dry-run
+  python manage.py mark_exemption_form_fee_paid --student-id 1012326815 --dry-run
 """
 from __future__ import annotations
 
@@ -35,7 +38,10 @@ def _find_student(*, reg_no: str = "", student_id: str = "") -> AdmittedStudent:
 
 
 class Command(BaseCommand):
-    help = "Mark exemption form fee paid for local QA (no real SchoolPay needed)."
+    help = (
+        "Mark exemption form fee paid so HOD can approve "
+        "(corrects SchoolPay→tuition mis-allocation or missing MoMo stamp)."
+    )
 
     def add_arguments(self, parser):
         parser.add_argument("--reg-no", default="")

@@ -55,7 +55,7 @@ class FeeHead(models.Model):
         ('other', 'Other'),
     ]
 
-    code = models.CharField(max_length=20, unique=True, help_text="Unique code e.g., TUITION_FEE")
+    code = models.CharField(max_length=40, unique=True, help_text="Unique code e.g., TUITION_FEE")
     name = models.CharField(max_length=100, help_text="Fee name")
     category = models.CharField(
         max_length=20,

@@ -15,7 +15,8 @@ from payments.student_payment_allocation import build_finance_allocation
 
 EXEMPTION_FORM_FEE_CODE = "EXEMPTION_FORM"
 EXEMPTION_COURSE_FEE_CODE = "EXEMPTION_COURSE"
-EXEMPTION_REMAINING_TUITION_CODE = "EXEMPTION_REMAINING_TUITION"
+# FeeHead.code is max_length=20 — keep this ≤ 20 chars.
+EXEMPTION_REMAINING_TUITION_CODE = "EXEMPT_REMAIN_TUIT"
 # Accounts policy: remaining non-exempted papers are billed as
 # (semester tuition ÷ 6) each — not ÷ actual paper count in the term.
 EXEMPTION_REMAINING_TUITION_DENOMINATOR = 6
@@ -753,8 +754,13 @@ def ensure_exemption_fee_heads() -> tuple[FeeHead, FeeHead]:
 
 
 def ensure_exemption_remaining_tuition_fee_head() -> FeeHead:
+    code = EXEMPTION_REMAINING_TUITION_CODE
+    if len(code) > 40:
+        raise ValueError(
+            f"Remaining-tuition fee head code is too long ({len(code)} > 40): {code!r}"
+        )
     head, _ = FeeHead.objects.get_or_create(
-        code=EXEMPTION_REMAINING_TUITION_CODE,
+        code=code,
         defaults={
             "name": "Remaining tuition (after exemptions)",
             "category": "tuition",
@@ -2286,7 +2292,7 @@ def prorate_tuition_for_course_exemptions(
     Suggested remaining-tuition total for a semester after exemptions
     (diagnostic / legacy helper).
 
-    Accounts posts one EXEMPTION_REMAINING_TUITION charge per remaining paper::
+    Accounts posts one EXEMPT_REMAIN_TUIT charge per remaining paper::
 
         per_paper = semester_tuition / 6
         term_total = per_paper * non_exempted_papers
@@ -3097,6 +3103,36 @@ def add_exemption_line_from_curriculum(
         score_obtained=(score_obtained or "").strip()[:20],
         decision=ExemptionRequestLine.DECISION_PENDING,
     )
+    return line
+
+
+def update_exemption_line_score(
+    change_request: AdmissionChangeRequest,
+    *,
+    line_id: int,
+    score_obtained: str,
+) -> "ExemptionRequestLine":
+    """
+    HOD/Admin: set or correct the prior-institution score on an existing paper
+    (e.g. student left Score blank but transcript shows 63).
+    """
+    from admissions.models import ExemptionRequestLine
+
+    if change_request.change_type != "exemption":
+        raise ValueError("Only exemption requests have paper scores.")
+    if change_request.status == "rejected":
+        raise ValueError("Cannot edit scores on a rejected exemption request.")
+
+    line = change_request.exemption_lines.filter(pk=line_id).first()
+    if line is None:
+        raise ValueError("That paper is not on this exemption request.")
+
+    score = (score_obtained or "").strip()[:20]
+    if not score:
+        raise ValueError("Enter the score or grade (e.g. 63 or B+).")
+
+    line.score_obtained = score
+    line.save(update_fields=["score_obtained"])
     return line
 
 

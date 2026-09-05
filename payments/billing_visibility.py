@@ -262,8 +262,12 @@ def is_exemption_form_fee_charge(charge) -> bool:
 
 
 def is_exemption_adhoc_charge(charge) -> bool:
-    """Course / form exemption fees — always visible on student balances."""
-    return fee_head_code(charge) in {"EXEMPTION_COURSE", "EXEMPTION_FORM"}
+    """Course / form / remaining-tuition exemption fees — always on balances."""
+    return fee_head_code(charge) in {
+        "EXEMPTION_COURSE",
+        "EXEMPTION_FORM",
+        "EXEMPT_REMAIN_TUIT",
+    }
 
 
 def adhoc_charge_billing_reached(charge) -> bool:
