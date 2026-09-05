@@ -2914,9 +2914,9 @@ def propose_exemption_promotion(
     """
     HOD or Dean confirms the student's year/semester after HOD paper approval.
 
-    The target is stored on the change request only. SPE current/entry position
-    moves when Accounts bills (apply_stored_exemption_promotion), so Y2 tuition
-    does not open before exemption charges exist.
+    The target is stored on the change request. SPE normally moves when Accounts
+    bills. If Accounts has already billed, SPE moves immediately so late
+    confirmation still promotes the student.
     """
     if not exemption_ready_for_hod_promotion(change_request):
         if exemption_promotion_proposed(change_request):
@@ -2941,6 +2941,8 @@ def propose_exemption_promotion(
     if (int(to_year), int(to_term)) == (int(from_year), int(from_term)):
         raise ValueError("Student is already at that year/term.")
 
+    accounts_already_billed = change_request.accounts_status in ("billed", "confirmed")
+
     change_request.exemption_promotion_year = int(to_year)
     change_request.exemption_promotion_term = int(to_term)
     change_request.exemption_promotion_from_year = int(from_year)
@@ -2948,10 +2950,15 @@ def propose_exemption_promotion(
     change_request.exemption_promotion_by = decided_by
     change_request.exemption_promotion_at = timezone.now()
 
+    timing = (
+        "applied now — Accounts already billed"
+        if accounts_already_billed
+        else f"applies when Accounts bills exemption CR #{change_request.id}"
+    )
     note = (
         f"[{timezone.now():%Y-%m-%d %H:%M}] Promotion confirmed "
         f"Y{from_year}T{from_term} -> Y{to_year}T{to_term} "
-        f"(applies when Accounts bills exemption CR #{change_request.id}), "
+        f"({timing}), "
         f"by {getattr(decided_by, 'get_full_name', lambda: decided_by)() or decided_by}."
     )
     change_request.review_notes = "\n".join(
@@ -2970,10 +2977,16 @@ def propose_exemption_promotion(
         ]
     )
 
+    applied = False
+    if accounts_already_billed:
+        applied = apply_stored_exemption_promotion(
+            change_request, decided_by=decided_by
+        )
+
     return {
         "proposed": True,
-        "applied": False,
-        "pending_accounts_billing": True,
+        "applied": applied,
+        "pending_accounts_billing": not accounts_already_billed,
         "pending_ar_approval": False,
         "from_year_of_study": int(from_year),
         "from_term_number": int(from_term),
