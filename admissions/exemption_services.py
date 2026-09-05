@@ -2283,19 +2283,17 @@ def prorate_tuition_for_course_exemptions(
     term_number: int,
 ) -> tuple[Decimal, dict | None]:
     """
-    Replace full semester tuition with Accounts' paper-based amount when the
-    student has any course exemptions in that semester *and* Accounts has
-    already billed the exemption:
+    Suggested remaining-tuition total for a semester after exemptions
+    (diagnostic / legacy helper).
 
-        amount = (semester_tuition / total_papers) * non_exempted_papers
+    Accounts posts one EXEMPTION_REMAINING_TUITION charge per remaining paper::
 
-    Before Accounts bills, return the full tuition amount so the portal still
-    shows the normal semester requirement.
+        per_paper = semester_tuition / 6
+        term_total = per_paper * non_exempted_papers
 
-    If every paper in the year is exempted, callers should omit tuition and
-    functional entirely (see year_fully_course_exempted). For a fully exempted
-    term within a partial year, tuition becomes 0 here; functional is handled
-    separately by the allocator.
+    Before Accounts bills, return full tuition so the portal still shows the
+    normal semester requirement. After billing, schedule TUITION is omitted and
+    the ad-hoc remaining-paper charges apply; functional fees stay on schedule.
     """
     counts = semester_paper_counts_for_exemptions(
         student, year_of_study=year_of_study, term_number=term_number
@@ -2312,13 +2310,17 @@ def prorate_tuition_for_course_exemptions(
     if year_fully_course_exempted(student, year_of_study=year_of_study):
         return Decimal("0.00"), counts
 
-    total = Decimal(counts["total_papers"])
     remaining = Decimal(counts["non_exempted_papers"])
     if remaining <= 0:
         return Decimal("0.00"), counts
 
-    prorated = (Decimal(str(tuition_amount)) / total * remaining).quantize(Decimal("0.01"))
-    return prorated, counts
+    denom = Decimal(EXEMPTION_REMAINING_TUITION_DENOMINATOR)
+    per_paper = (Decimal(str(tuition_amount)) / denom).quantize(Decimal("0.01"))
+    return (per_paper * remaining).quantize(Decimal("0.01")), {
+        **counts,
+        "billing_denominator": EXEMPTION_REMAINING_TUITION_DENOMINATOR,
+        "per_paper": float(per_paper),
+    }
 
 
 def _next_year_term(year: int, term: int, *, max_terms_per_year: int, max_years: int):
