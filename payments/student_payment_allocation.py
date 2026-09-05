@@ -523,15 +523,16 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
             continue
         # When staff split a manual charge across chosen semesters, each part is tagged
         # with a Semester for ledger placement. Ordinary ad-hoc waits until that term
-        # starts; exemption form/course fees stay immediately due so they appear on
-        # student list balances as soon as Accounts posts them.
+        # starts; exemption form fee stays immediately due; remaining-tuition arrears
+        # stay due; EXEMPTION_COURSE split parts are due only for current/prior terms.
         sem = charge.semester
         billable = True
         payable_year = payable_term = None
+        code = fee_head_code(charge)
         extra: dict[str, Any] = {
             "charge_status": charge.status,
             "fee_head_id": charge.fee_head_id,
-            "fee_head_code": fee_head_code(charge),
+            "fee_head_code": code,
         }
         if is_exemption_form_fee_charge(charge):
             extra["exclude_from_tuition"] = True
@@ -548,11 +549,37 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
                     "billing_date": eff_date.isoformat() if eff_date else None,
                 }
             )
-            if is_exemption_adhoc_charge(charge):
+            pair = _curriculum_pair(payable_year, payable_term)
+            if code == "EXEMPTION_FORM":
+                billable = True
+                extra["exemption_immediate"] = True
+            elif code == "EXEMPT_REMAIN_TUIT":
+                # Papers still owed from earlier terms — always collectible.
+                billable = True
+                extra["exemption_immediate"] = True
+                if pair is not None and pair < (cy, ct):
+                    extra["prior_period_settled"] = True
+            elif code == "EXEMPTION_COURSE":
+                # 4-way split: only this semester's slice (and any unpaid prior slices)
+                # are due now; later semester tags wait.
+                extra["exemption_immediate"] = True
+                if pair is None:
+                    billable = True
+                elif pair > (cy, ct):
+                    billable = False
+                elif pair < (cy, ct):
+                    billable = True
+                    extra["prior_period_settled"] = True
+                else:
+                    billable = True
+            elif is_exemption_adhoc_charge(charge):
                 billable = True
                 extra["exemption_immediate"] = True
             elif eff_date is not None:
                 billable = timezone.localdate() >= eff_date
+        elif is_exemption_adhoc_charge(charge):
+            billable = True
+            extra["exemption_immediate"] = True
         lines.append(
             DemandLine(
                 kind="ad_hoc",

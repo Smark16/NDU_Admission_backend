@@ -765,24 +765,42 @@ def _billing_lines_from_alloc(alloc) -> list[dict[str, Any]]:
                 "semester_label": semester_label,
             }
         elif line.kind == "ad_hoc":
-            if is_prior:
-                continue
             is_form = (line.extra.get("fee_head_code") or "") == "EXEMPTION_FORM"
+            # Keep prior-term remaining / unpaid exemption slices visible as
+            # carried-forward (do not drop them — student must still pay).
+            if is_form:
+                semester_label = "Exemption form fee"
+                yi, ti = None, None
+            else:
+                # Group under Year N Semester M with tuition/functional for that term.
+                if yi and ti:
+                    semester_label = curriculum_period_label(yi, ti, calendar_type=cal)
+                else:
+                    semester_label = curriculum_period_label(
+                        None,
+                        None,
+                        calendar_type=cal,
+                        semester_name=line.extra.get("semester_name") or "Additional charges",
+                    )
             row = {
                 "kind": "exemption_form" if is_form else "ad_hoc",
                 "charge_id": line.charge_id,
                 "fee_head": line.fee_head,
                 "fee_head_code": line.extra.get("fee_head_code") or "",
-                "description": line.description,
+                "description": (
+                    f"{line.description} · {prior_suffix}"
+                    if is_prior and line.description
+                    else line.description
+                ),
                 "amount": float(line.amount),
                 "paid_amount": float(line.paid_amount),
                 "balance": float(line.balance),
                 "currency": line.currency,
                 "status": line.extra.get("charge_status", line.status),
-                "prior_term": False,
+                "prior_term": is_prior,
                 "year_of_study": None if is_form else yi,
                 "term_number": None if is_form else ti,
-                "semester_label": "Exemption form fee" if is_form else "Ad-hoc charges",
+                "semester_label": semester_label,
             }
         else:
             continue
