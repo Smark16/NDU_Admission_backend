@@ -315,6 +315,11 @@ urlpatterns = [
     # Admission Change Requests
     path('change_requests/my', views.StudentChangeRequestListCreate.as_view(), name='student_change_requests'),
     path(
+        'change_requests/exemption/verify/<uuid:token>/',
+        views.ExemptionHodApprovalVerifyPublicView.as_view(),
+        name='exemption_hod_approval_verify_public',
+    ),
+    path(
         'change_requests/my/<int:pk>',
         views.StudentChangeRequestListCreate.as_view(),
         name='student_change_request_delete',

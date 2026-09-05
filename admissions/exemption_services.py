@@ -3173,3 +3173,96 @@ def advance_student_position_for_exemption(
         "to_year_of_study": to_year,
         "to_term_number": to_term,
     }
+
+
+def ensure_exemption_verification_token(change_request: AdmissionChangeRequest) -> str | None:
+    """
+    Issue (or return) the public QR token once HOD has reviewed with ≥1 approved paper.
+    """
+    if change_request.change_type != "exemption":
+        return None
+    if not change_request.hod_reviewed_at:
+        return None
+    from admissions.models import ExemptionRequestLine
+
+    has_approved = change_request.exemption_lines.filter(
+        decision=ExemptionRequestLine.DECISION_APPROVED
+    ).exists()
+    if not has_approved:
+        return None
+    if change_request.exemption_verification_token:
+        return str(change_request.exemption_verification_token)
+    import uuid
+
+    change_request.exemption_verification_token = uuid.uuid4()
+    change_request.save(update_fields=["exemption_verification_token", "updated_at"])
+    return str(change_request.exemption_verification_token)
+
+
+def public_verify_exemption(token: str, *, request=None) -> dict:
+    """Payload for GET /api/admissions/change_requests/exemption/verify/<token>/."""
+    from admissions.models import ExemptionRequestLine
+
+    token = (token or "").strip()
+    if not token:
+        return {"valid": False, "detail": "Missing verification token."}
+
+    try:
+        req = (
+            AdmissionChangeRequest.objects.select_related(
+                "admitted_student",
+                "admitted_student__admitted_program",
+                "hod_reviewed_by",
+            )
+            .prefetch_related("exemption_lines")
+            .get(
+                exemption_verification_token=token,
+                change_type="exemption",
+            )
+        )
+    except (AdmissionChangeRequest.DoesNotExist, ValueError):
+        return {"valid": False, "detail": "This exemption document could not be verified."}
+
+    student = req.admitted_student
+    programme = None
+    if student and student.admitted_program_id:
+        programme = student.admitted_program.name
+
+    approved = []
+    for line in req.exemption_lines.all():
+        if line.decision != ExemptionRequestLine.DECISION_APPROVED:
+            continue
+        approved.append(
+            {
+                "course_code": line.course_code or "",
+                "course_name": line.course_name or "",
+                "year_of_study": line.year_of_study,
+                "term_number": line.term_number,
+                "score_obtained": line.score_obtained,
+            }
+        )
+
+    hod_name = None
+    if req.hod_reviewed_by_id:
+        hod_name = req.hod_reviewed_by.get_full_name() or req.hod_reviewed_by.username
+
+    return {
+        "valid": True,
+        "message": "Authentic HOD course-exemption approval from Ndejje University portal.",
+        "request_id": req.id,
+        "hod_status": req.hod_status,
+        "hod_status_display": req.get_hod_status_display(),
+        "hod_reviewed_at": req.hod_reviewed_at.isoformat() if req.hod_reviewed_at else None,
+        "hod_reviewed_by_name": hod_name,
+        "approved_count": len(approved),
+        "papers": approved,
+        "promotion_year": req.exemption_promotion_year,
+        "promotion_term": req.exemption_promotion_term,
+        "student": {
+            "name": student.full_name if student else "",
+            "student_id": student.student_id if student else "",
+            "reg_no": student.reg_no if student else "",
+            "programme": programme,
+        },
+        "checked_at": timezone.now().isoformat(),
+    }

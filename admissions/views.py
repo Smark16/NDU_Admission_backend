@@ -4840,7 +4840,9 @@ class StudentChangeRequestListCreate(APIView):
             return Response({'detail': 'No active admission found.'}, status=404)
         qs = AdmissionChangeRequest.objects.filter(
             admitted_student=admission
-        ).select_related('new_program', 'new_campus', 'reviewed_by').prefetch_related(
+        ).select_related(
+            'new_program', 'new_campus', 'reviewed_by', 'hod_reviewed_by'
+        ).prefetch_related(
             'exemption_lines', 'supporting_documents'
         )
 
@@ -5199,6 +5201,21 @@ class StudentChangeRequestListCreate(APIView):
             **data,
         )
         return Response(AdmissionChangeRequestSerializer(obj).data, status=201)
+
+
+class ExemptionHodApprovalVerifyPublicView(APIView):
+    """GET /api/admissions/change_requests/exemption/verify/<token>/ — public QR check."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request, token):
+        from admissions.exemption_services import public_verify_exemption
+
+        payload = public_verify_exemption(str(token), request=request)
+        if not payload.get("valid"):
+            return Response(payload, status=status.HTTP_404_NOT_FOUND)
+        return Response(payload)
 
 
 class ExemptionFormFeeAccessView(APIView):
@@ -6093,6 +6110,11 @@ class AdminChangeRequestReview(APIView):
                         req_obj.hod_reviewed_by = request.user
                         req_obj.hod_reviewed_at = timezone.now()
                         req_obj.hod_notes = review_notes
+                        from admissions.exemption_services import (
+                            ensure_exemption_verification_token,
+                        )
+
+                        ensure_exemption_verification_token(req_obj)
                     elif stage in ("dean", "ar"):
                         from admissions.exemption_services import (
                             apply_line_decisions,

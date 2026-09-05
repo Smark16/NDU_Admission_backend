@@ -1634,6 +1634,7 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
     promotion_context = serializers.SerializerMethodField()
     exemption_promotion_applied = serializers.SerializerMethodField()
     exemption_promotion_pending_accounts = serializers.SerializerMethodField()
+    verification_token = serializers.SerializerMethodField()
 
     class Meta:
         model = AdmissionChangeRequest
@@ -1659,6 +1660,7 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
             'exemption_promotion_year', 'exemption_promotion_term',
             'exemption_promotion_at', 'exemption_effects_applied_at',
             'exemption_promotion_applied', 'exemption_promotion_pending_accounts',
+            'verification_token',
         ]
 
     def get_supporting_documents(self, obj):
@@ -1719,6 +1721,13 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
 
     def get_hod_reviewed_by_name(self, obj):
         return self._reviewer_name(getattr(obj, "hod_reviewed_by", None))
+
+    def get_verification_token(self, obj):
+        if getattr(obj, "change_type", None) != "exemption":
+            return None
+        from admissions.exemption_services import ensure_exemption_verification_token
+
+        return ensure_exemption_verification_token(obj)
 
     def get_dean_reviewed_by_name(self, obj):
         return self._reviewer_name(getattr(obj, "dean_reviewed_by", None))
