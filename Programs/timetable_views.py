@@ -32,6 +32,13 @@ from Programs.timetable_pdf import (
     render_timetable_pdf,
     safe_pdf_filename,
 )
+from Programs.timetable_csv import (
+    apply_import,
+    build_timetable_worksheet,
+    csv_template_text,
+    spreadsheet_bytes_to_csv_text,
+    worksheet_csv_to_xlsx_bytes,
+)
 from Programs.timetable_utils import (
     build_catalog_overview,
     compute_teaching_load,
@@ -1076,6 +1083,182 @@ class SemesterTimetableBulkPublishView(APIView):
                 ),
             }
         )
+
+
+class SemesterTimetableCsvTemplateView(APIView):
+    """GET /api/program/semester/<id>/timetable/csv_template — download CSV/Excel template."""
+
+    permission_classes = [IsAuthenticated, ProgramSchedulingAPIPermission]
+
+    def get(self, request, semester_id):
+        semester = get_object_or_404(Semester, pk=semester_id, is_active=True)
+        assert_semester_access(request.user, semester)
+        text = csv_template_text(semester=semester)
+        batch = semester.program_batch
+        label = (batch.name if batch else f"sem{semester_id}").replace(" ", "_")
+        fmt = (request.query_params.get("file_format") or request.query_params.get("format") or "csv").strip().lower()
+        if fmt in ("xlsx", "excel", "xls"):
+            try:
+                payload = worksheet_csv_to_xlsx_bytes(text)
+            except ValueError as exc:
+                return Response({"detail": str(exc)}, status=500)
+            response = HttpResponse(
+                payload,
+                content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+            response["Content-Disposition"] = (
+                f'attachment; filename="timetable_template_{label}.xlsx"'
+            )
+            return response
+        response = HttpResponse(text, content_type="text/csv; charset=utf-8")
+        response["Content-Disposition"] = (
+            f'attachment; filename="timetable_template_{label}.csv"'
+        )
+        return response
+
+
+class SemesterTimetableCsvWorksheetView(APIView):
+    """
+    GET /api/program/semester/<id>/timetable/csv_worksheet
+
+    Pre-filled schedule worksheet from the database (STO / cross-cutting / programme-only).
+    Query params:
+      expand=faculty|ay|none (default faculty)
+      campus_id=
+      study_mode=  (optional override; else inferred from this batch)
+      format=csv|xlsx via file_format= (default xlsx). Do not use ?format= — DRF reserves that.
+    """
+
+    permission_classes = [IsAuthenticated, ProgramSchedulingAPIPermission]
+
+    def get(self, request, semester_id):
+        semester = get_object_or_404(
+            Semester.objects.select_related(
+                "program_batch",
+                "program_batch__program",
+                "program_batch__program__faculty",
+            ),
+            pk=semester_id,
+            is_active=True,
+        )
+        assert_semester_access(request.user, semester)
+
+        expand = (request.query_params.get("expand") or "faculty").strip().lower()
+        if expand not in ("faculty", "ay", "none"):
+            expand = "faculty"
+
+        campus_id = None
+        raw_campus = request.query_params.get("campus_id")
+        if raw_campus not in (None, ""):
+            try:
+                campus_id = int(raw_campus)
+            except (TypeError, ValueError):
+                return Response({"detail": "campus_id must be an integer."}, status=400)
+
+        study_mode = (request.query_params.get("study_mode") or "").strip()
+        # Prefer file_format — DRF's ?format= triggers content negotiation 404.
+        fmt = (
+            request.query_params.get("file_format")
+            or request.query_params.get("export")
+            or "xlsx"
+        ).strip().lower()
+
+        text = build_timetable_worksheet(
+            semester=semester,
+            campus_id=campus_id,
+            study_mode=study_mode,
+            expand=expand,
+        )
+        batch = semester.program_batch
+        label = (batch.name if batch else f"sem{semester_id}").replace(" ", "_")
+
+        if fmt in ("csv", "text"):
+            response = HttpResponse(text, content_type="text/csv; charset=utf-8")
+            response["Content-Disposition"] = (
+                f'attachment; filename="timetable_worksheet_{label}.csv"'
+            )
+            return response
+
+        try:
+            payload = worksheet_csv_to_xlsx_bytes(text)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=500)
+        response = HttpResponse(
+            payload,
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        response["Content-Disposition"] = (
+            f'attachment; filename="timetable_worksheet_{label}.xlsx"'
+        )
+        return response
+
+
+class SemesterTimetableBulkUploadView(APIView):
+    """
+    POST /api/program/semester/<id>/timetable/bulk_upload
+
+    Multipart: file (CSV or Excel .xlsx). Optional: strict=1 (default), dry_run=1.
+    Same columns as the worksheet (course_code, day, start_time, …).
+    """
+
+    permission_classes = [IsAuthenticated, ProgramSchedulingAPIPermission]
+    parser_classes = [MultiPartParser, FormParser]
+
+    @staticmethod
+    def _flag(request, name: str, default: bool = False) -> bool:
+        raw = request.data.get(name)
+        if raw is None:
+            raw = request.query_params.get(name)
+        if raw is None or raw == "":
+            return default
+        return str(raw).strip().lower() in ("1", "true", "yes", "y", "t")
+
+    def post(self, request, semester_id):
+        semester = get_object_or_404(Semester, pk=semester_id, is_active=True)
+        assert_semester_access(request.user, semester)
+
+        uploaded = request.FILES.get("file")
+        if not uploaded:
+            return Response(
+                {"detail": 'No file received. Send CSV/Excel as multipart field "file".'},
+                status=400,
+            )
+        name = (uploaded.name or "").lower()
+        if not name.endswith((".csv", ".xlsx", ".xlsm", ".xls")):
+            return Response(
+                {"detail": "Only .csv or Excel (.xlsx) files are accepted."},
+                status=400,
+            )
+
+        raw = uploaded.read()
+        try:
+            text = spreadsheet_bytes_to_csv_text(raw, uploaded.name or "")
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
+
+        strict = self._flag(request, "strict", default=True)
+        if "strict" in request.data or "strict" in request.query_params:
+            strict = self._flag(request, "strict", default=True)
+        dry_run = self._flag(request, "dry_run", default=False)
+
+        result = apply_import(semester, text, strict=strict, dry_run=dry_run)
+        payload = result.as_dict()
+        if result.errors and result.created == 0:
+            payload["detail"] = (
+                "Import blocked by validation errors."
+                if strict
+                else "No sessions created."
+            )
+            return Response(payload, status=400)
+        payload["message"] = (
+            f"{'Dry run: would create' if dry_run else 'Created'} {result.created} session(s)"
+            + (
+                f", {result.shared_offerings} shared teaching group(s)."
+                if result.shared_offerings
+                else "."
+            )
+        )
+        return Response(payload, status=200)
 
 
 class TimetableSessionDetailView(APIView):

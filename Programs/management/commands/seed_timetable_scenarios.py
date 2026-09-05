@@ -143,6 +143,7 @@ class Command(BaseCommand):
             ProgramBatch,
             ProgramCurriculumLine,
             ProgramCurriculumVersion,
+            Semester,
             SharedTeachingOffering,
             TeachingSection,
             TimetableSession,
@@ -166,6 +167,8 @@ class Command(BaseCommand):
             TeachingSection.objects.filter(name__startswith=TAG).delete()
             ProgramCurriculumLine.objects.filter(program__name__startswith=TAG).delete()
             ProgramCurriculumVersion.objects.filter(program__name__startswith=TAG).delete()
+            # Children before parents so easyaudit __str__ still finds FKs.
+            Semester.objects.filter(program_batch__name__startswith=TAG).delete()
             ProgramBatch.objects.filter(name__startswith=TAG).delete()
             Program.objects.filter(name__startswith=TAG).delete()
             CourseCatalogUnit.objects.filter(title__startswith=TAG).delete()
