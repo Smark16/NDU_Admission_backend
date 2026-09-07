@@ -346,8 +346,12 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
         if amt <= 0:
             continue
         sem = rule.semester
-        # Full term / full year / pre-entry terms: omit TUITION + FUNCTIONAL.
-        # Partial exemptions: Accounts posts remaining tuition manually after billing.
+        # Omit TUITION + FUNCTIONAL for terms before SPE entry (e.g. whole Y1
+        # after promotion into Y2T1). From entry onward the student pays schedule
+        # tuition + functional even if some/all papers that term were also
+        # course-exempted — EXEMPTION_COURSE is billed separately.
+        # Without a promotion entry point, fully paper-exempted years/terms
+        # still omit both heads (legacy non-promoted cases).
         fee_code = (rule.fee_head.code or "").upper() if rule.fee_head_id else ""
         is_tuition_head = fee_code == "TUITION_FEE"
         is_functional_head = fee_code == "FUNCTIONAL_FEE" or "FUNCTIONAL" in fee_code
@@ -377,26 +381,11 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
         ):
             if entry_pair is not None and (sem_year, sem_term) < entry_pair:
                 continue
-            if _year_fully_exempt(sem_year):
-                continue
-            if _term_fully_exempt(sem_year, sem_term):
-                continue
-
-        # After Accounts bills exemptions, schedule TUITION for that term is
-        # omitted — remaining papers are posted manually as EXEMPT_REMAIN_TUIT
-        # (semester tuition ÷ 6 each, on that semester). Functional fees stay on schedule.
-        # The flat EXEMPTION_COURSE fee is the only amount Accounts may split across semesters.
-        if (
-            is_tuition_head
-            and finance_unlocked
-            and sem_year is not None
-            and sem_term is not None
-        ):
-            counts = semester_paper_counts_for_exemptions(
-                student, year_of_study=sem_year, term_number=sem_term
-            )
-            if counts and counts.get("exempted_papers", 0) > 0:
-                continue
+            if entry_pair is None:
+                if _year_fully_exempt(sem_year):
+                    continue
+                if _term_fully_exempt(sem_year, sem_term):
+                    continue
 
         line = DemandLine(
             kind="tuition_structure",
