@@ -2441,6 +2441,85 @@ def enrollment_promotion_context(student: AdmittedStudent) -> dict | None:
     }
 
 
+def remaining_semesters_for_exemption_split(
+    student: AdmittedStudent,
+    change_request: AdmissionChangeRequest | None = None,
+) -> list:
+    """
+    Active cohort semesters from promotion target (else SPE) through programme end.
+
+    Used by Accounts when spreading EXEMPTION_COURSE equally across remaining
+    programme semesters instead of a manual checkbox selection.
+    """
+    from Programs.models import Semester
+    from payments.student_portal_finance import _student_program_batch_id
+
+    pb_id = _student_program_batch_id(student)
+    if not pb_id:
+        return []
+
+    start_year = 1
+    start_term = 1
+    if (
+        change_request is not None
+        and change_request.exemption_promotion_year is not None
+        and change_request.exemption_promotion_term is not None
+    ):
+        start_year = int(change_request.exemption_promotion_year)
+        start_term = int(change_request.exemption_promotion_term)
+    else:
+        try:
+            enrollment = student.programme_enrollment
+            if enrollment is not None:
+                start_year = int(enrollment.current_year_of_study or 1)
+                start_term = int(enrollment.current_term_number or 1)
+        except Exception:
+            pass
+
+    qs = (
+        Semester.objects.filter(program_batch_id=pb_id, is_active=True)
+        .order_by("year_of_study", "term_number", "order", "name")
+    )
+    remaining = []
+    for sem in qs:
+        y = int(sem.year_of_study or 0)
+        t = int(sem.term_number or 0)
+        if (y, t) >= (start_year, start_term):
+            remaining.append(sem)
+    return remaining
+
+
+def exemption_split_presets_for_request(change_request: AdmissionChangeRequest) -> dict:
+    """Preset semester ids for Accounts exemption fee split modes."""
+    student = change_request.admitted_student
+    remaining = remaining_semesters_for_exemption_split(student, change_request)
+    from_year = None
+    from_term = None
+    if (
+        change_request.exemption_promotion_year is not None
+        and change_request.exemption_promotion_term is not None
+    ):
+        from_year = int(change_request.exemption_promotion_year)
+        from_term = int(change_request.exemption_promotion_term)
+    else:
+        try:
+            enrollment = student.programme_enrollment
+            if enrollment is not None:
+                from_year = int(enrollment.current_year_of_study or 1)
+                from_term = int(enrollment.current_term_number or 1)
+        except Exception:
+            pass
+    if remaining and from_year is None:
+        from_year = int(remaining[0].year_of_study or 1)
+        from_term = int(remaining[0].term_number or 1)
+    return {
+        "remaining_semester_ids": [int(s.id) for s in remaining],
+        "remaining_count": len(remaining),
+        "from_year": from_year,
+        "from_term": from_term,
+    }
+
+
 def exemption_promotion_proposed(change_request: AdmissionChangeRequest) -> bool:
     """True when HOD/Dean has confirmed a target year/term on the request."""
     return (

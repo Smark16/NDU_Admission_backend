@@ -832,6 +832,7 @@ class StudentExemptionChargesCreateView(APIView):
           year_of_study?, term_number?, semester_id?, amount? }
       ]
       semester_ids: [int, ...]  — EXEMPTION_COURSE total spread across these
+      split_mode?: "manual"|"remaining"  — audit note only; semester_ids authoritative
       replace_pending: bool — delete pending charges for this change request
 
     Exempted papers → EXEMPTION_COURSE (flat alumnus/external fee), spread.
@@ -885,6 +886,8 @@ class StudentExemptionChargesCreateView(APIView):
         lines = request.data.get("lines") or []
         semester_ids = request.data.get("semester_ids") or []
         replace_pending = bool(request.data.get("replace_pending"))
+        split_mode_raw = _text(request.data.get("split_mode")).lower()
+        split_mode = split_mode_raw if split_mode_raw in ("manual", "remaining") else ""
 
         if not change_request_id:
             return Response(
@@ -1190,10 +1193,13 @@ class StudentExemptionChargesCreateView(APIView):
 
                 if paper_count > 0 and paper_total > 0:
                     label_base = f"Course exemption fees ({paper_count} paper(s))"
+                    split_note = (
+                        f" split_mode={split_mode};" if split_mode else ""
+                    )
                     notes = (
                         f"{note_marker}; fee head {EXEMPTION_COURSE_FEE_CODE}; "
                         f"total UGX {paper_total} = sum of per-paper exemption fees; "
-                        f"spread across {len(semesters)} semester(s). "
+                        f"spread across {len(semesters)} semester(s).{split_note} "
                         f"Papers: {', '.join(paper_labels[:20])}"
                         + ("…" if len(paper_labels) > 20 else "")
                     )[:2000]
