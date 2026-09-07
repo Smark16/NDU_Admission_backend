@@ -645,23 +645,9 @@ class GetAvailableCoursesForRegistration(APIView):
                         status=status.HTTP_400_BAD_REQUEST,
                     )
 
-                # ── Step 2: Standard courses (blueprint year/term = current) ──────
-                # Curriculum lines at current position with no blocking override
-                standard_lines = ProgramCurriculumLine.objects.filter(
-                    program=curriculum_owner_program(spe.program),
-                    curriculum_version=curriculum_version,
-                    year_of_study=curr_year,
-                    term_number=curr_term,
-                    is_active=True,
-                ).exclude(id__in=excluded_line_ids)
-                if selected_specialization:
-                    standard_lines = standard_lines.filter(
-                        Q(specialization__isnull=True)
-                        | Q(specialization='')
-                        | Q(specialization__iexact=selected_specialization)
-                    )
-
-                # Find the operational Semester for current position
+                # ── Step 2: Units due now (current SPE + pre-entry leftovers) ─────
+                # Billing-date gated for leftover terms (same rule as auto-assign /
+                # Accounts remaining tuition: Y1S1 due with Y2S1; Y1S2 waits).
                 current_semester = Semester.objects.filter(
                     program_batch=spe.program_batch,
                     year_of_study=curr_year,
@@ -669,18 +655,12 @@ class GetAvailableCoursesForRegistration(APIView):
                     is_active=True,
                 ).first()
 
-                if current_semester:
-                    # Map code → CourseUnit for fast lookup
-                    cu_map = {
-                        cu.code: cu.id
-                        for cu in CourseUnit.objects.filter(
-                            semester=current_semester, is_active=True
-                        )
-                    }
-                    for line in standard_lines:
-                        cid = cu_map.get(line.catalog_course.code)
-                        if cid:
-                            available_course_unit_ids.add(cid)
+                from .enrollment_course_assignment import (
+                    course_unit_ids_for_enrollment_due_terms,
+                )
+
+                due_unit_ids, _due_skip = course_unit_ids_for_enrollment_due_terms(spe)
+                available_course_unit_ids.update(due_unit_ids)
 
                 # ── Step 3: Deferred / backlog overrides effective NOW ────────────
                 active_overrides = [
