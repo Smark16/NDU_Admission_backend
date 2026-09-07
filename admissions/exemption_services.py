@@ -3275,12 +3275,43 @@ def advance_student_position_for_exemption(
         update_fields += ["entry_year_of_study", "entry_term_number"]
     enrollment.save(update_fields=update_fields)
 
+    # Portal My Courses + LMS read StudentCourseUnitEnrollment. Moving SPE alone
+    # leaves the new term empty until units are assigned.
+    auto_assign = {
+        "course_units_auto_assigned": 0,
+        "course_units_total_in_semester": 0,
+        "auto_assign_skip_reason": None,
+    }
+    try:
+        from payments.programme_enrollment_activation import (
+            _auto_assign_current_semester_course_units,
+        )
+
+        auto_assign = _auto_assign_current_semester_course_units(enrollment)
+    except Exception:
+        logger = __import__("logging").getLogger(__name__)
+        logger.exception(
+            "Auto-assign after exemption promotion failed for student %s CR #%s",
+            student.pk,
+            change_request.id,
+        )
+        auto_assign["auto_assign_skip_reason"] = "auto_assign_error"
+
     note = (
         f"[{timezone.now():%Y-%m-%d %H:%M}] Advanced Y{from_year}T{from_term} -> "
         f"Y{to_year}T{to_term} following approved course exemption "
         f"(change request #{change_request.id}), confirmed by "
         f"{getattr(decided_by, 'get_full_name', lambda: decided_by)() or decided_by}."
     )
+    assigned_n = int(auto_assign.get("course_units_auto_assigned") or 0)
+    total_n = int(auto_assign.get("course_units_total_in_semester") or 0)
+    skip = auto_assign.get("auto_assign_skip_reason")
+    if assigned_n or total_n or skip:
+        note += f" Course units assigned={assigned_n}/{total_n}"
+        if skip:
+            note += f" (skip={skip})"
+        note += "."
+
     change_request.review_notes = "\n".join(
         filter(None, [change_request.review_notes, note])
     )[:20000]
@@ -3300,6 +3331,9 @@ def advance_student_position_for_exemption(
         "from_term_number": from_term,
         "to_year_of_study": to_year,
         "to_term_number": to_term,
+        "course_units_auto_assigned": assigned_n,
+        "course_units_total_in_semester": total_n,
+        "auto_assign_skip_reason": skip,
     }
 
 
