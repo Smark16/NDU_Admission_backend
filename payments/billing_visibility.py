@@ -271,9 +271,12 @@ def is_exemption_adhoc_charge(charge) -> bool:
 
 
 def adhoc_charge_billing_reached(charge) -> bool:
-    # Exemption fees are owed as soon as Accounts posts them, even when
-    # staff spreads the total across future cohort semesters for ledger tagging.
-    if is_exemption_adhoc_charge(charge):
+    # Form fee: always owed once posted.
+    # Course-exemption split: SPE gating is applied in _build_demand_lines.
+    # Remaining-tuition papers: follow the tagged semester billing date so
+    # Y1S2 (etc.) stays not-due until Accounts' term is open.
+    code = fee_head_code(charge)
+    if code in {"EXEMPTION_FORM", "EXEMPTION_COURSE"}:
         return True
     effective = adhoc_charge_billing_date(charge)
     if effective is None:
