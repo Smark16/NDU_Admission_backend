@@ -17,7 +17,11 @@ from accounts.models import Campus
 from Programs.models import CourseUnit, RoomType, Semester, TeachingSection, TimetableSession, Venue
 from Programs.section_lecturers import timetable_lecturer_prefetch
 from Programs.permissions import ProgramSchedulingAPIPermission
-from admissions.faculty_scope import assert_semester_access, assert_timetable_session_access
+from admissions.faculty_scope import (
+    assert_course_unit_access,
+    assert_semester_access,
+    assert_timetable_session_access,
+)
 from Programs.teaching_sections import list_sections_for_batch
 from Programs.venue_code_utils import (
     ensure_room_type,
@@ -49,6 +53,8 @@ from Programs.timetable_utils import (
     serialize_lecturer_brief,
     serialize_session,
     sessions_for_semester,
+    soft_delete_linked_sessions_from_source,
+    update_linked_sessions_from_source,
     validate_session_scheduling,
 )
 from Programs.shared_teaching import (
@@ -1266,10 +1272,56 @@ class TimetableSessionDetailView(APIView):
 
     def patch(self, request, pk):
         session = get_object_or_404(
-            TimetableSession.objects.select_related("course_unit", "venue", "venue__campus"),
+            TimetableSession.objects.select_related(
+                "course_unit",
+                "course_unit__shared_teaching_offering",
+                "venue",
+                "venue__campus",
+            ),
             pk=pk,
         )
         assert_timetable_session_access(request.user, session)
+
+        previous_fingerprint = {
+            "day_of_week": session.day_of_week,
+            "start_time": session.start_time,
+            "end_time": session.end_time,
+            "session_date": session.session_date,
+            "start_date": session.start_date,
+            "end_date": session.end_date,
+            "session_type": session.session_type,
+        }
+        original_semester_id = session.course_unit.semester_id if session.course_unit_id else None
+
+        if "course_unit_id" in request.data:
+            raw_cu = request.data.get("course_unit_id")
+            if raw_cu in (None, ""):
+                return Response({"detail": "course_unit_id cannot be empty."}, status=400)
+            new_cu = get_object_or_404(
+                CourseUnit.objects.select_related(
+                    "semester",
+                    "shared_teaching_offering",
+                    "program_batch",
+                    "program_batch__program",
+                ),
+                pk=int(raw_cu),
+                is_active=True,
+            )
+            if original_semester_id and new_cu.semester_id != original_semester_id:
+                return Response(
+                    {
+                        "detail": (
+                            "Course unit must stay on the same semester timetable. "
+                            "Open the other semester to schedule that unit there."
+                        )
+                    },
+                    status=400,
+                )
+            assert_course_unit_access(request.user, new_cu)
+            session.course_unit = new_cu
+            # Section may not belong to the new unit's cohort — clear unless re-sent below.
+            if "teaching_section_id" not in request.data:
+                session.teaching_section = None
 
         if "session_date" in request.data:
             raw = request.data.get("session_date")
@@ -1356,6 +1408,7 @@ class TimetableSessionDetailView(APIView):
 
         warnings = list(validation.warnings)
         raw_lecturer_ids = request.data.get("lecturer_ids", None)
+        lecturer_ids_parsed: list[int] | None = None
         if raw_lecturer_ids is not None:
             if not isinstance(raw_lecturer_ids, list):
                 warnings.append(
@@ -1365,14 +1418,19 @@ class TimetableSessionDetailView(APIView):
                 try:
                     from Programs.section_lecturers import assign_lecturers_to_section
 
+                    lecturer_ids_parsed = [int(x) for x in raw_lecturer_ids]
                     assign_lecturers_to_section(
                         session.course_unit,
-                        [int(x) for x in raw_lecturer_ids],
+                        lecturer_ids_parsed,
                         teaching_section=session.teaching_section,
                     )
                     session = (
                         TimetableSession.objects.select_related(
-                            "course_unit", "venue", "venue__campus", "teaching_section"
+                            "course_unit",
+                            "course_unit__shared_teaching_offering",
+                            "venue",
+                            "venue__campus",
+                            "teaching_section",
                         )
                         .prefetch_related(*timetable_lecturer_prefetch())
                         .get(pk=session.pk)
@@ -1380,17 +1438,80 @@ class TimetableSessionDetailView(APIView):
                 except Exception as exc:
                     warnings.append(f"Session saved, but lecturers were not updated: {exc}")
 
+        propagated = {"updated": [], "skipped": [], "created": [], "warnings": []}
+        propagate = bool(
+            request.data.get("mirror_to_linked_units")
+            or request.data.get("propagate_to_linked")
+        )
+        if propagate:
+            # Reload course_unit STO after save
+            session = (
+                TimetableSession.objects.select_related(
+                    "course_unit",
+                    "course_unit__shared_teaching_offering",
+                    "venue",
+                    "venue__campus",
+                    "teaching_section",
+                )
+                .prefetch_related(*timetable_lecturer_prefetch())
+                .get(pk=session.pk)
+            )
+            propagated = update_linked_sessions_from_source(
+                session,
+                previous=previous_fingerprint,
+                lecturer_ids=lecturer_ids_parsed,
+            )
+            warnings.extend(propagated.get("warnings") or [])
+            n_upd = len(propagated.get("updated") or [])
+            n_new = len(propagated.get("created") or [])
+            if n_upd or n_new:
+                parts = []
+                if n_upd:
+                    parts.append(f"updated {n_upd}")
+                if n_new:
+                    parts.append(f"created {n_new}")
+                warnings.append(
+                    "Linked programme slot(s) "
+                    + " and ".join(parts)
+                    + " (same study mode)."
+                )
+
         data = serialize_session(session)
         data["warnings"] = warnings
         data["clashes"] = validation.clashes
+        data["propagated"] = propagated
         return Response(data)
 
     def delete(self, request, pk):
         session = get_object_or_404(
-            TimetableSession.objects.select_related("course_unit__program_batch__program"),
+            TimetableSession.objects.select_related(
+                "course_unit",
+                "course_unit__program_batch__program",
+                "course_unit__shared_teaching_offering",
+            ),
             pk=pk,
         )
         assert_timetable_session_access(request.user, session)
+        previous_fingerprint = {
+            "day_of_week": session.day_of_week,
+            "start_time": session.start_time,
+            "end_time": session.end_time,
+            "session_date": session.session_date,
+            "start_date": session.start_date,
+            "end_date": session.end_date,
+            "session_type": session.session_type,
+        }
+        cascade_raw = (
+            request.query_params.get("mirror_to_linked_units")
+            or request.query_params.get("propagate_to_linked")
+            or ""
+        )
+        cascade = str(cascade_raw).lower() in ("1", "true", "yes")
+        if cascade:
+            soft_delete_linked_sessions_from_source(
+                session, previous=previous_fingerprint
+            )
+
         session.is_active = False
         session.save(update_fields=["is_active", "updated_at"])
         return Response(status=204)

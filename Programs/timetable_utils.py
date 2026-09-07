@@ -608,6 +608,290 @@ def mirror_session_to_linked_units(session: TimetableSession) -> dict:
         result["created"].append(serialize_session(clone))
         result["warnings"].extend(validation.warnings)
 
+        # Keep peer course-unit lecturers in sync with the mother slot when possible.
+        try:
+            from Programs.section_lecturers import (
+                assign_lecturers_to_section,
+                lecturers_for_timetable_session,
+            )
+
+            lecturer_ids = [
+                int(u.id) for u in lecturers_for_timetable_session(session) if getattr(u, "id", None)
+            ]
+            if lecturer_ids:
+                assign_lecturers_to_section(
+                    sibling,
+                    lecturer_ids,
+                    teaching_section=None,
+                    mode="replace",
+                )
+        except Exception:  # noqa: BLE001
+            pass
+
+    return result
+
+
+def _session_fingerprint(session: TimetableSession) -> dict:
+    return {
+        "day_of_week": session.day_of_week,
+        "start_time": session.start_time,
+        "end_time": session.end_time,
+        "session_date": session.session_date,
+        "start_date": session.start_date,
+        "end_date": session.end_date,
+        "session_type": session.session_type,
+    }
+
+
+def _find_peer_session_to_update(
+    sibling,
+    *,
+    previous: dict,
+    sto_id: int,
+    source_session: TimetableSession,
+):
+    """Match the mirrored peer slot that corresponds to the pre-edit mother session."""
+    from Programs.models import TimetableSession as TS
+
+    qs = TS.objects.filter(course_unit=sibling, is_active=True)
+    exact = qs.filter(
+        day_of_week=previous.get("day_of_week"),
+        start_time=previous.get("start_time"),
+        end_time=previous.get("end_time"),
+        session_date=previous.get("session_date"),
+        start_date=previous.get("start_date"),
+        end_date=previous.get("end_date"),
+        session_type=previous.get("session_type") or source_session.session_type,
+    ).first()
+    if exact:
+        return exact
+
+    mirrored_note = f"Mirrored from shared teaching #{sto_id}"
+    note_match = (
+        qs.filter(notes__icontains=mirrored_note)
+        .filter(session_type=source_session.session_type)
+        .order_by("id")
+        .first()
+    )
+    if note_match:
+        return note_match
+
+    # Single recurring slot of the same type on the sibling — safe to update.
+    same_type = list(qs.filter(session_type=source_session.session_type).order_by("id")[:2])
+    if len(same_type) == 1:
+        return same_type[0]
+    return None
+
+
+def update_linked_sessions_from_source(
+    session: TimetableSession,
+    *,
+    previous: dict | None = None,
+    lecturer_ids: list[int] | None = None,
+) -> dict:
+    """
+    Push day/time/venue/lecturer changes from a mother (or any linked) session onto
+    same-study-mode siblings on the same SharedTeachingOffering.
+
+    ``previous`` should be the pre-edit fingerprint so peers can be matched before
+    the mother slot moved. If omitted, uses the current session fingerprint (weaker).
+    """
+    from Programs.models import CourseUnit, TimetableSession as TS
+    from Programs.shared_teaching import study_mode_for_course_unit
+
+    result = {"updated": [], "skipped": [], "created": [], "warnings": []}
+    cu = session.course_unit
+    sto_id = getattr(cu, "shared_teaching_offering_id", None) if cu else None
+    if not sto_id:
+        result["warnings"].append("Course unit is not on a shared teaching offering.")
+        return result
+
+    prev = previous or _session_fingerprint(session)
+    source_mode = study_mode_for_course_unit(cu) if cu else "Other"
+
+    siblings = list(
+        CourseUnit.objects.filter(shared_teaching_offering_id=sto_id, is_active=True)
+        .exclude(pk=cu.pk)
+        .select_related("semester", "program_batch", "program_batch__program")
+    )
+    if not siblings:
+        result["warnings"].append("No other linked programme course units to update.")
+        return result
+
+    for sibling in siblings:
+        sibling_mode = study_mode_for_course_unit(sibling)
+        if sibling_mode != source_mode:
+            result["skipped"].append(
+                {
+                    "course_unit_id": sibling.id,
+                    "reason": (
+                        f"different study mode ({sibling_mode} — only {source_mode} "
+                        "programmes receive the update)"
+                    ),
+                }
+            )
+            continue
+
+        peer = _find_peer_session_to_update(
+            sibling, previous=prev, sto_id=sto_id, source_session=session
+        )
+        if peer is None:
+            # No existing peer slot — create one (same as first-time mirror).
+            clone = TS(
+                course_unit=sibling,
+                teaching_section=None,
+                day_of_week=session.day_of_week,
+                session_date=session.session_date,
+                start_date=session.start_date,
+                end_date=session.end_date,
+                start_time=session.start_time,
+                end_time=session.end_time,
+                venue=session.venue,
+                room_label=session.room_label,
+                session_type=session.session_type,
+                delivery_mode=session.delivery_mode,
+                notes=(session.notes or "").strip()
+                or f"Mirrored from shared teaching #{sto_id} (cu {cu.id})",
+                is_published=session.is_published,
+                is_active=True,
+            )
+            validation = validate_session_scheduling(clone, require_venue=False)
+            if not validation.ok:
+                result["skipped"].append(
+                    {
+                        "course_unit_id": sibling.id,
+                        "reason": "; ".join(validation.errors),
+                    }
+                )
+                result["warnings"].extend(validation.errors)
+                continue
+            try:
+                clone.full_clean()
+                clone.save()
+            except Exception as exc:  # noqa: BLE001
+                result["skipped"].append({"course_unit_id": sibling.id, "reason": str(exc)})
+                continue
+            if lecturer_ids:
+                try:
+                    from Programs.section_lecturers import assign_lecturers_to_section
+
+                    assign_lecturers_to_section(
+                        sibling, lecturer_ids, teaching_section=None, mode="replace"
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+            clone = (
+                TS.objects.select_related(
+                    "course_unit",
+                    "course_unit__catalog_unit",
+                    "course_unit__shared_teaching_offering",
+                    "venue",
+                    "venue__campus",
+                    "teaching_section",
+                )
+                .prefetch_related(*timetable_lecturer_prefetch())
+                .get(pk=clone.pk)
+            )
+            result["created"].append(serialize_session(clone))
+            continue
+
+        peer.day_of_week = session.day_of_week
+        peer.session_date = session.session_date
+        peer.start_date = session.start_date
+        peer.end_date = session.end_date
+        peer.start_time = session.start_time
+        peer.end_time = session.end_time
+        peer.venue = session.venue
+        peer.room_label = session.room_label
+        peer.session_type = session.session_type
+        peer.delivery_mode = session.delivery_mode
+        peer.is_published = session.is_published
+        if not (peer.notes or "").strip():
+            peer.notes = f"Mirrored from shared teaching #{sto_id} (cu {cu.id})"
+
+        validation = validate_session_scheduling(peer, exclude_pk=peer.pk, require_venue=False)
+        if not validation.ok:
+            result["skipped"].append(
+                {
+                    "course_unit_id": sibling.id,
+                    "session_id": peer.id,
+                    "reason": "; ".join(validation.errors),
+                }
+            )
+            result["warnings"].extend(validation.errors)
+            continue
+        try:
+            peer.full_clean()
+            peer.save()
+        except Exception as exc:  # noqa: BLE001
+            result["skipped"].append(
+                {"course_unit_id": sibling.id, "session_id": peer.id, "reason": str(exc)}
+            )
+            continue
+
+        if lecturer_ids is not None:
+            try:
+                from Programs.section_lecturers import assign_lecturers_to_section
+
+                assign_lecturers_to_section(
+                    sibling, [int(x) for x in lecturer_ids], teaching_section=None, mode="replace"
+                )
+            except Exception as exc:  # noqa: BLE001
+                result["warnings"].append(
+                    f"Peer CU#{sibling.id} slot updated but lecturers not synced: {exc}"
+                )
+
+        peer = (
+            TS.objects.select_related(
+                "course_unit",
+                "course_unit__catalog_unit",
+                "course_unit__shared_teaching_offering",
+                "venue",
+                "venue__campus",
+                "teaching_section",
+            )
+            .prefetch_related(*timetable_lecturer_prefetch())
+            .get(pk=peer.pk)
+        )
+        result["updated"].append(serialize_session(peer))
+        result["warnings"].extend(validation.warnings)
+
+    return result
+
+
+def soft_delete_linked_sessions_from_source(
+    session: TimetableSession,
+    *,
+    previous: dict | None = None,
+) -> dict:
+    """Soft-delete same-mode peer slots that mirrored this session."""
+    from Programs.models import CourseUnit
+    from Programs.shared_teaching import study_mode_for_course_unit
+
+    result = {"deleted": [], "skipped": [], "warnings": []}
+    cu = session.course_unit
+    sto_id = getattr(cu, "shared_teaching_offering_id", None) if cu else None
+    if not sto_id:
+        return result
+
+    prev = previous or _session_fingerprint(session)
+    source_mode = study_mode_for_course_unit(cu) if cu else "Other"
+    siblings = CourseUnit.objects.filter(
+        shared_teaching_offering_id=sto_id, is_active=True
+    ).exclude(pk=cu.pk)
+
+    for sibling in siblings:
+        if study_mode_for_course_unit(sibling) != source_mode:
+            continue
+        peer = _find_peer_session_to_update(
+            sibling, previous=prev, sto_id=sto_id, source_session=session
+        )
+        if peer is None:
+            result["skipped"].append({"course_unit_id": sibling.id, "reason": "no matching slot"})
+            continue
+        peer.is_active = False
+        peer.save(update_fields=["is_active", "updated_at"])
+        result["deleted"].append({"session_id": peer.id, "course_unit_id": sibling.id})
     return result
 
 
