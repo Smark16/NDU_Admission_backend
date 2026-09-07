@@ -68,6 +68,7 @@ from .specialization_rules import (
     has_complete_specialization_entry,
     is_before_specialization_entry,
     normalize_specialization,
+    program_enforces_specialization_tracks,
     resolve_specialization_for_program,
 )
 
@@ -593,8 +594,8 @@ class MyAvailableSpecializationsView(APIView):
                 'specialization_locked': spec_locked,
                 'specialization_locked_message': spec_locked_message if spec_locked else '',
                 'admitted_specialization': admitted_combo,
-                # Programme-level config
-                'program_has_specialization': program.has_specialization,
+                # Programme-level config (postgrad Education: false even if flag set)
+                'program_has_specialization': program_enforces_specialization_tracks(program),
                 'specialization_entry_year': program.specialization_entry_year,
                 'specialization_entry_term': program.specialization_entry_term,
             }

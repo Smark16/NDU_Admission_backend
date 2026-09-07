@@ -25,9 +25,78 @@ MSG_PROGRAM_ENTRY_FIELDS = (
     "specialization_entry_term must be set."
 )
 
+# AcademicLevel.name markers for programmes that do NOT use teaching-subject
+# combinations (Education undergrad). Match carefully so "Undergraduate" is
+# never treated as postgraduate via a bare "graduate" substring.
+_POSTGRAD_LEVEL_EXACT = frozenset(
+    {
+        "postgraduate",
+        "post-graduate",
+        "post graduate",
+        "masters",
+        "master",
+        "master's",
+        "phd",
+        "doctorate",
+        "doctoral",
+        "pgd",
+        "pgde",
+        "msc",
+        "ma",
+        "mba",
+        "med",
+        "meng",
+    }
+)
+_POSTGRAD_LEVEL_SUBSTRINGS = (
+    "postgraduate",
+    "post-graduate",
+    "post graduate",
+    "masters",
+    "master's",
+    "doctorate",
+    "doctoral",
+    "pgde",
+)
+
 
 def normalize_specialization(value: Any) -> str:
     return (value or "").strip()
+
+
+def is_postgraduate_program(program: Program | None) -> bool:
+    """
+    True for postgraduate / graduate award levels.
+
+    Faculty of Education postgraduate programmes must not require teaching
+    subject combinations (specialization) for registration.
+    """
+    if program is None:
+        return False
+    level = getattr(program, "academic_level", None)
+    name = normalize_specialization(getattr(level, "name", None)).lower()
+    if not name:
+        return False
+    if "undergrad" in name:
+        return False
+    if name in _POSTGRAD_LEVEL_EXACT:
+        return True
+    if any(s in name for s in _POSTGRAD_LEVEL_SUBSTRINGS):
+        return True
+    # Whole-word-ish PGD / PhD tokens
+    tokens = {t.strip(".,()") for t in name.replace("/", " ").split()}
+    if tokens & {"pgd", "pgde", "phd", "msc", "mba", "ma", "med", "meng"}:
+        return True
+    return False
+
+
+def program_enforces_specialization_tracks(program: Program | None) -> bool:
+    """has_specialization programmes excluding postgraduate award levels."""
+    if program is None or not getattr(program, "has_specialization", False):
+        return False
+    if is_postgraduate_program(program):
+        return False
+    return True
 
 
 def has_complete_specialization_entry(program: Program) -> bool:
@@ -196,7 +265,7 @@ def compute_specialization_course_gate(
         "tagged_line_specializations": tagged,
     }
 
-    if not program.has_specialization:
+    if not program_enforces_specialization_tracks(program):
         return out
 
     if not has_complete_specialization_entry(program):

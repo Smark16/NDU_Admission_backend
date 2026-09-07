@@ -1874,7 +1874,9 @@ class StudentAcademicTrackerView(APIView):
             cal = getattr(program, "calendar_type", None) or "semester"
             term_label = "Trimester" if cal == "trimester" else "Semester"
             cohort_label, intake_label = academic_cohort_display_for_student(admitted_student)
-            has_spec = bool(getattr(program, "has_specialization", False))
+            from .specialization_rules import program_enforces_specialization_tracks
+
+            has_spec = program_enforces_specialization_tracks(program)
             return Response(
                 {
                     "enrollment_pending": True,
@@ -2014,7 +2016,9 @@ class StudentAcademicTrackerView(APIView):
             reg_status = 'registered'
             reg_label = 'Fully Registered'
 
-        has_spec = bool(getattr(program, "has_specialization", False))
+        from .specialization_rules import program_enforces_specialization_tracks
+
+        has_spec = program_enforces_specialization_tracks(program)
         spec_entry_year = getattr(program, "specialization_entry_year", None)
         spec_entry_term = getattr(program, "specialization_entry_term", None)
 
