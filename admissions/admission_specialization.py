@@ -13,17 +13,13 @@ def program_requires_admission_specialization(program) -> bool:
     Education programmes (e.g. teaching combinations) set the specialization entry
     point at year 1 term 1.  Other programmes (e.g. BBA tracks at year 3) choose
     later via enrollment — they must not block admission.
-
-    Postgraduate Education programmes do not use teaching subject combinations.
     """
+    if program is None or not getattr(program, "has_specialization", False):
+        return False
     from Programs.specialization_rules import (
         has_complete_specialization_entry,
         is_before_specialization_entry,
-        program_enforces_specialization_tracks,
     )
-
-    if not program_enforces_specialization_tracks(program):
-        return False
 
     if not has_complete_specialization_entry(program):
         return False
