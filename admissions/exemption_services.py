@@ -2920,6 +2920,193 @@ def reverse_exemption_promotion_if_applied(change_request: AdmissionChangeReques
     return True
 
 
+def reopen_exemption_accounts_billing(
+    change_request: AdmissionChangeRequest,
+    *,
+    actor=None,
+    reverse_promotion: bool = True,
+) -> dict:
+    """
+    Super-admin: undo Accounts billing so the exemption can be billed again.
+
+    Keeps HOD / Dean / AR paper decisions. Deletes only *pending* ad-hoc charges
+    tied to this change request. Refuses if any linked charge is already paid.
+    Optionally rolls SPE back to the recorded pre-promotion year/term while
+    keeping the stored promotion target for the next bill.
+    """
+    from django.db import transaction
+
+    if change_request.change_type != "exemption":
+        raise ValueError("Not an exemption request.")
+    if change_request.accounts_status not in ("billed", "confirmed"):
+        raise ValueError(
+            f"Accounts status is already {change_request.accounts_status or 'pending'} — nothing to undo."
+        )
+
+    student = change_request.admitted_student
+    note_marker = f"Exemption change request #{change_request.id}"
+    charges = StudentTuitionPayment.objects.filter(
+        student=student,
+        source="ad_hoc",
+        notes__icontains=note_marker,
+    )
+    paid = charges.exclude(status="pending").exclude(is_waived=True)
+    if paid.exists():
+        paid_ids = list(paid.values_list("id", "status", "amount"))
+        raise ValueError(
+            "Cannot undo billing while non-pending charges exist. "
+            f"Finance must reverse payments first: {paid_ids}"
+        )
+
+    with transaction.atomic():
+        deleted_n, _ = charges.filter(status="pending").delete()
+        promotion_reversed = False
+        if reverse_promotion and exemption_promotion_applied(change_request):
+            promotion_reversed = reverse_exemption_promotion_if_applied(change_request)
+
+        change_request.accounts_status = "pending"
+        change_request.accounts_reviewed_by = None
+        change_request.accounts_reviewed_at = None
+
+        actor_name = ""
+        if actor is not None:
+            actor_name = (
+                getattr(actor, "get_full_name", lambda: "")() or getattr(actor, "username", "")
+            )
+        note = (
+            f"[{timezone.now():%Y-%m-%d %H:%M}] Accounts billing undone by super admin"
+            + (f" ({actor_name})" if actor_name else "")
+            + f" — removed {deleted_n} pending charge(s)"
+            + ("; SPE promotion reversed" if promotion_reversed else "")
+            + ". Ready to bill again."
+        )
+        change_request.review_notes = "\n".join(
+            filter(None, [change_request.review_notes, note])
+        )[:20000]
+        change_request.save(
+            update_fields=[
+                "accounts_status",
+                "accounts_reviewed_by",
+                "accounts_reviewed_at",
+                "review_notes",
+                "updated_at",
+            ]
+        )
+
+    return {
+        "reopened": True,
+        "charges_removed": deleted_n,
+        "promotion_reversed": promotion_reversed,
+        "accounts_status": change_request.accounts_status,
+        "exemption_promotion_year": change_request.exemption_promotion_year,
+        "exemption_promotion_term": change_request.exemption_promotion_term,
+    }
+
+
+def apply_exemption_promotion_for_billed(
+    change_request: AdmissionChangeRequest,
+    *,
+    decided_by,
+    to_year: int | None = None,
+    to_term: int | None = None,
+) -> dict:
+    """
+    Promote a student whose exemption Accounts has already billed.
+
+    Use when billing ran without applying SPE, or when HOD confirmed late.
+    Optional year/term stores (or updates) the target, then applies immediately.
+    """
+    if change_request.change_type != "exemption":
+        raise ValueError("Not an exemption request.")
+    if change_request.hod_status != "approved":
+        raise ValueError("HOD must approve papers before promotion.")
+    if change_request.accounts_status not in ("billed", "confirmed"):
+        raise ValueError(
+            "Accounts has not billed this exemption yet. "
+            "Use Confirm promotion so the move applies when Accounts bills."
+        )
+    if exemption_promotion_applied(change_request):
+        raise ValueError("Student is already at the confirmed promotion year/term.")
+
+    if to_year is not None and to_term is not None:
+        to_year = int(to_year)
+        to_term = int(to_term)
+        if exemption_promotion_proposed(change_request):
+            student = change_request.admitted_student
+            validate_advance_position(student, to_year=to_year, to_term=to_term)
+            try:
+                enrollment = student.programme_enrollment
+            except Exception as exc:
+                raise ValueError("Student has no programme enrollment to advance.") from exc
+            if (
+                change_request.exemption_promotion_from_year is None
+                or change_request.exemption_promotion_from_term is None
+            ):
+                change_request.exemption_promotion_from_year = int(
+                    enrollment.current_year_of_study or 1
+                )
+                change_request.exemption_promotion_from_term = int(
+                    enrollment.current_term_number or 1
+                )
+            change_request.exemption_promotion_year = to_year
+            change_request.exemption_promotion_term = to_term
+            change_request.exemption_promotion_by = decided_by
+            change_request.exemption_promotion_at = timezone.now()
+            note = (
+                f"[{timezone.now():%Y-%m-%d %H:%M}] Promotion target updated for billed "
+                f"exemption → Y{to_year}T{to_term} (apply now), "
+                f"by {getattr(decided_by, 'get_full_name', lambda: decided_by)() or decided_by}."
+            )
+            change_request.review_notes = "\n".join(
+                filter(None, [change_request.review_notes, note])
+            )[:20000]
+            change_request.save(
+                update_fields=[
+                    "exemption_promotion_year",
+                    "exemption_promotion_term",
+                    "exemption_promotion_from_year",
+                    "exemption_promotion_from_term",
+                    "exemption_promotion_by",
+                    "exemption_promotion_at",
+                    "review_notes",
+                    "updated_at",
+                ]
+            )
+            applied = apply_stored_exemption_promotion(
+                change_request, decided_by=decided_by
+            )
+            return {
+                "proposed": True,
+                "applied": applied,
+                "pending_accounts_billing": False,
+                "from_year_of_study": change_request.exemption_promotion_from_year,
+                "from_term_number": change_request.exemption_promotion_from_term,
+                "to_year_of_study": to_year,
+                "to_term_number": to_term,
+            }
+        return propose_exemption_promotion(
+            change_request,
+            to_year=to_year,
+            to_term=to_term,
+            decided_by=decided_by,
+        )
+
+    if not exemption_promotion_proposed(change_request):
+        raise ValueError(
+            "No promotion target is stored. Provide year_of_study and term_number."
+        )
+    applied = apply_stored_exemption_promotion(change_request, decided_by=decided_by)
+    return {
+        "proposed": True,
+        "applied": applied,
+        "pending_accounts_billing": False,
+        "from_year_of_study": change_request.exemption_promotion_from_year,
+        "from_term_number": change_request.exemption_promotion_from_term,
+        "to_year_of_study": change_request.exemption_promotion_year,
+        "to_term_number": change_request.exemption_promotion_term,
+    }
+
+
 def exemption_can_return_to_hod(
     change_request: AdmissionChangeRequest,
     from_stage: str,

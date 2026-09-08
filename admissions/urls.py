@@ -403,6 +403,16 @@ urlpatterns = [
         name='exemption_advance_position',
     ),
     path(
+        'change_requests/<int:pk>/apply_promotion',
+        views.ExemptionApplyPromotionView.as_view(),
+        name='exemption_apply_promotion',
+    ),
+    path(
+        'change_requests/<int:pk>/reopen_accounts_billing',
+        views.ExemptionReopenAccountsBillingView.as_view(),
+        name='exemption_reopen_accounts_billing',
+    ),
+    path(
         'change_requests/exemption/fee_report',
         views.ExemptionFormFeeReportView.as_view(),
         name='exemption_form_fee_report',

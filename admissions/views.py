@@ -6035,6 +6035,16 @@ class AdminChangeRequestReview(APIView):
                     {"detail": f"This request is no longer pending at the {stage.upper()} stage."},
                     status=400,
                 )
+            if stage == "dean" and not (review_notes or "").strip():
+                return Response(
+                    {
+                        "detail": (
+                            "Dean must leave a review comment. "
+                            "The Dean's role is to review the exemption and record a comment."
+                        ),
+                    },
+                    status=400,
+                )
 
             if stage == "hod" and action == "approve" and exemption_submission_is_unpaid(req_obj):
                 return Response(
@@ -6570,6 +6580,138 @@ class ExemptionAdvancePositionView(APIView):
                     if req_obj.exemption_effects_applied_at
                     else None
                 ),
+            }
+        )
+
+
+class ExemptionReopenAccountsBillingView(APIView):
+    """
+    Super admin: undo Accounts billing so the exemption can be billed again.
+
+    POST /api/admissions/change_requests/<pk>/reopen_accounts_billing
+    Body: { "reverse_promotion"?: bool }  (default true)
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        from admissions.exemption_services import reopen_exemption_accounts_billing
+        from admissions.serializers import AdmissionChangeRequestSerializer
+
+        if not user_is_super_admin(request.user):
+            return Response(
+                {"detail": "Only a super admin can undo exemption billing."},
+                status=403,
+            )
+
+        req_obj = get_object_or_404(
+            AdmissionChangeRequest.objects.prefetch_related("exemption_lines"),
+            pk=pk,
+            change_type="exemption",
+        )
+        reverse_promotion = request.data.get("reverse_promotion", True)
+        if isinstance(reverse_promotion, str):
+            reverse_promotion = reverse_promotion.strip().lower() not in (
+                "0",
+                "false",
+                "no",
+            )
+
+        try:
+            result = reopen_exemption_accounts_billing(
+                req_obj,
+                actor=request.user,
+                reverse_promotion=bool(reverse_promotion),
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
+
+        req_obj = (
+            AdmissionChangeRequest.objects.select_related("reviewed_by")
+            .prefetch_related("exemption_lines", "supporting_documents")
+            .get(pk=req_obj.pk)
+        )
+        return Response(
+            {
+                **result,
+                "change_request": AdmissionChangeRequestSerializer(
+                    req_obj, context={"request": request}
+                ).data,
+            }
+        )
+
+
+class ExemptionApplyPromotionView(APIView):
+    """
+    Apply (or set + apply) year/semester promotion for a billed exemption.
+
+    POST /api/admissions/change_requests/<pk>/apply_promotion
+    Body: { "year_of_study"?: int, "term_number"?: int }
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        from admissions.exemption_services import (
+            apply_exemption_promotion_for_billed,
+            enrollment_promotion_context,
+        )
+        from admissions.permissions import (
+            user_can_approve_exemption_requests,
+            user_can_review_exemption_dean,
+        )
+        from admissions.serializers import AdmissionChangeRequestSerializer
+
+        req_obj = get_object_or_404(AdmissionChangeRequest, pk=pk, change_type="exemption")
+
+        if not (
+            user_is_super_admin(request.user)
+            or user_can_approve_exemption_requests(request.user)
+            or user_can_review_exemption_dean(request.user)
+        ):
+            return Response(
+                {"detail": "You do not have permission to apply exemption promotion."},
+                status=403,
+            )
+
+        to_year = request.data.get("year_of_study")
+        to_term = request.data.get("term_number")
+        try:
+            year_arg = int(to_year) if to_year not in (None, "") else None
+            term_arg = int(to_term) if to_term not in (None, "") else None
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "year_of_study and term_number must be integers when provided."},
+                status=400,
+            )
+        if (year_arg is None) ^ (term_arg is None):
+            return Response(
+                {"detail": "Provide both year_of_study and term_number, or neither."},
+                status=400,
+            )
+
+        try:
+            result = apply_exemption_promotion_for_billed(
+                req_obj,
+                decided_by=request.user,
+                to_year=year_arg,
+                to_term=term_arg,
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
+
+        req_obj = (
+            AdmissionChangeRequest.objects.select_related("reviewed_by")
+            .prefetch_related("exemption_lines", "supporting_documents")
+            .get(pk=req_obj.pk)
+        )
+        return Response(
+            {
+                **result,
+                "change_request": AdmissionChangeRequestSerializer(
+                    req_obj, context={"request": request}
+                ).data,
+                "promotion_context": enrollment_promotion_context(req_obj.admitted_student),
             }
         )
 
