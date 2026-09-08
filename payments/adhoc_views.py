@@ -834,6 +834,8 @@ class StudentExemptionChargesCreateView(APIView):
       semester_ids: [int, ...]  — EXEMPTION_COURSE total spread across these
       split_mode?: "manual"|"remaining"  — audit note only; semester_ids authoritative
       replace_pending: bool — delete pending charges for this change request
+      promotion_year?: int — Accounts sets/corrects SPE target (applied after charges)
+      promotion_term?: int
 
     Exempted papers → EXEMPTION_COURSE (flat alumnus/external fee), spread.
     Remaining tuition → EXEMPT_REMAIN_TUIT one charge per remaining paper:
@@ -854,6 +856,7 @@ class StudentExemptionChargesCreateView(APIView):
             exemption_billing_lines_for_request,
             exemption_course_fee_for_paper,
             exemption_remaining_curriculum_lines_for_request,
+            set_exemption_promotion_target_for_accounts,
         )
         from admissions.models import AdmissionChangeRequest, ExemptionRequestLine
         from django.db import DataError, DatabaseError, IntegrityError, transaction
@@ -888,6 +891,25 @@ class StudentExemptionChargesCreateView(APIView):
         replace_pending = bool(request.data.get("replace_pending"))
         split_mode_raw = _text(request.data.get("split_mode")).lower()
         split_mode = split_mode_raw if split_mode_raw in ("manual", "remaining") else ""
+        promotion_year = _safe_int(
+            request.data.get("promotion_year")
+            if "promotion_year" in request.data
+            else request.data.get("year_of_study")
+        )
+        promotion_term = _safe_int(
+            request.data.get("promotion_term")
+            if "promotion_term" in request.data
+            else request.data.get("term_number")
+        )
+        if (promotion_year is None) ^ (promotion_term is None):
+            return Response(
+                {
+                    "detail": (
+                        "Provide both promotion_year and promotion_term, or neither."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         if not change_request_id:
             return Response(
@@ -1176,6 +1198,15 @@ class StudentExemptionChargesCreateView(APIView):
         promotion_applied = False
         try:
             with transaction.atomic():
+                if promotion_year is not None and promotion_term is not None:
+                    set_exemption_promotion_target_for_accounts(
+                        req,
+                        to_year=promotion_year,
+                        to_term=promotion_term,
+                        decided_by=request.user,
+                    )
+                    req.refresh_from_db()
+
                 if replace_pending:
                     head_ids = [course_head.id]
                     if remaining_head is not None:
