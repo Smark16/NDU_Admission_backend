@@ -2338,16 +2338,62 @@ def _next_year_term(year: int, term: int, *, max_terms_per_year: int, max_years:
     return None
 
 
+def program_uses_engineering_exemption_promotion(program) -> bool:
+    """Faculty of Engineering uses paper-count bands instead of full-term coverage."""
+    if program is None:
+        return False
+    faculty = getattr(program, "faculty", None)
+    name = (getattr(faculty, "name", None) or "").strip().lower()
+    return "engineering" in name
+
+
+def engineering_promotion_target_from_paper_count(approved_count: int) -> tuple[int, int]:
+    """
+    Engineering faculty exemption promotion bands (HOD-approved papers):
+
+    - more than 7 papers → Year 2 Semester 1
+    - more than 4 and up to 7 → Year 1 Semester 2
+    - 4 or fewer → Year 1 Semester 1
+    """
+    n = max(0, int(approved_count or 0))
+    if n > 7:
+        return 2, 1
+    if n > 4:
+        return 1, 2
+    return 1, 1
+
+
+def engineering_promotion_rule_summary(approved_count: int, year: int, term: int) -> str:
+    n = int(approved_count or 0)
+    if n > 7:
+        band = "more than 7 approved papers"
+    elif n > 4:
+        band = "more than 4 and up to 7 approved papers"
+    else:
+        band = "4 or fewer approved papers"
+    return (
+        f"Engineering faculty rule ({band}): this student will be promoted to "
+        f"Year {year} Semester {term}."
+    )
+
+
+def _hod_approved_exemption_paper_count(change_request: AdmissionChangeRequest) -> int:
+    from admissions.models import ExemptionRequestLine
+
+    return change_request.exemption_lines.filter(
+        decision=ExemptionRequestLine.DECISION_APPROVED,
+    ).count()
+
+
 def suggest_promotion_after_exemption(change_request: AdmissionChangeRequest) -> dict | None:
     """
-    If the exemptions applied for this student now cover every paper in one or
-    more consecutive terms starting at (or before) her current position, return
-    the first term that still has non-exempted work — the position she should
-    actually be advanced to. Returns None if no advancement is warranted.
+    Advisory promotion target after exemptions.
 
-    This is advisory only: nothing is changed until an HOD/Dean confirms the
-    target year/term (stored on the request). The SPE move itself waits until
-    Accounts bills the exemption charges.
+    Faculty of Engineering: auto bands from HOD-approved paper count
+    (>7 → Y2S1, >4 → Y1S2, else Y1S1). Other faculties: first term that
+    still has non-exempted work after consecutive fully covered terms.
+
+    Nothing is changed until HOD confirms; SPE moves when Accounts bills.
     """
     from Programs.models import ProgramCurriculumLine, StudentCurriculumOverride
 
@@ -2357,11 +2403,40 @@ def suggest_promotion_after_exemption(change_request: AdmissionChangeRequest) ->
     except Exception:
         return None
 
+    program = enrollment.program
+    cur_year = int(enrollment.current_year_of_study or 1)
+    cur_term = int(enrollment.current_term_number or 1)
+
+    # ── Engineering: paper-count bands (auto suggestion for HOD) ───────────
+    if program_uses_engineering_exemption_promotion(program):
+        approved_count = _hod_approved_exemption_paper_count(change_request)
+        is_preview = False
+        if approved_count <= 0:
+            # Before HOD finishes decisions, preview from papers on the request.
+            approved_count = change_request.exemption_lines.count()
+            is_preview = approved_count > 0
+        if approved_count <= 0:
+            return None
+        sug_year, sug_term = engineering_promotion_target_from_paper_count(approved_count)
+        return {
+            "current_year_of_study": cur_year,
+            "current_term_number": cur_term,
+            "suggested_year_of_study": sug_year,
+            "suggested_term_number": sug_term,
+            "covered_terms": [],
+            "rule": "engineering_paper_count",
+            "rule_summary": engineering_promotion_rule_summary(
+                approved_count, sug_year, sug_term
+            ),
+            "approved_paper_count": approved_count,
+            "is_preview": is_preview,
+            "auto_filled": True,
+        }
+
     version = _resolve_curriculum_version(enrollment)
     if version is None:
         return None
 
-    program = enrollment.program
     max_terms_per_year = program.max_terms_per_year
     max_years = program.max_years
 
@@ -2385,7 +2460,6 @@ def suggest_promotion_after_exemption(change_request: AdmissionChangeRequest) ->
         ).values_list("curriculum_line_id", flat=True)
     )
 
-    cur_year, cur_term = enrollment.current_year_of_study, enrollment.current_term_number
     year, term = cur_year, cur_term
     covered_terms: list[tuple[int, int]] = []
 
@@ -2412,6 +2486,14 @@ def suggest_promotion_after_exemption(change_request: AdmissionChangeRequest) ->
         "suggested_year_of_study": year,
         "suggested_term_number": term,
         "covered_terms": [{"year_of_study": y, "term_number": t} for y, t in covered_terms],
+        "rule": "full_term_coverage",
+        "rule_summary": (
+            f"Full term(s) covered by exemptions — suggested next position "
+            f"Year {year} Semester {term}."
+        ),
+        "approved_paper_count": len(exempted_ids),
+        "is_preview": False,
+        "auto_filled": True,
     }
 
 
@@ -2438,6 +2520,7 @@ def enrollment_promotion_context(student: AdmittedStudent) -> dict | None:
         "max_terms_per_year": max_terms,
         "default_year_of_study": nxt[0] if nxt else cur_year,
         "default_term_number": nxt[1] if nxt else cur_term,
+        "engineering_paper_count_rule": program_uses_engineering_exemption_promotion(program),
     }
 
 
