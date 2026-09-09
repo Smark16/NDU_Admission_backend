@@ -2292,10 +2292,13 @@ def prorate_tuition_for_course_exemptions(
     Suggested remaining-tuition total for a semester after exemptions
     (diagnostic / legacy helper).
 
-    Accounts posts one EXEMPT_REMAIN_TUIT charge per remaining paper::
+    Accounts posts EXEMPT_REMAIN_TUIT as the sum of remaining-paper fees
+    (semester tuition ÷ 6 each), then spreads that total across the same
+    semester lines as the exemption fee (grand payment-schedule split)::
 
         per_paper = semester_tuition / 6
-        term_total = per_paper * non_exempted_papers
+        remaining_total = per_paper * non_exempted_papers
+        # posted as equal slices on Accounts-selected semesters
 
     Before Accounts bills, return full tuition so the portal still shows the
     normal semester requirement. After billing, schedule TUITION is omitted and

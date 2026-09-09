@@ -255,6 +255,8 @@ class Command(BaseCommand):
         w("  Rule: semester TUITION only ÷ 6 per remaining (non-exempted) paper.")
         w("  Functional fees are never prorated. Exempted papers billed separately at")
         w("  UGX 150,000 (non-Ndejje) / UGX 100,000 (Ndejje alumni) each.")
+        w("  Accounts spreads exempted total + remaining total across selected")
+        w("  remaining programme semesters (grand payment-schedule split).")
         from admissions.exemption_services import (
             EXEMPTION_COURSE_FEE_ALUMNI_UGX,
             EXEMPTION_COURSE_FEE_STANDARD_UGX,

@@ -543,20 +543,19 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
                 billable = True
                 extra["exemption_immediate"] = True
             elif code == "EXEMPT_REMAIN_TUIT":
-                # Accounts: remaining papers for a term are due when that term is
-                # due — not forced "carried forward" after SPE promotion.
-                # Example: after promote to Y2S1, Y1S1 remaining (3 papers) is due
-                # now if Y1S1 billing date has passed; Y1S2 remaining waits until
-                # Y1S2 is due.
-                if eff_date is not None:
-                    billable = timezone.localdate() >= eff_date
-                elif pair is None:
+                # Remaining-tuition total is spread across the same semester lines
+                # as EXEMPTION_COURSE (grand payment-schedule split). Gate like
+                # exemption slices: only this / prior SPE terms are due now.
+                extra["exemption_immediate"] = True
+                if pair is None:
                     billable = True
+                elif pair > (cy, ct):
+                    billable = False
+                elif pair < (cy, ct):
+                    billable = True
+                    extra["prior_period_settled"] = True
                 else:
-                    # No calendar date: only current SPE term (and earlier) due.
-                    billable = pair <= (cy, ct)
-                # Do not set prior_period_settled — keep status Due/Pending so the
-                # 919k Y1S1 block counts as payable now, not only "carried forward".
+                    billable = True
             elif code == "EXEMPTION_COURSE":
                 # 4-way split: only this semester's slice (and any unpaid prior slices)
                 # are due now; later semester tags wait.

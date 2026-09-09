@@ -272,11 +272,10 @@ def is_exemption_adhoc_charge(charge) -> bool:
 
 def adhoc_charge_billing_reached(charge) -> bool:
     # Form fee: always owed once posted.
-    # Course-exemption split: SPE gating is applied in _build_demand_lines.
-    # Remaining-tuition papers: follow the tagged semester billing date so
-    # Y1S2 (etc.) stays not-due until Accounts' term is open.
+    # Course-exemption + remaining-tuition splits: SPE gating is applied in
+    # _build_demand_lines (same semester-slice rules).
     code = fee_head_code(charge)
-    if code in {"EXEMPTION_FORM", "EXEMPTION_COURSE"}:
+    if code in {"EXEMPTION_FORM", "EXEMPTION_COURSE", "EXEMPT_REMAIN_TUIT"}:
         return True
     effective = adhoc_charge_billing_date(charge)
     if effective is None:

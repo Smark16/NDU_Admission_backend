@@ -837,9 +837,10 @@ class StudentExemptionChargesCreateView(APIView):
       promotion_year?: int — Accounts sets/corrects SPE target (applied after charges)
       promotion_term?: int
 
-    Exempted papers → EXEMPTION_COURSE (flat alumnus/external fee), spread.
-    Remaining tuition → EXEMPT_REMAIN_TUIT one charge per remaining paper:
-      semester tuition ÷ 6 — posted by Accounts.
+    Exempted papers → EXEMPTION_COURSE (flat alumnus/external fee).
+    Remaining papers → EXEMPT_REMAIN_TUIT (semester tuition ÷ 6 each).
+    Both totals are summed independently, then each total is spread equally
+    across the same semester_ids (grand total ÷ N on the payment schedule).
     """
 
     permission_classes = [StudentChargesPermission]
@@ -1119,12 +1120,15 @@ class StudentExemptionChargesCreateView(APIView):
                 .first()
             )
 
-        remaining_resolved: list[tuple[dict, Semester, Decimal]] = []
+        remaining_labels: list[str] = []
+        remaining_total = Decimal("0.00")
+        remaining_count = 0
         for raw in remaining_raw:
             code = _text(
                 raw.get("course_code") or raw.get("paper_code"),
                 default="Remaining",
             )
+            name = _text(raw.get("course_name") or raw.get("paper_name"))
             raw_amount = raw.get("amount")
             try:
                 if raw_amount in (None, ""):
@@ -1139,33 +1143,40 @@ class StudentExemptionChargesCreateView(APIView):
                 )
             if amount <= 0:
                 continue
-            sem = _resolve_semester_for_remaining(raw)
-            if sem is None:
+            # Curriculum term is still validated so Accounts lines stay auditable,
+            # but posting spreads remaining_total across semester_ids (same as
+            # exemption fees) — not onto each paper's own term.
+            if _resolve_semester_for_remaining(raw) is None:
                 return Response(
                     {
                         "detail": (
-                            f"Could not resolve semester for remaining tuition "
-                            f"({code}). Set year/term or semester_id."
+                            f"Could not resolve curriculum term for remaining "
+                            f"tuition ({code}). Set year/term or semester_id."
                         )
                     },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-            remaining_resolved.append((raw, sem, amount))
+            remaining_total += amount
+            remaining_count += 1
+            label = code or "unit"
+            if name:
+                label = f"{label} ({name})"
+            remaining_labels.append(label)
 
-        if paper_count < 1 and not remaining_resolved:
+        if paper_count < 1 and remaining_count < 1:
             return Response(
                 {"detail": "No billable exemption or remaining-tuition amounts."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         semesters: list[Semester] = []
-        if paper_count > 0:
+        if paper_count > 0 or remaining_count > 0:
             if not semester_ids:
                 return Response(
                     {
                         "detail": (
                             "Select at least one semester to spread the "
-                            "exemption total across."
+                            "exempted + remaining totals across."
                         )
                     },
                     status=status.HTTP_400_BAD_REQUEST,
@@ -1181,7 +1192,7 @@ class StudentExemptionChargesCreateView(APIView):
             _, course_head = ensure_exemption_fee_heads()
             remaining_head = (
                 ensure_exemption_remaining_tuition_fee_head()
-                if remaining_resolved
+                if remaining_count > 0
                 else None
             )
         except (DataError, IntegrityError, ValueError) as exc:
@@ -1222,11 +1233,9 @@ class StudentExemptionChargesCreateView(APIView):
                     deleted_count = doomed.count()
                     doomed.delete()
 
+                split_note = f" split_mode={split_mode};" if split_mode else ""
                 if paper_count > 0 and paper_total > 0:
                     label_base = f"Course exemption fees ({paper_count} paper(s))"
-                    split_note = (
-                        f" split_mode={split_mode};" if split_mode else ""
-                    )
                     notes = (
                         f"{note_marker}; fee head {EXEMPTION_COURSE_FEE_CODE}; "
                         f"total UGX {paper_total} = sum of per-paper exemption fees; "
@@ -1247,42 +1256,35 @@ class StudentExemptionChargesCreateView(APIView):
                         )
                     )
 
-                for raw, sem, amount in remaining_resolved:
+                if remaining_count > 0 and remaining_total > 0:
                     if remaining_head is None:
                         raise ValueError(
                             "Remaining tuition fee head is missing — cannot bill remaining papers."
                         )
-                    code = _text(
-                        raw.get("course_code") or raw.get("paper_code"),
-                        default="Remaining",
+                    rem_label = (
+                        f"Remaining tuition ({remaining_count} paper(s), tuition÷6)"
                     )
-                    name = _text(raw.get("course_name") or raw.get("paper_name"))
-                    label = (
-                        _text(raw.get("label"))
-                        or (
-                            f"Remaining tuition — {name}"
-                            if name
-                            else f"Remaining tuition — {code}"
-                        )
-                    )[:200]
-                    notes = (
+                    rem_notes = (
                         f"{note_marker}; fee head {EXEMPTION_REMAINING_TUITION_CODE}; "
-                        f"remaining_tuition; papers={code}; "
-                        f"{_text(raw.get('notes') or raw.get('note'))}"
-                    ).strip()[:2000]
-                    charge = StudentTuitionPayment.objects.create(
-                        student=student,
-                        source="ad_hoc",
-                        fee_head=remaining_head,
-                        label=label,
-                        amount=amount,
-                        currency="UGX",
-                        status="pending",
-                        notes=notes,
-                        charged_by=request.user if request.user.is_authenticated else None,
-                        semester=sem,
+                        f"remaining_tuition; total UGX {remaining_total} = "
+                        f"sum of non-exempted paper fees (tuition÷6 each); "
+                        f"spread across {len(semesters)} semester(s) with exemption "
+                        f"total (grand payment-schedule split).{split_note} "
+                        f"Papers: {', '.join(remaining_labels[:20])}"
+                        + ("…" if len(remaining_labels) > 20 else "")
+                    )[:2000]
+                    created.extend(
+                        _create_split_adhoc_charges(
+                            student=student,
+                            fee_head=remaining_head,
+                            label_base=rem_label,
+                            amount=remaining_total,
+                            currency="UGX",
+                            notes=rem_notes,
+                            semesters=semesters,
+                            charged_by=request.user,
+                        )
                     )
-                    created.append(_charge_to_dict(charge))
 
                 from django.utils import timezone
                 from admissions.exemption_services import apply_stored_exemption_promotion
@@ -1336,16 +1338,22 @@ class StudentExemptionChargesCreateView(APIView):
             )
 
         parts = []
+        n_split = len(semesters)
         if paper_count > 0:
             parts.append(
-                f"exemption UGX {paper_total:,.2f} across {len(semesters)} semester(s) "
+                f"exemption UGX {paper_total:,.2f} across {n_split} semester(s) "
                 f"({paper_count} paper(s))"
             )
-        if remaining_resolved:
-            rem_total = sum((a for _, _, a in remaining_resolved), Decimal("0.00"))
+        if remaining_count > 0:
             parts.append(
-                f"remaining tuition UGX {rem_total:,.2f} "
-                f"({len(remaining_resolved)} paper(s))"
+                f"remaining tuition UGX {remaining_total:,.2f} across {n_split} "
+                f"semester(s) ({remaining_count} paper(s))"
+            )
+        if paper_count > 0 and remaining_count > 0 and n_split > 0:
+            grand = paper_total + remaining_total
+            parts.append(
+                f"grand total UGX {grand:,.2f} ÷ {n_split} "
+                f"(~UGX {(grand / Decimal(n_split)):,.2f} per semester)"
             )
         detail = "Posted " + "; ".join(parts) + "."
         if deleted_count:
@@ -1361,10 +1369,8 @@ class StudentExemptionChargesCreateView(APIView):
                 "change_request_id": req.id,
                 "paper_count": paper_count,
                 "total_amount": float(paper_total),
-                "remaining_count": len(remaining_resolved),
-                "remaining_total": float(
-                    sum((a for _, _, a in remaining_resolved), Decimal("0.00"))
-                ),
+                "remaining_count": remaining_count,
+                "remaining_total": float(remaining_total),
                 "deleted_pending": deleted_count,
                 "promotion_applied": promotion_applied,
                 "charges": created,
