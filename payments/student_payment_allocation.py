@@ -314,8 +314,9 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
             )
         return term_fully_exempt_cache[key]
 
-    # Advanced entry (e.g. HOD promote after exemptions): no tuition/functional
-    # for terms before the student's entry year/term — covered by per-paper fees.
+    # Advanced entry (e.g. HOD promote after exemptions): no tuition/functional/
+    # practical for terms before the student's entry year/term — covered by
+    # per-paper exemption fees; practical resumes at entry (e.g. Y2T1).
     entry_pair: tuple[int, int] | None = None
     has_course_exemptions = False
     try:
@@ -439,8 +440,24 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
             payable_term=pt,
         ):
             continue
+        fee_code = (rule.fee_head.code or "").upper() if rule.fee_head_id else ""
+        fee_name = (rule.fee_head.name or "").upper() if rule.fee_head_id else ""
+        is_practical = "PRACTICAL" in fee_code or "PRACTICAL" in fee_name
+        # Whole-year / advanced-entry exemption: no Y1 practical — student pays
+        # practical from entry year Sem 1 onward (e.g. Y2T1), not the skipped year.
+        if is_practical:
+            if entry_pair is not None and (py, pt) < entry_pair:
+                continue
+            if _year_fully_exempt(py):
+                continue
+            if _term_fully_exempt(py, pt):
+                continue
         reached = _milestone_reached(cy, ct, py, pt)
         billable = billing_date_reached(rule)
+        # Current-term practical is due with the semester (same as tuition), even
+        # if Accounts has not yet opened the scheduled billing date.
+        if is_practical and py == cy and pt == ct:
+            billable = True
         amt, cur = effective_amount_currency(rule, international)
         if amt <= 0:
             continue
