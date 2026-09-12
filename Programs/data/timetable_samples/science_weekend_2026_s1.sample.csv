@@ -1,0 +1,9 @@
+course_code,day,start_time,end_time,start_date,end_date,session_date,venue_code,room_label,session_type,delivery_mode,teaching_section,shared_key,lecturer_email,is_published,notes
+"BIT1107,BCS1107,DIT1107",Fri,08:00,11:00,2026-08-17,2026-12-18,,D1-1,,lecture,on_campus,,wkd-prog-y1-fri,,false,Principles of Programming — Weekend Fri (fill lecturer_email)
+BSE1105,Fri,08:00,11:00,2026-08-17,2026-12-18,,,Research Fellow7,,lecture,on_campus,,,,false,Calculus I — confirm weekday/room from source grid
+"BIT2105,DIT2105,BCS2107,BSE2107",Fri,11:00,14:00,2026-08-17,2026-12-18,,,CISCO LAB-Block C,,practical,on_campus,,wkd-cisco-y2,,false,CISCO Practical Skills Dev — Weekend
+"BIT3103,BISS3106,BRM3101,BSE4104",Fri,14:00,17:00,2026-08-17,2026-12-18,,,Learning Centre common Room,,lecture,on_campus,,wkd-ppm,,false,Project Planning & Management combined
+BSE3102,Fri,14:00,17:00,2026-08-17,2026-12-18,,,Former Masters Lab,,lecture,on_campus,,,,false,CAD Modelling — confirm lecturer
+"BIT1106,BCS1106,BISS3101",Sat,08:00,11:00,2026-08-17,2026-12-18,,,TBA,,lecture,on_campus,,wkd-literacy,,false,Complete title/room from source grid
+"BIT2104,DIT2104,DCS2104,BCS2104",Sat,11:00,14:00,2026-08-17,2026-12-18,,,TBA,,lecture,on_campus,,wkd-y2-shared,,false,Shared Y2 sitting — set venue_code
+"BIT1107,BCS1107",Sun,08:00,11:00,2026-08-17,2026-12-18,,,,lecture,online,,wkd-online-sun,,false,Weekend Sunday ONLINE band example

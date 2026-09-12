@@ -17,7 +17,11 @@ from accounts.models import Campus
 from Programs.models import CourseUnit, RoomType, Semester, TeachingSection, TimetableSession, Venue
 from Programs.section_lecturers import timetable_lecturer_prefetch
 from Programs.permissions import ProgramSchedulingAPIPermission
-from admissions.faculty_scope import assert_semester_access, assert_timetable_session_access
+from admissions.faculty_scope import (
+    assert_course_unit_access,
+    assert_semester_access,
+    assert_timetable_session_access,
+)
 from Programs.teaching_sections import list_sections_for_batch
 from Programs.venue_code_utils import (
     ensure_room_type,
@@ -32,6 +36,13 @@ from Programs.timetable_pdf import (
     render_timetable_pdf,
     safe_pdf_filename,
 )
+from Programs.timetable_csv import (
+    apply_import,
+    build_timetable_worksheet,
+    csv_template_text,
+    spreadsheet_bytes_to_csv_text,
+    worksheet_csv_to_xlsx_bytes,
+)
 from Programs.timetable_utils import (
     build_catalog_overview,
     compute_teaching_load,
@@ -42,6 +53,8 @@ from Programs.timetable_utils import (
     serialize_lecturer_brief,
     serialize_session,
     sessions_for_semester,
+    soft_delete_linked_sessions_from_source,
+    update_linked_sessions_from_source,
     validate_session_scheduling,
 )
 from Programs.shared_teaching import (
@@ -600,6 +613,8 @@ class SemesterTimetableView(APIView):
                     "credit_units": float(cu.credit_units) if cu.credit_units else None,
                     "catalog_unit_id": cat.id if cat else None,
                     "catalog_code": cat.code if cat else "",
+                    "is_cross_cutting": bool(cat.is_cross_cutting) if cat else False,
+                    "cross_cutting_note": (cat.cross_cutting_note or "") if cat else "",
                     "code_number": course_code_number(cu.code),
                     "study_mode": study_mode_for_course_unit(cu),
                     "shared_teaching_offering_id": cu.shared_teaching_offering_id,
@@ -1076,15 +1091,237 @@ class SemesterTimetableBulkPublishView(APIView):
         )
 
 
+class SemesterTimetableCsvTemplateView(APIView):
+    """GET /api/program/semester/<id>/timetable/csv_template — download CSV/Excel template."""
+
+    permission_classes = [IsAuthenticated, ProgramSchedulingAPIPermission]
+
+    def get(self, request, semester_id):
+        semester = get_object_or_404(Semester, pk=semester_id, is_active=True)
+        assert_semester_access(request.user, semester)
+        text = csv_template_text(semester=semester)
+        batch = semester.program_batch
+        label = (batch.name if batch else f"sem{semester_id}").replace(" ", "_")
+        fmt = (request.query_params.get("file_format") or request.query_params.get("format") or "csv").strip().lower()
+        if fmt in ("xlsx", "excel", "xls"):
+            try:
+                payload = worksheet_csv_to_xlsx_bytes(text)
+            except ValueError as exc:
+                return Response({"detail": str(exc)}, status=500)
+            response = HttpResponse(
+                payload,
+                content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+            response["Content-Disposition"] = (
+                f'attachment; filename="timetable_template_{label}.xlsx"'
+            )
+            return response
+        response = HttpResponse(text, content_type="text/csv; charset=utf-8")
+        response["Content-Disposition"] = (
+            f'attachment; filename="timetable_template_{label}.csv"'
+        )
+        return response
+
+
+class SemesterTimetableCsvWorksheetView(APIView):
+    """
+    GET /api/program/semester/<id>/timetable/csv_worksheet
+
+    Pre-filled schedule worksheet from the database (STO / cross-cutting / programme-only).
+    Query params:
+      expand=faculty|ay|none (default faculty)
+      campus_id=
+      study_mode=  (optional override; else inferred from this batch)
+      format=csv|xlsx via file_format= (default xlsx). Do not use ?format= — DRF reserves that.
+    """
+
+    permission_classes = [IsAuthenticated, ProgramSchedulingAPIPermission]
+
+    def get(self, request, semester_id):
+        semester = get_object_or_404(
+            Semester.objects.select_related(
+                "program_batch",
+                "program_batch__program",
+                "program_batch__program__faculty",
+            ),
+            pk=semester_id,
+            is_active=True,
+        )
+        assert_semester_access(request.user, semester)
+
+        expand = (request.query_params.get("expand") or "faculty").strip().lower()
+        if expand not in ("faculty", "ay", "none"):
+            expand = "faculty"
+
+        campus_id = None
+        raw_campus = request.query_params.get("campus_id")
+        if raw_campus not in (None, ""):
+            try:
+                campus_id = int(raw_campus)
+            except (TypeError, ValueError):
+                return Response({"detail": "campus_id must be an integer."}, status=400)
+
+        study_mode = (request.query_params.get("study_mode") or "").strip()
+        # Prefer file_format — DRF's ?format= triggers content negotiation 404.
+        fmt = (
+            request.query_params.get("file_format")
+            or request.query_params.get("export")
+            or "xlsx"
+        ).strip().lower()
+
+        text = build_timetable_worksheet(
+            semester=semester,
+            campus_id=campus_id,
+            study_mode=study_mode,
+            expand=expand,
+        )
+        batch = semester.program_batch
+        label = (batch.name if batch else f"sem{semester_id}").replace(" ", "_")
+
+        if fmt in ("csv", "text"):
+            response = HttpResponse(text, content_type="text/csv; charset=utf-8")
+            response["Content-Disposition"] = (
+                f'attachment; filename="timetable_worksheet_{label}.csv"'
+            )
+            return response
+
+        try:
+            payload = worksheet_csv_to_xlsx_bytes(text)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=500)
+        response = HttpResponse(
+            payload,
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        response["Content-Disposition"] = (
+            f'attachment; filename="timetable_worksheet_{label}.xlsx"'
+        )
+        return response
+
+
+class SemesterTimetableBulkUploadView(APIView):
+    """
+    POST /api/program/semester/<id>/timetable/bulk_upload
+
+    Multipart: file (CSV or Excel .xlsx). Optional: strict=1 (default), dry_run=1.
+    Same columns as the worksheet (course_code, day, start_time, …).
+    """
+
+    permission_classes = [IsAuthenticated, ProgramSchedulingAPIPermission]
+    parser_classes = [MultiPartParser, FormParser]
+
+    @staticmethod
+    def _flag(request, name: str, default: bool = False) -> bool:
+        raw = request.data.get(name)
+        if raw is None:
+            raw = request.query_params.get(name)
+        if raw is None or raw == "":
+            return default
+        return str(raw).strip().lower() in ("1", "true", "yes", "y", "t")
+
+    def post(self, request, semester_id):
+        semester = get_object_or_404(Semester, pk=semester_id, is_active=True)
+        assert_semester_access(request.user, semester)
+
+        uploaded = request.FILES.get("file")
+        if not uploaded:
+            return Response(
+                {"detail": 'No file received. Send CSV/Excel as multipart field "file".'},
+                status=400,
+            )
+        name = (uploaded.name or "").lower()
+        if not name.endswith((".csv", ".xlsx", ".xlsm", ".xls")):
+            return Response(
+                {"detail": "Only .csv or Excel (.xlsx) files are accepted."},
+                status=400,
+            )
+
+        raw = uploaded.read()
+        try:
+            text = spreadsheet_bytes_to_csv_text(raw, uploaded.name or "")
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
+
+        strict = self._flag(request, "strict", default=True)
+        if "strict" in request.data or "strict" in request.query_params:
+            strict = self._flag(request, "strict", default=True)
+        dry_run = self._flag(request, "dry_run", default=False)
+
+        result = apply_import(semester, text, strict=strict, dry_run=dry_run)
+        payload = result.as_dict()
+        if result.errors and result.created == 0:
+            payload["detail"] = (
+                "Import blocked by validation errors."
+                if strict
+                else "No sessions created."
+            )
+            return Response(payload, status=400)
+        payload["message"] = (
+            f"{'Dry run: would create' if dry_run else 'Created'} {result.created} session(s)"
+            + (
+                f", {result.shared_offerings} shared teaching group(s)."
+                if result.shared_offerings
+                else "."
+            )
+        )
+        return Response(payload, status=200)
+
+
 class TimetableSessionDetailView(APIView):
     permission_classes = [IsAuthenticated, ProgramSchedulingAPIPermission]
 
     def patch(self, request, pk):
         session = get_object_or_404(
-            TimetableSession.objects.select_related("course_unit", "venue", "venue__campus"),
+            TimetableSession.objects.select_related(
+                "course_unit",
+                "course_unit__shared_teaching_offering",
+                "venue",
+                "venue__campus",
+            ),
             pk=pk,
         )
         assert_timetable_session_access(request.user, session)
+
+        previous_fingerprint = {
+            "day_of_week": session.day_of_week,
+            "start_time": session.start_time,
+            "end_time": session.end_time,
+            "session_date": session.session_date,
+            "start_date": session.start_date,
+            "end_date": session.end_date,
+            "session_type": session.session_type,
+        }
+        original_semester_id = session.course_unit.semester_id if session.course_unit_id else None
+
+        if "course_unit_id" in request.data:
+            raw_cu = request.data.get("course_unit_id")
+            if raw_cu in (None, ""):
+                return Response({"detail": "course_unit_id cannot be empty."}, status=400)
+            new_cu = get_object_or_404(
+                CourseUnit.objects.select_related(
+                    "semester",
+                    "shared_teaching_offering",
+                    "program_batch",
+                    "program_batch__program",
+                ),
+                pk=int(raw_cu),
+                is_active=True,
+            )
+            if original_semester_id and new_cu.semester_id != original_semester_id:
+                return Response(
+                    {
+                        "detail": (
+                            "Course unit must stay on the same semester timetable. "
+                            "Open the other semester to schedule that unit there."
+                        )
+                    },
+                    status=400,
+                )
+            assert_course_unit_access(request.user, new_cu)
+            session.course_unit = new_cu
+            # Section may not belong to the new unit's cohort — clear unless re-sent below.
+            if "teaching_section_id" not in request.data:
+                session.teaching_section = None
 
         if "session_date" in request.data:
             raw = request.data.get("session_date")
@@ -1171,6 +1408,7 @@ class TimetableSessionDetailView(APIView):
 
         warnings = list(validation.warnings)
         raw_lecturer_ids = request.data.get("lecturer_ids", None)
+        lecturer_ids_parsed: list[int] | None = None
         if raw_lecturer_ids is not None:
             if not isinstance(raw_lecturer_ids, list):
                 warnings.append(
@@ -1180,14 +1418,19 @@ class TimetableSessionDetailView(APIView):
                 try:
                     from Programs.section_lecturers import assign_lecturers_to_section
 
+                    lecturer_ids_parsed = [int(x) for x in raw_lecturer_ids]
                     assign_lecturers_to_section(
                         session.course_unit,
-                        [int(x) for x in raw_lecturer_ids],
+                        lecturer_ids_parsed,
                         teaching_section=session.teaching_section,
                     )
                     session = (
                         TimetableSession.objects.select_related(
-                            "course_unit", "venue", "venue__campus", "teaching_section"
+                            "course_unit",
+                            "course_unit__shared_teaching_offering",
+                            "venue",
+                            "venue__campus",
+                            "teaching_section",
                         )
                         .prefetch_related(*timetable_lecturer_prefetch())
                         .get(pk=session.pk)
@@ -1195,17 +1438,80 @@ class TimetableSessionDetailView(APIView):
                 except Exception as exc:
                     warnings.append(f"Session saved, but lecturers were not updated: {exc}")
 
+        propagated = {"updated": [], "skipped": [], "created": [], "warnings": []}
+        propagate = bool(
+            request.data.get("mirror_to_linked_units")
+            or request.data.get("propagate_to_linked")
+        )
+        if propagate:
+            # Reload course_unit STO after save
+            session = (
+                TimetableSession.objects.select_related(
+                    "course_unit",
+                    "course_unit__shared_teaching_offering",
+                    "venue",
+                    "venue__campus",
+                    "teaching_section",
+                )
+                .prefetch_related(*timetable_lecturer_prefetch())
+                .get(pk=session.pk)
+            )
+            propagated = update_linked_sessions_from_source(
+                session,
+                previous=previous_fingerprint,
+                lecturer_ids=lecturer_ids_parsed,
+            )
+            warnings.extend(propagated.get("warnings") or [])
+            n_upd = len(propagated.get("updated") or [])
+            n_new = len(propagated.get("created") or [])
+            if n_upd or n_new:
+                parts = []
+                if n_upd:
+                    parts.append(f"updated {n_upd}")
+                if n_new:
+                    parts.append(f"created {n_new}")
+                warnings.append(
+                    "Linked programme slot(s) "
+                    + " and ".join(parts)
+                    + " (same study mode)."
+                )
+
         data = serialize_session(session)
         data["warnings"] = warnings
         data["clashes"] = validation.clashes
+        data["propagated"] = propagated
         return Response(data)
 
     def delete(self, request, pk):
         session = get_object_or_404(
-            TimetableSession.objects.select_related("course_unit__program_batch__program"),
+            TimetableSession.objects.select_related(
+                "course_unit",
+                "course_unit__program_batch__program",
+                "course_unit__shared_teaching_offering",
+            ),
             pk=pk,
         )
         assert_timetable_session_access(request.user, session)
+        previous_fingerprint = {
+            "day_of_week": session.day_of_week,
+            "start_time": session.start_time,
+            "end_time": session.end_time,
+            "session_date": session.session_date,
+            "start_date": session.start_date,
+            "end_date": session.end_date,
+            "session_type": session.session_type,
+        }
+        cascade_raw = (
+            request.query_params.get("mirror_to_linked_units")
+            or request.query_params.get("propagate_to_linked")
+            or ""
+        )
+        cascade = str(cascade_raw).lower() in ("1", "true", "yes")
+        if cascade:
+            soft_delete_linked_sessions_from_source(
+                session, previous=previous_fingerprint
+            )
+
         session.is_active = False
         session.save(update_fields=["is_active", "updated_at"])
         return Response(status=204)

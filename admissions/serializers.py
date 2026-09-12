@@ -1629,8 +1629,13 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
     exemption_course_fee_rate = serializers.SerializerMethodField()
     exemption_course_fee_total = serializers.SerializerMethodField()
     exemption_billing_lines = serializers.SerializerMethodField()
+    exemption_remaining_curriculum_lines = serializers.SerializerMethodField()
+    exemption_split_presets = serializers.SerializerMethodField()
     suggested_promotion = serializers.SerializerMethodField()
     promotion_context = serializers.SerializerMethodField()
+    exemption_promotion_applied = serializers.SerializerMethodField()
+    exemption_promotion_pending_accounts = serializers.SerializerMethodField()
+    verification_token = serializers.SerializerMethodField()
 
     class Meta:
         model = AdmissionChangeRequest
@@ -1651,9 +1656,13 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
             'exemption_attained_at', 'exemption_academic_years', 'exemption_is_alumnus',
             'exemption_course_fee_rate', 'exemption_course_fee_total',
             'exemption_billing_lines',
+            'exemption_remaining_curriculum_lines',
+            'exemption_split_presets',
             'suggested_promotion', 'promotion_context',
             'exemption_promotion_year', 'exemption_promotion_term',
             'exemption_promotion_at', 'exemption_effects_applied_at',
+            'exemption_promotion_applied', 'exemption_promotion_pending_accounts',
+            'verification_token',
         ]
 
     def get_supporting_documents(self, obj):
@@ -1714,6 +1723,13 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
 
     def get_hod_reviewed_by_name(self, obj):
         return self._reviewer_name(getattr(obj, "hod_reviewed_by", None))
+
+    def get_verification_token(self, obj):
+        if getattr(obj, "change_type", None) != "exemption":
+            return None
+        from admissions.exemption_services import ensure_exemption_verification_token
+
+        return ensure_exemption_verification_token(obj)
 
     def get_dean_reviewed_by_name(self, obj):
         return self._reviewer_name(getattr(obj, "dean_reviewed_by", None))
@@ -1789,6 +1805,41 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
         except Exception:
             return []
 
+    def get_exemption_remaining_curriculum_lines(self, obj):
+        if obj.change_type != "exemption":
+            return None
+        if self.context.get("list_view"):
+            return None
+        if not self._request_user_can_view_finance():
+            return None
+        from admissions.exemption_services import (
+            exemption_remaining_curriculum_lines_for_request,
+        )
+
+        try:
+            return exemption_remaining_curriculum_lines_for_request(obj)
+        except Exception:
+            return []
+
+    def get_exemption_split_presets(self, obj):
+        if obj.change_type != "exemption":
+            return None
+        if self.context.get("list_view"):
+            return None
+        if not self._request_user_can_view_finance():
+            return None
+        from admissions.exemption_services import exemption_split_presets_for_request
+
+        try:
+            return exemption_split_presets_for_request(obj)
+        except Exception:
+            return {
+                "remaining_semester_ids": [],
+                "remaining_count": 0,
+                "from_year": None,
+                "from_term": None,
+            }
+
     def get_suggested_promotion(self, obj):
         if obj.change_type != "exemption" or obj.hod_status != "approved":
             return None
@@ -1800,6 +1851,26 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
             return suggest_promotion_after_exemption(obj)
         except Exception:
             return None
+
+    def get_exemption_promotion_applied(self, obj):
+        if obj.change_type != "exemption":
+            return False
+        from admissions.exemption_services import exemption_promotion_applied
+
+        try:
+            return exemption_promotion_applied(obj)
+        except Exception:
+            return False
+
+    def get_exemption_promotion_pending_accounts(self, obj):
+        if obj.change_type != "exemption":
+            return False
+        from admissions.exemption_services import exemption_promotion_pending_accounts
+
+        try:
+            return exemption_promotion_pending_accounts(obj)
+        except Exception:
+            return False
 
     def get_promotion_context(self, obj):
         if obj.change_type != "exemption" or obj.hod_status != "approved":
@@ -1826,6 +1897,8 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
             data["exemption_course_fee_rate"] = None
             data["exemption_course_fee_total"] = None
             data["exemption_billing_lines"] = None
+            data["exemption_remaining_curriculum_lines"] = None
+            data["exemption_split_presets"] = None
         return data
 
 

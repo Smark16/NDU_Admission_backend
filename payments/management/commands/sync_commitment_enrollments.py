@@ -26,8 +26,9 @@ def iter_students_in_batches(qs, batch_size=200):
 
 class Command(BaseCommand):
     help = (
-        "Activate programme enrollment and (when enabled) auto-assign current-semester "
-        "course units for admitted students who met the commitment fee threshold."
+        "Activate programme enrollment and (when enabled) auto-assign course units "
+        "due now (current SPE term + pre-entry remaining papers whose billing date "
+        "has been reached) for admitted students who met the commitment fee threshold."
     )
 
     def add_arguments(self, parser):

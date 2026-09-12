@@ -69,7 +69,10 @@ from .timetable_views import (
     RoomTypeListCreateView,
     SemesterTeachingLoadPdfView,
     SemesterTimetableBulkPublishView,
+    SemesterTimetableBulkUploadView,
     SemesterTimetableCopyView,
+    SemesterTimetableCsvTemplateView,
+    SemesterTimetableCsvWorksheetView,
     SemesterTimetablePdfView,
     SemesterTimetableView,
     StudentMyTimetablePdfView,
@@ -309,6 +312,21 @@ urlpatterns = [
         'semester/<int:semester_id>/timetable/publish',
         SemesterTimetableBulkPublishView.as_view(),
         name='semester_timetable_publish',
+    ),
+    path(
+        'semester/<int:semester_id>/timetable/csv_template',
+        SemesterTimetableCsvTemplateView.as_view(),
+        name='semester_timetable_csv_template',
+    ),
+    path(
+        'semester/<int:semester_id>/timetable/csv_worksheet',
+        SemesterTimetableCsvWorksheetView.as_view(),
+        name='semester_timetable_csv_worksheet',
+    ),
+    path(
+        'semester/<int:semester_id>/timetable/bulk_upload',
+        SemesterTimetableBulkUploadView.as_view(),
+        name='semester_timetable_bulk_upload',
     ),
     path(
         'semester/<int:semester_id>/timetable/copy',

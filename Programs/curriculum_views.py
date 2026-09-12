@@ -554,6 +554,13 @@ class CurriculumLineDetailView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     def delete(self, request, pk):
+        from django.db import transaction
+        from django.db.models.deletion import ProtectedError
+
+        from accounts.super_admin import user_is_super_admin
+
+        from .course_unit_marks_guards import course_unit_has_entered_marks
+
         line = self._get_object(pk)
         if not program_allows_curriculum_writes(line.program):
             return Response(
@@ -561,27 +568,23 @@ class CurriculumLineDetailView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        # ── Operational-use guard ─────────────────────────────────────────────
-        # Check whether any live academic work already depends on this line.
-        offered_units = line.offered_course_units.all()
+        offered_units = list(line.offered_course_units.all())
 
-        has_enrollments = offered_units.filter(student_enrollments__isnull=False).exists()
-        has_lecturers   = offered_units.filter(lecturers__isnull=False).exists()
-        has_overrides   = line.student_overrides.exists()
-        has_course_units = offered_units.exists()
+        # Marks always block — including Super Admin.
+        for cu in offered_units:
+            if course_unit_has_entered_marks(cu):
+                return Response(
+                    {
+                        'detail': (
+                            f"This curriculum course cannot be deleted because marks have already "
+                            f"been entered on offering {cu.code} (id {cu.id})."
+                        )
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
 
-        if has_enrollments:
-            return Response(
-                {
-                    'detail': (
-                        "This curriculum course cannot be deleted because it is already in active "
-                        "academic use. Students are already enrolled in course units created from it."
-                    )
-                },
-                status=status.HTTP_409_CONFLICT,
-            )
-
-        if has_overrides:
+        # Academic overrides (exemptions / deferrals / transfers) stay protected for everyone.
+        if line.student_overrides.exists():
             return Response(
                 {
                     'detail': (
@@ -592,7 +595,24 @@ class CurriculumLineDetailView(APIView):
                 status=status.HTTP_409_CONFLICT,
             )
 
-        if has_lecturers:
+        has_enrollments = any(cu.student_enrollments.exists() for cu in offered_units)
+        has_lecturers = any(cu.lecturers.exists() for cu in offered_units)
+        has_course_units = bool(offered_units)
+        is_sa = user_is_super_admin(request.user)
+
+        if has_enrollments and not is_sa:
+            return Response(
+                {
+                    'detail': (
+                        "This curriculum course cannot be deleted because it is already in active "
+                        "academic use. Students are already enrolled in course units created from it. "
+                        "Ask a Super Admin (allowed only when no marks have been entered)."
+                    )
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        if has_lecturers and not is_sa:
             return Response(
                 {
                     'detail': (
@@ -603,23 +623,50 @@ class CurriculumLineDetailView(APIView):
                 status=status.HTTP_409_CONFLICT,
             )
 
-        if has_course_units:
+        if has_course_units and not is_sa:
             return Response(
                 {
                     'detail': (
                         "This curriculum course cannot be deleted because semester course units "
-                        "have already been created from it. Deactivate the line instead."
+                        "have already been created from it. Deactivate the line instead, or ask "
+                        "a Super Admin to remove it (only when no marks exist)."
                     )
                 },
                 status=status.HTTP_409_CONFLICT,
             )
-        # ─────────────────────────────────────────────────────────────────────
 
-        line.delete()
-        return Response(
-            {'detail': 'Curriculum line removed.'},
-            status=status.HTTP_204_NO_CONTENT,
-        )
+        try:
+            with transaction.atomic():
+                removed_offerings = 0
+                for cu in offered_units:
+                    cu.delete()
+                    removed_offerings += 1
+                code = ""
+                try:
+                    code = line.catalog_course.code if line.catalog_course_id else ""
+                except Exception:
+                    code = ""
+                line.delete()
+        except ProtectedError:
+            return Response(
+                {
+                    'detail': (
+                        "Cannot delete this curriculum course because related records still "
+                        "depend on it."
+                    )
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        detail = "Curriculum line removed."
+        if removed_offerings:
+            detail += f" Also removed {removed_offerings} semester course unit(s)"
+            if has_enrollments:
+                detail += " and their enrollments (no marks)"
+            detail += "."
+        if code:
+            detail = f"{code}: {detail}"
+        return Response({'detail': detail}, status=status.HTTP_200_OK)
 
 
 class BulkUploadCurriculumView(APIView):

@@ -15,6 +15,11 @@ from payments.student_payment_allocation import build_finance_allocation
 
 EXEMPTION_FORM_FEE_CODE = "EXEMPTION_FORM"
 EXEMPTION_COURSE_FEE_CODE = "EXEMPTION_COURSE"
+# FeeHead.code is max_length=20 — keep this ≤ 20 chars.
+EXEMPTION_REMAINING_TUITION_CODE = "EXEMPT_REMAIN_TUIT"
+# Accounts policy: remaining non-exempted papers are billed as
+# (semester tuition ÷ 6) each — not ÷ actual paper count in the term.
+EXEMPTION_REMAINING_TUITION_DENOMINATOR = 6
 EXEMPTION_FORM_FEE_UGX = Decimal(
     str(getattr(settings, "EXEMPTION_FORM_FEE_UGX", "50000"))
 )
@@ -502,6 +507,12 @@ def exemption_course_fee_for_paper(
 
 
 def _billable_exemption_lines(change_request: "AdmissionChangeRequest"):
+    """
+    Papers Accounts may charge.
+
+    Prefer the fully AR-confirmed set when AR has finished; otherwise bill
+    HOD-approved papers so Accounts can invoice right after HOD approval.
+    """
     from admissions.models import ExemptionRequestLine
 
     qs = change_request.exemption_lines.all()
@@ -513,8 +524,6 @@ def _billable_exemption_lines(change_request: "AdmissionChangeRequest"):
                 ar_decision=ExemptionRequestLine.DECISION_APPROVED,
             )
         )
-    if change_request.status == "pending":
-        return list(qs.filter(decision=ExemptionRequestLine.DECISION_APPROVED))
     return list(qs.filter(decision=ExemptionRequestLine.DECISION_APPROVED))
 
 
@@ -553,6 +562,7 @@ def exemption_billing_lines_for_request(
             error = "Paper has no year/term — match it to a curriculum unit first."
         out.append(
             {
+                "line_kind": "exemption_fee",
                 "exemption_line_id": line.id,
                 "curriculum_line_id": line.curriculum_line_id,
                 "course_code": line.course_code or "",
@@ -571,6 +581,145 @@ def exemption_billing_lines_for_request(
                 "error": error,
             }
         )
+    return out
+
+
+def exemption_remaining_curriculum_lines_for_request(
+    change_request: "AdmissionChangeRequest",
+) -> list[dict]:
+    """
+    Remaining (non-exempted) papers for each semester touched by HOD-approved
+    exemptions — one billable row per paper. Accounts bills manually:
+
+        amount per paper = semester tuition ÷ 6
+
+    (Common denominator fixed by Accounts; not the actual paper count.)
+    Functional fees are not included. After Accounts bills, the fee-schedule
+    TUITION_FEE for that term is omitted so this charge is not double-counted.
+    """
+    from Programs.models import ProgramCurriculumLine, StudentCurriculumOverride
+    from payments.billing_visibility import resolve_semester_for_year_term
+    from payments.student_portal_finance import _student_program_batch_id
+
+    student = change_request.admitted_student
+    billable = _billable_exemption_lines(change_request)
+    if not billable:
+        return []
+
+    try:
+        enrollment = student.programme_enrollment
+    except Exception:
+        return []
+
+    version = _resolve_curriculum_version(enrollment)
+    if version is None:
+        return []
+
+    owner_program_id = _curriculum_line_program_id(enrollment)
+    pb_id = _student_program_batch_id(student)
+    denom = Decimal(EXEMPTION_REMAINING_TUITION_DENOMINATOR)
+
+    terms: set[tuple[int, int]] = set()
+    for line in billable:
+        year = line.year_of_study
+        term = line.term_number
+        if (year is None or term is None) and line.curriculum_line_id:
+            cl = line.curriculum_line
+            if cl is not None:
+                year = cl.year_of_study
+                term = cl.term_number
+        if year is not None and term is not None:
+            terms.add((int(year), int(term)))
+
+    if not terms:
+        return []
+
+    exempted_line_ids = set(
+        StudentCurriculumOverride.objects.filter(
+            enrollment=enrollment,
+            override_type="exempted",
+            curriculum_line__curriculum_version=version,
+            curriculum_line__program_id=owner_program_id,
+            curriculum_line__is_active=True,
+        ).values_list("curriculum_line_id", flat=True)
+    )
+    for line in billable:
+        if line.curriculum_line_id:
+            exempted_line_ids.add(line.curriculum_line_id)
+
+    out: list[dict] = []
+    for year, term in sorted(terms):
+        papers = list(
+            ProgramCurriculumLine.objects.filter(
+                curriculum_version=version,
+                program_id=owner_program_id,
+                year_of_study=year,
+                term_number=term,
+                is_active=True,
+            )
+            .select_related("catalog_course")
+            .order_by("sort_order", "catalog_course__code", "id")
+        )
+        if not papers:
+            continue
+        total = len(papers)
+        remaining_papers = [cl for cl in papers if cl.id not in exempted_line_ids]
+        non_exempted = len(remaining_papers)
+        if non_exempted <= 0:
+            continue
+
+        tuition = semester_tuition_amount_for_student(
+            student, year_of_study=year, term_number=term
+        )
+        per_paper = None
+        error = None
+        if tuition is None:
+            error = "No TUITION_FEE rule for this term — enter amount manually."
+        else:
+            per_paper = (tuition / denom).quantize(Decimal("0.01"))
+
+        semester = resolve_semester_for_year_term(
+            program_batch_id=pb_id,
+            year_of_study=year,
+            term_number=term,
+        )
+        for cl in remaining_papers:
+            catalog = cl.catalog_course
+            code = (catalog.code if catalog else "") or f"#{cl.id}"
+            title = (catalog.title if catalog else "") or code
+            out.append(
+                {
+                    "line_kind": "remaining_tuition",
+                    "exemption_line_id": None,
+                    "curriculum_line_id": cl.id,
+                    "course_code": code,
+                    "course_name": title or code,
+                    "score_obtained": "",
+                    "year_of_study": year,
+                    "term_number": term,
+                    "amount": float(per_paper) if per_paper is not None else None,
+                    "semester_id": semester.id if semester is not None else None,
+                    "semester_label": (
+                        f"Year {semester.year_of_study}, Term {semester.term_number}"
+                        f" — {semester.name}"
+                        if semester is not None
+                        else None
+                    ),
+                    "error": error,
+                    "total_papers": total,
+                    "exempted_papers": total - non_exempted,
+                    "non_exempted_papers": non_exempted,
+                    "billing_denominator": EXEMPTION_REMAINING_TUITION_DENOMINATOR,
+                    "full_tuition": float(tuition) if tuition is not None else None,
+                    "note": (
+                        f"(UGX {tuition:,.0f} ÷ {EXEMPTION_REMAINING_TUITION_DENOMINATOR}) "
+                        f"— tuition only, not functional fees. Posted by Accounts."
+                        if tuition is not None
+                        else "Accounts must set the amount."
+                    ),
+                    "remaining_paper_codes": [code],
+                }
+            )
     return out
 
 
@@ -598,11 +747,32 @@ def ensure_exemption_fee_heads() -> tuple[FeeHead, FeeHead]:
         defaults={
             "name": "Course exemption fee",
             "category": "tuition",
-            "description": "Per-course exemption fee billed by Accounts after Dean approval.",
+            "description": "Per-course exemption fee billed by Accounts after HOD approval.",
             "is_active": True,
         },
     )
     return form_head, course_head
+
+
+def ensure_exemption_remaining_tuition_fee_head() -> FeeHead:
+    code = EXEMPTION_REMAINING_TUITION_CODE
+    if len(code) > 40:
+        raise ValueError(
+            f"Remaining-tuition fee head code is too long ({len(code)} > 40): {code!r}"
+        )
+    head, _ = FeeHead.objects.get_or_create(
+        code=code,
+        defaults={
+            "name": "Remaining tuition (after exemptions)",
+            "category": "tuition",
+            "description": (
+                "Tuition for non-exempted papers: "
+                "(semester tuition ÷ 6) per remaining paper. Posted by Accounts."
+            ),
+            "is_active": True,
+        },
+    )
+    return head
 
 
 def _open_form_fee_charge(student: AdmittedStudent) -> StudentTuitionPayment | None:
@@ -2120,6 +2290,21 @@ def year_fully_course_exempted(
     return exempted >= total
 
 
+def exemption_tuition_finance_unlocked(student: AdmittedStudent) -> bool:
+    """
+    Tuition proration / full-term waiver apply only after Accounts has billed
+    the exemption (per-paper EXEMPTION_COURSE charges).
+
+    Until then the student keeps the full fee schedule (tuition + functional +
+    practical) so HOD academic approval does not make them look fully paid.
+    """
+    return AdmissionChangeRequest.objects.filter(
+        admitted_student=student,
+        change_type="exemption",
+        accounts_status__in=("billed", "confirmed"),
+    ).exists()
+
+
 def prorate_tuition_for_course_exemptions(
     student: AdmittedStudent,
     tuition_amount: Decimal,
@@ -2128,35 +2313,47 @@ def prorate_tuition_for_course_exemptions(
     term_number: int,
 ) -> tuple[Decimal, dict | None]:
     """
-    Replace full semester tuition with Accounts' paper-based amount when the
-    student has any course exemptions in that semester:
+    Suggested remaining-tuition total for a semester after exemptions
+    (diagnostic / legacy helper).
 
-        amount = (semester_tuition / total_papers) * non_exempted_papers
+    Accounts posts EXEMPT_REMAIN_TUIT as the sum of remaining-paper fees
+    (semester tuition ÷ 6 each), then spreads that total across the same
+    semester lines as the exemption fee (grand payment-schedule split)::
 
-    If every paper in the year is exempted, callers should omit tuition and
-    functional entirely (see year_fully_course_exempted). For a fully exempted
-    term within a partial year, tuition becomes 0 here; functional is handled
-    separately by the allocator.
+        per_paper = semester_tuition / 6
+        remaining_total = per_paper * non_exempted_papers
+        # posted as equal slices on Accounts-selected semesters
+
+    Before Accounts bills, return full tuition so the portal still shows the
+    normal semester requirement. After billing, schedule TUITION is omitted and
+    the ad-hoc remaining-paper charges apply; functional fees stay on schedule.
     """
-    if year_fully_course_exempted(student, year_of_study=year_of_study):
-        counts = semester_paper_counts_for_exemptions(
-            student, year_of_study=year_of_study, term_number=term_number
-        )
-        return Decimal("0.00"), counts
-
     counts = semester_paper_counts_for_exemptions(
         student, year_of_study=year_of_study, term_number=term_number
     )
     if counts is None or counts["exempted_papers"] <= 0:
         return tuition_amount, counts
 
-    total = Decimal(counts["total_papers"])
+    if not exemption_tuition_finance_unlocked(student):
+        return tuition_amount, {
+            **counts,
+            "deferred_until_accounts_billed": True,
+        }
+
+    if year_fully_course_exempted(student, year_of_study=year_of_study):
+        return Decimal("0.00"), counts
+
     remaining = Decimal(counts["non_exempted_papers"])
     if remaining <= 0:
         return Decimal("0.00"), counts
 
-    prorated = (Decimal(str(tuition_amount)) / total * remaining).quantize(Decimal("0.01"))
-    return prorated, counts
+    denom = Decimal(EXEMPTION_REMAINING_TUITION_DENOMINATOR)
+    per_paper = (Decimal(str(tuition_amount)) / denom).quantize(Decimal("0.01"))
+    return (per_paper * remaining).quantize(Decimal("0.01")), {
+        **counts,
+        "billing_denominator": EXEMPTION_REMAINING_TUITION_DENOMINATOR,
+        "per_paper": float(per_paper),
+    }
 
 
 def _next_year_term(year: int, term: int, *, max_terms_per_year: int, max_years: int):
@@ -2168,15 +2365,62 @@ def _next_year_term(year: int, term: int, *, max_terms_per_year: int, max_years:
     return None
 
 
+def program_uses_engineering_exemption_promotion(program) -> bool:
+    """Faculty of Engineering uses paper-count bands instead of full-term coverage."""
+    if program is None:
+        return False
+    faculty = getattr(program, "faculty", None)
+    name = (getattr(faculty, "name", None) or "").strip().lower()
+    return "engineering" in name
+
+
+def engineering_promotion_target_from_paper_count(approved_count: int) -> tuple[int, int]:
+    """
+    Engineering faculty exemption promotion bands (HOD-approved papers):
+
+    - more than 7 papers → Year 2 Semester 1
+    - more than 4 and up to 7 → Year 1 Semester 2
+    - 4 or fewer → Year 1 Semester 1
+    """
+    n = max(0, int(approved_count or 0))
+    if n > 7:
+        return 2, 1
+    if n > 4:
+        return 1, 2
+    return 1, 1
+
+
+def engineering_promotion_rule_summary(approved_count: int, year: int, term: int) -> str:
+    n = int(approved_count or 0)
+    if n > 7:
+        band = "more than 7 approved papers"
+    elif n > 4:
+        band = "more than 4 and up to 7 approved papers"
+    else:
+        band = "4 or fewer approved papers"
+    return (
+        f"Engineering faculty rule ({band}): this student will be promoted to "
+        f"Year {year} Semester {term}."
+    )
+
+
+def _hod_approved_exemption_paper_count(change_request: AdmissionChangeRequest) -> int:
+    from admissions.models import ExemptionRequestLine
+
+    return change_request.exemption_lines.filter(
+        decision=ExemptionRequestLine.DECISION_APPROVED,
+    ).count()
+
+
 def suggest_promotion_after_exemption(change_request: AdmissionChangeRequest) -> dict | None:
     """
-    If the exemptions applied for this student now cover every paper in one or
-    more consecutive terms starting at (or before) her current position, return
-    the first term that still has non-exempted work — the position she should
-    actually be advanced to. Returns None if no advancement is warranted.
+    Advisory promotion target after exemptions.
 
-    This is advisory only: nothing is changed until an HOD/Dean explicitly
-    confirms via advance_student_position_for_exemption().
+    Faculty of Engineering: auto bands from HOD-approved paper count
+    (>7 → Y2S1, >4 → Y1S2, else Y1S1). Other faculties: first term that
+    still has non-exempted work after consecutive fully covered terms.
+
+    Nothing is changed until HOD confirms; SPE moves when Accounts bills.
     """
     from Programs.models import ProgramCurriculumLine, StudentCurriculumOverride
 
@@ -2186,11 +2430,40 @@ def suggest_promotion_after_exemption(change_request: AdmissionChangeRequest) ->
     except Exception:
         return None
 
+    program = enrollment.program
+    cur_year = int(enrollment.current_year_of_study or 1)
+    cur_term = int(enrollment.current_term_number or 1)
+
+    # ── Engineering: paper-count bands (auto suggestion for HOD) ───────────
+    if program_uses_engineering_exemption_promotion(program):
+        approved_count = _hod_approved_exemption_paper_count(change_request)
+        is_preview = False
+        if approved_count <= 0:
+            # Before HOD finishes decisions, preview from papers on the request.
+            approved_count = change_request.exemption_lines.count()
+            is_preview = approved_count > 0
+        if approved_count <= 0:
+            return None
+        sug_year, sug_term = engineering_promotion_target_from_paper_count(approved_count)
+        return {
+            "current_year_of_study": cur_year,
+            "current_term_number": cur_term,
+            "suggested_year_of_study": sug_year,
+            "suggested_term_number": sug_term,
+            "covered_terms": [],
+            "rule": "engineering_paper_count",
+            "rule_summary": engineering_promotion_rule_summary(
+                approved_count, sug_year, sug_term
+            ),
+            "approved_paper_count": approved_count,
+            "is_preview": is_preview,
+            "auto_filled": True,
+        }
+
     version = _resolve_curriculum_version(enrollment)
     if version is None:
         return None
 
-    program = enrollment.program
     max_terms_per_year = program.max_terms_per_year
     max_years = program.max_years
 
@@ -2214,7 +2487,6 @@ def suggest_promotion_after_exemption(change_request: AdmissionChangeRequest) ->
         ).values_list("curriculum_line_id", flat=True)
     )
 
-    cur_year, cur_term = enrollment.current_year_of_study, enrollment.current_term_number
     year, term = cur_year, cur_term
     covered_terms: list[tuple[int, int]] = []
 
@@ -2241,6 +2513,14 @@ def suggest_promotion_after_exemption(change_request: AdmissionChangeRequest) ->
         "suggested_year_of_study": year,
         "suggested_term_number": term,
         "covered_terms": [{"year_of_study": y, "term_number": t} for y, t in covered_terms],
+        "rule": "full_term_coverage",
+        "rule_summary": (
+            f"Full term(s) covered by exemptions — suggested next position "
+            f"Year {year} Semester {term}."
+        ),
+        "approved_paper_count": len(exempted_ids),
+        "is_preview": False,
+        "auto_filled": True,
     }
 
 
@@ -2267,15 +2547,100 @@ def enrollment_promotion_context(student: AdmittedStudent) -> dict | None:
         "max_terms_per_year": max_terms,
         "default_year_of_study": nxt[0] if nxt else cur_year,
         "default_term_number": nxt[1] if nxt else cur_term,
+        "engineering_paper_count_rule": program_uses_engineering_exemption_promotion(program),
     }
 
 
-def exemption_promotion_applied(change_request: AdmissionChangeRequest) -> bool:
-    """True when the student's SPE position matches the HOD-confirmed promotion."""
+def remaining_semesters_for_exemption_split(
+    student: AdmittedStudent,
+    change_request: AdmissionChangeRequest | None = None,
+) -> list:
+    """
+    Active cohort semesters from promotion target (else SPE) through programme end.
+
+    Used by Accounts when spreading EXEMPTION_COURSE equally across remaining
+    programme semesters instead of a manual checkbox selection.
+    """
+    from Programs.models import Semester
+    from payments.student_portal_finance import _student_program_batch_id
+
+    pb_id = _student_program_batch_id(student)
+    if not pb_id:
+        return []
+
+    start_year = 1
+    start_term = 1
     if (
-        change_request.exemption_promotion_year is None
-        or change_request.exemption_promotion_term is None
+        change_request is not None
+        and change_request.exemption_promotion_year is not None
+        and change_request.exemption_promotion_term is not None
     ):
+        start_year = int(change_request.exemption_promotion_year)
+        start_term = int(change_request.exemption_promotion_term)
+    else:
+        try:
+            enrollment = student.programme_enrollment
+            if enrollment is not None:
+                start_year = int(enrollment.current_year_of_study or 1)
+                start_term = int(enrollment.current_term_number or 1)
+        except Exception:
+            pass
+
+    qs = (
+        Semester.objects.filter(program_batch_id=pb_id, is_active=True)
+        .order_by("year_of_study", "term_number", "order", "name")
+    )
+    remaining = []
+    for sem in qs:
+        y = int(sem.year_of_study or 0)
+        t = int(sem.term_number or 0)
+        if (y, t) >= (start_year, start_term):
+            remaining.append(sem)
+    return remaining
+
+
+def exemption_split_presets_for_request(change_request: AdmissionChangeRequest) -> dict:
+    """Preset semester ids for Accounts exemption fee split modes."""
+    student = change_request.admitted_student
+    remaining = remaining_semesters_for_exemption_split(student, change_request)
+    from_year = None
+    from_term = None
+    if (
+        change_request.exemption_promotion_year is not None
+        and change_request.exemption_promotion_term is not None
+    ):
+        from_year = int(change_request.exemption_promotion_year)
+        from_term = int(change_request.exemption_promotion_term)
+    else:
+        try:
+            enrollment = student.programme_enrollment
+            if enrollment is not None:
+                from_year = int(enrollment.current_year_of_study or 1)
+                from_term = int(enrollment.current_term_number or 1)
+        except Exception:
+            pass
+    if remaining and from_year is None:
+        from_year = int(remaining[0].year_of_study or 1)
+        from_term = int(remaining[0].term_number or 1)
+    return {
+        "remaining_semester_ids": [int(s.id) for s in remaining],
+        "remaining_count": len(remaining),
+        "from_year": from_year,
+        "from_term": from_term,
+    }
+
+
+def exemption_promotion_proposed(change_request: AdmissionChangeRequest) -> bool:
+    """True when HOD/Dean has confirmed a target year/term on the request."""
+    return (
+        change_request.exemption_promotion_year is not None
+        and change_request.exemption_promotion_term is not None
+    )
+
+
+def exemption_promotion_applied(change_request: AdmissionChangeRequest) -> bool:
+    """True when the student's SPE position matches the confirmed promotion target."""
+    if not exemption_promotion_proposed(change_request):
         return False
     try:
         enrollment = change_request.admitted_student.programme_enrollment
@@ -2292,15 +2657,24 @@ def exemption_promotion_applied(change_request: AdmissionChangeRequest) -> bool:
     )
 
 
+def exemption_promotion_pending_accounts(change_request: AdmissionChangeRequest) -> bool:
+    """Proposed target exists, but SPE has not moved yet (waits for Accounts billing)."""
+    if not exemption_promotion_proposed(change_request):
+        return False
+    if exemption_promotion_applied(change_request):
+        return False
+    return change_request.accounts_status not in ("billed", "confirmed")
+
+
 def exemption_ready_for_hod_promotion(change_request: AdmissionChangeRequest) -> bool:
-    """True when HOD has approved at least one paper and promotion is not yet applied."""
+    """True when HOD has approved papers and no promotion target is stored yet."""
     from admissions.models import ExemptionRequestLine
 
     if change_request.change_type != "exemption":
         return False
     if change_request.hod_status != "approved":
         return False
-    if exemption_promotion_applied(change_request):
+    if exemption_promotion_proposed(change_request):
         return False
     return change_request.exemption_lines.filter(
         decision=ExemptionRequestLine.DECISION_APPROVED,
@@ -2414,6 +2788,11 @@ def reopen_exemption_stage_review(
             change_request.exemption_promotion_year is not None
             or change_request.exemption_promotion_term is not None
         ):
+            # Reverse SPE if Accounts (or legacy HOD-immediate) already moved them.
+            try:
+                reverse_exemption_promotion_if_applied(change_request)
+            except ValueError:
+                pass
             change_request.exemption_promotion_year = None
             change_request.exemption_promotion_term = None
             change_request.exemption_promotion_by = None
@@ -2502,6 +2881,228 @@ def reverse_exemption_promotion_if_applied(change_request: AdmissionChangeReques
         update_fields += ["entry_year_of_study", "entry_term_number"]
     enrollment.save(update_fields=update_fields)
     return True
+
+
+def reopen_exemption_accounts_billing(
+    change_request: AdmissionChangeRequest,
+    *,
+    actor=None,
+    reverse_promotion: bool = True,
+) -> dict:
+    """
+    Super-admin: undo Accounts billing so the exemption can be billed again.
+
+    Keeps HOD / Dean / AR paper decisions. Deletes only *pending* ad-hoc charges
+    tied to this change request. Refuses if any linked charge is already paid.
+    Optionally rolls SPE back to the recorded pre-promotion year/term while
+    keeping the stored promotion target for the next bill.
+    """
+    from django.db import transaction
+
+    if change_request.change_type != "exemption":
+        raise ValueError("Not an exemption request.")
+    if change_request.accounts_status not in ("billed", "confirmed"):
+        raise ValueError(
+            f"Accounts status is already {change_request.accounts_status or 'pending'} — nothing to undo."
+        )
+
+    student = change_request.admitted_student
+    note_marker = f"Exemption change request #{change_request.id}"
+    charges = StudentTuitionPayment.objects.filter(
+        student=student,
+        source="ad_hoc",
+        notes__icontains=note_marker,
+    )
+    paid = charges.exclude(status="pending").exclude(is_waived=True)
+    if paid.exists():
+        paid_ids = list(paid.values_list("id", "status", "amount"))
+        raise ValueError(
+            "Cannot undo billing while non-pending charges exist. "
+            f"Finance must reverse payments first: {paid_ids}"
+        )
+
+    with transaction.atomic():
+        deleted_n, _ = charges.filter(status="pending").delete()
+        promotion_reversed = False
+        if reverse_promotion and exemption_promotion_applied(change_request):
+            promotion_reversed = reverse_exemption_promotion_if_applied(change_request)
+
+        change_request.accounts_status = "pending"
+        change_request.accounts_reviewed_by = None
+        change_request.accounts_reviewed_at = None
+
+        actor_name = ""
+        if actor is not None:
+            actor_name = (
+                getattr(actor, "get_full_name", lambda: "")() or getattr(actor, "username", "")
+            )
+        note = (
+            f"[{timezone.now():%Y-%m-%d %H:%M}] Accounts billing undone by super admin"
+            + (f" ({actor_name})" if actor_name else "")
+            + f" — removed {deleted_n} pending charge(s)"
+            + ("; SPE promotion reversed" if promotion_reversed else "")
+            + ". Ready to bill again."
+        )
+        change_request.review_notes = "\n".join(
+            filter(None, [change_request.review_notes, note])
+        )[:20000]
+        change_request.save(
+            update_fields=[
+                "accounts_status",
+                "accounts_reviewed_by",
+                "accounts_reviewed_at",
+                "review_notes",
+                "updated_at",
+            ]
+        )
+
+    return {
+        "reopened": True,
+        "charges_removed": deleted_n,
+        "promotion_reversed": promotion_reversed,
+        "accounts_status": change_request.accounts_status,
+        "exemption_promotion_year": change_request.exemption_promotion_year,
+        "exemption_promotion_term": change_request.exemption_promotion_term,
+    }
+
+
+def apply_exemption_promotion_for_billed(
+    change_request: AdmissionChangeRequest,
+    *,
+    decided_by,
+    to_year: int | None = None,
+    to_term: int | None = None,
+) -> dict:
+    """
+    Promote a student whose exemption Accounts has already billed.
+
+    Use when billing ran without applying SPE, or when HOD confirmed late.
+    Optional year/term stores (or updates) the target, then applies immediately.
+    """
+    if change_request.change_type != "exemption":
+        raise ValueError("Not an exemption request.")
+    if change_request.hod_status != "approved":
+        raise ValueError("HOD must approve papers before promotion.")
+    if change_request.accounts_status not in ("billed", "confirmed"):
+        raise ValueError(
+            "Accounts has not billed this exemption yet. "
+            "Use Confirm promotion so the move applies when Accounts bills."
+        )
+
+    if to_year is not None and to_term is not None:
+        to_year = int(to_year)
+        to_term = int(to_term)
+        student = change_request.admitted_student
+        validate_advance_position(student, to_year=to_year, to_term=to_term)
+        try:
+            enrollment = student.programme_enrollment
+        except Exception as exc:
+            raise ValueError("Student has no programme enrollment to advance.") from exc
+
+        already_at_target = (
+            int(enrollment.current_year_of_study or 0),
+            int(enrollment.current_term_number or 0),
+        ) == (to_year, to_term)
+        if already_at_target:
+            # Align stored target with SPE if needed, then stop.
+            if (
+                change_request.exemption_promotion_year != to_year
+                or change_request.exemption_promotion_term != to_term
+            ):
+                change_request.exemption_promotion_year = to_year
+                change_request.exemption_promotion_term = to_term
+                change_request.exemption_promotion_by = decided_by
+                change_request.exemption_promotion_at = timezone.now()
+                change_request.save(
+                    update_fields=[
+                        "exemption_promotion_year",
+                        "exemption_promotion_term",
+                        "exemption_promotion_by",
+                        "exemption_promotion_at",
+                        "updated_at",
+                    ]
+                )
+            return {
+                "proposed": True,
+                "applied": True,
+                "pending_accounts_billing": False,
+                "from_year_of_study": change_request.exemption_promotion_from_year,
+                "from_term_number": change_request.exemption_promotion_from_term,
+                "to_year_of_study": to_year,
+                "to_term_number": to_term,
+            }
+
+        if not exemption_promotion_proposed(change_request):
+            return propose_exemption_promotion(
+                change_request,
+                to_year=to_year,
+                to_term=to_term,
+                decided_by=decided_by,
+            )
+
+        # Retarget from current SPE (allows Y1T2 → Y2T1 after an earlier apply).
+        change_request.exemption_promotion_from_year = int(
+            enrollment.current_year_of_study or 1
+        )
+        change_request.exemption_promotion_from_term = int(
+            enrollment.current_term_number or 1
+        )
+        change_request.exemption_promotion_year = to_year
+        change_request.exemption_promotion_term = to_term
+        change_request.exemption_promotion_by = decided_by
+        change_request.exemption_promotion_at = timezone.now()
+        note = (
+            f"[{timezone.now():%Y-%m-%d %H:%M}] Promotion retargeted for billed "
+            f"exemption Y{change_request.exemption_promotion_from_year}"
+            f"T{change_request.exemption_promotion_from_term} → Y{to_year}T{to_term} "
+            f"(apply now), "
+            f"by {getattr(decided_by, 'get_full_name', lambda: decided_by)() or decided_by}."
+        )
+        change_request.review_notes = "\n".join(
+            filter(None, [change_request.review_notes, note])
+        )[:20000]
+        change_request.save(
+            update_fields=[
+                "exemption_promotion_year",
+                "exemption_promotion_term",
+                "exemption_promotion_from_year",
+                "exemption_promotion_from_term",
+                "exemption_promotion_by",
+                "exemption_promotion_at",
+                "review_notes",
+                "updated_at",
+            ]
+        )
+        applied = apply_stored_exemption_promotion(
+            change_request, decided_by=decided_by
+        )
+        return {
+            "proposed": True,
+            "applied": applied,
+            "pending_accounts_billing": False,
+            "from_year_of_study": change_request.exemption_promotion_from_year,
+            "from_term_number": change_request.exemption_promotion_from_term,
+            "to_year_of_study": to_year,
+            "to_term_number": to_term,
+        }
+
+    if exemption_promotion_applied(change_request):
+        raise ValueError("Student is already at the confirmed promotion year/term.")
+
+    if not exemption_promotion_proposed(change_request):
+        raise ValueError(
+            "No promotion target is stored. Provide year_of_study and term_number."
+        )
+    applied = apply_stored_exemption_promotion(change_request, decided_by=decided_by)
+    return {
+        "proposed": True,
+        "applied": applied,
+        "pending_accounts_billing": False,
+        "from_year_of_study": change_request.exemption_promotion_from_year,
+        "from_term_number": change_request.exemption_promotion_from_term,
+        "to_year_of_study": change_request.exemption_promotion_year,
+        "to_term_number": change_request.exemption_promotion_term,
+    }
 
 
 def exemption_can_return_to_hod(
@@ -2652,11 +3253,19 @@ def propose_exemption_promotion(
 ) -> dict:
     """
     HOD or Dean confirms the student's year/semester after HOD paper approval.
-    The move is applied immediately on the student record; Dean and AR verify only.
+
+    The target is stored on the change request. SPE normally moves when Accounts
+    bills. If Accounts has already billed, SPE moves immediately so late
+    confirmation still promotes the student.
     """
     if not exemption_ready_for_hod_promotion(change_request):
-        if exemption_promotion_applied(change_request):
-            raise ValueError("Student promotion from this exemption has already been applied.")
+        if exemption_promotion_proposed(change_request):
+            raise ValueError(
+                "A year/semester promotion is already confirmed for this exemption. "
+                "It will apply when Accounts bills."
+                if not exemption_promotion_applied(change_request)
+                else "Student promotion from this exemption has already been applied."
+            )
         raise ValueError(
             "The HOD must approve at least one exemption paper before proposing promotion."
         )
@@ -2672,35 +3281,57 @@ def propose_exemption_promotion(
     if (int(to_year), int(to_term)) == (int(from_year), int(from_term)):
         raise ValueError("Student is already at that year/term.")
 
+    accounts_already_billed = change_request.accounts_status in ("billed", "confirmed")
+
     change_request.exemption_promotion_year = int(to_year)
     change_request.exemption_promotion_term = int(to_term)
+    change_request.exemption_promotion_from_year = int(from_year)
+    change_request.exemption_promotion_from_term = int(from_term)
     change_request.exemption_promotion_by = decided_by
     change_request.exemption_promotion_at = timezone.now()
+
+    timing = (
+        "applied now — Accounts already billed"
+        if accounts_already_billed
+        else f"applies when Accounts bills exemption CR #{change_request.id}"
+    )
+    note = (
+        f"[{timezone.now():%Y-%m-%d %H:%M}] Promotion confirmed "
+        f"Y{from_year}T{from_term} -> Y{to_year}T{to_term} "
+        f"({timing}), "
+        f"by {getattr(decided_by, 'get_full_name', lambda: decided_by)() or decided_by}."
+    )
+    change_request.review_notes = "\n".join(
+        filter(None, [change_request.review_notes, note])
+    )[:20000]
     change_request.save(
         update_fields=[
             "exemption_promotion_year",
             "exemption_promotion_term",
+            "exemption_promotion_from_year",
+            "exemption_promotion_from_term",
             "exemption_promotion_by",
             "exemption_promotion_at",
+            "review_notes",
             "updated_at",
         ]
     )
 
-    promotion = advance_student_position_for_exemption(
-        change_request,
-        to_year=int(to_year),
-        to_term=int(to_term),
-        decided_by=decided_by,
-    )
+    applied = False
+    if accounts_already_billed:
+        applied = apply_stored_exemption_promotion(
+            change_request, decided_by=decided_by
+        )
 
     return {
         "proposed": True,
-        "applied": True,
+        "applied": applied,
+        "pending_accounts_billing": not accounts_already_billed,
         "pending_ar_approval": False,
-        "from_year_of_study": promotion["from_year_of_study"],
-        "from_term_number": promotion["from_term_number"],
-        "to_year_of_study": promotion["to_year_of_study"],
-        "to_term_number": promotion["to_term_number"],
+        "from_year_of_study": int(from_year),
+        "from_term_number": int(from_term),
+        "to_year_of_study": int(to_year),
+        "to_term_number": int(to_term),
     }
 
 
@@ -2726,10 +3357,104 @@ def apply_stored_exemption_promotion(
     return True
 
 
+def set_exemption_promotion_target_for_accounts(
+    change_request: AdmissionChangeRequest,
+    *,
+    to_year: int,
+    to_term: int,
+    decided_by,
+) -> dict:
+    """
+    Accounts sets or corrects the year/semester target before billing applies it.
+
+    Used when HOD left the wrong promotion (or none). Does not move SPE yet —
+    ``apply_stored_exemption_promotion`` runs after charges are posted.
+    """
+    if change_request.change_type != "exemption":
+        raise ValueError("Not an exemption request.")
+    if change_request.hod_status != "approved":
+        raise ValueError("HOD must approve papers before Accounts can set promotion.")
+
+    to_year = int(to_year)
+    to_term = int(to_term)
+    student = change_request.admitted_student
+    validate_advance_position(student, to_year=to_year, to_term=to_term)
+    try:
+        enrollment = student.programme_enrollment
+    except Exception as exc:
+        raise ValueError("Student has no programme enrollment to promote.") from exc
+    if enrollment is None:
+        raise ValueError("Student has no programme enrollment to promote.")
+
+    from_year = int(enrollment.current_year_of_study or 1)
+    from_term = int(enrollment.current_term_number or 1)
+    # Keep original from_* if student has not yet been moved from the first recorded position.
+    if (
+        change_request.exemption_promotion_from_year is not None
+        and change_request.exemption_promotion_from_term is not None
+        and not exemption_promotion_applied(change_request)
+    ):
+        from_year = int(change_request.exemption_promotion_from_year)
+        from_term = int(change_request.exemption_promotion_from_term)
+
+    prev_y = change_request.exemption_promotion_year
+    prev_t = change_request.exemption_promotion_term
+    change_request.exemption_promotion_year = to_year
+    change_request.exemption_promotion_term = to_term
+    change_request.exemption_promotion_from_year = from_year
+    change_request.exemption_promotion_from_term = from_term
+    change_request.exemption_promotion_by = decided_by
+    change_request.exemption_promotion_at = timezone.now()
+    actor_name = (
+        getattr(decided_by, "get_full_name", lambda: "")()
+        or getattr(decided_by, "username", "")
+        or str(decided_by)
+    )
+    if prev_y is not None and prev_t is not None and (int(prev_y), int(prev_t)) != (to_year, to_term):
+        note = (
+            f"[{timezone.now():%Y-%m-%d %H:%M}] Accounts corrected promotion "
+            f"Y{prev_y}T{prev_t} → Y{to_year}T{to_term} "
+            f"(applies when exemption CR #{change_request.id} is billed), by {actor_name}."
+        )
+    else:
+        note = (
+            f"[{timezone.now():%Y-%m-%d %H:%M}] Accounts set promotion "
+            f"Y{from_year}T{from_term} → Y{to_year}T{to_term} "
+            f"(applies when exemption CR #{change_request.id} is billed), by {actor_name}."
+        )
+    change_request.review_notes = "\n".join(
+        filter(None, [change_request.review_notes, note])
+    )[:20000]
+    change_request.save(
+        update_fields=[
+            "exemption_promotion_year",
+            "exemption_promotion_term",
+            "exemption_promotion_from_year",
+            "exemption_promotion_from_term",
+            "exemption_promotion_by",
+            "exemption_promotion_at",
+            "review_notes",
+            "updated_at",
+        ]
+    )
+    return {
+        "set": True,
+        "from_year_of_study": from_year,
+        "from_term_number": from_term,
+        "to_year_of_study": to_year,
+        "to_term_number": to_term,
+        "corrected": prev_y is not None
+        and prev_t is not None
+        and (int(prev_y), int(prev_t)) != (to_year, to_term),
+    }
+
+
 def finalize_exemption_effects(change_request: AdmissionChangeRequest, *, decided_by) -> dict:
     """
     Mark AR verification complete and sync fully-approved curriculum overrides.
-    Promotion and HOD-visible overrides are already on the student record.
+
+    Year/semester promotion is applied later when Accounts bills — not here —
+    so fee structure does not open before exemption charges exist.
     """
     if change_request.change_type != "exemption":
         return {"applied": False, "reason": "not_exemption"}
@@ -2739,26 +3464,16 @@ def finalize_exemption_effects(change_request: AdmissionChangeRequest, *, decide
         return {"applied": False, "reason": "already_applied"}
 
     overrides_created = apply_exemption_overrides(change_request, decided_by=decided_by)
-    promotion = None
-    if (
-        change_request.exemption_promotion_year is not None
-        and change_request.exemption_promotion_term is not None
-        and not exemption_promotion_applied(change_request)
-    ):
-        promotion = advance_student_position_for_exemption(
-            change_request,
-            to_year=int(change_request.exemption_promotion_year),
-            to_term=int(change_request.exemption_promotion_term),
-            decided_by=change_request.exemption_promotion_by or decided_by,
-        )
 
     change_request.exemption_effects_applied_at = timezone.now()
     change_request.save(update_fields=["exemption_effects_applied_at", "updated_at"])
     return {
         "applied": True,
         "overrides_created": overrides_created,
-        "promotion": promotion,
+        "promotion": None,
+        "promotion_pending_accounts": exemption_promotion_pending_accounts(change_request),
     }
+
 
 
 def validate_advance_position(
@@ -2836,6 +3551,36 @@ def add_exemption_line_from_curriculum(
     return line
 
 
+def update_exemption_line_score(
+    change_request: AdmissionChangeRequest,
+    *,
+    line_id: int,
+    score_obtained: str,
+) -> "ExemptionRequestLine":
+    """
+    HOD/Admin: set or correct the prior-institution score on an existing paper
+    (e.g. student left Score blank but transcript shows 63).
+    """
+    from admissions.models import ExemptionRequestLine
+
+    if change_request.change_type != "exemption":
+        raise ValueError("Only exemption requests have paper scores.")
+    if change_request.status == "rejected":
+        raise ValueError("Cannot edit scores on a rejected exemption request.")
+
+    line = change_request.exemption_lines.filter(pk=line_id).first()
+    if line is None:
+        raise ValueError("That paper is not on this exemption request.")
+
+    score = (score_obtained or "").strip()[:20]
+    if not score:
+        raise ValueError("Enter the score or grade (e.g. 63 or B+).")
+
+    line.score_obtained = score
+    line.save(update_fields=["score_obtained"])
+    return line
+
+
 def advance_student_position_for_exemption(
     change_request: AdmissionChangeRequest,
     *,
@@ -2883,12 +3628,43 @@ def advance_student_position_for_exemption(
         update_fields += ["entry_year_of_study", "entry_term_number"]
     enrollment.save(update_fields=update_fields)
 
+    # Portal My Courses + LMS read StudentCourseUnitEnrollment. Moving SPE alone
+    # leaves the new term empty until units are assigned.
+    auto_assign = {
+        "course_units_auto_assigned": 0,
+        "course_units_total_in_semester": 0,
+        "auto_assign_skip_reason": None,
+    }
+    try:
+        from payments.programme_enrollment_activation import (
+            _auto_assign_current_semester_course_units,
+        )
+
+        auto_assign = _auto_assign_current_semester_course_units(enrollment)
+    except Exception:
+        logger = __import__("logging").getLogger(__name__)
+        logger.exception(
+            "Auto-assign after exemption promotion failed for student %s CR #%s",
+            student.pk,
+            change_request.id,
+        )
+        auto_assign["auto_assign_skip_reason"] = "auto_assign_error"
+
     note = (
         f"[{timezone.now():%Y-%m-%d %H:%M}] Advanced Y{from_year}T{from_term} -> "
         f"Y{to_year}T{to_term} following approved course exemption "
         f"(change request #{change_request.id}), confirmed by "
         f"{getattr(decided_by, 'get_full_name', lambda: decided_by)() or decided_by}."
     )
+    assigned_n = int(auto_assign.get("course_units_auto_assigned") or 0)
+    total_n = int(auto_assign.get("course_units_total_in_semester") or 0)
+    skip = auto_assign.get("auto_assign_skip_reason")
+    if assigned_n or total_n or skip:
+        note += f" Course units assigned={assigned_n}/{total_n}"
+        if skip:
+            note += f" (skip={skip})"
+        note += "."
+
     change_request.review_notes = "\n".join(
         filter(None, [change_request.review_notes, note])
     )[:20000]
@@ -2908,4 +3684,100 @@ def advance_student_position_for_exemption(
         "from_term_number": from_term,
         "to_year_of_study": to_year,
         "to_term_number": to_term,
+        "course_units_auto_assigned": assigned_n,
+        "course_units_total_in_semester": total_n,
+        "auto_assign_skip_reason": skip,
+    }
+
+
+def ensure_exemption_verification_token(change_request: AdmissionChangeRequest) -> str | None:
+    """
+    Issue (or return) the public QR token once HOD has reviewed with ≥1 approved paper.
+    """
+    if change_request.change_type != "exemption":
+        return None
+    if not change_request.hod_reviewed_at:
+        return None
+    from admissions.models import ExemptionRequestLine
+
+    has_approved = change_request.exemption_lines.filter(
+        decision=ExemptionRequestLine.DECISION_APPROVED
+    ).exists()
+    if not has_approved:
+        return None
+    if change_request.exemption_verification_token:
+        return str(change_request.exemption_verification_token)
+    import uuid
+
+    change_request.exemption_verification_token = uuid.uuid4()
+    change_request.save(update_fields=["exemption_verification_token", "updated_at"])
+    return str(change_request.exemption_verification_token)
+
+
+def public_verify_exemption(token: str, *, request=None) -> dict:
+    """Payload for GET /api/admissions/change_requests/exemption/verify/<token>/."""
+    from admissions.models import ExemptionRequestLine
+
+    token = (token or "").strip()
+    if not token:
+        return {"valid": False, "detail": "Missing verification token."}
+
+    try:
+        req = (
+            AdmissionChangeRequest.objects.select_related(
+                "admitted_student",
+                "admitted_student__admitted_program",
+                "hod_reviewed_by",
+            )
+            .prefetch_related("exemption_lines")
+            .get(
+                exemption_verification_token=token,
+                change_type="exemption",
+            )
+        )
+    except (AdmissionChangeRequest.DoesNotExist, ValueError):
+        return {"valid": False, "detail": "This exemption document could not be verified."}
+
+    student = req.admitted_student
+    programme = None
+    if student and student.admitted_program_id:
+        programme = student.admitted_program.name
+
+    approved = []
+    for line in req.exemption_lines.all():
+        if line.decision != ExemptionRequestLine.DECISION_APPROVED:
+            continue
+        approved.append(
+            {
+                "course_code": line.course_code or "",
+                "course_name": line.course_name or "",
+                "year_of_study": line.year_of_study,
+                "term_number": line.term_number,
+                "score_obtained": line.score_obtained,
+            }
+        )
+
+    hod_name = None
+    if req.hod_reviewed_by_id:
+        hod_name = req.hod_reviewed_by.get_full_name() or req.hod_reviewed_by.username
+
+    return {
+        "valid": True,
+        "message": "Authentic HOD course-exemption approval from Ndejje University portal.",
+        "request_id": req.id,
+        "hod_status": req.hod_status,
+        "hod_status_display": req.get_hod_status_display(),
+        "hod_reviewed_at": req.hod_reviewed_at.isoformat() if req.hod_reviewed_at else None,
+        "hod_reviewed_by_name": hod_name,
+        "approved_count": len(approved),
+        "papers": approved,
+        "promotion_year": req.exemption_promotion_year,
+        "promotion_term": req.exemption_promotion_term,
+        "student": {
+            "name": student.full_name if student else "",
+            "student_id": student.student_id if student else "",
+            "reg_no": student.reg_no if student else "",
+            "programme": programme,
+        },
+        "checked_at": timezone.now().isoformat(),
     }

@@ -57,15 +57,25 @@ def _default_program_batch(student: AdmittedStudent):
 
 
 def _auto_assign_current_semester_course_units(enrollment) -> dict:
-    """Auto-assign course units for the student's current term (combination-aware)."""
-    from Programs.enrollment_course_assignment import course_unit_ids_for_enrollment_current_term
+    """
+    Auto-assign course units due now: current SPE term plus pre-entry remaining
+    papers whose term billing date has been reached (Accounts exemption rule).
+    Also withdraws exempted papers and premature leftover-term enrollments.
+    """
+    from Programs.enrollment_course_assignment import (
+        course_unit_ids_for_enrollment_due_terms,
+        withdraw_enrollments_for_exempted_papers,
+        withdraw_enrollments_for_not_yet_due_prior_terms,
+    )
     from Programs.models import StudentCourseUnitEnrollment, StudentProgrammeEnrollment
 
-    def _zero(reason: str) -> dict:
+    def _zero(reason: str, **extra) -> dict:
         return {
             "course_units_auto_assigned": 0,
             "course_units_total_in_semester": 0,
             "auto_assign_skip_reason": reason,
+            "exempted_enrollments_withdrawn": extra.get("exempted_enrollments_withdrawn", 0),
+            "premature_enrollments_withdrawn": extra.get("premature_enrollments_withdrawn", 0),
         }
 
     settings = RegistrationSettings.get_settings()
@@ -81,18 +91,42 @@ def _auto_assign_current_semester_course_units(enrollment) -> dict:
         ).get(pk=enrollment.pk)
     )
 
-    unit_ids, skip_reason = course_unit_ids_for_enrollment_current_term(enrollment)
-    if skip_reason:
-        return _zero(skip_reason)
-    if not unit_ids:
-        return _zero("no_course_units")
+    exempted_withdrawn = withdraw_enrollments_for_exempted_papers(enrollment)
+    premature_withdrawn = withdraw_enrollments_for_not_yet_due_prior_terms(enrollment)
 
-    existing_ids = set(
-        StudentCourseUnitEnrollment.objects.filter(
+    unit_ids, skip_reason = course_unit_ids_for_enrollment_due_terms(enrollment)
+    if skip_reason:
+        return _zero(
+            skip_reason,
+            exempted_enrollments_withdrawn=exempted_withdrawn,
+            premature_enrollments_withdrawn=premature_withdrawn,
+        )
+    if not unit_ids:
+        return _zero(
+            "no_course_units",
+            exempted_enrollments_withdrawn=exempted_withdrawn,
+            premature_enrollments_withdrawn=premature_withdrawn,
+        )
+
+    # Re-activate a previously withdrawn due unit if it is due again.
+    existing_rows = {
+        row.course_unit_id: row
+        for row in StudentCourseUnitEnrollment.objects.filter(
             student=enrollment.student, course_unit_id__in=unit_ids
-        ).values_list("course_unit_id", flat=True)
-    )
-    missing_ids = [cid for cid in unit_ids if cid not in existing_ids]
+        )
+    }
+    missing_ids = []
+    reactivated = 0
+    for cid in unit_ids:
+        row = existing_rows.get(cid)
+        if row is None:
+            missing_ids.append(cid)
+        elif row.status == "withdrawn":
+            row.status = "enrolled"
+            row.source = "admin_assigned"
+            row.save(update_fields=["status", "source"])
+            reactivated += 1
+
     if missing_ids:
         StudentCourseUnitEnrollment.objects.bulk_create(
             [
@@ -107,9 +141,11 @@ def _auto_assign_current_semester_course_units(enrollment) -> dict:
             ignore_conflicts=True,
         )
     return {
-        "course_units_auto_assigned": len(missing_ids),
+        "course_units_auto_assigned": len(missing_ids) + reactivated,
         "course_units_total_in_semester": len(unit_ids),
         "auto_assign_skip_reason": None,
+        "exempted_enrollments_withdrawn": exempted_withdrawn,
+        "premature_enrollments_withdrawn": premature_withdrawn,
     }
 
 

@@ -261,7 +261,11 @@ class ProgramCurriculumVersion(models.Model):
 
     def __str__(self):
         tag = " (default)" if self.is_default else ""
-        return f"{self.program.short_form} - {self.name}{tag}"
+        try:
+            short = self.program.short_form
+        except Program.DoesNotExist:
+            return f"CurriculumVersion #{self.pk} ({self.name}){tag}"
+        return f"{short} - {self.name}{tag}"
 
     @property
     def effective_minimum_graduation_load(self) -> Decimal:
@@ -354,7 +358,11 @@ class ProgramSpecialization(models.Model):
         verbose_name_plural = 'Program Specializations'
 
     def __str__(self):
-        return f"{self.program.short_form} → {self.name}"
+        try:
+            short = self.program.short_form
+        except Program.DoesNotExist:
+            return f"Specialization #{self.pk} ({self.name})"
+        return f"{short} → {self.name}"
 
 
 # =============================================================================
@@ -393,6 +401,21 @@ class CourseCatalogUnit(models.Model):
         null=True,
         blank=True,
         help_text="Total contact hours; left blank to auto-sum L+P+T on save.",
+    )
+    is_cross_cutting = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text=(
+            "True when this paper commonly runs as one sitting across programmes/faculties "
+            "(Ethics, Comm Skills, CISCO, Literacy, etc.). Programme CourseUnits stay separate; "
+            "use Shared Teaching when they share time/room/lecturer."
+        ),
+    )
+    cross_cutting_note = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="Optional hint for staff (e.g. often shared Main Day + Weekend).",
     )
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -510,10 +533,18 @@ class ProgramCurriculumLine(models.Model):
         verbose_name_plural = 'Program Curriculum Lines'
 
     def __str__(self):
+        try:
+            short = self.program.short_form
+        except Program.DoesNotExist:
+            short = "?"
+        try:
+            code = self.catalog_course.code
+        except Exception:
+            code = "?"
         return (
-            f"{self.program.short_form} "
+            f"{short} "
             f"Y{self.year_of_study}T{self.term_number} — "
-            f"{self.catalog_course.code}"
+            f"{code}"
         )
 
     def clean(self):
@@ -597,7 +628,12 @@ class ProgramBatch(models.Model):
         unique_together = ['program', 'name']
 
     def __str__(self):
-        return f"{self.program.short_form} - {self.name}"
+        # Safe when easyaudit logs post_delete after Program was already removed.
+        try:
+            short = self.program.short_form
+        except Program.DoesNotExist:
+            return f"Batch #{self.pk} ({self.name})"
+        return f"{short} - {self.name}"
 
     @property
     def is_offer_active(self):
@@ -699,7 +735,11 @@ class TeachingSection(models.Model):
     def __str__(self):
         default = " (default)" if self.is_default else ""
         shared = " [shared]" if self.is_shared else ""
-        return f"{self.program_batch} · {self.code}{default}{shared}"
+        try:
+            batch = self.program_batch
+        except ProgramBatch.DoesNotExist:
+            return f"Section #{self.pk} · {self.code}{default}{shared}"
+        return f"{batch} · {self.code}{default}{shared}"
 
     def clean(self):
         from django.core.exceptions import ValidationError
@@ -766,8 +806,21 @@ class Semester(models.Model):
         unique_together = ['program_batch', 'order']
 
     def __str__(self):
-        pos = f" (Y{self.year_of_study}T{self.term_number})" if self.year_of_study and self.term_number else ""
-        return f"{self.program_batch.program.short_form} - {self.program_batch.name} - {self.name}{pos}"
+        pos = (
+            f" (Y{self.year_of_study}T{self.term_number})"
+            if self.year_of_study and self.term_number
+            else ""
+        )
+        # Safe when easyaudit logs post_delete after ProgramBatch cascade.
+        try:
+            batch = self.program_batch
+        except ProgramBatch.DoesNotExist:
+            return f"Semester #{self.pk} ({self.name}){pos}"
+        try:
+            short = batch.program.short_form
+        except Program.DoesNotExist:
+            short = "?"
+        return f"{short} - {batch.name} - {self.name}{pos}"
 
     def clean(self):
         from django.core.exceptions import ValidationError
@@ -1010,8 +1063,18 @@ class CourseUnitSectionLecturer(models.Model):
         ]
 
     def __str__(self):
-        sec = self.teaching_section.code if self.teaching_section_id else "ALL"
-        return f"{self.course_unit.code} · {sec} · {self.lecturer_id}"
+        try:
+            if self.teaching_section_id:
+                sec = self.teaching_section.code
+            else:
+                sec = "ALL"
+        except TeachingSection.DoesNotExist:
+            sec = f"#{self.teaching_section_id}"
+        try:
+            code = self.course_unit.code
+        except CourseUnit.DoesNotExist:
+            code = f"CU#{self.course_unit_id}"
+        return f"{code} · {sec} · {self.lecturer_id}"
 
     def clean(self):
         from django.core.exceptions import ValidationError
@@ -1835,7 +1898,11 @@ class TimetableSession(models.Model):
 
     def __str__(self):
         day = dict(self.DAY_CHOICES).get(self.day_of_week, "?")
-        return f"{self.course_unit.code} {day} {self.start_time}-{self.end_time}"
+        try:
+            code = self.course_unit.code
+        except CourseUnit.DoesNotExist:
+            code = f"CU#{self.course_unit_id}"
+        return f"{code} {day} {self.start_time}-{self.end_time}"
 
     def clean(self):
         from django.core.exceptions import ValidationError

@@ -315,6 +315,11 @@ urlpatterns = [
     # Admission Change Requests
     path('change_requests/my', views.StudentChangeRequestListCreate.as_view(), name='student_change_requests'),
     path(
+        'change_requests/exemption/verify/<uuid:token>/',
+        views.ExemptionHodApprovalVerifyPublicView.as_view(),
+        name='exemption_hod_approval_verify_public',
+    ),
+    path(
         'change_requests/my/<int:pk>',
         views.StudentChangeRequestListCreate.as_view(),
         name='student_change_request_delete',
@@ -334,6 +339,11 @@ urlpatterns = [
         'change_requests/exemption/form_fee/pay',
         exemption_form_fee_payment.InitiateExemptionFormFeePaymentView.as_view(),
         name='exemption_form_fee_pay',
+    ),
+    path(
+        'change_requests/exemption/form_fee/pay/cancel',
+        exemption_form_fee_payment.CancelExemptionFormFeePaymentView.as_view(),
+        name='exemption_form_fee_pay_cancel',
     ),
     path(
         'change_requests/exemption/form_fee/pay/<str:payment_ref>',
@@ -383,9 +393,24 @@ urlpatterns = [
         name='exemption_request_add_line',
     ),
     path(
+        'change_requests/<int:pk>/exemption_lines/<int:line_id>',
+        views.AdminExemptionLineScoreView.as_view(),
+        name='exemption_request_update_line_score',
+    ),
+    path(
         'change_requests/<int:pk>/advance_position',
         views.ExemptionAdvancePositionView.as_view(),
         name='exemption_advance_position',
+    ),
+    path(
+        'change_requests/<int:pk>/apply_promotion',
+        views.ExemptionApplyPromotionView.as_view(),
+        name='exemption_apply_promotion',
+    ),
+    path(
+        'change_requests/<int:pk>/reopen_accounts_billing',
+        views.ExemptionReopenAccountsBillingView.as_view(),
+        name='exemption_reopen_accounts_billing',
     ),
     path(
         'change_requests/exemption/fee_report',

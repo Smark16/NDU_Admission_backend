@@ -1,0 +1,7 @@
+course_code,day,start_time,end_time,start_date,end_date,session_date,venue_code,room_label,session_type,delivery_mode,teaching_section,shared_key,lecturer_email,is_published,notes
+BSD1207,Mon,08:00,11:00,2026-08-17,2026-12-18,,,ICDL LAB,,lecture,on_campus,,,,false,Linear Programming — Day KLA morning; confirm weekday
+"BIT3101,BCS3101,BSE3101,BBC2105",Mon,11:00,14:00,2026-08-17,2026-12-18,,D1-1,,lecture,on_campus,,kla-ui-vb,,false,UI/VB + Event Driven — mid band (Community Hour 12–13 D2-1)
+BSD1202,Tue,08:00,11:00,2026-08-17,2026-12-18,,,Learning centre,,lecture,on_campus,,,,false,Integral Calculus
+BSE1103,Tue,08:00,11:00,2026-08-17,2026-12-18,,D4-2,,lecture,on_campus,,,,false,Calculus I
+"BIT2106,BCS2106",Wed,11:00,14:00,2026-08-17,2026-12-18,,,Eng. Block - Room 2,,lecture,on_campus,,kla-networks,,false,Computer Networks
+"BIT3106,BCS3107,BBC3107",Thu,14:00,17:00,2026-08-17,2026-12-18,,,TBA,,lecture,on_campus,,kla-fyp,,false,Final Year Project — set room from source

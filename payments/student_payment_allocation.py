@@ -282,16 +282,19 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
     student_pb_id = _student_program_batch_id(student)
 
     from admissions.exemption_services import (
-        prorate_tuition_for_course_exemptions,
         semester_paper_counts_for_exemptions,
         year_fully_course_exempted,
+        exemption_tuition_finance_unlocked,
     )
 
     # Cache full-year / full-term exemption checks (tuition + functional waived).
     year_fully_exempt_cache: dict[int, bool] = {}
     term_fully_exempt_cache: dict[tuple[int, int], bool] = {}
+    finance_unlocked = exemption_tuition_finance_unlocked(student)
 
     def _year_fully_exempt(year: int) -> bool:
+        if not finance_unlocked:
+            return False
         if year not in year_fully_exempt_cache:
             year_fully_exempt_cache[year] = year_fully_course_exempted(
                 student, year_of_study=year
@@ -299,6 +302,8 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
         return year_fully_exempt_cache[year]
 
     def _term_fully_exempt(year: int, term: int) -> bool:
+        if not finance_unlocked:
+            return False
         key = (year, term)
         if key not in term_fully_exempt_cache:
             counts = semester_paper_counts_for_exemptions(
@@ -309,8 +314,9 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
             )
         return term_fully_exempt_cache[key]
 
-    # Advanced entry (e.g. HOD promote after exemptions): no tuition/functional
-    # for terms before the student's entry year/term — covered by per-paper fees.
+    # Advanced entry (e.g. HOD promote after exemptions): no tuition/functional/
+    # practical for terms before the student's entry year/term — covered by
+    # per-paper exemption fees; practical resumes at entry (e.g. Y2T1).
     entry_pair: tuple[int, int] | None = None
     has_course_exemptions = False
     try:
@@ -341,13 +347,15 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
         if amt <= 0:
             continue
         sem = rule.semester
-        # Partial exemptions: prorate TUITION only.
-        # Full term / full year / pre-entry terms: omit TUITION + FUNCTIONAL —
-        # student pays only per-paper EXEMPTION_COURSE charges for those papers.
+        # Omit TUITION + FUNCTIONAL for terms before SPE entry (e.g. whole Y1
+        # after promotion into Y2T1). From entry onward the student pays schedule
+        # tuition + functional even if some/all papers that term were also
+        # course-exempted — EXEMPTION_COURSE is billed separately.
+        # Without a promotion entry point, fully paper-exempted years/terms
+        # still omit both heads (legacy non-promoted cases).
         fee_code = (rule.fee_head.code or "").upper() if rule.fee_head_id else ""
         is_tuition_head = fee_code == "TUITION_FEE"
         is_functional_head = fee_code == "FUNCTIONAL_FEE" or "FUNCTIONAL" in fee_code
-        proration_meta: dict[str, Any] | None = None
 
         sem_year = int(sem.year_of_study) if sem is not None and sem.year_of_study else None
         sem_term = int(sem.term_number) if sem is not None and sem.term_number else None
@@ -374,24 +382,12 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
         ):
             if entry_pair is not None and (sem_year, sem_term) < entry_pair:
                 continue
-            if _year_fully_exempt(sem_year):
-                continue
-            if _term_fully_exempt(sem_year, sem_term):
-                continue
+            if entry_pair is None:
+                if _year_fully_exempt(sem_year):
+                    continue
+                if _term_fully_exempt(sem_year, sem_term):
+                    continue
 
-        if (
-            is_tuition_head
-            and sem_year is not None
-            and sem_term is not None
-        ):
-            amt, proration_meta = prorate_tuition_for_course_exemptions(
-                student,
-                amt,
-                year_of_study=sem_year,
-                term_number=sem_term,
-            )
-            if amt <= 0:
-                continue
         line = DemandLine(
             kind="tuition_structure",
             rule_id=rule.id,
@@ -423,18 +419,6 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
                 "calendar_type": (
                     getattr(program, "calendar_type", None) or "semester"
                 ),
-                **(
-                    {
-                        "tuition_prorated_for_exemptions": True,
-                        "exemption_total_papers": proration_meta["total_papers"],
-                        "exemption_exempted_papers": proration_meta["exempted_papers"],
-                        "exemption_non_exempted_papers": proration_meta[
-                            "non_exempted_papers"
-                        ],
-                    }
-                    if proration_meta and proration_meta.get("exempted_papers", 0) > 0
-                    else {}
-                ),
             },
         )
         # Continuing / batch-imported cohorts: only current curriculum term is open.
@@ -456,8 +440,24 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
             payable_term=pt,
         ):
             continue
+        fee_code = (rule.fee_head.code or "").upper() if rule.fee_head_id else ""
+        fee_name = (rule.fee_head.name or "").upper() if rule.fee_head_id else ""
+        is_practical = "PRACTICAL" in fee_code or "PRACTICAL" in fee_name
+        # Whole-year / advanced-entry exemption: no Y1 practical — student pays
+        # practical from entry year Sem 1 onward (e.g. Y2T1), not the skipped year.
+        if is_practical:
+            if entry_pair is not None and (py, pt) < entry_pair:
+                continue
+            if _year_fully_exempt(py):
+                continue
+            if _term_fully_exempt(py, pt):
+                continue
         reached = _milestone_reached(cy, ct, py, pt)
         billable = billing_date_reached(rule)
+        # Current-term practical is due with the semester (same as tuition), even
+        # if Accounts has not yet opened the scheduled billing date.
+        if is_practical and py == cy and pt == ct:
+            billable = True
         amt, cur = effective_amount_currency(rule, international)
         if amt <= 0:
             continue
@@ -529,15 +529,16 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
             continue
         # When staff split a manual charge across chosen semesters, each part is tagged
         # with a Semester for ledger placement. Ordinary ad-hoc waits until that term
-        # starts; exemption form/course fees stay immediately due so they appear on
-        # student list balances as soon as Accounts posts them.
+        # starts; exemption form fee stays immediately due; remaining-tuition arrears
+        # stay due; EXEMPTION_COURSE split parts are due only for current/prior terms.
         sem = charge.semester
         billable = True
         payable_year = payable_term = None
+        code = fee_head_code(charge)
         extra: dict[str, Any] = {
             "charge_status": charge.status,
             "fee_head_id": charge.fee_head_id,
-            "fee_head_code": fee_head_code(charge),
+            "fee_head_code": code,
         }
         if is_exemption_form_fee_charge(charge):
             extra["exclude_from_tuition"] = True
@@ -554,11 +555,45 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
                     "billing_date": eff_date.isoformat() if eff_date else None,
                 }
             )
-            if is_exemption_adhoc_charge(charge):
+            pair = _curriculum_pair(payable_year, payable_term)
+            if code == "EXEMPTION_FORM":
+                billable = True
+                extra["exemption_immediate"] = True
+            elif code == "EXEMPT_REMAIN_TUIT":
+                # Remaining-tuition total is spread across the same semester lines
+                # as EXEMPTION_COURSE (grand payment-schedule split). Gate like
+                # exemption slices: only this / prior SPE terms are due now.
+                extra["exemption_immediate"] = True
+                if pair is None:
+                    billable = True
+                elif pair > (cy, ct):
+                    billable = False
+                elif pair < (cy, ct):
+                    billable = True
+                    extra["prior_period_settled"] = True
+                else:
+                    billable = True
+            elif code == "EXEMPTION_COURSE":
+                # 4-way split: only this semester's slice (and any unpaid prior slices)
+                # are due now; later semester tags wait.
+                extra["exemption_immediate"] = True
+                if pair is None:
+                    billable = True
+                elif pair > (cy, ct):
+                    billable = False
+                elif pair < (cy, ct):
+                    billable = True
+                    extra["prior_period_settled"] = True
+                else:
+                    billable = True
+            elif is_exemption_adhoc_charge(charge):
                 billable = True
                 extra["exemption_immediate"] = True
             elif eff_date is not None:
                 billable = timezone.localdate() >= eff_date
+        elif is_exemption_adhoc_charge(charge):
+            billable = True
+            extra["exemption_immediate"] = True
         lines.append(
             DemandLine(
                 kind="ad_hoc",

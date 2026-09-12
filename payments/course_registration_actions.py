@@ -62,6 +62,12 @@ def _unit_allowed_for_self_register(student, cu, spe) -> tuple[bool, str]:
     ).exists():
         return True, ""
 
+    # Pre-entry remaining papers due now (exemption promotion leftovers).
+    from Programs.enrollment_course_assignment import due_prior_year_term_pairs
+
+    if (int(sem.year_of_study), int(sem.term_number)) in set(due_prior_year_term_pairs(spe)):
+        return True, ""
+
     # Legacy semesters without year/term metadata on the same cohort.
     if (sem.year_of_study is None or sem.term_number is None) and (
         spe.program_batch_id and sem.program_batch_id == spe.program_batch_id

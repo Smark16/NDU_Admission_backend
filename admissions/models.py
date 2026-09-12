@@ -1039,6 +1039,15 @@ class AdmissionChangeRequest(models.Model):
     )
     hod_reviewed_at = models.DateTimeField(null=True, blank=True)
     hod_notes = models.TextField(blank=True, default="")
+    # Public QR authenticity for the student HOD-approval printout
+    exemption_verification_token = models.UUIDField(
+        unique=True,
+        null=True,
+        blank=True,
+        editable=False,
+        db_index=True,
+        help_text="Token embedded in the HOD exemption print QR for public verification.",
+    )
     dean_reviewed_by = models.ForeignKey(
         User,
         on_delete=models.SET_NULL,

@@ -6,7 +6,9 @@ and programme timetabling/enrollment.
 Scope:
 - Assign the HOD as ``AcademicDepartment.head_of_department`` (Academic Departments UI).
 - That grants the HOD group and the department's faculty.
-- Access is limited to programmes whose ``Program.department`` is a department they head.
+- Programme scheduling / enrollment stay limited to programmes in departments they head.
+- Course exemption lists are faculty-wide for the HOD (so programmes without
+  ``Program.department`` still appear). Other change-request types stay department-scoped.
 - Faculty Dean / Faculty Admin remain faculty-wide (not narrowed by department).
 """
 

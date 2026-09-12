@@ -1,4 +1,4 @@
-"""Multi-stage course exemption review pipeline (HOD → Dean → AR → Accounts)."""
+"""Multi-stage course exemption review pipeline (HOD → Dean → AR; Accounts after HOD)."""
 from __future__ import annotations
 
 from django.utils import timezone
@@ -40,8 +40,9 @@ def prior_exemption_stage_approved(change_request, stage: str) -> bool:
         return change_request.hod_status == "approved"
     if stage == "ar":
         return change_request.dean_status == "approved"
+    # Accounts bills as soon as HOD has approved papers (Dean/AR may still be reviewing).
     if stage == "accounts":
-        return change_request.ar_status == "approved"
+        return change_request.hod_status == "approved"
     return False
 
 
@@ -177,8 +178,8 @@ def filter_exemption_requests_for_stage(qs, stage: str, status_filter: str | Non
             return qs.filter(ar_status="rejected")
         return qs
 
-    # accounts
-    qs = qs.filter(ar_status="approved")
+    # accounts — visible once HOD has approved (parallel with Dean/AR)
+    qs = qs.filter(hod_status="approved")
     if status_filter == "pending":
         return qs.filter(accounts_status="pending")
     if status_filter == "approved":

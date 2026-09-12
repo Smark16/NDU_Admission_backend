@@ -56,6 +56,12 @@ class ListCourseUnitEnrollments(generics.ListAPIView):
                 "reg_no": student.reg_no,
                 "name": student.full_name,
                 "enrollment_date": enrollment.enrollment_date,
+                "registration_date": (
+                    enrollment.registration_date.isoformat()
+                    if enrollment.registration_date
+                    else None
+                ),
+                "is_registered": enrollment.registration_date is not None,
                 "status": enrollment.status,
                 "grade": enrollment.grade,
                 "teaching_section_id": section.id if section else None,
@@ -246,12 +252,15 @@ class EnrollStudentsInCourseUnit(APIView):
                         errors.append(f"Student {student.student_id} is already enrolled")
                         continue
                     
+                    # Enrol only — do NOT stamp registration_date here.
+                    # Course registration requires Accounts clearance (+ AR docs for Y1S1)
+                    # via student portal or Enrol → Register courses. No admin bypass.
                     enrollment = StudentCourseUnitEnrollment.objects.create(
                         student=student,
                         course_unit=course_unit,
                         status="enrolled",
                         source="admin_assigned",
-                        registration_date=timezone.now(),
+                        registration_date=None,
                     )
                     enrolled.append({
                         'id': enrollment.id,
@@ -266,7 +275,11 @@ class EnrollStudentsInCourseUnit(APIView):
         return Response({
             'enrolled': enrolled,
             'errors': errors,
-            'message': f'Successfully enrolled {len(enrolled)} student(s)'
+            'message': (
+                f'Successfully enrolled {len(enrolled)} student(s). '
+                'They are Enrolled only — Register still needs Accounts clearance '
+                '(Enrol → Register courses, or the student portal).'
+            ),
         }, status=status.HTTP_201_CREATED)
 
 class AssignLecturersToCourseUnit(APIView):
@@ -632,23 +645,9 @@ class GetAvailableCoursesForRegistration(APIView):
                         status=status.HTTP_400_BAD_REQUEST,
                     )
 
-                # ── Step 2: Standard courses (blueprint year/term = current) ──────
-                # Curriculum lines at current position with no blocking override
-                standard_lines = ProgramCurriculumLine.objects.filter(
-                    program=curriculum_owner_program(spe.program),
-                    curriculum_version=curriculum_version,
-                    year_of_study=curr_year,
-                    term_number=curr_term,
-                    is_active=True,
-                ).exclude(id__in=excluded_line_ids)
-                if selected_specialization:
-                    standard_lines = standard_lines.filter(
-                        Q(specialization__isnull=True)
-                        | Q(specialization='')
-                        | Q(specialization__iexact=selected_specialization)
-                    )
-
-                # Find the operational Semester for current position
+                # ── Step 2: Units due now (current SPE + pre-entry leftovers) ─────
+                # Billing-date gated for leftover terms (same rule as auto-assign /
+                # Accounts remaining tuition: Y1S1 due with Y2S1; Y1S2 waits).
                 current_semester = Semester.objects.filter(
                     program_batch=spe.program_batch,
                     year_of_study=curr_year,
@@ -656,18 +655,12 @@ class GetAvailableCoursesForRegistration(APIView):
                     is_active=True,
                 ).first()
 
-                if current_semester:
-                    # Map code → CourseUnit for fast lookup
-                    cu_map = {
-                        cu.code: cu.id
-                        for cu in CourseUnit.objects.filter(
-                            semester=current_semester, is_active=True
-                        )
-                    }
-                    for line in standard_lines:
-                        cid = cu_map.get(line.catalog_course.code)
-                        if cid:
-                            available_course_unit_ids.add(cid)
+                from .enrollment_course_assignment import (
+                    course_unit_ids_for_enrollment_due_terms,
+                )
+
+                due_unit_ids, _due_skip = course_unit_ids_for_enrollment_due_terms(spe)
+                available_course_unit_ids.update(due_unit_ids)
 
                 # ── Step 3: Deferred / backlog overrides effective NOW ────────────
                 active_overrides = [
@@ -1335,10 +1328,16 @@ class AdminRegisterStudentForCourses(APIView):
         student, err = self._student(request, student_id)
         if err:
             return err
+
         block_reason = registration_clearance_block_reason(student)
         if block_reason:
             return Response(
-                {"detail": block_reason},
+                {
+                    "detail": block_reason,
+                    "accounts_registration_cleared": bool(
+                        getattr(student, "accounts_registration_cleared", False)
+                    ),
+                },
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -1393,25 +1392,48 @@ class RemoveStudentFromCourseUnit(APIView):
     permission_classes = [AcademicEnrollmentAdminPermission]
     
     def delete(self, request, enrollment_id):
+        from accounts.super_admin import user_is_super_admin
+
+        from .course_unit_marks_guards import enrollment_has_entered_marks
         from .models import StudentCourseUnitEnrollment
         
         try:
             enrollment = StudentCourseUnitEnrollment.objects.select_related(
-                "course_unit__program_batch__program"
+                "course_unit__program_batch__program",
+                "course_result",
             ).get(id=enrollment_id)
             assert_course_unit_enrollment_access(request.user, enrollment)
-            if enrollment.registration_date:
+
+            if enrollment_has_entered_marks(enrollment):
                 return Response(
                     {
-                        "detail": "This student is already registered for this course. Registered units cannot be removed or revoked."
+                        "detail": (
+                            "Cannot remove this student: marks have already been entered "
+                            "for this course unit."
+                        )
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+            if enrollment.registration_date and not user_is_super_admin(request.user):
+                return Response(
+                    {
+                        "detail": (
+                            "This student is already registered for this course. "
+                            "Only Super Admin may remove a registered unit when no marks "
+                            "have been entered."
+                        )
                     },
                     status=status.HTTP_403_FORBIDDEN,
                 )
+
             student_id = enrollment.student.student_id
+            was_registered = enrollment.registration_date is not None
             enrollment.delete()
-            return Response({
-                'message': f'Student {student_id} removed from course unit'
-            }, status=status.HTTP_200_OK)
+            msg = f"Student {student_id} removed from course unit"
+            if was_registered:
+                msg += " (registered; no marks)"
+            return Response({"message": msg}, status=status.HTTP_200_OK)
         except StudentCourseUnitEnrollment.DoesNotExist:
             return Response({'detail': 'Enrollment not found'}, status=status.HTTP_404_NOT_FOUND)
 

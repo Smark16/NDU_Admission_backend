@@ -1,0 +1,8 @@
+course_code,day,start_time,end_time,start_date,end_date,session_date,venue_code,room_label,session_type,delivery_mode,teaching_section,shared_key,lecturer_email,is_published,notes
+"BIT1103,DIT1103,DCS1103,BCS1103",Mon,08:30,11:30,2026-08-17,2026-12-18,,,Level 3 Room 2,,lecture,on_campus,,main-entre,,false,Entrepreneurship with Faculty of Business — Main Day
+"BCS1104,DCS1104,BSE1103",Mon,08:30,11:30,2026-08-17,2026-12-18,,,Mini Lab - Lady Irene,,lecture,on_campus,,main-discrete,,false,Discrete Mathematics
+"BIT2105,DCIT2105,DIT2105,DCS2105,BCS2105,BSE2107",Mon,11:30,13:30,2026-08-17,2026-12-18,,,Main Lab-SC,,practical,on_campus,,main-cisco-y2,,false,CISCO Practical Skills
+BCS3105,Mon,14:30,17:30,2026-08-17,2026-12-18,,,Main Lab - Lady Irene,,lecture,on_campus,,,,false,Client Server Programming
+"BCS1105,DCS1105",Tue,08:30,11:30,2026-08-17,2026-12-18,,,Mini Lab - Lady Irene,,lecture,on_campus,,main-stats,,false,Probability & Statistics
+BSE1101,Tue,08:30,11:30,2026-08-17,2026-12-18,,,TBA,,lecture,on_campus,,,,false,Programming Logic — set room
+"BIT1105,BCS1105",Thu,14:30,17:30,2026-08-17,2026-12-18,,,TBA,,lecture,on_campus,,main-y1-pm,,false,Afternoon band — complete from source grid

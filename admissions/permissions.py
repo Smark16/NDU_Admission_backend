@@ -115,9 +115,20 @@ def user_can_bill_exemption_accounts(user) -> bool:
         return True
     if user.has_perm("admissions.bill_exemption_accounts"):
         return True
-    from accounts.finance_access import user_can_configure_fee_plans
+    from accounts.finance_access import (
+        user_can_configure_fee_plans,
+        user_can_view_student_finance,
+        user_in_bursar_clearance_groups,
+    )
 
+    if user_in_bursar_clearance_groups(user):
+        return True
     if user_can_configure_fee_plans(user):
+        return True
+    # Finance Officer and other access_finance staff who post charges.
+    if user_can_view_student_finance(user) and user.has_perm(
+        "payments.add_studenttuitionpayment"
+    ):
         return True
     return False
 

@@ -262,14 +262,20 @@ def is_exemption_form_fee_charge(charge) -> bool:
 
 
 def is_exemption_adhoc_charge(charge) -> bool:
-    """Course / form exemption fees — always visible on student balances."""
-    return fee_head_code(charge) in {"EXEMPTION_COURSE", "EXEMPTION_FORM"}
+    """Course / form / remaining-tuition exemption fees — always on balances."""
+    return fee_head_code(charge) in {
+        "EXEMPTION_COURSE",
+        "EXEMPTION_FORM",
+        "EXEMPT_REMAIN_TUIT",
+    }
 
 
 def adhoc_charge_billing_reached(charge) -> bool:
-    # Exemption fees are owed as soon as Accounts posts them, even when
-    # staff spreads the total across future cohort semesters for ledger tagging.
-    if is_exemption_adhoc_charge(charge):
+    # Form fee: always owed once posted.
+    # Course-exemption + remaining-tuition splits: SPE gating is applied in
+    # _build_demand_lines (same semester-slice rules).
+    code = fee_head_code(charge)
+    if code in {"EXEMPTION_FORM", "EXEMPTION_COURSE", "EXEMPT_REMAIN_TUIT"}:
         return True
     effective = adhoc_charge_billing_date(charge)
     if effective is None:
