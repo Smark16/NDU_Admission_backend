@@ -6355,6 +6355,62 @@ class AdminExemptionReturnToHodView(APIView):
         )
 
 
+class AdminExemptionSuperAdminReturnToHodView(APIView):
+    """
+    Super admin: force return an exemption to HOD (add papers / redo HOD).
+
+    POST /api/admissions/change_requests/<pk>/super_admin_return_to_hod
+    Body: { "reason": str, "undo_billing"?: bool }
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        from admissions.exemption_services import super_admin_return_exemption_to_hod
+        from admissions.serializers import AdmissionChangeRequestSerializer
+
+        if not user_is_super_admin(request.user):
+            return Response(
+                {"detail": "Only a super admin can force-return an exemption to HOD."},
+                status=403,
+            )
+
+        req_obj = get_object_or_404(
+            AdmissionChangeRequest.objects.prefetch_related("exemption_lines"),
+            pk=pk,
+            change_type="exemption",
+        )
+        reason = (request.data.get("reason") or request.data.get("review_notes") or "").strip()
+        undo_billing = request.data.get("undo_billing", False)
+        if isinstance(undo_billing, str):
+            undo_billing = undo_billing.strip().lower() not in ("0", "false", "no")
+
+        try:
+            with transaction.atomic():
+                result = super_admin_return_exemption_to_hod(
+                    req_obj,
+                    actor=request.user,
+                    reason=reason,
+                    undo_billing=bool(undo_billing),
+                )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
+
+        req_obj = (
+            AdmissionChangeRequest.objects.select_related("reviewed_by")
+            .prefetch_related("exemption_lines", "supporting_documents")
+            .get(pk=req_obj.pk)
+        )
+        return Response(
+            {
+                **result,
+                "change_request": AdmissionChangeRequestSerializer(
+                    req_obj, context={"request": request}
+                ).data,
+            }
+        )
+
+
 class AdminExemptionLineAddView(APIView):
     """
     HOD/Dean: add another curriculum paper to an exemption request.

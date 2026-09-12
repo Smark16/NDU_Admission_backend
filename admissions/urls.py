@@ -383,6 +383,11 @@ urlpatterns = [
         name='exemption_return_to_hod',
     ),
     path(
+        'change_requests/<int:pk>/super_admin_return_to_hod',
+        views.AdminExemptionSuperAdminReturnToHodView.as_view(),
+        name='exemption_super_admin_return_to_hod',
+    ),
+    path(
         'change_requests/<int:pk>/return_unpaid',
         views.AdminReturnUnpaidExemptionView.as_view(),
         name='return_unpaid_exemption',

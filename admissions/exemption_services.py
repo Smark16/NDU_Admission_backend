@@ -3502,6 +3502,75 @@ def return_exemption_to_hod_for_review(
     }
 
 
+def super_admin_return_exemption_to_hod(
+    change_request: AdmissionChangeRequest,
+    *,
+    actor=None,
+    reason: str = "",
+    undo_billing: bool = False,
+) -> dict:
+    """
+    Super admin: force the exemption back to HOD for a full re-review
+    (e.g. HOD needs to add papers), without needing Dean/AR UI roles.
+
+    If Accounts has already billed, set undo_billing=True to remove pending
+    charges and reverse promotion first.
+    """
+    if change_request.change_type != "exemption":
+        raise ValueError("Not an exemption request.")
+    if not (reason or "").strip():
+        raise ValueError("Enter a reason for returning this request to HOD.")
+
+    billing_undone = False
+    charges_removed = 0
+    if change_request.accounts_status in ("billed", "confirmed"):
+        if not undo_billing:
+            raise ValueError(
+                "Accounts has already billed this exemption. "
+                "Confirm undo billing (or use Undo billing first), then return to HOD."
+            )
+        bill_result = reopen_exemption_accounts_billing(
+            change_request,
+            actor=actor,
+            reverse_promotion=True,
+        )
+        billing_undone = True
+        charges_removed = int(bill_result.get("charges_removed") or 0)
+        change_request.refresh_from_db()
+
+    if change_request.hod_status != "approved":
+        # HOD rejected or still mid-decision — soft reopen HOD stage when allowed.
+        result = reopen_exemption_stage_review(
+            change_request,
+            stage="hod",
+            actor=actor,
+            reason=reason,
+        )
+        return {
+            **result,
+            "returned_to_hod": True,
+            "from_stage": "super_admin",
+            "billing_undone": billing_undone,
+            "charges_removed": charges_removed,
+            "mode": "reopen_hod",
+        }
+
+    from_stage = "ar" if change_request.dean_status == "approved" else "dean"
+    result = return_exemption_to_hod_for_review(
+        change_request,
+        from_stage=from_stage,
+        actor=actor,
+        reason=f"[super admin] {(reason or '').strip()}",
+    )
+    return {
+        **result,
+        "billing_undone": billing_undone,
+        "charges_removed": charges_removed,
+        "mode": "return_to_hod",
+        "from_stage": from_stage,
+    }
+
+
 def propose_exemption_promotion(
     change_request: AdmissionChangeRequest,
     *,
@@ -3869,8 +3938,8 @@ def advance_student_position_for_exemption(
     enrollment.current_year_of_study = to_year
     enrollment.current_term_number = to_term
     # Exemption advance = advanced standing: stamp entry so terms before the
-    # new position do not keep full tuition/functional (those years are covered
-    # by per-paper EXEMPTION_COURSE charges instead).
+    # new position drop full tuition (covered by per-paper EXEMPTION_COURSE).
+    # Y1S1 functional still carries on demand; other pre-entry functional is omitted.
     entry_y = enrollment.entry_year_of_study
     entry_t = enrollment.entry_term_number
     try:
