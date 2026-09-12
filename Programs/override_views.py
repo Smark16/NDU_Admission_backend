@@ -66,6 +66,43 @@ def _line_to_dict(line: ProgramCurriculumLine, override: StudentCurriculumOverri
     }
 
 
+def _ensure_enrollment_curriculum_version(enrollment: StudentProgrammeEnrollment):
+    """Bind a curriculum version if SPE has none (same rules as curriculum GET)."""
+    if enrollment.curriculum_version_id is not None:
+        return enrollment
+    fallback = (
+        enrollment.program_batch.curriculum_version
+        if enrollment.program_batch_id and enrollment.program_batch.curriculum_version_id
+        else resolve_program_default_curriculum_version(enrollment.program)
+    )
+    if fallback:
+        enrollment.curriculum_version = fallback
+        enrollment.save(update_fields=["curriculum_version", "updated_at"])
+    return enrollment
+
+
+def _curriculum_line_for_enrollment(enrollment: StudentProgrammeEnrollment, line_id: int):
+    """
+    Resolve a blueprint line for this SPE.
+
+    Inherited programmes store lines on the curriculum owner programme, not
+    enrollment.program — matching StudentCurriculumView listing.
+    """
+    enrollment = _ensure_enrollment_curriculum_version(enrollment)
+    if enrollment.curriculum_version_id is None:
+        return None
+    return (
+        ProgramCurriculumLine.objects.filter(
+            pk=line_id,
+            program=curriculum_owner_program(enrollment.program),
+            curriculum_version=enrollment.curriculum_version,
+            is_active=True,
+        )
+        .select_related("catalog_course")
+        .first()
+    )
+
+
 # ---------------------------------------------------------------------------
 # Views
 # ---------------------------------------------------------------------------
@@ -89,15 +126,7 @@ class StudentCurriculumView(APIView):
                 {"detail": "No academic enrollment found for this student."},
                 status=status.HTTP_404_NOT_FOUND,
             )
-        if enrollment.curriculum_version_id is None:
-            fallback = (
-                enrollment.program_batch.curriculum_version
-                if enrollment.program_batch_id and enrollment.program_batch.curriculum_version_id
-                else resolve_program_default_curriculum_version(enrollment.program)
-            )
-            if fallback:
-                enrollment.curriculum_version = fallback
-                enrollment.save(update_fields=["curriculum_version", "updated_at"])
+        _ensure_enrollment_curriculum_version(enrollment)
 
         lines = (
             ProgramCurriculumLine.objects
@@ -159,7 +188,12 @@ class EnrollmentOverrideListCreate(APIView):
         return Response([_override_to_dict(o) for o in overrides])
 
     def post(self, request, enrollment_id):
-        enrollment = get_object_or_404(StudentProgrammeEnrollment, pk=enrollment_id)
+        enrollment = get_object_or_404(
+            StudentProgrammeEnrollment.objects.select_related(
+                "program", "program_batch", "curriculum_version"
+            ),
+            pk=enrollment_id,
+        )
 
         curriculum_line_id = request.data.get("curriculum_line_id")
         override_type      = request.data.get("override_type", "").strip()
@@ -182,12 +216,25 @@ class EnrollmentOverrideListCreate(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        line = get_object_or_404(
-            ProgramCurriculumLine,
-            pk=curriculum_line_id,
-            program=enrollment.program,
-            curriculum_version=enrollment.curriculum_version,
-        )
+        try:
+            line_pk = int(curriculum_line_id)
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "curriculum_line_id must be an integer."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        line = _curriculum_line_for_enrollment(enrollment, line_pk)
+        if line is None:
+            return Response(
+                {
+                    "detail": (
+                        "Curriculum line not found for this student's programme blueprint "
+                        "(check curriculum version / inheritance)."
+                    )
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
 
         # Validate position fields for deferred/backlog
         eff_year = request.data.get("effective_year_of_study")
@@ -216,12 +263,19 @@ class EnrollmentOverrideListCreate(APIView):
                     {"detail": "substituted_by_id is required for substituted type."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-            substituted_by = get_object_or_404(
-                ProgramCurriculumLine,
-                pk=sub_id,
-                program=enrollment.program,
-                curriculum_version=enrollment.curriculum_version,
-            )
+            try:
+                sub_pk = int(sub_id)
+            except (TypeError, ValueError):
+                return Response(
+                    {"detail": "substituted_by_id must be an integer."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            substituted_by = _curriculum_line_for_enrollment(enrollment, sub_pk)
+            if substituted_by is None:
+                return Response(
+                    {"detail": "Substitute curriculum line not found for this student's blueprint."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
 
         override = StudentCurriculumOverride.objects.create(
             enrollment=enrollment,
