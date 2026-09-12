@@ -113,7 +113,7 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         bands_n = self._ensure_grade_scale()
-        self.stdout.write(self.style.SUCCESS(f"Grade scale ready ({bands_n} bands). Use A–C+ (60%+)."))
+        self.stdout.write(self.style.SUCCESS(f"Grade scale ready ({bands_n} bands). Use A-C+ (60%+)."))
 
         if options["curriculum_only"]:
             self._attach_curriculum_only(options["program_id"])
@@ -160,7 +160,7 @@ class Command(BaseCommand):
         self.stdout.write("")
         self.stdout.write("Test path:")
         self.stdout.write("  1. Log in as a YES student (reg no / NDU@1234).")
-        self.stdout.write("  2. Dashboard → Exemptions → pick EXMQA papers, grade A/B, submit and pay.")
+        self.stdout.write("  2. Dashboard > Exemptions > pick EXMQA papers, grade A/B, submit and pay.")
         self._print_exmqa_logins()
 
     def _attach_curriculum_only(self, program_id):

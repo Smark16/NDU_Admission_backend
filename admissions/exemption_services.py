@@ -221,8 +221,7 @@ def return_unpaid_exemption_submission(
     """
     Take an unpaid exemption out of the HOD/Accounts queue.
 
-    Pending: reject (does not use up a student attempt).
-    Approved: only if undo_approved — reverse curriculum exemptions, then reject.
+    Pending only. Approved exemptions cannot be undone (even if unpaid).
     """
     if change_request.change_type != "exemption":
         raise ValueError("Not an exemption request.")
@@ -230,15 +229,16 @@ def return_unpaid_exemption_submission(
         raise ValueError("This student has already paid the exemption form fee.")
     if change_request.status == "rejected":
         return {"id": change_request.id, "status": "rejected", "already_returned": True}
-    if change_request.status == "approved" and not undo_approved:
-        raise ValueError(
-            "This exemption was already approved. Pass undo_approved to reverse "
-            "curriculum exemptions and return it."
-        )
-
-    extras = {"overrides_removed": 0, "course_charges_removed": 0}
     if change_request.status == "approved":
-        extras = undo_exemption_curriculum_effects(change_request)
+        raise ValueError(
+            "This exemption was already approved. Approved programmes cannot be undone "
+            "or returned unpaid."
+        )
+    # Keep the parameter for older callers/CLI; approved undo is no longer allowed.
+    if undo_approved:
+        raise ValueError(
+            "Undoing an approved exemption is not allowed. Paper decisions are final."
+        )
 
     from admissions.models import ExemptionRequestLine
 
@@ -258,7 +258,8 @@ def return_unpaid_exemption_submission(
         "id": change_request.id,
         "status": "rejected",
         "already_returned": False,
-        **extras,
+        "overrides_removed": 0,
+        "course_charges_removed": 0,
     }
 
 
@@ -1798,6 +1799,29 @@ def apply_line_decisions(
                 f"Decision for {line.course_code or eid} must be approve or reject."
             )
 
+        # Decisions are final once recorded for this stage.
+        if stage == "hod":
+            existing = (line.decision or ExemptionRequestLine.DECISION_PENDING)
+        elif stage == "dean":
+            existing = (line.dean_decision or ExemptionRequestLine.DECISION_PENDING)
+        else:
+            existing = (line.ar_decision or ExemptionRequestLine.DECISION_PENDING)
+        if existing in (
+            ExemptionRequestLine.DECISION_APPROVED,
+            ExemptionRequestLine.DECISION_REJECTED,
+        ) and existing != decision_val:
+            raise ValueError(
+                f"{line.course_code or eid} is already {existing} at the {stage.upper()} stage "
+                "and cannot be changed."
+            )
+        if existing in (
+            ExemptionRequestLine.DECISION_APPROVED,
+            ExemptionRequestLine.DECISION_REJECTED,
+        ) and existing == decision_val:
+            # Idempotent re-submit of the same decision is allowed (e.g. matching notes),
+            # but do not reopen or flip.
+            continue
+
         note = str(raw.get("decision_note") or "").strip()[:255]
 
         if stage == "hod":
@@ -2291,80 +2315,18 @@ def exemption_stage_can_reopen(change_request: AdmissionChangeRequest, stage: st
     """
     Whether HOD / Dean / AR can undo their own stage decisions.
 
-    Only allowed before the next pipeline stage has acted, and before AR
-    final effects (curriculum + promotion) are applied.
+    Paper approve/reject decisions are final once submitted — undoing
+    (un-approve / un-reject) is not allowed.
     """
     stage = (stage or "").strip().lower()
     if change_request.change_type != "exemption":
         return False, "Not an exemption request."
-    if exemption_effects_applied(change_request):
-        return False, (
-            "Curriculum exemptions and promotion already applied after AR approval. "
-            "Contact Academic Registry / system admin to reverse effects."
-        )
-    if stage == "hod" and exemption_promotion_applied(change_request):
-        return False, (
-            "The student has already been promoted following HOD approval. "
-            "Contact Academic Registry / system admin to reverse the promotion."
-        )
-    if change_request.accounts_status in ("billed", "confirmed"):
-        return False, "Accounts has already billed this exemption — cannot reopen earlier stages."
-
-    lines = list(change_request.exemption_lines.all())
-    if not lines:
-        return False, "This exemption request has no papers."
-
-    from admissions.models import ExemptionRequestLine
-
-    pending = ExemptionRequestLine.DECISION_PENDING
-
-    if stage == "hod":
-        if change_request.hod_status == "pending" and all(
-            (l.decision or pending) == pending for l in lines
-        ):
-            return False, "HOD has not submitted decisions yet."
-        if change_request.dean_status != "pending":
-            return False, "Dean has already reviewed — ask Dean to undo first, or contact AR."
-        if any((l.dean_decision or pending) != pending for l in lines):
-            return False, "Dean has already decided on one or more papers."
-        if change_request.ar_status != "pending":
-            return False, "AR has already reviewed this request."
-        return True, ""
-
-    if stage == "dean":
-        if change_request.hod_status != "approved":
-            return False, "HOD must approve papers before Dean review can be undone."
-        if change_request.dean_status == "pending" and all(
-            (l.dean_decision or pending) == pending
-            for l in lines
-            if l.decision == ExemptionRequestLine.DECISION_APPROVED
-        ):
-            return False, "Dean has not submitted decisions yet."
-        if change_request.ar_status != "pending":
-            return False, "AR has already reviewed — ask AR to undo first, or contact registry."
-        if any(
-            (l.ar_decision or pending) != pending
-            for l in lines
-            if l.dean_decision == ExemptionRequestLine.DECISION_APPROVED
-        ):
-            return False, "AR has already decided on one or more papers."
-        return True, ""
-
-    if stage == "ar":
-        if change_request.dean_status != "approved":
-            return False, "Dean must approve papers before AR review can be undone."
-        if change_request.ar_status == "pending" and all(
-            (l.ar_decision or pending) == pending
-            for l in lines
-            if (
-                l.decision == ExemptionRequestLine.DECISION_APPROVED
-                and l.dean_decision == ExemptionRequestLine.DECISION_APPROVED
-            )
-        ):
-            return False, "AR has not submitted decisions yet."
-        return True, ""
-
-    return False, 'stage must be "hod", "dean", or "ar".'
+    if stage not in ("hod", "dean", "ar"):
+        return False, 'stage must be "hod", "dean", or "ar".'
+    return False, (
+        f"{stage.upper()} paper decisions are final once submitted. "
+        "Approved or rejected programmes cannot be undone."
+    )
 
 
 def reopen_exemption_stage_review(
@@ -2546,23 +2508,16 @@ def exemption_can_return_to_hod(
     change_request: AdmissionChangeRequest,
     from_stage: str,
 ) -> tuple[bool, str]:
-    """Dean or AR may send a HOD-approved request back for full HOD re-review."""
+    """Dean/AR return-to-HOD is disabled — paper decisions are final once submitted."""
     from_stage = (from_stage or "").strip().lower()
     if change_request.change_type != "exemption":
         return False, "Not an exemption request."
-    if change_request.hod_status != "approved":
-        return False, "HOD has not approved this request yet."
-    if change_request.accounts_status in ("billed", "confirmed"):
-        return False, "Accounts has already billed this exemption — cannot return to HOD."
-    if from_stage == "dean":
-        if change_request.ar_status != "pending":
-            return False, "AR has already reviewed — use the AR tab to return to HOD first."
-        return True, ""
-    if from_stage == "ar":
-        if change_request.dean_status != "approved":
-            return False, "Dean must finish review before AR can return this request to HOD."
-        return True, ""
-    return False, 'from_stage must be "dean" or "ar".'
+    if from_stage not in ("dean", "ar"):
+        return False, 'from_stage must be "dean" or "ar".'
+    return False, (
+        "Approved or rejected exemption programmes cannot be returned to HOD. "
+        "Paper decisions are final once submitted."
+    )
 
 
 def return_exemption_to_hod_for_review(

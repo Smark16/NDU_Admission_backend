@@ -31,8 +31,8 @@ class Command(BaseCommand):
             "--undo-approved",
             action="store_true",
             help=(
-                "Also reverse already-approved unpaid exemptions "
-                "(remove curriculum overrides and EXEMPTION_COURSE bills)."
+                "Deprecated: approved exemption programmes cannot be undone. "
+                "This flag is ignored and will fail for approved requests."
             ),
         )
         parser.add_argument(
@@ -68,7 +68,7 @@ class Command(BaseCommand):
         if dry:
             self.stdout.write(
                 "Re-run without --dry-run to return pending ones. "
-                "Add --undo-approved to reverse approved unpaid exemptions."
+                "Approved exemptions cannot be undone."
             )
             return
 
@@ -80,7 +80,8 @@ class Command(BaseCommand):
                     skipped += 1
                     self.stdout.write(
                         self.style.WARNING(
-                            f"  Skip CR #{req.id}: already approved. Re-run with --undo-approved to reverse."
+                            f"  Skip CR #{req.id}: already approved. "
+                            "Approved exemption programmes cannot be undone."
                         )
                     )
                     continue
