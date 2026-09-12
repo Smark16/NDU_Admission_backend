@@ -373,6 +373,11 @@ urlpatterns = [
         name='exemption_reopen_stage',
     ),
     path(
+        'change_requests/<int:pk>/exemption_lines/<int:line_id>/reopen',
+        views.AdminExemptionLineReopenView.as_view(),
+        name='exemption_reopen_line',
+    ),
+    path(
         'change_requests/<int:pk>/return_to_hod',
         views.AdminExemptionReturnToHodView.as_view(),
         name='exemption_return_to_hod',
