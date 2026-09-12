@@ -2661,16 +2661,15 @@ def exemption_effects_applied(change_request: AdmissionChangeRequest) -> bool:
     return bool(getattr(change_request, "exemption_effects_applied_at", None))
 
 
-def exemption_stage_can_reopen(change_request: AdmissionChangeRequest, stage: str) -> tuple[bool, str]:
-    """
-    Whether HOD / Dean / AR can undo their own stage decisions.
-
-    Only allowed before the next pipeline stage has acted, and before AR
-    final effects (curriculum + promotion) are applied.
-    """
+def _exemption_stage_reopen_pipeline_ok(
+    change_request: AdmissionChangeRequest, stage: str
+) -> tuple[bool, str]:
+    """Hard blocks shared by full-stage and per-paper reopen."""
     stage = (stage or "").strip().lower()
     if change_request.change_type != "exemption":
         return False, "Not an exemption request."
+    if stage not in ("hod", "dean", "ar"):
+        return False, 'stage must be "hod", "dean", or "ar".'
     if exemption_effects_applied(change_request):
         return False, (
             "Curriculum exemptions and promotion already applied after AR approval. "
@@ -2695,10 +2694,6 @@ def exemption_stage_can_reopen(change_request: AdmissionChangeRequest, stage: st
     pending = ExemptionRequestLine.DECISION_PENDING
 
     if stage == "hod":
-        if change_request.hod_status == "pending" and all(
-            (l.decision or pending) == pending for l in lines
-        ):
-            return False, "HOD has not submitted decisions yet."
         if change_request.dean_status != "pending":
             return False, "Dean has already reviewed — ask Dean to undo first, or contact AR."
         if any((l.dean_decision or pending) != pending for l in lines):
@@ -2708,14 +2703,6 @@ def exemption_stage_can_reopen(change_request: AdmissionChangeRequest, stage: st
         return True, ""
 
     if stage == "dean":
-        if change_request.hod_status != "approved":
-            return False, "HOD must approve papers before Dean review can be undone."
-        if change_request.dean_status == "pending" and all(
-            (l.dean_decision or pending) == pending
-            for l in lines
-            if l.decision == ExemptionRequestLine.DECISION_APPROVED
-        ):
-            return False, "Dean has not submitted decisions yet."
         if change_request.ar_status != "pending":
             return False, "AR has already reviewed — ask AR to undo first, or contact registry."
         if any(
@@ -2726,9 +2713,60 @@ def exemption_stage_can_reopen(change_request: AdmissionChangeRequest, stage: st
             return False, "AR has already decided on one or more papers."
         return True, ""
 
+    # ar
+    return True, ""
+
+
+def exemption_stage_can_reopen(change_request: AdmissionChangeRequest, stage: str) -> tuple[bool, str]:
+    """
+    Whether HOD / Dean / AR can undo their own stage decisions.
+
+    Only allowed before the next pipeline stage has acted, and before AR
+    final effects (curriculum + promotion) are applied.
+    """
+    stage = (stage or "").strip().lower()
+    ok, detail = _exemption_stage_reopen_pipeline_ok(change_request, stage)
+    if not ok:
+        return False, detail
+
+    from admissions.models import ExemptionRequestLine
+
+    pending = ExemptionRequestLine.DECISION_PENDING
+    lines = list(change_request.exemption_lines.all())
+
+    if stage == "hod":
+        if change_request.hod_status == "pending" and all(
+            (l.decision or pending) == pending for l in lines
+        ):
+            return False, "HOD has not submitted decisions yet."
+        return True, ""
+
+    if stage == "dean":
+        if change_request.hod_status != "approved":
+            # Still allow if any HOD-approved paper has a Dean decision to undo.
+            if not any(
+                l.decision == ExemptionRequestLine.DECISION_APPROVED
+                and (l.dean_decision or pending) != pending
+                for l in lines
+            ):
+                return False, "HOD must approve papers before Dean review can be undone."
+        if change_request.dean_status == "pending" and all(
+            (l.dean_decision or pending) == pending
+            for l in lines
+            if l.decision == ExemptionRequestLine.DECISION_APPROVED
+        ):
+            return False, "Dean has not submitted decisions yet."
+        return True, ""
+
     if stage == "ar":
         if change_request.dean_status != "approved":
-            return False, "Dean must approve papers before AR review can be undone."
+            if not any(
+                l.decision == ExemptionRequestLine.DECISION_APPROVED
+                and l.dean_decision == ExemptionRequestLine.DECISION_APPROVED
+                and (l.ar_decision or pending) != pending
+                for l in lines
+            ):
+                return False, "Dean must approve papers before AR review can be undone."
         if change_request.ar_status == "pending" and all(
             (l.ar_decision or pending) == pending
             for l in lines
@@ -2740,6 +2778,44 @@ def exemption_stage_can_reopen(change_request: AdmissionChangeRequest, stage: st
             return False, "AR has not submitted decisions yet."
         return True, ""
 
+    return False, 'stage must be "hod", "dean", or "ar".'
+
+
+def exemption_line_can_reopen(
+    change_request: AdmissionChangeRequest,
+    stage: str,
+    line,
+) -> tuple[bool, str]:
+    """Whether one paper's decision at this stage can be reset to Pending."""
+    from admissions.models import ExemptionRequestLine
+
+    stage = (stage or "").strip().lower()
+    ok, detail = _exemption_stage_reopen_pipeline_ok(change_request, stage)
+    if not ok:
+        return False, detail
+
+    pending = ExemptionRequestLine.DECISION_PENDING
+    if stage == "hod":
+        if (line.decision or pending) == pending:
+            return False, "This paper is already pending at HOD."
+        return True, ""
+    if stage == "dean":
+        if line.decision != ExemptionRequestLine.DECISION_APPROVED:
+            return False, "Only HOD-approved papers can be undone at Dean stage."
+        if (line.dean_decision or pending) == pending:
+            return False, "This paper is already pending at Dean."
+        if (line.ar_decision or pending) != pending:
+            return False, "AR has already decided on this paper — ask AR to undo first."
+        return True, ""
+    if stage == "ar":
+        if (
+            line.decision != ExemptionRequestLine.DECISION_APPROVED
+            or line.dean_decision != ExemptionRequestLine.DECISION_APPROVED
+        ):
+            return False, "Only Dean-approved papers can be undone at AR stage."
+        if (line.ar_decision or pending) == pending:
+            return False, "This paper is already pending at AR."
+        return True, ""
     return False, 'stage must be "hod", "dean", or "ar".'
 
 
@@ -2879,6 +2955,141 @@ def reopen_exemption_stage_review(
         "reopened": True,
         "stage": stage,
         "papers_reset": reset_n,
+        "cleared_promotion_proposal": cleared_promotion,
+        "hod_status": change_request.hod_status,
+        "dean_status": change_request.dean_status,
+        "ar_status": change_request.ar_status,
+        "status": change_request.status,
+    }
+
+
+def reopen_exemption_line_review(
+    change_request: AdmissionChangeRequest,
+    *,
+    stage: str,
+    line_id: int,
+    actor=None,
+    reason: str = "",
+) -> dict:
+    """
+    Reset one paper's decision at HOD / Dean / AR back to Pending.
+
+    Same pipeline guards as full-stage reopen. Other papers stay as they are.
+    """
+    from admissions.models import ExemptionRequestLine
+
+    stage = (stage or "").strip().lower()
+    try:
+        line = change_request.exemption_lines.get(pk=line_id)
+    except ExemptionRequestLine.DoesNotExist as exc:
+        raise ValueError("That course paper is not on this exemption request.") from exc
+
+    ok, detail = exemption_line_can_reopen(change_request, stage, line)
+    if not ok:
+        raise ValueError(detail)
+
+    pending = ExemptionRequestLine.DECISION_PENDING
+    code = (line.course_code or f"#{line.id}").strip()
+    update_fields: list[str] = []
+
+    if stage == "hod":
+        if line.decision == ExemptionRequestLine.DECISION_APPROVED:
+            revoke_exemption_override_for_line(line)
+        line.decision = pending
+        line.decision_note = ""
+        line.dean_decision = pending
+        line.dean_decision_note = ""
+        line.ar_decision = pending
+        line.ar_decision_note = ""
+        update_fields = [
+            "decision",
+            "decision_note",
+            "dean_decision",
+            "dean_decision_note",
+            "ar_decision",
+            "ar_decision_note",
+        ]
+    elif stage == "dean":
+        line.dean_decision = pending
+        line.dean_decision_note = ""
+        line.ar_decision = pending
+        line.ar_decision_note = ""
+        update_fields = [
+            "dean_decision",
+            "dean_decision_note",
+            "ar_decision",
+            "ar_decision_note",
+        ]
+    else:
+        line.ar_decision = pending
+        line.ar_decision_note = ""
+        update_fields = ["ar_decision", "ar_decision_note"]
+
+    line.save(update_fields=update_fields)
+    sync_exemption_request_stages_from_lines(change_request)
+
+    cleared_promotion = False
+    cr_fields = ["hod_status", "dean_status", "ar_status", "status", "updated_at"]
+    if stage == "hod":
+        change_request.hod_reviewed_by = None
+        change_request.hod_reviewed_at = None
+        cr_fields += ["hod_reviewed_by", "hod_reviewed_at"]
+        if (
+            change_request.exemption_promotion_year is not None
+            or change_request.exemption_promotion_term is not None
+        ):
+            try:
+                reverse_exemption_promotion_if_applied(change_request)
+            except ValueError:
+                pass
+            change_request.exemption_promotion_year = None
+            change_request.exemption_promotion_term = None
+            change_request.exemption_promotion_from_year = None
+            change_request.exemption_promotion_from_term = None
+            change_request.exemption_promotion_by = None
+            change_request.exemption_promotion_at = None
+            cr_fields += [
+                "exemption_promotion_year",
+                "exemption_promotion_term",
+                "exemption_promotion_from_year",
+                "exemption_promotion_from_term",
+                "exemption_promotion_by",
+                "exemption_promotion_at",
+            ]
+            cleared_promotion = True
+    elif stage == "dean":
+        change_request.dean_reviewed_by = None
+        change_request.dean_reviewed_at = None
+        cr_fields += ["dean_reviewed_by", "dean_reviewed_at"]
+    else:
+        change_request.ar_reviewed_by = None
+        change_request.ar_reviewed_at = None
+        cr_fields += ["ar_reviewed_by", "ar_reviewed_at"]
+
+    actor_name = ""
+    if actor is not None:
+        actor_name = (
+            getattr(actor, "get_full_name", lambda: "")()
+            or getattr(actor, "username", "")
+            or str(actor)
+        )
+    note = (
+        f"[{timezone.now():%Y-%m-%d %H:%M}] {stage.upper()} decision reopened for {code}"
+        + (f" by {actor_name}" if actor_name else "")
+        + (f": {(reason or '').strip()}" if (reason or "").strip() else ".")
+    )
+    change_request.review_notes = "\n".join(
+        filter(None, [change_request.review_notes, note])
+    )[:20000]
+    cr_fields.append("review_notes")
+    change_request.save(update_fields=list(dict.fromkeys(cr_fields)))
+
+    return {
+        "reopened": True,
+        "stage": stage,
+        "exemption_line_id": line.id,
+        "course_code": code,
+        "papers_reset": 1,
         "cleared_promotion_proposal": cleared_promotion,
         "hod_status": change_request.hod_status,
         "dean_status": change_request.dean_status,
