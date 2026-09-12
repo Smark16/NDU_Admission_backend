@@ -544,14 +544,26 @@ class AdmittedStudentSerializer(serializers.ModelSerializer):
         old_program_id = instance.admitted_program_id
         old_campus_id = instance.admitted_campus_id
         old_study_mode = (instance.study_mode or "").strip()
+        old_reg_no = (instance.reg_no or "").strip()
 
-        placement_touch = any(
-            key in validated_data
-            for key in ("admitted_program", "admitted_campus", "study_mode")
+        # Incoming campus/programme/mode are always posted by the edit UI.
+        # Only treat as a placement *change* when values actually differ — otherwise
+        # keep a manually corrected reg_no / schoolpay_code from the client.
+        new_program = validated_data.get("admitted_program", instance.admitted_program)
+        new_campus = validated_data.get("admitted_campus", instance.admitted_campus)
+        new_study_mode = (
+            validated_data.get("study_mode", instance.study_mode) or ""
+        ).strip()
+        new_program_id = getattr(new_program, "pk", new_program)
+        new_campus_id = getattr(new_campus, "pk", new_campus)
+        placement_will_change = (
+            int(new_program_id or 0) != int(old_program_id or 0)
+            or int(new_campus_id or 0) != int(old_campus_id or 0)
+            or new_study_mode != old_study_mode
         )
         # Placement changes must never rewrite SchoolPay codes or accept a client
         # reg. number — the server assigns the next free number for the new prefix.
-        if placement_touch:
+        if placement_will_change:
             validated_data.pop("schoolpay_code", None)
             validated_data.pop("is_registered_with_schoolpay", None)
             validated_data.pop("reg_no", None)
@@ -587,6 +599,17 @@ class AdmittedStudentSerializer(serializers.ModelSerializer):
         if placement_changed:
             regenerate_reg_no_for_admission(admitted, sync_portal=True)
             admitted.refresh_from_db(fields=["reg_no"])
+        elif (admitted.reg_no or "").strip() != old_reg_no:
+            # Manual reg correction (same placement) — keep portal username in sync.
+            try:
+                from admissions.student_accounts import ensure_student_portal_account
+
+                ensure_student_portal_account(admitted)
+            except Exception:
+                logger.exception(
+                    "Portal username sync failed after manual reg_no change for admission %s",
+                    admitted.pk,
+                )
 
         if admitted.admitted_program_id != old_program_id:
             reset_academic_registration_for_programme_change(
