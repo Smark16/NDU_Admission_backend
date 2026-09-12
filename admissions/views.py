@@ -6430,31 +6430,40 @@ class AdminExemptionLineAddView(APIView):
 
 class AdminExemptionLineScoreView(APIView):
     """
-    HOD/Dean/Admin: set or correct prior score on an existing exemption paper.
+    HOD/Dean/AR/Admin: set score or delete a paper on an exemption request.
 
     PATCH /api/admissions/change_requests/<pk>/exemption_lines/<line_id>
     Body: { "score_obtained": "63" }
+
+    DELETE /api/admissions/change_requests/<pk>/exemption_lines/<line_id>
+    Body (optional): { "reason": str }
     """
 
     permission_classes = [IsAuthenticated]
 
+    def _can_edit_papers(self, user) -> bool:
+        from admissions.permissions import (
+            user_can_approve_exemption_requests,
+            user_can_review_exemption_ar,
+            user_can_review_exemption_dean,
+        )
+
+        return (
+            user_can_approve_exemption_requests(user)
+            or user_can_review_exemption_dean(user)
+            or user_can_review_exemption_ar(user)
+        )
+
     def patch(self, request, pk, line_id):
         from admissions.exemption_services import update_exemption_line_score
         from admissions.serializers import ExemptionRequestLineSerializer
-        from admissions.permissions import (
-            user_can_approve_exemption_requests,
-            user_can_review_exemption_dean,
-        )
 
         req_obj = get_object_or_404(
             AdmissionChangeRequest.objects.select_related("admitted_student"),
             pk=pk,
             change_type="exemption",
         )
-        if not (
-            user_can_approve_exemption_requests(request.user)
-            or user_can_review_exemption_dean(request.user)
-        ):
+        if not self._can_edit_papers(request.user):
             return Response(
                 {"detail": "You do not have permission to edit exemption scores."},
                 status=403,
@@ -6490,6 +6499,57 @@ class AdminExemptionLineScoreView(APIView):
             {
                 "detail": "Score updated.",
                 "line": ExemptionRequestLineSerializer(line).data,
+                "change_request": AdmissionChangeRequestSerializer(
+                    req_obj, context={"request": request}
+                ).data,
+            }
+        )
+
+    def delete(self, request, pk, line_id):
+        from admissions.exemption_services import delete_exemption_line
+
+        req_obj = get_object_or_404(
+            AdmissionChangeRequest.objects.select_related("admitted_student").prefetch_related(
+                "exemption_lines"
+            ),
+            pk=pk,
+            change_type="exemption",
+        )
+        if not self._can_edit_papers(request.user):
+            return Response(
+                {"detail": "You do not have permission to delete exemption papers."},
+                status=403,
+            )
+        qs = filter_admission_change_requests_for_user(
+            AdmissionChangeRequest.objects.filter(pk=req_obj.pk),
+            request.user,
+        )
+        if not qs.exists():
+            return Response({"detail": "Not found."}, status=404)
+
+        reason = (request.data.get("reason") or request.data.get("review_notes") or "").strip()
+        try:
+            with transaction.atomic():
+                result = delete_exemption_line(
+                    req_obj,
+                    line_id=int(line_id),
+                    actor=request.user,
+                    reason=reason,
+                )
+        except (TypeError, ValueError) as exc:
+            return Response({"detail": str(exc)}, status=400)
+
+        req_obj = (
+            AdmissionChangeRequest.objects.select_related("reviewed_by")
+            .prefetch_related("exemption_lines", "supporting_documents")
+            .get(pk=req_obj.pk)
+        )
+        return Response(
+            {
+                **result,
+                "detail": (
+                    f"Removed {result.get('course_code') or 'paper'} from this exemption request."
+                ),
                 "change_request": AdmissionChangeRequestSerializer(
                     req_obj, context={"request": request}
                 ).data,

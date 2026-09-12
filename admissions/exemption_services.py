@@ -3839,6 +3839,111 @@ def update_exemption_line_score(
     return line
 
 
+def delete_exemption_line(
+    change_request: AdmissionChangeRequest,
+    *,
+    line_id: int,
+    actor=None,
+    reason: str = "",
+) -> dict:
+    """
+    HOD / Dean / AR: remove a paper from an exemption request (e.g. duplicate units).
+
+    Allowed until Accounts has billed. Revokes any curriculum override for that paper
+    and re-syncs stage status from the remaining lines.
+    """
+    from admissions.models import ExemptionRequestLine
+
+    if change_request.change_type != "exemption":
+        raise ValueError("Only exemption requests have papers to delete.")
+    if change_request.status == "rejected":
+        raise ValueError("Cannot delete papers from a rejected exemption request.")
+    if exemption_effects_applied(change_request):
+        raise ValueError(
+            "Curriculum exemptions already finalized after AR approval. "
+            "Contact Academic Registry / system admin."
+        )
+    if change_request.accounts_status in ("billed", "confirmed"):
+        raise ValueError(
+            "Accounts has already billed this exemption — cannot delete papers. "
+            "Undo billing first if a duplicate was charged."
+        )
+
+    line = change_request.exemption_lines.filter(pk=line_id).first()
+    if line is None:
+        raise ValueError("That paper is not on this exemption request.")
+
+    remaining = change_request.exemption_lines.exclude(pk=line_id).count()
+    if remaining < 1:
+        raise ValueError(
+            "Cannot delete the last paper on this request. "
+            "Reject the request instead, or add the correct paper first."
+        )
+
+    code = (line.course_code or f"#{line.id}").strip()
+    if line.decision == ExemptionRequestLine.DECISION_APPROVED:
+        revoke_exemption_override_for_line(line)
+
+    line.delete()
+    sync_exemption_request_stages_from_lines(change_request)
+
+    cleared_promotion = False
+    cr_fields = ["hod_status", "dean_status", "ar_status", "status", "updated_at"]
+    # Approved-paper set may have changed — clear a pending promotion proposal.
+    if (
+        change_request.exemption_promotion_year is not None
+        or change_request.exemption_promotion_term is not None
+    ):
+        try:
+            reverse_exemption_promotion_if_applied(change_request)
+        except ValueError:
+            pass
+        change_request.exemption_promotion_year = None
+        change_request.exemption_promotion_term = None
+        change_request.exemption_promotion_from_year = None
+        change_request.exemption_promotion_from_term = None
+        change_request.exemption_promotion_by = None
+        change_request.exemption_promotion_at = None
+        cr_fields += [
+            "exemption_promotion_year",
+            "exemption_promotion_term",
+            "exemption_promotion_from_year",
+            "exemption_promotion_from_term",
+            "exemption_promotion_by",
+            "exemption_promotion_at",
+        ]
+        cleared_promotion = True
+
+    actor_name = ""
+    if actor is not None:
+        actor_name = (
+            getattr(actor, "get_full_name", lambda: "")()
+            or getattr(actor, "username", "")
+            or str(actor)
+        )
+    note = (
+        f"[{timezone.now():%Y-%m-%d %H:%M}] Paper removed ({code})"
+        + (f" by {actor_name}" if actor_name else "")
+        + (f": {(reason or '').strip()}" if (reason or "").strip() else ".")
+    )
+    change_request.review_notes = "\n".join(
+        filter(None, [change_request.review_notes, note])
+    )[:20000]
+    cr_fields.append("review_notes")
+    change_request.save(update_fields=list(dict.fromkeys(cr_fields)))
+
+    return {
+        "deleted": True,
+        "exemption_line_id": line_id,
+        "course_code": code,
+        "cleared_promotion_proposal": cleared_promotion,
+        "hod_status": change_request.hod_status,
+        "dean_status": change_request.dean_status,
+        "ar_status": change_request.ar_status,
+        "status": change_request.status,
+    }
+
+
 def advance_student_position_for_exemption(
     change_request: AdmissionChangeRequest,
     *,
