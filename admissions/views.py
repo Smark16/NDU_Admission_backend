@@ -6156,7 +6156,7 @@ class AdminChangeRequestReview(APIView):
 
 class AdminExemptionStageReopenView(APIView):
     """
-    HOD / Dean / AR reopen is disabled — paper decisions are final once submitted.
+    HOD / Dean / AR: undo stage decisions after a mistake, before the next stage acts.
 
     POST /api/admissions/change_requests/<pk>/reopen_stage
     Body: { "stage": "hod"|"dean"|"ar", "reason"?: str }
@@ -6221,7 +6221,7 @@ class AdminExemptionStageReopenView(APIView):
 
 class AdminExemptionReturnToHodView(APIView):
     """
-    Return-to-HOD is disabled — approved/rejected papers cannot be cleared.
+    Dean or AR: send a HOD-approved exemption back for full HOD re-review.
 
     POST /api/admissions/change_requests/<pk>/return_to_hod
     Body: { "from_stage": "dean"|"ar", "reason": str }
