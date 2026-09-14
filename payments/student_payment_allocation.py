@@ -446,6 +446,9 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
         fee_code = (rule.fee_head.code or "").upper() if rule.fee_head_id else ""
         fee_name = (rule.fee_head.name or "").upper() if rule.fee_head_id else ""
         is_practical = "PRACTICAL" in fee_code or "PRACTICAL" in fee_name
+        is_room_board = (
+            "ROOM" in fee_code or "BOARD" in fee_code or "ROOM" in fee_name or "BOARD" in fee_name
+        )
         # Whole-year / advanced-entry exemption: no Y1 practical — student pays
         # practical from entry year Sem 1 onward (e.g. Y2T1), not the skipped year.
         if is_practical:
@@ -455,11 +458,18 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
                 continue
             if _term_fully_exempt(py, pt):
                 continue
+        elif is_room_board and entry_pair is not None and (py, pt) < entry_pair:
+            # Promoted students never occupied the pre-entry period's housing —
+            # this one-time fee is owed for whenever they actually first need a
+            # bed, which is their real entry term, not the schedule's nominal
+            # Year 1 slot. Re-date it there instead of skipping or leaving it
+            # mis-filed as an already-settled prior period.
+            py, pt = entry_pair
         reached = _milestone_reached(cy, ct, py, pt)
         billable = billing_date_reached(rule)
-        # Current-term practical is due with the semester (same as tuition), even
-        # if Accounts has not yet opened the scheduled billing date.
-        if is_practical and py == cy and pt == ct:
+        # Current-term practical/room & board is due with the semester (same as
+        # tuition), even if Accounts has not yet opened the scheduled billing date.
+        if (is_practical or is_room_board) and py == cy and pt == ct:
             billable = True
         amt, cur = effective_amount_currency(rule, international)
         if amt <= 0:
@@ -616,7 +626,11 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
 
 
 def _billing_line_sort_key(line: DemandLine) -> tuple:
-    """Oldest semester first; tuition → other programme fees → scheduled (e.g. room) → ad-hoc."""
+    """Oldest semester first; room & board → tuition → other programme fees → scheduled → ad-hoc.
+
+    Room & Board is paid off first when money is tight — Accounts policy is to
+    keep students housed before tuition/functional, not the other way round.
+    """
     y = line.extra.get("semester_year_of_study") or line.payable_year or 0
     t = line.extra.get("semester_term_number") or line.payable_term or 0
     try:
@@ -625,7 +639,9 @@ def _billing_line_sort_key(line: DemandLine) -> tuple:
         yi, ti = 0, 0
     start = _as_date(line.extra.get("semester_start_date")) or date.min
     head = (line.fee_head or "").lower()
-    if line.kind == "tuition_structure":
+    if "room" in head or "board" in head:
+        rank = -1
+    elif line.kind == "tuition_structure":
         rank = 0 if "tuition" in head else 1
     elif line.kind == "scheduled_other":
         rank = 2
@@ -678,19 +694,17 @@ def _allocate_pools_to_lines(
             key=_billing_line_sort_key,
         )
     else:
-        ordered = [
-            ln
-            for ln in lines
-            if ln.extra.get("prior_period_settled") or _line_is_billable(ln)
-        ]
         ordered = sorted(
-            (ln for ln in ordered if ln.extra.get("prior_period_settled")),
+            (ln for ln in lines if ln.extra.get("prior_period_settled")),
             key=_prior_line_sort_key,
-        ) + [
-            ln
-            for ln in lines
-            if not ln.extra.get("prior_period_settled") and _line_is_billable(ln)
-        ]
+        ) + sorted(
+            (
+                ln
+                for ln in lines
+                if not ln.extra.get("prior_period_settled") and _line_is_billable(ln)
+            ),
+            key=_billing_line_sort_key,
+        )
 
     # Exemption form fee is MoMo-prompt only. Do not spend SchoolPay / tuition credit on it.
     for line in ordered:
