@@ -575,7 +575,25 @@ class ExamCardToken(models.Model):
 class MarksEntryWindow(models.Model):
     """Controls when lecturers may enter marks for a batch, semester, or course."""
 
+    COMPONENT_CA = "ca"
+    COMPONENT_EXAM = "exam"
+    COMPONENT_BOTH = "both"
+    COMPONENT_CHOICES = [
+        (COMPONENT_CA, "CA only"),
+        (COMPONENT_EXAM, "Exam only"),
+        (COMPONENT_BOTH, "CA + Exam"),
+    ]
+
     name = models.CharField(max_length=160)
+    component = models.CharField(
+        max_length=10,
+        choices=COMPONENT_CHOICES,
+        default=COMPONENT_BOTH,
+        help_text=(
+            "Which mark(s) this window governs. CA is normally entered and "
+            "locked before the exam sits; Exam only opens once results are in."
+        ),
+    )
     program_batch = models.ForeignKey(
         "Programs.ProgramBatch",
         on_delete=models.CASCADE,

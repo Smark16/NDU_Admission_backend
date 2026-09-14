@@ -547,6 +547,7 @@ class MarksEntryWindowSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "name",
+            "component",
             "program_batch",
             "program_batch_name",
             "semester",
