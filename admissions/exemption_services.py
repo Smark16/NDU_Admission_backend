@@ -2283,14 +2283,21 @@ def exemption_tuition_finance_unlocked(student: AdmittedStudent) -> bool:
 
 def prorate_tuition_for_course_exemptions(
     student: AdmittedStudent,
-    tuition_amount: Decimal,
     *,
     year_of_study: int,
     term_number: int,
-) -> tuple[Decimal, dict | None]:
+) -> tuple[Decimal | None, dict | None]:
     """
     Suggested remaining-tuition total for a semester after exemptions
     (diagnostic / legacy helper).
+
+    Resolves the tuition amount itself via ``semester_tuition_amount_for_student``
+    — the same currency-aware resolver the real billing path
+    (``exemption_remaining_curriculum_lines_for_request``) uses — instead of
+    trusting a caller-supplied amount. A caller previously passing a raw
+    ``FeePlanRule.amount`` (not adjusted for international pricing) could make
+    this diagnostic disagree with what Accounts actually bills for reasons
+    having nothing to do with exemptions.
 
     Accounts posts EXEMPT_REMAIN_TUIT as the sum of remaining-paper fees
     (semester tuition ÷ 6 each), then spreads that total across the same
@@ -2303,7 +2310,15 @@ def prorate_tuition_for_course_exemptions(
     Before Accounts bills, return full tuition so the portal still shows the
     normal semester requirement. After billing, schedule TUITION is omitted and
     the ad-hoc remaining-paper charges apply; functional fees stay on schedule.
+
+    Returns (None, None) when no TUITION_FEE rule resolves for this term.
     """
+    tuition_amount = semester_tuition_amount_for_student(
+        student, year_of_study=year_of_study, term_number=term_number
+    )
+    if tuition_amount is None:
+        return None, None
+
     counts = semester_paper_counts_for_exemptions(
         student, year_of_study=year_of_study, term_number=term_number
     )
@@ -2324,7 +2339,7 @@ def prorate_tuition_for_course_exemptions(
         return Decimal("0.00"), counts
 
     denom = Decimal(EXEMPTION_REMAINING_TUITION_DENOMINATOR)
-    per_paper = (Decimal(str(tuition_amount)) / denom).quantize(Decimal("0.01"))
+    per_paper = (tuition_amount / denom).quantize(Decimal("0.01"))
     return (per_paper * remaining).quantize(Decimal("0.01")), {
         **counts,
         "billing_denominator": EXEMPTION_REMAINING_TUITION_DENOMINATOR,
