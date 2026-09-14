@@ -348,11 +348,11 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
         if amt <= 0:
             continue
         sem = rule.semester
-        # Omit pre-entry TUITION (and non-Y1S1 FUNCTIONAL) after promotion into
-        # e.g. Y2T1. Y1S1 FUNCTIONAL always carries for advanced-entry / promoted
-        # students. From entry onward they pay schedule tuition + functional;
-        # EXEMPTION_COURSE is billed separately. Without a promotion entry
-        # point, fully paper-exempted years/terms still omit both heads.
+        # Omit pre-entry TUITION and FUNCTIONAL after promotion into e.g. Y2T1 —
+        # those terms are covered by per-paper EXEMPTION_COURSE fees, not the
+        # normal schedule. From entry onward they pay schedule tuition +
+        # functional as usual. Without a promotion entry point, fully
+        # paper-exempted years/terms still omit both heads.
         fee_code = (rule.fee_head.code or "").upper() if rule.fee_head_id else ""
         is_tuition_head = fee_code == "TUITION_FEE"
         is_functional_head = fee_code == "FUNCTIONAL_FEE" or "FUNCTIONAL" in fee_code
@@ -381,10 +381,9 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
             and sem_term is not None
         ):
             if entry_pair is not None and (sem_year, sem_term) < entry_pair:
-                # Promoted: drop pre-entry tuition; keep Year 1 Sem 1 functional.
-                if is_tuition_head:
-                    continue
-                if is_functional_head and (sem_year, sem_term) != (1, 1):
+                # Promoted: drop pre-entry tuition and functional alike — the
+                # student is exempted from that term and billed per paper instead.
+                if is_tuition_head or is_functional_head:
                     continue
             if entry_pair is None:
                 if _year_fully_exempt(sem_year):
