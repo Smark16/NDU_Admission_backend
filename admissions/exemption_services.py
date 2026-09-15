@@ -2369,12 +2369,12 @@ def engineering_promotion_target_from_paper_count(approved_count: int) -> tuple[
     """
     Engineering faculty exemption promotion bands (HOD-approved papers):
 
-    - more than 7 papers → Year 2 Semester 1
-    - more than 4 and up to 7 → Year 1 Semester 2
+    - 7 or more papers → Year 2 Semester 1
+    - more than 4 and up to 6 → Year 1 Semester 2
     - 4 or fewer → Year 1 Semester 1
     """
     n = max(0, int(approved_count or 0))
-    if n > 7:
+    if n >= 7:
         return 2, 1
     if n > 4:
         return 1, 2
@@ -2383,10 +2383,10 @@ def engineering_promotion_target_from_paper_count(approved_count: int) -> tuple[
 
 def engineering_promotion_rule_summary(approved_count: int, year: int, term: int) -> str:
     n = int(approved_count or 0)
-    if n > 7:
-        band = "more than 7 approved papers"
+    if n >= 7:
+        band = "7 or more approved papers"
     elif n > 4:
-        band = "more than 4 and up to 7 approved papers"
+        band = "more than 4 and up to 6 approved papers"
     else:
         band = "4 or fewer approved papers"
     return (
