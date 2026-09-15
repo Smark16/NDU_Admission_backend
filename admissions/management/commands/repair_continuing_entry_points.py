@@ -87,7 +87,12 @@ class Command(BaseCommand):
         skipped = 0
         activate_errors = 0
 
-        for enr in qs.iterator():
+        # Not .iterator(): a PostgreSQL server-side cursor doesn't survive
+        # PgBouncer's transaction-mode pooling across the .update() calls
+        # issued mid-loop below — it silently reports success while writing
+        # nothing. Dataset here is small (continuing/legacy students only),
+        # so materializing it fully costs nothing.
+        for enr in list(qs):
             student = enr.student
             cy = int(enr.current_year_of_study or 0)
             ct = int(enr.current_term_number or 0)
@@ -120,18 +125,28 @@ class Command(BaseCommand):
 
             # Bypass Model.save() / easyaudit teaching_section loads.
             if (ey, et) != (cy, ct):
-                StudentProgrammeEnrollment.objects.filter(pk=enr.pk).update(
+                affected = StudentProgrammeEnrollment.objects.filter(pk=enr.pk).update(
                     entry_year_of_study=cy,
                     entry_term_number=ct,
                 )
-                entry_updated += 1
+                if affected:
+                    entry_updated += 1
+                else:
+                    self.stderr.write(
+                        self.style.ERROR(f"{reg}: entry update matched 0 rows — not applied.")
+                    )
 
             if not student.admission_fee_paid:
-                AdmittedStudent.objects.filter(pk=student.pk).update(
+                affected = AdmittedStudent.objects.filter(pk=student.pk).update(
                     admission_fee_paid=True,
                     admission_fee_paid_at=timezone.now(),
                 )
-                commitment_updated += 1
+                if affected:
+                    commitment_updated += 1
+                else:
+                    self.stderr.write(
+                        self.style.ERROR(f"{reg}: commitment update matched 0 rows — not applied.")
+                    )
 
             if do_activate:
                 try:
