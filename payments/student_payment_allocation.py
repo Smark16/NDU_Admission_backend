@@ -375,16 +375,24 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
         else:
             billable = billing_date_reached(rule)
 
+        legacy_covered = False
         if (
             (is_tuition_head or is_functional_head)
             and sem_year is not None
             and sem_term is not None
         ):
             if entry_pair is not None and (sem_year, sem_term) < entry_pair:
-                # Promoted: drop pre-entry tuition and functional alike — the
-                # student is exempted from that term and billed per paper instead.
-                if is_tuition_head or is_functional_head:
-                    continue
+                if has_course_exemptions:
+                    # Promoted via exemption: drop pre-entry tuition and
+                    # functional alike — that term is billed per paper instead.
+                    if is_tuition_head or is_functional_head:
+                        continue
+                else:
+                    # Continuing/legacy student (no exemption): still show this
+                    # period so staff and the student can see the full academic
+                    # history, but it's assumed settled at the prior
+                    # institution — never competes for real payment credits.
+                    legacy_covered = True
             if entry_pair is None:
                 if _year_fully_exempt(sem_year):
                     continue
@@ -422,6 +430,7 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
                 "calendar_type": (
                     getattr(program, "calendar_type", None) or "semester"
                 ),
+                "legacy_covered": legacy_covered,
             },
         )
         # Continuing / batch-imported cohorts: only current curriculum term is open.
@@ -712,6 +721,14 @@ def _allocate_pools_to_lines(
             line.paid_amount = Decimal("0")
             line.balance = line.amount
             line.status = "due"
+            continue
+        if line.extra.get("legacy_covered"):
+            # Continuing/legacy student, pre-entry term: shown for visibility
+            # only — assumed settled at the prior institution, never draws
+            # from a real credit pool.
+            line.paid_amount = line.amount
+            line.balance = Decimal("0")
+            line.status = "settled"
             continue
         need = line.amount
         # When open allocation runs after prior, keep any amount already applied.
