@@ -460,20 +460,31 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
         )
         # Whole-year / advanced-entry exemption: no Y1 practical — student pays
         # practical from entry year Sem 1 onward (e.g. Y2T1), not the skipped year.
+        legacy_covered = False
         if is_practical:
             if entry_pair is not None and (py, pt) < entry_pair:
-                continue
+                if has_course_exemptions:
+                    continue
+                # Continuing/legacy student: this is real pre-entry history,
+                # not replaced by anything — show it, settled, not dropped.
+                legacy_covered = True
             if _year_fully_exempt(py):
                 continue
             if _term_fully_exempt(py, pt):
                 continue
         elif is_room_board and entry_pair is not None and (py, pt) < entry_pair:
-            # Promoted students never occupied the pre-entry period's housing —
-            # this one-time fee is owed for whenever they actually first need a
-            # bed, which is their real entry term, not the schedule's nominal
-            # Year 1 slot. Re-date it there instead of skipping or leaving it
-            # mis-filed as an already-settled prior period.
-            py, pt = entry_pair
+            if has_course_exemptions:
+                # Promoted students never occupied the pre-entry period's
+                # housing — this one-time fee is owed for whenever they
+                # actually first need a bed, which is their real entry term,
+                # not the schedule's nominal Year 1 slot. Re-date it there.
+                py, pt = entry_pair
+            else:
+                # Continuing/legacy student: this really is their historical
+                # housing fee for that period — show it as its own settled
+                # entry instead of re-dating it onto (and duplicating) their
+                # real current-term Room & Board rule.
+                legacy_covered = True
         reached = _milestone_reached(cy, ct, py, pt)
         billable = billing_date_reached(rule)
         # Current-term practical/room & board is due with the semester (same as
@@ -532,6 +543,7 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
                 "calendar_type": (
                     getattr(program, "calendar_type", None) or "semester"
                 ),
+                "legacy_covered": legacy_covered,
             },
         )
         if _line_is_prior_curriculum_term(line, cy, ct):
