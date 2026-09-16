@@ -18,7 +18,7 @@ def student_has_published_marks(student: AdmittedStudent) -> bool:
 
 
 def build_student_transcript(student: AdmittedStudent) -> dict:
-    results = (
+    all_results = (
         CourseUnitResult.objects.filter(
             enrollment__student=student,
             status=CourseUnitResult.STATUS_PUBLISHED,
@@ -29,10 +29,28 @@ def build_student_transcript(student: AdmittedStudent) -> dict:
             "enrollment__course_unit__semester",
             "policy",
         )
-        .order_by(
-            "enrollment__course_unit__semester__order",
-            "enrollment__course_unit__code",
-        )
+        .order_by("-published_at", "-id")
+    )
+
+    # A retake creates a new enrollment (and so a new CourseUnitResult) rather
+    # than replacing the original — keep only the most recently published
+    # attempt per course code, same "latest wins" convention as
+    # outstanding_papers.py, so a superseded fail doesn't also count credits.
+    latest_by_code: dict[str, CourseUnitResult] = {}
+    for r in all_results:
+        code = (r.enrollment.course_unit.code or "").strip().upper()
+        if not code or code in latest_by_code:
+            continue
+        latest_by_code[code] = r
+
+    results = sorted(
+        latest_by_code.values(),
+        key=lambda r: (
+            r.enrollment.course_unit.semester.order
+            if r.enrollment.course_unit.semester_id
+            else 0,
+            r.enrollment.course_unit.code,
+        ),
     )
 
     semesters: dict[str, dict] = {}
@@ -70,7 +88,7 @@ def build_student_transcript(student: AdmittedStudent) -> dict:
     cgpa = round(weighted_gp / total_credits, 2) if total_credits else None
 
     document = get_transcript_document_meta(student)
-    published_count = results.count()
+    published_count = len(results)
 
     return {
         "student": {

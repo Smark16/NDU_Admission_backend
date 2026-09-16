@@ -166,12 +166,18 @@ class MarksEntryWindowBulkPreviewView(APIView):
     permission_classes = [IsAuthenticated, CanManageMarksWindows]
 
     def get(self, request):
+        from .models import MarksEntryWindow
         from .services.marks_window_bulk import parse_bulk_filters, preview_bulk_marks_windows
 
         filters = parse_bulk_filters(request.query_params)
         skip_open = request.query_params.get("skip_open", "1").lower() in ("1", "true", "yes")
+        component = request.query_params.get("component") or MarksEntryWindow.COMPONENT_BOTH
+        if component not in dict(MarksEntryWindow.COMPONENT_CHOICES):
+            component = MarksEntryWindow.COMPONENT_BOTH
         try:
-            payload = preview_bulk_marks_windows(request.user, filters, skip_open=skip_open)
+            payload = preview_bulk_marks_windows(
+                request.user, filters, skip_open=skip_open, component=component
+            )
             return Response(payload)
         except Exception as exc:
             logger.exception("Marks window bulk preview failed")
@@ -189,6 +195,7 @@ class MarksEntryWindowBulkApplyView(APIView):
     def post(self, request):
         from django.utils.dateparse import parse_datetime
 
+        from .models import MarksEntryWindow
         from .services.marks_window_bulk import apply_bulk_marks_windows, parse_bulk_filters
 
         filters = parse_bulk_filters(request.data)
@@ -198,6 +205,9 @@ class MarksEntryWindowBulkApplyView(APIView):
 
         opens_at = parse_datetime(request.data.get("opens_at") or "")
         closes_at = parse_datetime(request.data.get("closes_at") or "")
+        component = request.data.get("component") or MarksEntryWindow.COMPONENT_BOTH
+        if component not in dict(MarksEntryWindow.COMPONENT_CHOICES):
+            component = MarksEntryWindow.COMPONENT_BOTH
 
         try:
             result = apply_bulk_marks_windows(
@@ -208,6 +218,7 @@ class MarksEntryWindowBulkApplyView(APIView):
                 closes_at=closes_at,
                 notes=(request.data.get("notes") or "").strip(),
                 skip_open=bool(skip_open),
+                component=component,
             )
             return Response(result, status=status.HTTP_200_OK)
         except Exception as exc:

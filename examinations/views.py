@@ -253,13 +253,23 @@ class LecturerCourseMarksView(APIView):
         if not user_can_manage_course_marks(request.user, course_unit):
             return Response({"detail": "You are not assigned to this course."}, status=403)
 
-        try:
-            assert_marks_entry_allowed(course_unit, user=request.user)
-        except PermissionError as exc:
-            return Response({"detail": str(exc)}, status=403)
-
         serializer = SaveMarksSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+
+        # Only gate the component(s) actually present in this payload — a
+        # CA-only submission must not be blocked by a closed exam window,
+        # and vice versa.
+        touched_components = set()
+        for row in serializer.validated_data["marks"]:
+            if "ca_mark" in row:
+                touched_components.add("ca")
+            if "exam_mark" in row:
+                touched_components.add("exam")
+        for component in touched_components:
+            try:
+                assert_marks_entry_allowed(course_unit, user=request.user, component=component)
+            except PermissionError as exc:
+                return Response({"detail": str(exc)}, status=403)
 
         saved = []
         errors = []
@@ -319,8 +329,13 @@ class LecturerCourseMarksView(APIView):
                     continue
 
                 result.policy = policy
-                result.ca_mark = row.get("ca_mark")
-                result.exam_mark = row.get("exam_mark")
+                # Only overwrite a field when its key is actually present in
+                # this row — a CA-only or exam-only submission must not blank
+                # out the mark for the component it isn't touching.
+                if "ca_mark" in row:
+                    result.ca_mark = row.get("ca_mark")
+                if "exam_mark" in row:
+                    result.exam_mark = row.get("exam_mark")
                 result.entered_by = request.user
                 
                 # Validate CA mark does not exceed policy maximum

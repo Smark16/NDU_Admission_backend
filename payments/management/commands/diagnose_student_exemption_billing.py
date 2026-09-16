@@ -262,8 +262,8 @@ class Command(BaseCommand):
             EXEMPTION_COURSE_FEE_STANDARD_UGX,
             prorate_tuition_for_course_exemptions,
             semester_paper_counts_for_exemptions,
+            semester_tuition_amount_for_student,
         )
-        from decimal import Decimal
 
         w(f"  Configured rates: standard={EXEMPTION_COURSE_FEE_STANDARD_UGX} "
           f"alumni={EXEMPTION_COURSE_FEE_ALUMNI_UGX}")
@@ -282,9 +282,17 @@ class Command(BaseCommand):
             if counts is None:
                 w(f"  Y{y}T{t}: no curriculum papers / no enrollment — tuition left as scheduled")
                 continue
-            original = Decimal(str(rule.amount or 0))
+            # Both resolved the same currency-aware way the real billing path
+            # does, so this never disagrees with what Accounts actually bills
+            # for reasons unrelated to exemptions (e.g. international pricing).
+            original = semester_tuition_amount_for_student(
+                student, year_of_study=y, term_number=t
+            )
+            if original is None:
+                w(f"  Y{y}T{t}: no TUITION_FEE rule resolves for this student/term — tuition left as scheduled")
+                continue
             prorated, _ = prorate_tuition_for_course_exemptions(
-                student, original, year_of_study=y, term_number=t
+                student, year_of_study=y, term_number=t
             )
             if counts["exempted_papers"] <= 0:
                 w(f"  Y{y}T{t}: {counts['total_papers']} papers, 0 exempted — "

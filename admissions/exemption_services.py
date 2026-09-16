@@ -2283,14 +2283,21 @@ def exemption_tuition_finance_unlocked(student: AdmittedStudent) -> bool:
 
 def prorate_tuition_for_course_exemptions(
     student: AdmittedStudent,
-    tuition_amount: Decimal,
     *,
     year_of_study: int,
     term_number: int,
-) -> tuple[Decimal, dict | None]:
+) -> tuple[Decimal | None, dict | None]:
     """
     Suggested remaining-tuition total for a semester after exemptions
     (diagnostic / legacy helper).
+
+    Resolves the tuition amount itself via ``semester_tuition_amount_for_student``
+    — the same currency-aware resolver the real billing path
+    (``exemption_remaining_curriculum_lines_for_request``) uses — instead of
+    trusting a caller-supplied amount. A caller previously passing a raw
+    ``FeePlanRule.amount`` (not adjusted for international pricing) could make
+    this diagnostic disagree with what Accounts actually bills for reasons
+    having nothing to do with exemptions.
 
     Accounts posts EXEMPT_REMAIN_TUIT as the sum of remaining-paper fees
     (semester tuition ÷ 6 each), then spreads that total across the same
@@ -2303,7 +2310,15 @@ def prorate_tuition_for_course_exemptions(
     Before Accounts bills, return full tuition so the portal still shows the
     normal semester requirement. After billing, schedule TUITION is omitted and
     the ad-hoc remaining-paper charges apply; functional fees stay on schedule.
+
+    Returns (None, None) when no TUITION_FEE rule resolves for this term.
     """
+    tuition_amount = semester_tuition_amount_for_student(
+        student, year_of_study=year_of_study, term_number=term_number
+    )
+    if tuition_amount is None:
+        return None, None
+
     counts = semester_paper_counts_for_exemptions(
         student, year_of_study=year_of_study, term_number=term_number
     )
@@ -2324,7 +2339,7 @@ def prorate_tuition_for_course_exemptions(
         return Decimal("0.00"), counts
 
     denom = Decimal(EXEMPTION_REMAINING_TUITION_DENOMINATOR)
-    per_paper = (Decimal(str(tuition_amount)) / denom).quantize(Decimal("0.01"))
+    per_paper = (tuition_amount / denom).quantize(Decimal("0.01"))
     return (per_paper * remaining).quantize(Decimal("0.01")), {
         **counts,
         "billing_denominator": EXEMPTION_REMAINING_TUITION_DENOMINATOR,
@@ -2354,12 +2369,12 @@ def engineering_promotion_target_from_paper_count(approved_count: int) -> tuple[
     """
     Engineering faculty exemption promotion bands (HOD-approved papers):
 
-    - more than 7 papers → Year 2 Semester 1
-    - more than 4 and up to 7 → Year 1 Semester 2
+    - 7 or more papers → Year 2 Semester 1
+    - more than 4 and up to 6 → Year 1 Semester 2
     - 4 or fewer → Year 1 Semester 1
     """
     n = max(0, int(approved_count or 0))
-    if n > 7:
+    if n >= 7:
         return 2, 1
     if n > 4:
         return 1, 2
@@ -2368,10 +2383,10 @@ def engineering_promotion_target_from_paper_count(approved_count: int) -> tuple[
 
 def engineering_promotion_rule_summary(approved_count: int, year: int, term: int) -> str:
     n = int(approved_count or 0)
-    if n > 7:
-        band = "more than 7 approved papers"
+    if n >= 7:
+        band = "7 or more approved papers"
     elif n > 4:
-        band = "more than 4 and up to 7 approved papers"
+        band = "more than 4 and up to 6 approved papers"
     else:
         band = "4 or fewer approved papers"
     return (
@@ -3502,6 +3517,75 @@ def return_exemption_to_hod_for_review(
     }
 
 
+def super_admin_return_exemption_to_hod(
+    change_request: AdmissionChangeRequest,
+    *,
+    actor=None,
+    reason: str = "",
+    undo_billing: bool = False,
+) -> dict:
+    """
+    Super admin: force the exemption back to HOD for a full re-review
+    (e.g. HOD needs to add papers), without needing Dean/AR UI roles.
+
+    If Accounts has already billed, set undo_billing=True to remove pending
+    charges and reverse promotion first.
+    """
+    if change_request.change_type != "exemption":
+        raise ValueError("Not an exemption request.")
+    if not (reason or "").strip():
+        raise ValueError("Enter a reason for returning this request to HOD.")
+
+    billing_undone = False
+    charges_removed = 0
+    if change_request.accounts_status in ("billed", "confirmed"):
+        if not undo_billing:
+            raise ValueError(
+                "Accounts has already billed this exemption. "
+                "Confirm undo billing (or use Undo billing first), then return to HOD."
+            )
+        bill_result = reopen_exemption_accounts_billing(
+            change_request,
+            actor=actor,
+            reverse_promotion=True,
+        )
+        billing_undone = True
+        charges_removed = int(bill_result.get("charges_removed") or 0)
+        change_request.refresh_from_db()
+
+    if change_request.hod_status != "approved":
+        # HOD rejected or still mid-decision — soft reopen HOD stage when allowed.
+        result = reopen_exemption_stage_review(
+            change_request,
+            stage="hod",
+            actor=actor,
+            reason=reason,
+        )
+        return {
+            **result,
+            "returned_to_hod": True,
+            "from_stage": "super_admin",
+            "billing_undone": billing_undone,
+            "charges_removed": charges_removed,
+            "mode": "reopen_hod",
+        }
+
+    from_stage = "ar" if change_request.dean_status == "approved" else "dean"
+    result = return_exemption_to_hod_for_review(
+        change_request,
+        from_stage=from_stage,
+        actor=actor,
+        reason=f"[super admin] {(reason or '').strip()}",
+    )
+    return {
+        **result,
+        "billing_undone": billing_undone,
+        "charges_removed": charges_removed,
+        "mode": "return_to_hod",
+        "from_stage": from_stage,
+    }
+
+
 def propose_exemption_promotion(
     change_request: AdmissionChangeRequest,
     *,
@@ -3974,8 +4058,8 @@ def advance_student_position_for_exemption(
     enrollment.current_year_of_study = to_year
     enrollment.current_term_number = to_term
     # Exemption advance = advanced standing: stamp entry so terms before the
-    # new position do not keep full tuition/functional (those years are covered
-    # by per-paper EXEMPTION_COURSE charges instead).
+    # new position drop full tuition (covered by per-paper EXEMPTION_COURSE).
+    # Y1S1 functional still carries on demand; other pre-entry functional is omitted.
     entry_y = enrollment.entry_year_of_study
     entry_t = enrollment.entry_term_number
     try:

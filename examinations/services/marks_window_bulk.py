@@ -37,13 +37,19 @@ def parse_bulk_filters(data: dict) -> BulkFilters:
     )
 
 
-def _batch_level_windows():
+def _batch_level_windows(component: str | None = None):
     from examinations.models import MarksEntryWindow
 
-    return MarksEntryWindow.objects.filter(
+    qs = MarksEntryWindow.objects.filter(
         semester__isnull=True,
         course_unit__isnull=True,
     )
+    if component:
+        # A CA-only run must not treat an existing exam-only window (or vice
+        # versa) as "already open" — only windows covering this component,
+        # or already covering both, are relevant candidates.
+        qs = qs.filter(component__in=(component, MarksEntryWindow.COMPONENT_BOTH))
+    return qs
 
 
 def _window_status_key(window, *, now=None) -> str:
@@ -108,15 +114,17 @@ def _pick_batch_window(windows_by_batch: dict[int, list], batch_id: int):
     return sorted(pool, key=lambda w: w.updated_at, reverse=True)[0]
 
 
-def preview_bulk_marks_windows(user, filters: BulkFilters, *, skip_open: bool = True) -> dict[str, Any]:
+def preview_bulk_marks_windows(
+    user, filters: BulkFilters, *, skip_open: bool = True, component: str = "both"
+) -> dict[str, Any]:
     batches = list(filtered_batches_queryset(user, filters))
     batch_ids = [b.id for b in batches]
 
     windows_by_batch: dict[int, list] = {}
     if batch_ids:
-        for w in _batch_level_windows().filter(program_batch_id__in=batch_ids).select_related(
-            "program_batch"
-        ):
+        for w in _batch_level_windows(component).filter(
+            program_batch_id__in=batch_ids
+        ).select_related("program_batch"):
             windows_by_batch.setdefault(w.program_batch_id, []).append(w)
 
     now = timezone.now()
@@ -146,6 +154,7 @@ def preview_bulk_marks_windows(user, filters: BulkFilters, *, skip_open: bool = 
                 ),
                 "window_id": window.id if window else None,
                 "window_status": status_key,
+                "window_component": window.component if window else None,
                 "planned_action": action,
                 "window_name": window.name if window else None,
             }
@@ -158,6 +167,7 @@ def preview_bulk_marks_windows(user, filters: BulkFilters, *, skip_open: bool = 
             "academic_level_id": filters.academic_level_id,
             "campus_id": filters.campus_id,
         },
+        "component": component,
         "academic_years": distinct_academic_years(user),
         "summary": summary,
         "rows": rows,
@@ -181,10 +191,11 @@ def apply_bulk_marks_windows(
     closes_at=None,
     notes: str = "",
     skip_open: bool = True,
+    component: str = "both",
 ) -> dict[str, Any]:
     from examinations.models import MarksEntryWindow
 
-    preview = preview_bulk_marks_windows(user, filters, skip_open=skip_open)
+    preview = preview_bulk_marks_windows(user, filters, skip_open=skip_open, component=component)
     now = timezone.now()
     created = 0
     opened = 0
@@ -201,6 +212,7 @@ def apply_bulk_marks_windows(
                 if action == "create":
                     MarksEntryWindow.objects.create(
                         name=_default_window_name(batch, name_prefix),
+                        component=component,
                         program_batch=batch,
                         opens_at=opens_at or now,
                         closes_at=closes_at,
@@ -213,13 +225,14 @@ def apply_bulk_marks_windows(
                     window = _pick_batch_window(
                         {
                             w.program_batch_id: [w]
-                            for w in _batch_level_windows().filter(program_batch_id=batch.id)
+                            for w in _batch_level_windows(component).filter(program_batch_id=batch.id)
                         },
                         batch.id,
                     )
                     if window is None:
                         MarksEntryWindow.objects.create(
                             name=_default_window_name(batch, name_prefix),
+                            component=component,
                             program_batch=batch,
                             opens_at=opens_at or now,
                             closes_at=closes_at,

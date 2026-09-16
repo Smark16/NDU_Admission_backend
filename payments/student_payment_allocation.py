@@ -314,9 +314,10 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
             )
         return term_fully_exempt_cache[key]
 
-    # Advanced entry (e.g. HOD promote after exemptions): no tuition/functional/
-    # practical for terms before the student's entry year/term — covered by
-    # per-paper exemption fees; practical resumes at entry (e.g. Y2T1).
+    # Advanced entry (e.g. HOD promote after exemptions): no tuition/practical
+    # for terms before the student's entry year/term — covered by per-paper
+    # exemption fees; practical resumes at entry (e.g. Y2T1). Y1S1 functional
+    # still carries as prior balance for promoted students.
     entry_pair: tuple[int, int] | None = None
     has_course_exemptions = False
     try:
@@ -347,12 +348,11 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
         if amt <= 0:
             continue
         sem = rule.semester
-        # Omit TUITION + FUNCTIONAL for terms before SPE entry (e.g. whole Y1
-        # after promotion into Y2T1). From entry onward the student pays schedule
-        # tuition + functional even if some/all papers that term were also
-        # course-exempted — EXEMPTION_COURSE is billed separately.
-        # Without a promotion entry point, fully paper-exempted years/terms
-        # still omit both heads (legacy non-promoted cases).
+        # Omit pre-entry TUITION and FUNCTIONAL after promotion into e.g. Y2T1 —
+        # those terms are covered by per-paper EXEMPTION_COURSE fees, not the
+        # normal schedule. From entry onward they pay schedule tuition +
+        # functional as usual. Without a promotion entry point, fully
+        # paper-exempted years/terms still omit both heads.
         fee_code = (rule.fee_head.code or "").upper() if rule.fee_head_id else ""
         is_tuition_head = fee_code == "TUITION_FEE"
         is_functional_head = fee_code == "FUNCTIONAL_FEE" or "FUNCTIONAL" in fee_code
@@ -375,13 +375,24 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
         else:
             billable = billing_date_reached(rule)
 
+        legacy_covered = False
         if (
             (is_tuition_head or is_functional_head)
             and sem_year is not None
             and sem_term is not None
         ):
             if entry_pair is not None and (sem_year, sem_term) < entry_pair:
-                continue
+                if has_course_exemptions:
+                    # Promoted via exemption: drop pre-entry tuition and
+                    # functional alike — that term is billed per paper instead.
+                    if is_tuition_head or is_functional_head:
+                        continue
+                else:
+                    # Continuing/legacy student (no exemption): still show this
+                    # period so staff and the student can see the full academic
+                    # history, but it's assumed settled at the prior
+                    # institution — never competes for real payment credits.
+                    legacy_covered = True
             if entry_pair is None:
                 if _year_fully_exempt(sem_year):
                     continue
@@ -419,6 +430,7 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
                 "calendar_type": (
                     getattr(program, "calendar_type", None) or "semester"
                 ),
+                "legacy_covered": legacy_covered,
             },
         )
         # Continuing / batch-imported cohorts: only current curriculum term is open.
@@ -443,20 +455,41 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
         fee_code = (rule.fee_head.code or "").upper() if rule.fee_head_id else ""
         fee_name = (rule.fee_head.name or "").upper() if rule.fee_head_id else ""
         is_practical = "PRACTICAL" in fee_code or "PRACTICAL" in fee_name
+        is_room_board = (
+            "ROOM" in fee_code or "BOARD" in fee_code or "ROOM" in fee_name or "BOARD" in fee_name
+        )
         # Whole-year / advanced-entry exemption: no Y1 practical — student pays
         # practical from entry year Sem 1 onward (e.g. Y2T1), not the skipped year.
+        legacy_covered = False
         if is_practical:
             if entry_pair is not None and (py, pt) < entry_pair:
-                continue
+                if has_course_exemptions:
+                    continue
+                # Continuing/legacy student: this is real pre-entry history,
+                # not replaced by anything — show it, settled, not dropped.
+                legacy_covered = True
             if _year_fully_exempt(py):
                 continue
             if _term_fully_exempt(py, pt):
                 continue
+        elif is_room_board and entry_pair is not None and (py, pt) < entry_pair:
+            if has_course_exemptions:
+                # Promoted students never occupied the pre-entry period's
+                # housing — this one-time fee is owed for whenever they
+                # actually first need a bed, which is their real entry term,
+                # not the schedule's nominal Year 1 slot. Re-date it there.
+                py, pt = entry_pair
+            else:
+                # Continuing/legacy student: this really is their historical
+                # housing fee for that period — show it as its own settled
+                # entry instead of re-dating it onto (and duplicating) their
+                # real current-term Room & Board rule.
+                legacy_covered = True
         reached = _milestone_reached(cy, ct, py, pt)
         billable = billing_date_reached(rule)
-        # Current-term practical is due with the semester (same as tuition), even
-        # if Accounts has not yet opened the scheduled billing date.
-        if is_practical and py == cy and pt == ct:
+        # Current-term practical/room & board is due with the semester (same as
+        # tuition), even if Accounts has not yet opened the scheduled billing date.
+        if (is_practical or is_room_board) and py == cy and pt == ct:
             billable = True
         amt, cur = effective_amount_currency(rule, international)
         if amt <= 0:
@@ -510,6 +543,7 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
                 "calendar_type": (
                     getattr(program, "calendar_type", None) or "semester"
                 ),
+                "legacy_covered": legacy_covered,
             },
         )
         if _line_is_prior_curriculum_term(line, cy, ct):
@@ -613,7 +647,11 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
 
 
 def _billing_line_sort_key(line: DemandLine) -> tuple:
-    """Oldest semester first; tuition → other programme fees → scheduled (e.g. room) → ad-hoc."""
+    """Oldest semester first; room & board → tuition → other programme fees → scheduled → ad-hoc.
+
+    Room & Board is paid off first when money is tight — Accounts policy is to
+    keep students housed before tuition/functional, not the other way round.
+    """
     y = line.extra.get("semester_year_of_study") or line.payable_year or 0
     t = line.extra.get("semester_term_number") or line.payable_term or 0
     try:
@@ -622,7 +660,9 @@ def _billing_line_sort_key(line: DemandLine) -> tuple:
         yi, ti = 0, 0
     start = _as_date(line.extra.get("semester_start_date")) or date.min
     head = (line.fee_head or "").lower()
-    if line.kind == "tuition_structure":
+    if "room" in head or "board" in head:
+        rank = -1
+    elif line.kind == "tuition_structure":
         rank = 0 if "tuition" in head else 1
     elif line.kind == "scheduled_other":
         rank = 2
@@ -675,19 +715,17 @@ def _allocate_pools_to_lines(
             key=_billing_line_sort_key,
         )
     else:
-        ordered = [
-            ln
-            for ln in lines
-            if ln.extra.get("prior_period_settled") or _line_is_billable(ln)
-        ]
         ordered = sorted(
-            (ln for ln in ordered if ln.extra.get("prior_period_settled")),
+            (ln for ln in lines if ln.extra.get("prior_period_settled")),
             key=_prior_line_sort_key,
-        ) + [
-            ln
-            for ln in lines
-            if not ln.extra.get("prior_period_settled") and _line_is_billable(ln)
-        ]
+        ) + sorted(
+            (
+                ln
+                for ln in lines
+                if not ln.extra.get("prior_period_settled") and _line_is_billable(ln)
+            ),
+            key=_billing_line_sort_key,
+        )
 
     # Exemption form fee is MoMo-prompt only. Do not spend SchoolPay / tuition credit on it.
     for line in ordered:
@@ -695,6 +733,14 @@ def _allocate_pools_to_lines(
             line.paid_amount = Decimal("0")
             line.balance = line.amount
             line.status = "due"
+            continue
+        if line.extra.get("legacy_covered"):
+            # Continuing/legacy student, pre-entry term: shown for visibility
+            # only — assumed settled at the prior institution, never draws
+            # from a real credit pool.
+            line.paid_amount = line.amount
+            line.balance = Decimal("0")
+            line.status = "settled"
             continue
         need = line.amount
         # When open allocation runs after prior, keep any amount already applied.

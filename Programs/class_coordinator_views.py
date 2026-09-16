@@ -718,6 +718,9 @@ class StudentCoordinatorOpenCheckInView(APIView):
             session = _open_check_in(
                 session,
                 duration_minutes=int(duration) if duration is not None else None,
+                latitude=request.data.get("latitude"),
+                longitude=request.data.get("longitude"),
+                accuracy_m=request.data.get("accuracy_m") or request.data.get("accuracy"),
             )
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=400)

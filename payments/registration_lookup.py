@@ -35,7 +35,9 @@ def _registration_kind_ready() -> bool:
     return _registration_kind_ready_cache
 
 
-def _course_rows_for_student(student: AdmittedStudent) -> list[dict]:
+def _course_rows_for_student(
+    student: AdmittedStudent, *, current_term_only: bool = False
+) -> list[dict]:
     try:
         qs = StudentCourseUnitEnrollment.objects.filter(
             student=student, registration_date__isnull=False
@@ -44,6 +46,15 @@ def _course_rows_for_student(student: AdmittedStudent) -> list[dict]:
             "course_unit__semester",
             "course_unit__program_batch",
         )
+        if current_term_only:
+            spe = StudentProgrammeEnrollment.objects.filter(student=student).first()
+            cy = getattr(spe, "current_year_of_study", None) if spe else None
+            ct = getattr(spe, "current_term_number", None) if spe else None
+            if cy is not None and ct is not None:
+                qs = qs.filter(
+                    course_unit__semester__year_of_study=cy,
+                    course_unit__semester__term_number=ct,
+                )
         # Model has registration_kind but Programs.0021 may not be applied yet.
         # Defer so SELECT does not reference a missing column.
         if not _registration_kind_ready():
@@ -215,7 +226,9 @@ def build_public_verify_payload(student: AdmittedStudent, request=None) -> dict:
 
 def build_registration_lookup_payload(student: AdmittedStudent, request=None) -> dict:
     finance = _safe_finance(student)
-    registered_courses = _course_rows_for_student(student)
+    # Registration card is a proof-of-registration document for the current
+    # term only — past completed semesters shouldn't appear on it.
+    registered_courses = _course_rows_for_student(student, current_term_only=True)
     position = _programme_position(student)
     reg_dates = _registration_dates(student, registered_courses)
 

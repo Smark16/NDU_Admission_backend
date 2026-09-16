@@ -1532,6 +1532,21 @@ def _student_timetable_sessions(user, semester_id=None):
     if not student:
         return None, []
 
+    # A weekly class schedule can only ever represent one active term — default
+    # to the student's current SPE term when the caller doesn't pin one, so
+    # sessions from a different (past or upcoming) semester never merge into
+    # the same day-of-week grid once that other term's timetable is published.
+    if not semester_id:
+        from Programs.modular_registration import current_session_semester
+
+        try:
+            spe = student.programme_enrollment
+        except Exception:
+            spe = None
+        current_semester = current_session_semester(spe) if spe else None
+        if current_semester:
+            semester_id = current_semester.id
+
     enrollments = StudentCourseUnitEnrollment.objects.filter(
         student=student,
         status="enrolled",
