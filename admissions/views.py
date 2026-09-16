@@ -4882,6 +4882,294 @@ class StudentChangeRequestListCreate(APIView):
         req.delete()
         return Response({"detail": "Exemption application deleted.", "id": req_id}, status=200)
 
+    def patch(self, request, pk=None):
+        """
+        Student adds extra courses and/or documents — and may replace an
+        existing document (delete + re-attach) — on their OWN exemption
+        application, while it is still untouched by any review stage.
+        Course lines are additive only (no removal); never touches
+        form_fee/status fields so it doesn't interact with billing or the
+        2-attempt submit/resubmit counter.
+        """
+        admission = self._get_admission(request.user)
+        if not admission:
+            return Response({'detail': 'No active admission found.'}, status=404)
+        pk = pk or request.query_params.get("id")
+        if not pk:
+            return Response({"detail": "Missing request id."}, status=400)
+
+        obj = AdmissionChangeRequest.objects.filter(
+            pk=pk, admitted_student=admission, change_type="exemption"
+        ).first()
+        if not obj:
+            return Response({"detail": "Exemption application not found."}, status=404)
+
+        if obj.status != "pending" or obj.hod_status != "pending":
+            return Response(
+                {
+                    "detail": (
+                        "This application is already under review and can no longer be "
+                        "edited. Contact the Academic Registrar if changes are needed."
+                    )
+                },
+                status=400,
+            )
+
+        from admissions.exemption_services import (
+            _term_key,
+            assert_exemption_term_cap,
+            exemption_paper_meets_min_mark,
+            list_eligible_exemption_courses,
+        )
+        from Programs.models import ProgramCurriculumLine
+
+        curriculum_line_ids: list[int] = []
+        raw_ids = request.data.get("curriculum_line_ids")
+        if raw_ids not in (None, ""):
+            try:
+                parsed_ids = json.loads(raw_ids) if isinstance(raw_ids, str) else raw_ids
+            except (TypeError, ValueError):
+                return Response({"detail": "Invalid 'curriculum_line_ids' payload."}, status=400)
+            if isinstance(parsed_ids, list):
+                curriculum_line_ids = [
+                    int(i) for i in parsed_ids if str(i).strip().lstrip("-").isdigit()
+                ]
+
+        raw_papers = request.data.get("exemption_papers")
+        exemption_papers: list[dict] = []
+        if raw_papers not in (None, ""):
+            try:
+                parsed = json.loads(raw_papers) if isinstance(raw_papers, str) else raw_papers
+            except (TypeError, ValueError):
+                return Response({"detail": "Invalid 'exemption_papers' payload."}, status=400)
+            if isinstance(parsed, list):
+                exemption_papers = [
+                    p for p in parsed
+                    if isinstance(p, dict) and str(p.get("course_code") or "").strip()
+                ]
+
+        uploaded_files = request.FILES.getlist("documents")
+        doc_types_raw = request.data.get("document_types")
+        doc_types: list[str] = []
+        if doc_types_raw:
+            try:
+                parsed_types = (
+                    json.loads(doc_types_raw) if isinstance(doc_types_raw, str) else doc_types_raw
+                )
+            except (TypeError, ValueError):
+                parsed_types = []
+            if isinstance(parsed_types, list):
+                doc_types = [str(t) for t in parsed_types]
+
+        remove_document_ids: list[int] = []
+        raw_remove_docs = request.data.get("remove_document_ids")
+        if raw_remove_docs not in (None, ""):
+            try:
+                parsed_remove = (
+                    json.loads(raw_remove_docs) if isinstance(raw_remove_docs, str) else raw_remove_docs
+                )
+            except (TypeError, ValueError):
+                return Response({"detail": "Invalid 'remove_document_ids' payload."}, status=400)
+            if isinstance(parsed_remove, list):
+                remove_document_ids = [
+                    int(i) for i in parsed_remove if str(i).strip().lstrip("-").isdigit()
+                ]
+
+        docs_to_remove = list(
+            obj.supporting_documents.filter(pk__in=remove_document_ids)
+        ) if remove_document_ids else []
+        missing_remove_ids = set(remove_document_ids) - {d.pk for d in docs_to_remove}
+        if missing_remove_ids:
+            return Response(
+                {"detail": f"Document(s) not found on this application: {sorted(missing_remove_ids)}"},
+                status=400,
+            )
+        remaining_doc_count = obj.supporting_documents.count() - len(docs_to_remove) + len(uploaded_files)
+        if remaining_doc_count < 1:
+            return Response(
+                {"detail": "At least one supporting document must remain on the application."},
+                status=400,
+            )
+
+        if (
+            not curriculum_line_ids
+            and not exemption_papers
+            and not uploaded_files
+            and not docs_to_remove
+        ):
+            return Response(
+                {"detail": "Nothing to update — select a course, attach, or remove a document."},
+                status=400,
+            )
+
+        existing_line_ids = set(obj.exemption_lines.values_list("curriculum_line_id", flat=True))
+        eligible = {c["id"]: c for c in list_eligible_exemption_courses(admission)}
+
+        invalid = [i for i in curriculum_line_ids if i not in eligible]
+        dup = [i for i in curriculum_line_ids if i in existing_line_ids]
+        if invalid or dup:
+            parts = []
+            if invalid:
+                parts.append(f"invalid or ineligible curriculum line(s): {invalid}")
+            if dup:
+                parts.append(f"already on this application: {dup}")
+            return Response({"detail": "; ".join(parts)}, status=400)
+
+        scores_map = {}
+        scores_raw = request.data.get("scores")
+        if scores_raw:
+            try:
+                parsed_scores = json.loads(scores_raw) if isinstance(scores_raw, str) else scores_raw
+            except (TypeError, ValueError):
+                return Response({"detail": "Invalid 'scores' payload."}, status=400)
+            if isinstance(parsed_scores, dict):
+                scores_map = {
+                    str(k): str(v).strip() for k, v in parsed_scores.items() if str(v).strip()
+                }
+
+        extra_terms = set()
+        for lid in curriculum_line_ids:
+            row = eligible.get(lid) or {}
+            key = _term_key(row.get("year_of_study"), row.get("term_number"))
+            if key:
+                extra_terms.add(key)
+
+        if exemption_papers:
+            missing_links, bad_links = [], []
+            for idx, paper in enumerate(exemption_papers):
+                raw_clid = paper.get("curriculum_line_id")
+                if raw_clid in (None, "", 0, "0"):
+                    missing_links.append(idx + 1)
+                    continue
+                try:
+                    clid = int(raw_clid)
+                except (TypeError, ValueError):
+                    bad_links.append(idx + 1)
+                    continue
+                if clid not in eligible or clid in existing_line_ids:
+                    bad_links.append(idx + 1)
+            if missing_links or bad_links:
+                parts = []
+                if missing_links:
+                    parts.append(
+                        "each paper must be a selected Ndejje curriculum unit "
+                        f"(missing on row(s) {', '.join(str(i) for i in missing_links)})"
+                    )
+                if bad_links:
+                    parts.append(
+                        "invalid, already-exempted, or already-on-this-application "
+                        f"curriculum unit on row(s) {', '.join(str(i) for i in bad_links)}"
+                    )
+                return Response(
+                    {
+                        "detail": (
+                            "Select Ndejje curriculum units to exempt — not prior "
+                            "university course codes. " + "; ".join(parts) + "."
+                        )
+                    },
+                    status=400,
+                )
+
+            score_errors = []
+            for idx, paper in enumerate(exemption_papers):
+                ok, msg = exemption_paper_meets_min_mark(paper)
+                if not ok:
+                    score_errors.append(f"Row {idx + 1}: {msg}")
+            if score_errors:
+                return Response(
+                    {
+                        "detail": (
+                            "Exemption requires a score of 60% and above on each paper. "
+                            + " ".join(score_errors)
+                        )
+                    },
+                    status=400,
+                )
+
+            for paper in exemption_papers:
+                clid = int(paper["curriculum_line_id"])
+                row = eligible.get(clid) or {}
+                key = _term_key(row.get("year_of_study"), row.get("term_number"))
+                if key:
+                    extra_terms.add(key)
+
+        try:
+            assert_exemption_term_cap(admission, extra_terms)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
+
+        valid_doc_types = {c[0] for c in ExemptionSupportingDocument.DOC_TYPE_CHOICES}
+
+        added_lines = 0
+        added_docs = 0
+        removed_docs = 0
+        with transaction.atomic():
+            for doc in docs_to_remove:
+                doc.file.delete(save=False)
+                doc.delete()
+                removed_docs += 1
+
+            if curriculum_line_ids:
+                lines = ProgramCurriculumLine.objects.filter(
+                    pk__in=curriculum_line_ids
+                ).select_related("catalog_course")
+                for line in lines:
+                    course = line.catalog_course
+                    ExemptionRequestLine.objects.create(
+                        change_request=obj,
+                        curriculum_line=line,
+                        course_code=course.code if course else "",
+                        course_name=(course.title if course else "") or "",
+                        year_of_study=line.year_of_study,
+                        term_number=line.term_number,
+                        score_obtained=scores_map.get(str(line.pk), ""),
+                    )
+                    added_lines += 1
+
+            for paper in exemption_papers:
+                clid = int(paper["curriculum_line_id"])
+                linked = ProgramCurriculumLine.objects.filter(
+                    pk=clid, is_active=True
+                ).select_related("catalog_course").first()
+                if linked is None:
+                    continue
+                course = linked.catalog_course
+                ExemptionRequestLine.objects.create(
+                    change_request=obj,
+                    curriculum_line=linked,
+                    course_code=(course.code if course else "")[:40],
+                    course_name=((course.title if course else "") or "")[:255],
+                    year_of_study=linked.year_of_study,
+                    term_number=linked.term_number,
+                    score_obtained=str(paper.get("score_obtained") or "").strip()[:20],
+                )
+                added_lines += 1
+
+            for idx, upload in enumerate(uploaded_files):
+                dtype = doc_types[idx] if idx < len(doc_types) else ExemptionSupportingDocument.DOC_OTHER
+                if dtype not in valid_doc_types:
+                    dtype = ExemptionSupportingDocument.DOC_OTHER
+                ExemptionSupportingDocument.objects.create(
+                    change_request=obj,
+                    document_type=dtype,
+                    file=upload,
+                    original_filename=getattr(upload, "name", "") or "",
+                )
+                added_docs += 1
+
+        obj = (
+            AdmissionChangeRequest.objects.select_related(
+                "new_program", "new_campus", "reviewed_by"
+            )
+            .prefetch_related("exemption_lines", "supporting_documents")
+            .get(pk=obj.pk)
+        )
+        payload = AdmissionChangeRequestSerializer(obj, context={"request": request}).data
+        payload["added_lines"] = added_lines
+        payload["added_documents"] = added_docs
+        payload["removed_documents"] = removed_docs
+        return Response(payload, status=200)
+
     def post(self, request):
         admission = self._get_admission(request.user)
         if not admission:
