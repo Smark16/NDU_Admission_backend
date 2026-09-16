@@ -19,6 +19,7 @@ from decimal import Decimal
 
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from accounts.models import Campus, User
@@ -39,18 +40,43 @@ from Programs.models import Program, ProgramBatch, Semester, StudentProgrammeEnr
 
 
 PREFIX = "VOTEQA"
+LETTER_PREFIX = "VOTEQA-LTR"
 TUITION_AMOUNT = Decimal("1000000.00")
 PERCENTAGES = (20, 40, 50, 60, 80, 100)
 FIRST_NAMES = ["Aisha", "Brian", "Cathy", "Daniel", "Eva", "Francis"]
 LAST_NAMES = ["Nambi", "Okello", "Nakato", "Mugisha", "Akello", "Ssebunya"]
 
+# Alternate ERP formats (letter stream + Inservice mode I)
+# YY/1|2|3/A|B|C/NNN/MODE/NNN|NNNN|NNNNN
+LETTER_FORMAT_STUDENTS = (
+    # Explicit cases requested for import testing
+    {"tag": "1B5", "reg_no": "26/1/B/110/D/20572", "campus_digit": "1", "pct": 100},
+    {"tag": "2B5", "reg_no": "26/2/B/110/D/20572", "campus_digit": "2", "pct": 100},
+    {"tag": "3A5", "reg_no": "26/3/A/110/D/20572", "campus_digit": "3", "pct": 100},
+    # Extra coverage: letter A/C + serial length 3 / 4 / 5
+    {"tag": "1C3", "reg_no": "26/1/C/110/D/205", "campus_digit": "1", "pct": 100},
+    {"tag": "2A4", "reg_no": "26/2/A/110/D/2057", "campus_digit": "2", "pct": 100},
+    {"tag": "3C5", "reg_no": "26/3/C/110/W/12345", "campus_digit": "3", "pct": 100},
+    # Inservice (I) — classic + letter stream
+    {"tag": "2I4", "reg_no": "26/2/110/I/3445", "campus_digit": "2", "pct": 100},
+    {"tag": "2BI4", "reg_no": "26/2/B/110/I/5566", "campus_digit": "2", "pct": 100},
+)
+
 
 class Command(BaseCommand):
-    help = "Create VOTEQA students at 20/40/50/60/80/100% tuition for voter-import testing."
+    help = (
+        "Create VOTEQA students at 20/40/50/60/80/100% tuition for voter-import testing, "
+        "plus letter-block reg nos (YY/campus/A|B|C/...) for format-rejection tests."
+    )
 
     def add_arguments(self, parser):
         parser.add_argument("--reset", action="store_true", help="Delete previous VOTEQA students first.")
         parser.add_argument("--program-id", type=int, default=None)
+        parser.add_argument(
+            "--letter-only",
+            action="store_true",
+            help="Only seed letter-format reg nos (skip classic VOTEQA % ladder).",
+        )
 
     def handle(self, *args, **options):
         if options["reset"]:
@@ -59,28 +85,47 @@ class Command(BaseCommand):
         batch, program, academic_level, admin_user, campuses = self._lookups(options["program_id"])
         ipb, semester = self._ensure_cohort(program)
         rule = self._ensure_tuition_rule(program, ipb, semester, admin_user)
+        campus_by_digit = self._campus_by_digit(campuses)
 
         created = []
         with transaction.atomic():
-            for campus_index, campus in enumerate(campuses):
-                digit = self._campus_digit(campus)
-                for i, pct in enumerate(PERCENTAGES):
-                    created.append(
-                        self._upsert_student(
-                            campus=campus,
-                            campus_digit=digit,
-                            campus_index=campus_index,
-                            pct=pct,
-                            name_index=i,
-                            batch=batch,
-                            program=program,
-                            academic_level=academic_level,
-                            admin_user=admin_user,
-                            ipb=ipb,
-                            semester=semester,
-                            rule=rule,
+            if not options["letter_only"]:
+                for campus_index, campus in enumerate(campuses):
+                    digit = self._campus_digit(campus)
+                    for i, pct in enumerate(PERCENTAGES):
+                        created.append(
+                            self._upsert_student(
+                                campus=campus,
+                                campus_digit=digit,
+                                campus_index=campus_index,
+                                pct=pct,
+                                name_index=i,
+                                batch=batch,
+                                program=program,
+                                academic_level=academic_level,
+                                admin_user=admin_user,
+                                ipb=ipb,
+                                semester=semester,
+                                rule=rule,
+                            )
                         )
+
+            for i, spec in enumerate(LETTER_FORMAT_STUDENTS):
+                campus = campus_by_digit.get(spec["campus_digit"]) or campuses[0]
+                created.append(
+                    self._upsert_letter_student(
+                        spec=spec,
+                        name_index=i,
+                        campus=campus,
+                        batch=batch,
+                        program=program,
+                        academic_level=academic_level,
+                        admin_user=admin_user,
+                        ipb=ipb,
+                        semester=semester,
+                        rule=rule,
                     )
+                )
 
         settings = RegistrationSettings.get_settings()
         threshold = float(settings.min_tuition_payment_percentage or 0)
@@ -113,7 +158,9 @@ class Command(BaseCommand):
         self.stdout.write("  1. HORIZON > Finance / Registration settings > set Minimum tuition % to 50 (or 40 / 60).")
         self.stdout.write("  2. In e-voting admin > Student Management > Import from ERP.")
         self.stdout.write("  3. Only students at or above that % are added. Change the % and import again.")
-
+        self.stdout.write(
+            "  4. Letter-format rows (…/A|B|C/…) should appear in ERP eligible list but fail myvote parse_regno on import."
+        )
     def _lookups(self, program_id):
         batch = (
             Batch.objects.filter(is_active=True).filter(batch_offer_window_q()).order_by("-id").first()
@@ -142,7 +189,7 @@ class Command(BaseCommand):
         if not admin_user:
             raise CommandError("No User found.")
 
-        campuses = list(Campus.objects.order_by("id")[:2])
+        campuses = list(Campus.objects.order_by("id")[:3])
         if not campuses:
             raise CommandError("No Campus found.")
         return batch, program, academic_level, admin_user, campuses
@@ -152,7 +199,23 @@ class Command(BaseCommand):
         name = (campus.name or "").upper()
         if code in {"KLA", "KAMPALA"} or "KAMPALA" in name:
             return "2"
+        if code in {"3", "CAM3"} or "CAMPUS 3" in name or "ARUA" in name or "MBARARA" in name:
+            return "3"
         return "1"
+
+    def _campus_by_digit(self, campuses: list[Campus]) -> dict[str, Campus]:
+        by_digit: dict[str, Campus] = {}
+        for campus in campuses:
+            digit = self._campus_digit(campus)
+            by_digit.setdefault(digit, campus)
+        # Campus digit 3 may not exist in ERP yet — fall back to main so the reg still imports from ERP eligible list.
+        if "3" not in by_digit and campuses:
+            by_digit["3"] = by_digit.get("1") or campuses[0]
+        if "1" not in by_digit and campuses:
+            by_digit["1"] = campuses[0]
+        if "2" not in by_digit and campuses:
+            by_digit["2"] = campuses[-1]
+        return by_digit
 
     def _ensure_cohort(self, program: Program):
         today = timezone.now().date()
@@ -369,14 +432,168 @@ class Command(BaseCommand):
             "pct": pct,
         }
 
+    def _upsert_letter_student(
+        self,
+        *,
+        spec,
+        name_index,
+        campus,
+        batch,
+        program,
+        academic_level,
+        admin_user,
+        ipb,
+        semester,
+        rule,
+    ):
+        tag = spec["tag"]
+        reg_no = spec["reg_no"]
+        pct = int(spec["pct"])
+        campus_digit = spec["campus_digit"]
+        student_id = f"{LETTER_PREFIX}-{tag}"
+        first = FIRST_NAMES[name_index % len(FIRST_NAMES)]
+        last = LAST_NAMES[name_index % len(LAST_NAMES)]
+        email = f"{LETTER_PREFIX.lower()}.{tag.lower()}@example.test"
+        username = f"{LETTER_PREFIX.lower()}.{tag.lower()}"[:150]
+        now = timezone.now()
+
+        admission = AdmittedStudent.objects.filter(student_id=student_id).first()
+        if admission is None:
+            # Reg may already exist from a prior manual insert — reuse/update that row.
+            admission = AdmittedStudent.objects.filter(reg_no__iexact=reg_no).first()
+
+        if admission is None:
+            applicant = User.objects.create_user(
+                username=username,
+                email=email,
+                password=DEFAULT_STUDENT_PASSWORD,
+                first_name=first,
+                last_name=last,
+                is_applicant=True,
+                is_student=False,
+                is_active=True,
+            )
+            app = Application.objects.create(
+                applicant=applicant,
+                batch=batch,
+                campus=campus,
+                academic_level=academic_level,
+                first_name=first,
+                last_name=last,
+                middle_name=f"letter {tag}",
+                date_of_birth=date(2002, 3, 20),
+                gender="Female" if name_index % 2 else "Male",
+                nationality="Ugandan",
+                phone=f"+25671{campus_digit}00{name_index:02d}00",
+                email=email,
+                next_of_kin_name=f"{last} Next of Kin",
+                next_of_kin_contact="+256700000444",
+                next_of_kin_relationship="Parent",
+                olevel_year=2020,
+                olevel_index_number=f"{LETTER_PREFIX}/{tag}/2020",
+                olevel_school="VOTEQA Letter Secondary",
+                has_olevel=True,
+                has_alevel=False,
+                alevel_year=0,
+                alevel_index_number="",
+                alevel_school="",
+                alevel_combination="",
+                status="accepted",
+                application_fee_paid=True,
+                application_reference=f"{LETTER_PREFIX}-{tag}"[:50],
+                source=Application.SOURCE_DIRECT,
+            )
+            ApplicationProgramChoice.objects.create(application=app, program=program, choice_order=1)
+            admission = AdmittedStudent.objects.create(
+                application=app,
+                student_id=student_id,
+                reg_no=reg_no,
+                study_mode="D" if "/D/" in reg_no.upper() else "W",
+                admitted_program=program,
+                admitted_batch=batch,
+                admitted_campus=campus,
+                intended_program_batch=ipb,
+                is_admitted=True,
+                admission_fee_paid=True,
+                admission_fee_paid_at=now,
+                admitted_by=admin_user,
+                admission_notes=f"VOTEQA letter-format import probe — {reg_no}",
+            )
+        else:
+            admission.student_id = student_id
+            admission.reg_no = reg_no
+            admission.admitted_campus = campus
+            admission.admitted_program = program
+            admission.intended_program_batch = ipb
+            admission.is_admitted = True
+            admission.admission_fee_paid = True
+            admission.save()
+
+        StudentProgrammeEnrollment.objects.update_or_create(
+            student=admission,
+            defaults={
+                "program": program,
+                "program_batch": ipb,
+                "current_year_of_study": 1,
+                "current_term_number": 1,
+                "entry_year_of_study": 1,
+                "entry_term_number": 1,
+                "status": "enrolled",
+                "enrolled_by": admin_user,
+                "enrolled_at": now,
+                "notes": f"{LETTER_PREFIX} {reg_no}",
+            },
+        )
+
+        paid = (TUITION_AMOUNT * Decimal(pct) / Decimal("100")).quantize(Decimal("1.00"))
+        StudentTuitionPayment.objects.update_or_create(
+            student=admission,
+            transaction_id=f"{LETTER_PREFIX}-{tag}",
+            defaults={
+                "fee_plan_rule": rule,
+                "semester": semester,
+                "source": "scheduled",
+                "amount": paid,
+                "currency": "UGX",
+                "payment_method": "cash",
+                "status": "completed",
+                "payment_reference": f"{LETTER_PREFIX}-{tag}",
+                "receipt_number": f"VOTEQA-LTR-RCP-{tag}",
+                "paid_at": now,
+                "is_waived": False,
+            },
+        )
+
+        ensure_student_portal_account(admission)
+        user = admission.student_user
+        if user is not None:
+            user.set_password(DEFAULT_STUDENT_PASSWORD)
+            user.must_change_password = False
+            user.is_active = True
+            user.is_student = True
+            user.save(update_fields=["password", "must_change_password", "is_active", "is_student"])
+
+        return {
+            "student": admission,
+            "reg_no": admission.reg_no,
+            "campus": campus.name,
+            "pct": pct,
+        }
+
     def _reset_previous(self):
-        qs = AdmittedStudent.objects.filter(student_id__startswith=f"{PREFIX}-")
+        qs = AdmittedStudent.objects.filter(
+            Q(student_id__startswith=f"{PREFIX}-") | Q(student_id__startswith=f"{LETTER_PREFIX}-")
+        )
         n = qs.count()
         applicant_ids = list(qs.values_list("application__applicant_id", flat=True))
         app_ids = list(qs.values_list("application_id", flat=True))
-        StudentTuitionPayment.objects.filter(transaction_id__startswith=f"{PREFIX}-").delete()
+        StudentTuitionPayment.objects.filter(
+            Q(transaction_id__startswith=f"{PREFIX}-")
+            | Q(transaction_id__startswith=f"{LETTER_PREFIX}-")
+        ).delete()
         qs.delete()
         Application.objects.filter(pk__in=app_ids).delete()
         User.objects.filter(pk__in=[i for i in applicant_ids if i]).delete()
         User.objects.filter(username__startswith=f"{PREFIX.lower()}.").delete()
+        User.objects.filter(username__startswith=f"{LETTER_PREFIX.lower()}.").delete()
         self.stdout.write(self.style.WARNING(f"Removed {n} previous {PREFIX} student(s)."))
