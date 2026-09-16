@@ -41,6 +41,37 @@ from .timetable_utils import (
 STATUS_LABELS = dict(LectureAttendanceRecord.STATUS_CHOICES)
 VALID_STATUSES = set(STATUS_LABELS)
 
+# Location gating for student self-check-in (see LectureAttendanceSession.start_latitude).
+# A fix worse than this is typically WiFi/IP-based positioning, not real GPS — too
+# unreliable to trust, so we skip storing/enforcing location for that check-in window
+# rather than risk blocking students who are actually in the room.
+MAX_TRUSTED_LOCATION_ACCURACY_M = 100
+# Generous radius around the starter's device to absorb GPS drift on both ends
+# (indoor fixes commonly wander 20-50m by themselves).
+MAX_CHECK_IN_DISTANCE_M = 150
+
+
+def _parse_coordinate(value) -> float | None:
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    if f != f:  # NaN
+        return None
+    return f
+
+
+def _distance_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance between two lat/lng points, in metres (haversine)."""
+    from math import atan2, cos, radians, sin, sqrt
+
+    r = 6371000.0  # Earth radius, metres
+    phi1, phi2 = radians(lat1), radians(lat2)
+    d_phi = radians(lat2 - lat1)
+    d_lambda = radians(lon2 - lon1)
+    a = sin(d_phi / 2) ** 2 + cos(phi1) * cos(phi2) * sin(d_lambda / 2) ** 2
+    return 2 * r * atan2(sqrt(a), sqrt(1 - a))
+
 
 def _parse_date(value):
     if not value:
@@ -449,6 +480,7 @@ def _check_in_payload(session: LectureAttendanceSession | None) -> dict:
             "check_in_duration_minutes": 30,
             "checked_in_count": 0,
             "has_qr_token": False,
+            "location_gated": False,
         }
     checked_in = session.records.filter(
         status__in=[
@@ -469,6 +501,7 @@ def _check_in_payload(session: LectureAttendanceSession | None) -> dict:
         "attendance_code": code if session.student_check_in_open else "",
         # Backward-compatible aliases for older clients
         "has_qr_token": bool(code) and session.student_check_in_open,
+        "location_gated": session.start_latitude is not None and session.start_longitude is not None,
     }
 
 
@@ -839,7 +872,14 @@ def _get_or_create_session_shell(
     return session
 
 
-def _open_check_in(session: LectureAttendanceSession, *, duration_minutes: int | None = None) -> LectureAttendanceSession:
+def _open_check_in(
+    session: LectureAttendanceSession,
+    *,
+    duration_minutes: int | None = None,
+    latitude=None,
+    longitude=None,
+    accuracy_m=None,
+) -> LectureAttendanceSession:
     from datetime import timedelta
 
     if session.locked_at:
@@ -857,12 +897,32 @@ def _open_check_in(session: LectureAttendanceSession, *, duration_minutes: int |
     session.check_in_closes_at = now + timedelta(minutes=minutes)
     session.check_in_closed_at = None
     session.check_in_duration_minutes = minutes
+
+    # Refresh the starter's location every time check-in opens — a stale fix from a
+    # prior class shouldn't keep gating a different one. Only trust a fix accurate
+    # enough to be real GPS; anything coarser (WiFi/IP positioning) is discarded so
+    # the check simply doesn't apply rather than risk blocking real students.
+    lat = _parse_coordinate(latitude)
+    lon = _parse_coordinate(longitude)
+    acc = _parse_coordinate(accuracy_m)
+    if lat is not None and lon is not None and (acc is None or acc <= MAX_TRUSTED_LOCATION_ACCURACY_M):
+        session.start_latitude = lat
+        session.start_longitude = lon
+        session.start_location_accuracy_m = int(acc) if acc is not None else None
+    else:
+        session.start_latitude = None
+        session.start_longitude = None
+        session.start_location_accuracy_m = None
+
     session.save(
         update_fields=[
             "check_in_opened_at",
             "check_in_closes_at",
             "check_in_closed_at",
             "check_in_duration_minutes",
+            "start_latitude",
+            "start_longitude",
+            "start_location_accuracy_m",
             "updated_at",
         ]
     )
@@ -1432,6 +1492,9 @@ class LecturerAttendanceOpenCheckInView(APIView):
             session = _open_check_in(
                 session,
                 duration_minutes=int(duration) if duration is not None else None,
+                latitude=request.data.get("latitude"),
+                longitude=request.data.get("longitude"),
+                accuracy_m=request.data.get("accuracy_m") or request.data.get("accuracy"),
             )
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=400)
@@ -2153,6 +2216,57 @@ class StudentAttendanceCheckInView(APIView):
                     status=400,
                 )
             session = open_matches[0]
+
+        if session.start_latitude is not None and session.start_longitude is not None:
+            student_lat = _parse_coordinate(request.data.get("latitude"))
+            student_lon = _parse_coordinate(request.data.get("longitude"))
+            student_acc = _parse_coordinate(
+                request.data.get("accuracy_m") or request.data.get("accuracy")
+            )
+            if student_lat is None or student_lon is None:
+                return Response(
+                    {
+                        "detail": (
+                            "This class requires location to check in with the code. "
+                            "Allow location access and try again, or ask your lecturer "
+                            "to mark you present on the roster."
+                        ),
+                        "location_required": True,
+                    },
+                    status=400,
+                )
+            if student_acc is not None and student_acc > MAX_TRUSTED_LOCATION_ACCURACY_M:
+                return Response(
+                    {
+                        "detail": (
+                            "Your device's location isn't accurate enough to check in "
+                            "with the code. Move to an open area and try again, or ask "
+                            "your lecturer to mark you present on the roster."
+                        ),
+                        "location_required": True,
+                    },
+                    status=400,
+                )
+            distance = _distance_meters(
+                float(session.start_latitude),
+                float(session.start_longitude),
+                student_lat,
+                student_lon,
+            )
+            if distance > MAX_CHECK_IN_DISTANCE_M:
+                return Response(
+                    {
+                        "detail": (
+                            "You appear to be too far from where this class was started "
+                            "to check in with the code. If you are in class, ask your "
+                            "lecturer or class coordinator to mark you present on the "
+                            "roster."
+                        ),
+                        "location_required": True,
+                        "distance_m": round(distance),
+                    },
+                    status=400,
+                )
 
         now = dj_tz.now()
         marked_via = LectureAttendanceRecord.SOURCE_QR

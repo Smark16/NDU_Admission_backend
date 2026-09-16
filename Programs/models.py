@@ -2058,6 +2058,29 @@ class LectureAttendanceSession(models.Model):
         blank=True,
         help_text="When the current check_in_token was issued (rotated periodically).",
     )
+    start_latitude = models.DecimalField(
+        max_digits=9,
+        decimal_places=6,
+        null=True,
+        blank=True,
+        help_text=(
+            "Device location of whoever opened student self-check-in (lecturer or "
+            "class coordinator), captured fresh each time check-in opens. Only stored "
+            "when the device reported a reasonably accurate fix — see "
+            "start_location_accuracy_m. Used to keep self-check-in near the class."
+        ),
+    )
+    start_longitude = models.DecimalField(
+        max_digits=9,
+        decimal_places=6,
+        null=True,
+        blank=True,
+    )
+    start_location_accuracy_m = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Accuracy (metres) the browser reported for start_latitude/longitude.",
+    )
     locked_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
