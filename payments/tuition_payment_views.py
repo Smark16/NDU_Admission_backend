@@ -2,38 +2,26 @@ from OfferLetter.AdmissionReports.utils.excel import create_workbook
 from django.http import HttpResponse
 
 from django.db.models import Q, Sum, Count
+from django.utils import timezone
+from datetime import datetime, timedelta
+from decimal import Decimal
 
 from rest_framework.views import APIView
 from rest_framework.response import Response
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import (
     DjangoModelPermissions,
     IsAuthenticated,
+    BasePermission,
 )
-from rest_framework.pagination import PageNumberPagination
-from django.utils import timezone
-from datetime import timedelta, datetime
-
-from decimal import Decimal
 
 from payments.models import TuitionLedger
 from payments.student_payment_allocation import COMMITMENT_FEE_THRESHOLD
-from datetime import datetime
-from datetime import timedelta
-
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework.permissions import (
-    IsAuthenticated,
-    IsAdminUser
-)
-
 from payments.utils.Transaction_sync import (
-    fetch_transactions_by_range, reconcile_transactions
+    fetch_transactions_by_range,
+    reconcile_transactions,
 )
-
-from payments.serializers import (
-    TuitionLedgerSerializer
-)
+from payments.serializers import TuitionLedgerSerializer
 
 class StandardPagination(PageNumberPagination):
     page_size = 25
@@ -55,7 +43,8 @@ class TuitionLedgerListView(APIView):
             TuitionLedger.objects
             .select_related(
                 "student",
-                "user"
+                "student__application",
+                "user",
             )
             .all()
         )
@@ -108,16 +97,27 @@ class TuitionLedgerListView(APIView):
                 ]
             )
 
-        # SEARCH
+        # SEARCH (supports two+ name tokens, e.g. "John Doe")
         search = request.GET.get("search")
 
         if search:
+            from payments.search_utils import identity_or_name_search_q
 
             queryset = queryset.filter(
-                Q(student_name__icontains=search) |
-                Q(student_payment_code__icontains=search) |
-                Q(schoolpay_receipt_number__icontains=search) |
-                Q(student_registration_number__icontains=search)
+                identity_or_name_search_q(
+                    search,
+                    identity_fields=(
+                        "student_payment_code",
+                        "schoolpay_receipt_number",
+                        "student_registration_number",
+                    ),
+                    name_fields=(
+                        "student_name",
+                        "student__application__first_name",
+                        "student__application__middle_name",
+                        "student__application__last_name",
+                    ),
+                )
             )
 
         # ===================== TIME PERIOD FILTER =====================
@@ -125,7 +125,8 @@ class TuitionLedgerListView(APIView):
 
         today = timezone.now().date()
 
-        if time_period:
+        # Skip period filter for "all" / empty, or when custom from/to already set
+        if time_period and time_period not in ("all", "custom") and not (from_date and to_date):
             if time_period == "today":
                 queryset = queryset.filter(payment_date_time__date=today)
 
@@ -188,96 +189,131 @@ class TuitionLedgerListView(APIView):
         })
         
 # manual transaction sync
-class ManualHistoricalReconciliationView(
-    APIView
-):
-    permission_classes = [
-        IsAuthenticated,
-        IsAdminUser
-    ]
+class CanManualReconcilePayments(BasePermission):
+    message = "You do not have permission to reconcile SchoolPay payments."
+
+    def has_permission(self, request, view):
+        from accounts.erp_drf_permissions import user_has_any_erp_perm
+        from accounts.super_admin import user_is_super_admin
+
+        u = request.user
+        if not u or not u.is_authenticated:
+            return False
+        if user_is_super_admin(u):
+            return True
+        return user_has_any_erp_perm(u, "manage_payment_reconciliation", "access_finance")
+
+
+class ManualHistoricalReconciliationView(APIView):
+    """
+    Pull missing SchoolPay transactions for a date range into TuitionLedger.
+
+    SchoolPay accepts at most ~30 days per request; longer ranges are fetched
+    in consecutive 30-day chunks.
+    """
+
+    permission_classes = [IsAuthenticated, CanManualReconcilePayments]
+    SCHOOLPAY_MAX_DAYS = 30
+    MAX_RANGE_DAYS = 366
 
     def get(self, request):
+        return self._reconcile(request)
 
-        from_date = request.GET.get(
-            "from_date"
-        )
+    def post(self, request):
+        return self._reconcile(request)
 
-        to_date = request.GET.get(
-            "to_date"
-        )
+    def _reconcile(self, request):
+        data = request.data if request.method == "POST" else request.query_params
+        from_date = data.get("from_date")
+        to_date = data.get("to_date")
 
-        # VALIDATION
         if not from_date or not to_date:
-
-            return Response({
-                "error":
-                    "from_date and to_date are required"
-            }, status=400)
+            return Response(
+                {
+                    "error": "from_date and to_date are required (YYYY-MM-DD).",
+                    "schoolpay_max_days": self.SCHOOLPAY_MAX_DAYS,
+                    "hint": (
+                        "SchoolPay allows up to 30 days per request. "
+                        "Pick a range; ranges longer than 30 days are fetched in chunks."
+                    ),
+                },
+                status=400,
+            )
 
         try:
-
-            start_date = datetime.strptime(
-                from_date,
-                "%Y-%m-%d"
-            ).date()
-
-            end_date = datetime.strptime(
-                to_date,
-                "%Y-%m-%d"
-            ).date()
-
+            start_date = datetime.strptime(from_date, "%Y-%m-%d").date()
+            end_date = datetime.strptime(to_date, "%Y-%m-%d").date()
         except ValueError:
+            return Response(
+                {"error": "Invalid date format. Use YYYY-MM-DD"},
+                status=400,
+            )
 
-            return Response({
-                "error":
-                    "Invalid date format. Use YYYY-MM-DD"
-            }, status=400)
+        if end_date < start_date:
+            return Response(
+                {"error": "to_date must be on or after from_date."},
+                status=400,
+            )
+
+        span_days = (end_date - start_date).days + 1
+        if span_days > self.MAX_RANGE_DAYS:
+            return Response(
+                {
+                    "error": (
+                        f"Date range is {span_days} days. "
+                        f"Maximum allowed is {self.MAX_RANGE_DAYS} days per run."
+                    ),
+                    "schoolpay_max_days": self.SCHOOLPAY_MAX_DAYS,
+                },
+                status=400,
+            )
 
         total_synced = 0
-
+        chunks = []
         current_start = start_date
 
-        # SCHOOLPAY MAX = 31 DAYS
         while current_start <= end_date:
-
             current_end = min(
-                current_start + timedelta(days=30),
-                end_date
+                current_start + timedelta(days=self.SCHOOLPAY_MAX_DAYS - 1),
+                end_date,
             )
-
-            data = fetch_transactions_by_range(
-                from_date=current_start.strftime(
-                    "%Y-%m-%d"
-                ),
-                to_date=current_end.strftime(
-                    "%Y-%m-%d"
-                )
+            chunk_from = current_start.strftime("%Y-%m-%d")
+            chunk_to = current_end.strftime("%Y-%m-%d")
+            payload = fetch_transactions_by_range(
+                from_date=chunk_from,
+                to_date=chunk_to,
             )
-
-            synced = reconcile_transactions(
-                data
-            )
-
+            synced = reconcile_transactions(payload)
             total_synced += synced
-
-            current_start = (
-                current_end + timedelta(days=1)
+            chunks.append(
+                {
+                    "from_date": chunk_from,
+                    "to_date": chunk_to,
+                    "synced": synced,
+                }
             )
+            current_start = current_end + timedelta(days=1)
 
-        return Response({
-
-            "message":
-                "Historical reconciliation completed successfully",
-
-            "from_date":
-                from_date,
-
-            "to_date":
-                to_date,
-
-            "total_transactions_synced":
-                total_synced
-        })
+        return Response(
+            {
+                "message": "Historical reconciliation completed successfully",
+                "from_date": from_date,
+                "to_date": to_date,
+                "span_days": span_days,
+                "schoolpay_max_days": self.SCHOOLPAY_MAX_DAYS,
+                "chunk_count": len(chunks),
+                "chunks": chunks,
+                "total_transactions_synced": total_synced,
+                "note": (
+                    None
+                    if span_days <= self.SCHOOLPAY_MAX_DAYS
+                    else (
+                        f"Range exceeded SchoolPay's {self.SCHOOLPAY_MAX_DAYS}-day limit, "
+                        f"so it was fetched in {len(chunks)} chunk(s)."
+                    )
+                ),
+            }
+        )
 
 # individual student transactions
 class StudentTransactions(APIView):

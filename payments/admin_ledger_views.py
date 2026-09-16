@@ -138,31 +138,37 @@ def _apply_transaction_cohort_filters(qs, cohort: dict[str, int | str | None]):
 
 
 def _student_search_filter(search: str) -> Q:
-    term = (search or "").strip()
-    if not term:
-        return Q()
-    return (
-        Q(student_id__icontains=term)
-        | Q(reg_no__icontains=term)
-        | Q(schoolpay_code__icontains=term)
-        | Q(application__first_name__icontains=term)
-        | Q(application__last_name__icontains=term)
+    from payments.search_utils import identity_or_name_search_q
+
+    return identity_or_name_search_q(
+        search,
+        identity_fields=("student_id", "reg_no", "schoolpay_code"),
+        name_fields=(
+            "application__first_name",
+            "application__middle_name",
+            "application__last_name",
+        ),
     )
 
 
 def _transaction_search_filter(search: str) -> Q:
-    term = (search or "").strip()
-    if not term:
-        return Q()
-    return (
-        Q(student__student_id__icontains=term)
-        | Q(student__reg_no__icontains=term)
-        | Q(student__schoolpay_code__icontains=term)
-        | Q(student__application__first_name__icontains=term)
-        | Q(student__application__last_name__icontains=term)
-        | Q(receipt_number__icontains=term)
-        | Q(payment_reference__icontains=term)
-        | Q(label__icontains=term)
+    from payments.search_utils import identity_or_name_search_q
+
+    return identity_or_name_search_q(
+        search,
+        identity_fields=(
+            "student__student_id",
+            "student__reg_no",
+            "student__schoolpay_code",
+            "receipt_number",
+            "payment_reference",
+            "label",
+        ),
+        name_fields=(
+            "student__application__first_name",
+            "student__application__middle_name",
+            "student__application__last_name",
+        ),
     )
 
 
@@ -1109,15 +1115,27 @@ class AdminManualBankPaymentsReportView(APIView):
             .order_by("-payment_date_time", "-id")
         )
         if search:
+            from payments.search_utils import identity_or_name_search_q
+
             qs = qs.filter(
-                Q(student_name__icontains=search)
-                | Q(student_payment_code__icontains=search)
-                | Q(student_registration_number__icontains=search)
-                | Q(schoolpay_receipt_number__icontains=search)
-                | Q(source_channel_transaction_id__icontains=search)
-                | Q(user__email__icontains=search)
-                | Q(user__first_name__icontains=search)
-                | Q(user__last_name__icontains=search)
+                identity_or_name_search_q(
+                    search,
+                    identity_fields=(
+                        "student_payment_code",
+                        "student_registration_number",
+                        "schoolpay_receipt_number",
+                        "source_channel_transaction_id",
+                        "user__email",
+                        "user__first_name",
+                        "user__last_name",
+                    ),
+                    name_fields=(
+                        "student_name",
+                        "student__application__first_name",
+                        "student__application__middle_name",
+                        "student__application__last_name",
+                    ),
+                )
             )
         if from_date:
             qs = qs.filter(payment_date_time__date__gte=from_date)

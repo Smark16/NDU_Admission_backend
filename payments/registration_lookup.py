@@ -272,6 +272,8 @@ def _student_search_qs():
 
 
 def search_admitted_students(query: str, limit: int = 15):
+    from payments.search_utils import identity_or_name_search_q
+
     q = (query or "").strip()
     if not q:
         return _student_search_qs().none()
@@ -283,13 +285,21 @@ def search_admitted_students(query: str, limit: int = 15):
     if exact.exists():
         return exact[:limit]
 
-    return _student_search_qs().filter(
-        Q(student_id__icontains=q)
-        | Q(reg_no__icontains=q)
-        | Q(application__first_name__icontains=q)
-        | Q(application__last_name__icontains=q)
-        | Q(application__email__icontains=q)
-    ).order_by("application__last_name", "application__first_name")[:limit]
+    return (
+        _student_search_qs()
+        .filter(
+            identity_or_name_search_q(
+                q,
+                identity_fields=("student_id", "reg_no", "application__email"),
+                name_fields=(
+                    "application__first_name",
+                    "application__middle_name",
+                    "application__last_name",
+                ),
+            )
+        )
+        .order_by("application__last_name", "application__first_name")[:limit]
+    )
 
 
 def student_summary_row(student: AdmittedStudent) -> dict:
