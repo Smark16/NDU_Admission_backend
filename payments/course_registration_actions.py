@@ -191,6 +191,19 @@ def register_student_for_course_units(
                 errors.append(f"Already registered for {cu.code}")
                 continue
 
+            if not is_retake_offer and spe and spe.program:
+                from Programs.calendar_utils import program_is_modular
+
+                if program_is_modular(spe.program):
+                    from payments.modular_paper_billing import (
+                        modular_paper_registration_gate,
+                    )
+
+                    paid, gate_msg = modular_paper_registration_gate(student, cu)
+                    if not paid:
+                        errors.append(gate_msg)
+                        continue
+
             if is_retake_offer:
                 kind = offering.get("registration_kind") or StudentCourseUnitEnrollment.KIND_RETAKE
                 en.registration_kind = kind
