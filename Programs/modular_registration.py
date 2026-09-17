@@ -98,7 +98,14 @@ def modular_available_course_unit_ids(
     student,
     registered_course_ids: set[int],
 ) -> set[int]:
-    """Offerings in the current session the student may register for."""
+    """
+    Whole-curriculum offerings the student may register for.
+
+    Modular (Graduate School) students are not sequenced into one "current
+    session" — the full module list is open, and they pick papers (and get
+    billed) at their own pace, so this is not scoped to current_year_of_study
+    / current_term_number the way semester programmes are.
+    """
     from Programs.models import CourseUnit
 
     if spe is None or not program_is_modular(spe.program):
@@ -113,22 +120,11 @@ def modular_available_course_unit_ids(
     completed = completed_course_unit_ids(student)
 
     ids: set[int] = set()
-    session = current_session_semester(spe)
-    if session:
-        for cu in CourseUnit.objects.filter(
-            semester_id=session.pk,
-            is_active=True,
-        ).select_related("catalog_unit"):
-            if course_unit_in_program_curriculum(cu, catalog_unit_ids, catalog_codes):
-                ids.add(cu.id)
-
-    # Session slots without year/term metadata on the same cohort.
     for cu in CourseUnit.objects.filter(
         is_active=True,
-        semester__program_batch_id=batch_id,
-        semester__is_active=True,
+        program_batch_id=batch_id,
     ).filter(
-        Q(semester__year_of_study__isnull=True) | Q(semester__term_number__isnull=True)
+        Q(semester__isnull=True) | Q(semester__is_active=True)
     ).select_related("catalog_unit", "semester"):
         if course_unit_in_program_curriculum(cu, catalog_unit_ids, catalog_codes):
             ids.add(cu.id)
@@ -139,6 +135,10 @@ def modular_available_course_unit_ids(
 
 
 def modular_unit_allowed_for_register(student, cu, spe) -> tuple[bool, str]:
+    """
+    Whole-curriculum, self-paced eligibility check — no current-session/term
+    restriction. See modular_available_course_unit_ids() docstring.
+    """
     if spe is None:
         return False, "Programme enrollment is missing. Contact registry."
     if not program_is_modular(spe.program):
@@ -149,6 +149,8 @@ def modular_unit_allowed_for_register(student, cu, spe) -> tuple[bool, str]:
     sem = cu.semester
     if sem is None:
         return False, f"{cu.code} has no session assigned."
+    if not sem.is_active:
+        return False, f"{cu.code}'s session is not currently active."
 
     if spe.program_batch_id and sem.program_batch_id != spe.program_batch_id:
         return False, f"{cu.code} is not on your intake cohort."
@@ -160,18 +162,6 @@ def modular_unit_allowed_for_register(student, cu, spe) -> tuple[bool, str]:
 
     if cu.id in completed_course_unit_ids(student):
         return False, f"You have already completed {cu.code}."
-
-    session = current_session_semester(spe)
-    on_current_session = bool(
-        session
-        and sem.pk == session.pk
-    )
-    loose_session = sem.year_of_study is None or sem.term_number is None
-    if not on_current_session and not loose_session:
-        return False, (
-            f"{cu.code} is not offered in your current session "
-            f"(Year {spe.current_year_of_study}, Session {spe.current_term_number})."
-        )
 
     return True, ""
 
