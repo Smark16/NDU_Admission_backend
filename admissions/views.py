@@ -69,7 +69,6 @@ from payments.models import ApplicationPayment
 from payments.utils.application_payment_status import confirmed_application_fee_payment
 from Drafts.models import DraftApplication
 from django.db.models import Q, Prefetch, Count, Value
-from django.db.models.functions import Concat
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter, OrderingFilter
 from datetime import datetime
@@ -3342,33 +3341,9 @@ class ListAdmittedStudents(generics.ListAPIView):
 
         # Prefer exact/prefix identity matches before broad OR-icontains.
         if search:
-            identity = (
-                Q(student_id__iexact=search)
-                | Q(reg_no__iexact=search)
-                | Q(schoolpay_code__iexact=search)
-            )
-            if len(search) >= 2:
-                identity |= (
-                    Q(student_id__istartswith=search)
-                    | Q(reg_no__istartswith=search)
-                    | Q(schoolpay_code__istartswith=search)
-                )
-            name_q = (
-                Q(application__first_name__icontains=search)
-                | Q(application__last_name__icontains=search)
-                | Q(admitted_program__name__icontains=search)
-                | Q(admitted_program__faculty__name__icontains=search)
-            )
-            if " " in search:
-                queryset = queryset.annotate(
-                    applicant_full_name=Concat(
-                        "application__first_name",
-                        Value(" "),
-                        "application__last_name",
-                    )
-                )
-                name_q |= Q(applicant_full_name__icontains=search)
-            queryset = queryset.filter(identity | name_q)
+            from admissions.student_directory_search import admitted_student_search_q
+
+            queryset = queryset.filter(admitted_student_search_q(search))
             needs_distinct = True
 
         # Exact filters
@@ -3588,36 +3563,9 @@ class ListBonafideStudents(generics.ListAPIView):
         admission_intake = (self.request.query_params.get("admission_intake") or "").strip()
 
         if search:
-            # Prefer exact/prefix matches on indexed identity fields before OR-icontains.
-            identity = (
-                Q(student_id__iexact=search)
-                | Q(reg_no__iexact=search)
-                | Q(schoolpay_code__iexact=search)
-            )
-            if len(search) >= 2:
-                identity |= (
-                    Q(student_id__istartswith=search)
-                    | Q(reg_no__istartswith=search)
-                    | Q(schoolpay_code__istartswith=search)
-                )
-            name_q = (
-                Q(application__first_name__icontains=search)
-                | Q(application__last_name__icontains=search)
-                | Q(application__phone__icontains=search)
-                | Q(application__email__icontains=search)
-                | Q(admitted_program__name__icontains=search)
-                | Q(admitted_program__faculty__name__icontains=search)
-            )
-            if " " in search:
-                queryset = queryset.annotate(
-                    applicant_full_name=Concat(
-                        "application__first_name",
-                        Value(" "),
-                        "application__last_name",
-                    )
-                )
-                name_q |= Q(applicant_full_name__icontains=search)
-            queryset = queryset.filter(identity | name_q).distinct()
+            from admissions.student_directory_search import admitted_student_search_q
+
+            queryset = queryset.filter(admitted_student_search_q(search)).distinct()
 
         level = (self.request.query_params.get("level") or "").strip()
 
