@@ -866,7 +866,56 @@ class DeleteCampus(generics.RetrieveDestroyAPIView):
             )
         cache.delete("all_campuses_list")
         return Response(status=status.HTTP_204_NO_CONTENT)
-    
+
+# ======================================================Academic Calendar===================================================
+
+class ListAcademicCalendarEvents(generics.ListAPIView):
+    """Admin view — all events, published or not."""
+    queryset = AcademicCalendarEvent.objects.all()
+    serializer_class = AcademicCalendarEventSerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+
+class CreateAcademicCalendarEvent(generics.CreateAPIView):
+    queryset = AcademicCalendarEvent.objects.all()
+    serializer_class = AcademicCalendarEventSerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
+
+
+class EditAcademicCalendarEvent(generics.UpdateAPIView):
+    queryset = AcademicCalendarEvent.objects.all()
+    serializer_class = AcademicCalendarEventSerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+    def put(self, request, *args, **kwargs):
+        instance = self.get_object()
+        serializer = self.serializer_class(instance, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data, status=200)
+
+
+class DeleteAcademicCalendarEvent(generics.RetrieveDestroyAPIView):
+    queryset = AcademicCalendarEvent.objects.all()
+    serializer_class = AcademicCalendarEventSerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+
+
+class MyAcademicCalendar(generics.ListAPIView):
+    """Student/staff-facing view — published events relevant to the caller, soonest first."""
+    serializer_class = AcademicCalendarEventSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        audiences = ["all", "staff" if (user.is_staff or user.is_lecturer) else "students"]
+        return AcademicCalendarEvent.objects.filter(
+            is_published=True, audience__in=audiences
+        ).order_by("start_date", "id")
+
 # ======================================================Profile===================================================
 
 class EditProfile(generics.UpdateAPIView):

@@ -4,7 +4,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth.models import Group, Permission, update_last_login
 from django.contrib.auth.password_validation import validate_password
 from django.db.models import Q
-from .models import User, Campus, Profile, SystemSettings
+from .models import User, Campus, Profile, SystemSettings, AcademicCalendarEvent
 from admissions.models import Faculty
 from .jwt_utils import apply_user_token_claims
 from .role_assignment import role_requires_faculty_assignment
@@ -20,6 +20,20 @@ class CampusSerializer(serializers.ModelSerializer):
     class Meta:
         model = Campus
         fields = '__all__'
+
+# academic calendar
+class AcademicCalendarEventSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AcademicCalendarEvent
+        fields = '__all__'
+        read_only_fields = ('created_by', 'created_at', 'updated_at')
+
+    def validate(self, attrs):
+        start = attrs.get('start_date', getattr(self.instance, 'start_date', None))
+        end = attrs.get('end_date', getattr(self.instance, 'end_date', None))
+        if end and start and end < start:
+            raise serializers.ValidationError({'end_date': 'End date cannot be before start date.'})
+        return attrs
 
 # user
 def normalize_staff_id(value):

@@ -212,6 +212,56 @@ class SystemSettings(models.Model):
         return obj
 
 
+class AcademicCalendarEvent(models.Model):
+    """One entry on the university almanac (e.g. 'Mid-Semester Test I', 'Graduation Ceremony')."""
+
+    CATEGORY_CHOICES = [
+        ("registration", "Registration / Reporting"),
+        ("orientation", "Orientation"),
+        ("exam", "Examinations / Tests"),
+        ("deadline", "Deadline"),
+        ("holiday", "Public Holiday / Break"),
+        ("event", "University Event"),
+        ("meeting", "Internal Meeting"),
+        ("other", "Other"),
+    ]
+    AUDIENCE_CHOICES = [
+        ("students", "Students"),
+        ("staff", "Staff only"),
+        ("all", "Everyone"),
+    ]
+
+    title = models.CharField(max_length=255)
+    description = models.CharField(max_length=500, blank=True, default="")
+    start_date = models.DateField()
+    end_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Leave blank for a single-day event.",
+    )
+    category = models.CharField(max_length=20, choices=CATEGORY_CHOICES, default="other")
+    audience = models.CharField(max_length=20, choices=AUDIENCE_CHOICES, default="students")
+    academic_year = models.CharField(
+        max_length=20,
+        blank=True,
+        default="",
+        help_text="e.g. 2026/2027 — informational, not used for filtering.",
+    )
+    is_published = models.BooleanField(default=True)
+    created_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["start_date", "id"]
+        verbose_name = "Academic calendar event"
+
+    def __str__(self):
+        return f"{self.title} ({self.start_date})"
+
+
 class ErpAccessPolicy(models.Model):
     label = models.CharField(max_length=64, default="default", unique=True, editable=False)
 
