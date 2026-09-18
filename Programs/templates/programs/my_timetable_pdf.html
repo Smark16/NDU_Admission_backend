@@ -12,9 +12,9 @@
 
     @page {
 
-      size: A4 portrait;
+      size: A4 landscape;
 
-      margin: 1.2cm 1.4cm;
+      margin: 0.4cm 0.7cm;
 
     }
 
@@ -22,7 +22,7 @@
 
       font-family: Helvetica, Arial, sans-serif;
 
-      font-size: 10pt;
+      font-size: 9pt;
 
       color: #222;
 
@@ -34,7 +34,7 @@
 
       border-collapse: collapse;
 
-      margin-bottom: 14px;
+      margin-bottom: 3px;
 
     }
 
@@ -48,19 +48,19 @@
 
     .logo {
 
-      width: 150px;
+      width: 36px;
 
-      height: 150px;
+      height: 36px;
 
     }
 
     .doc-title {
 
-      font-size: 12pt;
+      font-size: 10.5pt;
 
       font-weight: bold;
 
-      margin-top: 8px;
+      margin-top: 0;
 
       color: #3e397b;
 
@@ -68,19 +68,19 @@
 
     .meta {
 
-      font-size: 9pt;
+      font-size: 7.5pt;
 
       color: #555;
 
-      margin-top: 2px;
+      margin-top: 0;
 
     }
 
     .period-box {
 
-      margin: 0 0 12px 0;
+      margin: 0 0 3px 0;
 
-      padding: 8px 10px;
+      padding: 2px 8px;
 
       border: 1px solid #e0e0e0;
 
@@ -90,9 +90,9 @@
 
     .person {
 
-      margin: 12px 0 16px 0;
+      margin: 2px 0 4px 0;
 
-      padding: 10px 12px;
+      padding: 2px 10px;
 
       border: 1px solid #ddd;
 
@@ -102,7 +102,7 @@
 
     .person-name {
 
-      font-size: 11pt;
+      font-size: 9.5pt;
 
       font-weight: bold;
 
@@ -110,23 +110,23 @@
 
     .day-heading {
 
-      font-size: 10.5pt;
+      font-size: 9pt;
 
       font-weight: bold;
 
       color: #7c1519;
 
-      margin: 14px 0 6px 0;
+      margin: 3px 0 1px 0;
 
-      padding-bottom: 3px;
+      padding-bottom: 1px;
 
-      border-bottom: 2px solid #7c1519;
+      border-bottom: 1.5px solid #7c1519;
 
     }
 
     .day-dates {
 
-      font-size: 9pt;
+      font-size: 8pt;
 
       font-weight: normal;
 
@@ -140,7 +140,7 @@
 
       border-collapse: collapse;
 
-      margin-bottom: 8px;
+      margin-bottom: 2px;
 
     }
 
@@ -150,11 +150,11 @@
 
       color: #fff;
 
-      font-size: 8.5pt;
+      font-size: 7.5pt;
 
       text-align: left;
 
-      padding: 6px 5px;
+      padding: 1px 5px;
 
     }
 
@@ -162,9 +162,9 @@
 
       border-bottom: 1px solid #e5e5e5;
 
-      padding: 6px 5px;
+      padding: 1px 5px;
 
-      font-size: 9pt;
+      font-size: 8pt;
 
       vertical-align: top;
 
@@ -178,15 +178,15 @@
 
     .footer {
 
-      margin-top: 18px;
+      margin-top: 3px;
 
-      font-size: 8pt;
+      font-size: 7pt;
 
       color: #666;
 
       border-top: 1px solid #ddd;
 
-      padding-top: 8px;
+      padding-top: 2px;
 
     }
 
@@ -290,19 +290,19 @@
 
         <tr>
 
-          <th style="width: 12%;">Time</th>
+          <th style="width: 11%;">Time</th>
 
-          <th style="width: 14%;">Dates</th>
+          <th style="width: 6%;">Dates</th>
 
           <th style="width: 22%;">Course</th>
 
-          <th style="width: 16%;">Room</th>
+          <th style="width: 14%;">Room</th>
 
-          <th style="width: 10%;">Type</th>
+          <th style="width: 9%;">Type</th>
 
-          <th style="width: 12%;">Delivery</th>
+          <th style="width: 10%;">Delivery</th>
 
-          <th style="width: 14%;">Lecturer(s)</th>
+          <th style="width: 28%;">Lecturer(s)</th>
 
         </tr>
 
@@ -320,15 +320,7 @@
 
           <td>
 
-            <span class="course-code">{{ s.course_code }}</span><br />
-
-            {{ s.course_name }}
-
-            {% if s.semester_name %}
-
-            <br /><span style="font-size: 8pt; color: #666;">{{ s.semester_name }}</span>
-
-            {% endif %}
+            <span class="course-code">{{ s.course_code }}</span> {{ s.course_name }}
 
           </td>
 
