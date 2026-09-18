@@ -1221,16 +1221,21 @@ class GetLecturerCourses(APIView):
             # merges rosters across every linked programme when shared.
             enrollments = registered_enrollments_for_course_unit(
                 rep, statuses=["enrolled"]
-            ).select_related("student", "student__application")
+            ).select_related("student", "student__application", "student__admitted_campus")
 
             students = []
+            campuses_seen = set()
             for enrollment in enrollments:
                 student = enrollment.student
+                campus_name = student.admitted_campus.name if student.admitted_campus_id else None
+                if campus_name:
+                    campuses_seen.add(campus_name)
                 students.append({
                     "id": student.id,
                     "student_id": student.student_id,
                     "reg_no": student.reg_no,
                     "name": student.full_name,
+                    "campus": campus_name,
                     "enrollment_date": enrollment.enrollment_date,
                     "registration_date": enrollment.registration_date,
                     "is_registered": enrollment.registration_date is not None,
@@ -1240,6 +1245,7 @@ class GetLecturerCourses(APIView):
 
             students_count = len(students)
             total_students += students_count
+            campuses = sorted(campuses_seen)
 
             shared_programs = sorted({
                 u.program_batch.program.name
@@ -1269,6 +1275,7 @@ class GetLecturerCourses(APIView):
                 'is_shared': sto is not None,
                 'shared_programs': shared_programs,
                 'shared_unit_count': len(units) if sto is not None else 1,
+                'campuses': campuses,
                 'students_count': students_count,
                 'students': students,
                 'marks_entry': marks_entry_status(rep, user=user),
