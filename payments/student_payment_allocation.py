@@ -452,12 +452,6 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
             payable_term=pt,
         ):
             continue
-        fee_code = (rule.fee_head.code or "").upper() if rule.fee_head_id else ""
-        fee_name = (rule.fee_head.name or "").upper() if rule.fee_head_id else ""
-        is_practical = "PRACTICAL" in fee_code or "PRACTICAL" in fee_name
-        is_room_board = (
-            "ROOM" in fee_code or "BOARD" in fee_code or "ROOM" in fee_name or "BOARD" in fee_name
-        )
         # Whole-year / advanced-entry exemption: the student never used this
         # term's resources, so ANY other-schedule fee for a promoted-past
         # pre-entry term is dropped -- not just fees literally named
@@ -479,9 +473,13 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
             continue
         reached = _milestone_reached(cy, ct, py, pt)
         billable = billing_date_reached(rule)
-        # Current-term practical/room & board is due with the semester (same as
-        # tuition), even if Accounts has not yet opened the scheduled billing date.
-        if (is_practical or is_room_board) and py == cy and pt == ct:
+        # Current-term other-schedule fees (Cisco, Huawei, practicals, room &
+        # board, or any future category) are due with the semester -- same as
+        # tuition -- even if the computed default billing date hasn't arrived.
+        # That default is calendar-based and doesn't know about promotion, so
+        # for a promoted student it can land later than their real current
+        # term; don't let that silently delay a fee that's actually due now.
+        if py == cy and pt == ct:
             billable = True
         amt, cur = effective_amount_currency(rule, international)
         if amt <= 0:
