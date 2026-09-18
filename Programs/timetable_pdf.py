@@ -12,6 +12,19 @@ from django.utils import timezone
 from accounts.portal_branding import load_portal_logo_b64_for_pdf, xhtml2pdf_link_callback
 from Programs.models import TimetableSession
 
+# Same palette as the frontend's src/utils/dayColors.ts, so a given day reads
+# the same colour on-screen and in the printed PDF.
+DAY_COLORS = {
+    "Monday": "#1565C0",
+    "Tuesday": "#6A1B9A",
+    "Wednesday": "#00695C",
+    "Thursday": "#E65100",
+    "Friday": "#AD1457",
+    "Saturday": "#2E7D32",
+    "Sunday": "#283593",
+}
+DAY_COLOR_FALLBACK = "#3e397b"
+
 
 def _portal_branding() -> dict:
     try:
@@ -73,6 +86,7 @@ def build_timetable_pdf_context(
                 "day_label": heading,
                 "date_label": subheading,
                 "sessions": rows,
+                "day_color": DAY_COLORS.get(heading, DAY_COLOR_FALLBACK),
             }
         )
 

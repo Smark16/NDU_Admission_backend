@@ -114,13 +114,9 @@
 
       font-weight: bold;
 
-      color: #7c1519;
-
       margin: 3px 0 1px 0;
 
       padding-bottom: 1px;
-
-      border-bottom: 1.5px solid #7c1519;
 
     }
 
@@ -145,8 +141,6 @@
     }
 
     .sessions-table th {
-
-      background: #3e397b;
 
       color: #fff;
 
@@ -272,7 +266,7 @@
 
     {% for section in day_sections %}
 
-    <div class="day-heading">
+    <div class="day-heading" style="color: {{ section.day_color }}; border-bottom: 1.5px solid {{ section.day_color }};">
 
       {{ section.day_label }}
 
@@ -288,7 +282,7 @@
 
       <thead>
 
-        <tr>
+        <tr style="background: {{ section.day_color }};">
 
           <th style="width: 11%;">Time</th>
 
