@@ -5,6 +5,7 @@ app_name = 'accounts'
 
 urlpatterns = [
     path("login", ObtainTokenView.as_view()),
+    path("google_login", GoogleLoginView.as_view()),
     path("session", SessionView.as_view()),
     path("switch_portal_mode", SwitchPortalModeView.as_view()),
     path("register", RegisterView.as_view()),

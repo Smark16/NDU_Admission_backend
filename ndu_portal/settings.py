@@ -287,6 +287,15 @@ EVOTING_API_KEY = env("EVOTING_API_KEY", default="")
 CAREERS_PORTAL_URL = env('CAREERS_PORTAL_URL', default='http://localhost:5174')
 HR_RECRUITMENT_EMAIL = env('HR_RECRUITMENT_EMAIL', default='')
 
+# "Sign in with Google" — verifies Google ID tokens against this OAuth client
+# and only accepts emails on our own Workspace domains. It does NOT provision
+# accounts; the email must already match an existing, active portal user.
+GOOGLE_OAUTH_CLIENT_ID = env('GOOGLE_OAUTH_CLIENT_ID', default='')
+GOOGLE_ALLOWED_EMAIL_DOMAINS = [
+    'ndejjeuniversity.ac.ug',
+    'temp.ndu.ac.ug',
+]
+
 CSRF_TRUSTED_ORIGINS = [
     'http://localhost:5173',
     'http://localhost:5174',

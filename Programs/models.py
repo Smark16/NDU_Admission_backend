@@ -60,6 +60,15 @@ class Program(models.Model):
         blank=True,
         help_text="Modular programmes only: maximum credit units per session (optional).",
     )
+    modular_papers_per_session = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        help_text=(
+            "Modular programmes only: number of papers a session's tuition is divided "
+            "across for per-paper billing (session tuition ÷ this = one paper's fee). "
+            "Defaults to 6 when unset."
+        ),
+    )
     minimum_graduation_load = models.DecimalField(
         max_digits=6,
         decimal_places=2,

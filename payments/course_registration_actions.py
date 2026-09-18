@@ -140,7 +140,12 @@ def register_student_for_course_units(
             is_retake_offer = offering is not None
 
             # Protect specialization tracks at write-time too (not just list-time).
-            if cu.curriculum_line_id and not is_retake_offer:
+            # Gate on program.has_specialization like GetAvailableCoursesForRegistration
+            # does — a stray specialization tag on a curriculum line (data-entry
+            # leftover) must not block registration for programmes that were never
+            # set up with specialization tracks in the first place.
+            program_has_specialization = bool(spe and spe.program and spe.program.has_specialization)
+            if cu.curriculum_line_id and not is_retake_offer and program_has_specialization:
                 line_spec = (cu.curriculum_line.specialization or "").strip()
                 if line_spec and not selected_specialization:
                     errors.append(
@@ -185,6 +190,19 @@ def register_student_for_course_units(
             if en.registration_date:
                 errors.append(f"Already registered for {cu.code}")
                 continue
+
+            if not is_retake_offer and spe and spe.program:
+                from Programs.calendar_utils import program_is_modular
+
+                if program_is_modular(spe.program):
+                    from payments.modular_paper_billing import (
+                        modular_paper_registration_gate,
+                    )
+
+                    paid, gate_msg = modular_paper_registration_gate(student, cu)
+                    if not paid:
+                        errors.append(gate_msg)
+                        continue
 
             if is_retake_offer:
                 kind = offering.get("registration_kind") or StudentCourseUnitEnrollment.KIND_RETAKE

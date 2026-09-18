@@ -91,6 +91,14 @@ def _auto_assign_current_semester_course_units(enrollment) -> dict:
         ).get(pk=enrollment.pk)
     )
 
+    from Programs.calendar_utils import program_is_modular
+
+    if program_is_modular(enrollment.program):
+        # Modular (Graduate School) programmes: no auto-assignment. Students pick
+        # papers themselves and each one is billed at the moment of registration
+        # (payments.modular_paper_billing) — never enrolled for free in bulk.
+        return _zero("modular_manual_enrollment")
+
     exempted_withdrawn = withdraw_enrollments_for_exempted_papers(enrollment)
     premature_withdrawn = withdraw_enrollments_for_not_yet_due_prior_terms(enrollment)
 

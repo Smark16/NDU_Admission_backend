@@ -56,6 +56,69 @@ class ObtainTokenView(TokenObtainPairView):
 
         return response
 
+# "Sign in with Google" — exchanges a Google ID token for our own JWT pair.
+# Never provisions accounts: the token's email must match an existing, active
+# portal user, same as the manual username/password path just below it.
+class GoogleLoginView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        from google.auth.transport import requests as google_requests
+        from google.oauth2 import id_token as google_id_token
+
+        credential = (request.data.get("id_token") or request.data.get("credential") or "").strip()
+        if not credential:
+            return Response({"detail": "Missing Google credential."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not settings.GOOGLE_OAUTH_CLIENT_ID:
+            logger.error("Google sign-in attempted but GOOGLE_OAUTH_CLIENT_ID is not configured.")
+            return Response(
+                {"detail": "Google sign-in is not configured on this server."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        try:
+            claims = google_id_token.verify_oauth2_token(
+                credential, google_requests.Request(), settings.GOOGLE_OAUTH_CLIENT_ID
+            )
+        except ValueError:
+            return Response({"detail": "Invalid or expired Google credential."}, status=status.HTTP_401_UNAUTHORIZED)
+
+        if not claims.get("email_verified"):
+            return Response({"detail": "Google account email is not verified."}, status=status.HTTP_401_UNAUTHORIZED)
+
+        email = (claims.get("email") or "").strip().lower()
+        domain = email.rsplit("@", 1)[-1] if "@" in email else ""
+        if domain not in settings.GOOGLE_ALLOWED_EMAIL_DOMAINS:
+            return Response(
+                {"detail": "Sign in with a Ndejje University Google account."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        user = User.objects.filter(email__iexact=email, is_active=True).first()
+        if not user:
+            return Response(
+                {"detail": "No portal account is linked to this Google email. Contact the registrar's office."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        refresh = RefreshToken.for_user(user)
+        access = ObtainSerializer.get_token(user)
+        update_last_login(None, user)
+        log_audit_event(
+            user,
+            'login',
+            user,
+            f"User {user.username} logged in via Google Sign-In",
+            request,
+        )
+
+        return Response(
+            {"access": str(access.access_token), "refresh": str(refresh)},
+            status=status.HTTP_200_OK,
+        )
+
+
 # live session (permissions refresh without full re-login)
 class SessionView(APIView):
     permission_classes = [IsAuthenticated]

@@ -1156,24 +1156,34 @@ class CheckLecturerStatus(APIView):
         }, status=status.HTTP_200_OK)
 
 class GetLecturerCourses(APIView):
-    """Get all courses assigned to the logged-in lecturer"""
+    """
+    Get all courses assigned to the logged-in lecturer, collapsed by shared
+    teaching offering so a lecturer teaching one shared class across many
+    programmes (e.g. Christian Ethics I) sees it as ONE class, not one per
+    programme's CourseUnit row.
+    """
     permission_classes = [IsAuthenticated]
-    
+
     def get(self, request):
-        from .models import StudentCourseUnitEnrollment
         from examinations.services.marks_window import marks_entry_status
-        
+        from Programs.shared_teaching import registered_enrollments_for_course_unit
+
         user = request.user
-        
+
         # Get all course units assigned to this lecturer
-        course_units = user.course_units.filter(is_active=True).select_related(
-            'semester',
-            'semester__program_batch',
-            'program_batch',
-            'program_batch__program'
-        ).prefetch_related('student_enrollments__student').order_by('code', 'name')
-        
-        if not course_units.exists():
+        course_units = list(
+            user.course_units.filter(is_active=True)
+            .select_related(
+                'semester',
+                'semester__program_batch',
+                'program_batch',
+                'program_batch__program',
+                'shared_teaching_offering',
+            )
+            .order_by('code', 'name')
+        )
+
+        if not course_units:
             return Response({
                 'lecturer_name': user.get_full_name(),
                 'email': user.email,
@@ -1181,26 +1191,37 @@ class GetLecturerCourses(APIView):
                 'total_students': 0,
                 'assigned_courses': []
             }, status=status.HTTP_200_OK)
-        
+
+        # Group by shared_teaching_offering_id (None = not shared, its own group).
+        groups: dict = {}
+        order = []
+        for cu in course_units:
+            key = cu.shared_teaching_offering_id or f"solo-{cu.pk}"
+            if key not in groups:
+                groups[key] = []
+                order.append(key)
+            groups[key].append(cu)
+
         assigned_courses = []
         total_students = 0
-        
-        for course_unit in course_units:
-            semester = course_unit.semester
-            program_batch = course_unit.program_batch or (semester.program_batch if semester else None)
-            
-            # All enrolled students on this course (registered and not-yet-registered).
-            enrollments = (
-                StudentCourseUnitEnrollment.objects.filter(
-                    course_unit=course_unit,
-                    status="enrolled",
-                )
-                .select_related("student", "student__application")
-                .order_by("student__reg_no", "student__student_id")
-            )
 
-            students_count = enrollments.count()
-            total_students += students_count
+        for key in order:
+            units = groups[key]
+            sto = units[0].shared_teaching_offering if units[0].shared_teaching_offering_id else None
+
+            if sto is not None:
+                rep = next((u for u in units if u.id == sto.parent_course_unit_id), units[0])
+            else:
+                rep = units[0]
+
+            semester = rep.semester
+            program_batch = rep.program_batch or (semester.program_batch if semester else None)
+
+            # All enrolled students on this course (registered and not-yet-registered);
+            # merges rosters across every linked programme when shared.
+            enrollments = registered_enrollments_for_course_unit(
+                rep, statuses=["enrolled"]
+            ).select_related("student", "student__application")
 
             students = []
             for enrollment in enrollments:
@@ -1216,12 +1237,21 @@ class GetLecturerCourses(APIView):
                     "registration_kind": enrollment.registration_kind,
                     "status": enrollment.status,
                 })
-            
+
+            students_count = len(students)
+            total_students += students_count
+
+            shared_programs = sorted({
+                u.program_batch.program.name
+                for u in units
+                if u.program_batch_id and u.program_batch.program_id
+            }) if sto is not None else []
+
             assigned_courses.append({
-                'course_unit_id': course_unit.id,
-                'course_code': course_unit.code,
-                'course_name': course_unit.name,
-                'credit_units': float(course_unit.credit_units) if course_unit.credit_units else None,
+                'course_unit_id': rep.id,
+                'course_code': (sto.code if sto and sto.code else rep.code),
+                'course_name': (sto.name if sto and sto.name else rep.name),
+                'credit_units': float(rep.credit_units) if rep.credit_units else None,
                 'semester': {
                     'id': semester.id if semester else None,
                     'name': semester.name if semester else None,
@@ -1236,11 +1266,14 @@ class GetLecturerCourses(APIView):
                     'name': program_batch.program.name if program_batch and program_batch.program else None,
                     'short_form': program_batch.program.short_form if program_batch and program_batch.program else None,
                 } if program_batch and program_batch.program else None,
+                'is_shared': sto is not None,
+                'shared_programs': shared_programs,
+                'shared_unit_count': len(units) if sto is not None else 1,
                 'students_count': students_count,
                 'students': students,
-                'marks_entry': marks_entry_status(course_unit, user=user),
+                'marks_entry': marks_entry_status(rep, user=user),
             })
-        
+
         return Response({
             'lecturer_name': user.get_full_name(),
             'email': user.email,
