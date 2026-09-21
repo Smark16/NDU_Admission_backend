@@ -136,6 +136,7 @@ from .course_enrollment_views import (
     PromoteStudentsToNextSemester,
     RemoveLecturerFromCourseUnit,
     RemoveStudentFromCourseUnit,
+    UnregisterStudentCourseUnit,
 )
 from .course_material_views import (
     LecturerCourseMaterialDetailView,
@@ -502,6 +503,11 @@ urlpatterns.extend(
             'enrollment/<int:enrollment_id>/remove',
             RemoveStudentFromCourseUnit.as_view(),
             name='remove_student_from_course_unit',
+        ),
+        path(
+            'enrollment/<int:enrollment_id>/unregister',
+            UnregisterStudentCourseUnit.as_view(),
+            name='unregister_student_course_unit',
         ),
         path(
             'student/my_courses',

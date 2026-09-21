@@ -414,3 +414,55 @@ def withdraw_enrollments_for_not_yet_due_prior_terms(enrollment) -> int:
         row.save(update_fields=["status"])
         withdrawn += 1
     return withdrawn
+
+
+def pending_exemption_covers_course_unit(course_unit_enrollment) -> bool:
+    """
+    True when the student has a not-yet-decided exemption request (AdmissionChangeRequest,
+    status="pending") with a line matching this course unit's code + year/term.
+
+    Used to gate un-registering a StudentCourseUnitEnrollment: registration is normally
+    locked once set (see AdminDeregisterStudentFromCourses), but a student who registered
+    for their normal course load before an overlapping exemption request was decided needs
+    a way back into registration once that request resolves.
+    """
+    from admissions.models import AdmissionChangeRequest
+
+    cu = course_unit_enrollment.course_unit
+    sem = cu.semester
+    code = (cu.code or "").strip().upper()
+    if not code or sem is None:
+        return False
+
+    return AdmissionChangeRequest.objects.filter(
+        admitted_student=course_unit_enrollment.student,
+        change_type="exemption",
+        status="pending",
+        exemption_lines__course_code__iexact=code,
+        exemption_lines__year_of_study=sem.year_of_study,
+        exemption_lines__term_number=sem.term_number,
+    ).exists()
+
+
+def revoke_course_unit_registration(course_unit_enrollment) -> None:
+    """
+    Clear registration_date back to None (keep the enrollment + status="enrolled"),
+    so the student can go through RegisterForCourses again. Also clears the
+    student-level is_registered/registration_date flag when nothing else is registered.
+    """
+    from .models import StudentCourseUnitEnrollment
+
+    course_unit_enrollment.registration_date = None
+    course_unit_enrollment.save(update_fields=["registration_date"])
+
+    student = course_unit_enrollment.student
+    still_registered = (
+        StudentCourseUnitEnrollment.objects.filter(student=student)
+        .exclude(status="withdrawn")
+        .filter(registration_date__isnull=False)
+        .exists()
+    )
+    if not still_registered and student.is_registered:
+        student.is_registered = False
+        student.registration_date = None
+        student.save(update_fields=["is_registered", "registration_date"])
