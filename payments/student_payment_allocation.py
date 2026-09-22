@@ -452,44 +452,34 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
             payable_term=pt,
         ):
             continue
-        fee_code = (rule.fee_head.code or "").upper() if rule.fee_head_id else ""
-        fee_name = (rule.fee_head.name or "").upper() if rule.fee_head_id else ""
-        is_practical = "PRACTICAL" in fee_code or "PRACTICAL" in fee_name
-        is_room_board = (
-            "ROOM" in fee_code or "BOARD" in fee_code or "ROOM" in fee_name or "BOARD" in fee_name
-        )
-        # Whole-year / advanced-entry exemption: no Y1 practical — student pays
-        # practical from entry year Sem 1 onward (e.g. Y2T1), not the skipped year.
+        # Whole-year / advanced-entry exemption: the student never used this
+        # term's resources, so ANY other-schedule fee for a promoted-past
+        # pre-entry term is dropped -- not just fees literally named
+        # "practical" (e.g. Cisco/Huawei certification fees, and Room &
+        # Board, are just as much a "did not attend, did not use it" cost --
+        # the entry term already carries its own separately-scheduled Room &
+        # Board rule, so re-dating the skipped term's fee there would double
+        # -charge instead of dropping a fee that was never owed).
         legacy_covered = False
-        if is_practical:
-            if entry_pair is not None and (py, pt) < entry_pair:
-                if has_course_exemptions:
-                    continue
-                # Continuing/legacy student: this is real pre-entry history,
-                # not replaced by anything — show it, settled, not dropped.
-                legacy_covered = True
-            if _year_fully_exempt(py):
-                continue
-            if _term_fully_exempt(py, pt):
-                continue
-        elif is_room_board and entry_pair is not None and (py, pt) < entry_pair:
+        if entry_pair is not None and (py, pt) < entry_pair:
             if has_course_exemptions:
-                # Promoted students never occupied the pre-entry period's
-                # housing — this one-time fee is owed for whenever they
-                # actually first need a bed, which is their real entry term,
-                # not the schedule's nominal Year 1 slot. Re-date it there.
-                py, pt = entry_pair
-            else:
-                # Continuing/legacy student: this really is their historical
-                # housing fee for that period — show it as its own settled
-                # entry instead of re-dating it onto (and duplicating) their
-                # real current-term Room & Board rule.
-                legacy_covered = True
+                continue
+            # Continuing/legacy student: this is real pre-entry history,
+            # not replaced by anything — show it, settled, not dropped.
+            legacy_covered = True
+        if _year_fully_exempt(py):
+            continue
+        if _term_fully_exempt(py, pt):
+            continue
         reached = _milestone_reached(cy, ct, py, pt)
         billable = billing_date_reached(rule)
-        # Current-term practical/room & board is due with the semester (same as
-        # tuition), even if Accounts has not yet opened the scheduled billing date.
-        if (is_practical or is_room_board) and py == cy and pt == ct:
+        # Current-term other-schedule fees (Cisco, Huawei, practicals, room &
+        # board, or any future category) are due with the semester -- same as
+        # tuition -- even if the computed default billing date hasn't arrived.
+        # That default is calendar-based and doesn't know about promotion, so
+        # for a promoted student it can land later than their real current
+        # term; don't let that silently delay a fee that's actually due now.
+        if py == cy and pt == ct:
             billable = True
         amt, cur = effective_amount_currency(rule, international)
         if amt <= 0:

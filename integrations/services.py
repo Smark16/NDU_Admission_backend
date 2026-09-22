@@ -175,8 +175,8 @@ def finance_status_for_student(student: AdmittedStudent) -> dict:
 
     percent = Decimal(str(finance.get("percentage_paid") or 0))
     balance = Decimal(str(finance.get("balance") or 0))
-    cleared_min = Decimal(str(cfg.cleared_min_percent or 100))
-    partial_min = Decimal(str(cfg.partial_min_percent or 50))
+    cleared_min = Decimal(str(cfg.cleared_min_percent))
+    partial_min = Decimal(str(cfg.partial_min_percent))
 
     if balance <= 0 or percent >= cleared_min:
         status = "CLEARED"

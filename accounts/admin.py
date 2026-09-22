@@ -1,5 +1,5 @@
 from django.contrib import admin
-from accounts.models import User, Campus, Profile
+from accounts.models import User, Campus, Profile, AcademicCalendarEvent
 from django.contrib.auth.admin import UserAdmin
 
 # @admin.register(User)
@@ -46,6 +46,12 @@ class CampusAdmin(admin.ModelAdmin):
 @admin.register(Profile)
 class ProfileAdmin(admin.ModelAdmin):
     list_display = ['id', 'user']
+
+@admin.register(AcademicCalendarEvent)
+class AcademicCalendarEventAdmin(admin.ModelAdmin):
+    list_display = ['id', 'title', 'start_date', 'end_date', 'category', 'audience', 'is_published']
+    list_filter = ['category', 'audience', 'is_published']
+    search_fields = ['title', 'description', 'academic_year']
 
 admin.site.register(User, UserAdmin)
 

@@ -1221,16 +1221,21 @@ class GetLecturerCourses(APIView):
             # merges rosters across every linked programme when shared.
             enrollments = registered_enrollments_for_course_unit(
                 rep, statuses=["enrolled"]
-            ).select_related("student", "student__application")
+            ).select_related("student", "student__application", "student__admitted_campus")
 
             students = []
+            campuses_seen = set()
             for enrollment in enrollments:
                 student = enrollment.student
+                campus_name = student.admitted_campus.name if student.admitted_campus_id else None
+                if campus_name:
+                    campuses_seen.add(campus_name)
                 students.append({
                     "id": student.id,
                     "student_id": student.student_id,
                     "reg_no": student.reg_no,
                     "name": student.full_name,
+                    "campus": campus_name,
                     "enrollment_date": enrollment.enrollment_date,
                     "registration_date": enrollment.registration_date,
                     "is_registered": enrollment.registration_date is not None,
@@ -1240,6 +1245,7 @@ class GetLecturerCourses(APIView):
 
             students_count = len(students)
             total_students += students_count
+            campuses = sorted(campuses_seen)
 
             shared_programs = sorted({
                 u.program_batch.program.name
@@ -1269,6 +1275,7 @@ class GetLecturerCourses(APIView):
                 'is_shared': sto is not None,
                 'shared_programs': shared_programs,
                 'shared_unit_count': len(units) if sto is not None else 1,
+                'campuses': campuses,
                 'students_count': students_count,
                 'students': students,
                 'marks_entry': marks_entry_status(rep, user=user),
@@ -1469,6 +1476,73 @@ class RemoveStudentFromCourseUnit(APIView):
             return Response({"message": msg}, status=status.HTTP_200_OK)
         except StudentCourseUnitEnrollment.DoesNotExist:
             return Response({'detail': 'Enrollment not found'}, status=status.HTTP_404_NOT_FOUND)
+
+class UnregisterStudentCourseUnit(APIView):
+    """
+    Clear registration_date on a StudentCourseUnitEnrollment so the student can
+    register again. Registration is normally locked once set (see
+    AdminDeregisterStudentFromCourses), so this is only allowed when either the
+    student has a pending (undecided) exemption request covering this exact
+    course unit, or the caller is Super Admin.
+    """
+    permission_classes = [AcademicEnrollmentAdminPermission]
+
+    def post(self, request, enrollment_id):
+        from accounts.super_admin import user_is_super_admin
+
+        from .course_unit_marks_guards import enrollment_has_entered_marks
+        from .enrollment_course_assignment import (
+            pending_exemption_covers_course_unit,
+            revoke_course_unit_registration,
+        )
+        from .models import StudentCourseUnitEnrollment
+
+        try:
+            enrollment = StudentCourseUnitEnrollment.objects.select_related(
+                "course_unit__program_batch__program",
+                "course_unit__semester",
+                "course_result",
+                "student",
+            ).get(id=enrollment_id)
+        except StudentCourseUnitEnrollment.DoesNotExist:
+            return Response({'detail': 'Enrollment not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        assert_course_unit_enrollment_access(request.user, enrollment)
+
+        if not enrollment.registration_date:
+            return Response(
+                {"detail": "Student is not registered for this course unit."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if enrollment_has_entered_marks(enrollment):
+            return Response(
+                {
+                    "detail": (
+                        "Cannot un-register: marks have already been entered "
+                        "for this course unit."
+                    )
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        is_super_admin = user_is_super_admin(request.user)
+        if not is_super_admin and not pending_exemption_covers_course_unit(enrollment):
+            return Response(
+                {
+                    "detail": (
+                        "Registered courses cannot be revoked unless the student has a "
+                        "pending exemption request covering this course, or you are Super Admin."
+                    )
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        revoke_course_unit_registration(enrollment)
+        return Response(
+            {"message": f"{enrollment.student.student_id} un-registered from {enrollment.course_unit.code}"},
+            status=status.HTTP_200_OK,
+        )
 
 # ====================================Student Promotion==================================================================
 

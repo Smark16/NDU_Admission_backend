@@ -365,7 +365,7 @@ class Application(models.Model):
     def full_name(self):
         from admissions.utils.person_name import format_person_name
 
-        return format_person_name(self.first_name, self.last_name, self.middle_name)
+        return format_person_name(self.first_name, self.middle_name, self.last_name)
 
     def save(self, *args, **kwargs):
         from admissions.utils.person_name import normalize_name_part

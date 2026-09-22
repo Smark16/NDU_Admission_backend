@@ -43,6 +43,12 @@ urlpatterns = [
     path('edit_campus/<int:pk>', EditCampus.as_view()),
     path('delete_campus/<int:pk>', DeleteCampus.as_view()),
 
+    path('list_academic_calendar', ListAcademicCalendarEvents.as_view()),
+    path('create_academic_calendar', CreateAcademicCalendarEvent.as_view()),
+    path('edit_academic_calendar/<int:pk>', EditAcademicCalendarEvent.as_view()),
+    path('delete_academic_calendar/<int:pk>', DeleteAcademicCalendarEvent.as_view()),
+    path('my_academic_calendar', MyAcademicCalendar.as_view()),
+
     path('edit_profile/<int:pk>', EditProfile.as_view()),
     path('user_profile', GetUserProfile.as_view()),
     path('get_user/<int:pk>', getUser.as_view()),
