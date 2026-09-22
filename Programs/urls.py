@@ -38,6 +38,11 @@ from .curriculum_views import (
     ListCreateCurriculumView,
 )
 from .curriculum_source_views import ProgramCurriculumForkView, ProgramCurriculumSourceView
+from .test_exam_registration_views import (
+    TestExamEligibleStudentsView,
+    TestExamRegistrationExcelView,
+    TestExamRegistrationPdfView,
+)
 from .enrollment_views import (
     AdminCreateEnrollmentView,
     AdminEnrollmentDetailView,
@@ -508,6 +513,21 @@ urlpatterns.extend(
             'enrollment/<int:enrollment_id>/unregister',
             UnregisterStudentCourseUnit.as_view(),
             name='unregister_student_course_unit',
+        ),
+        path(
+            'course_unit/<int:course_unit_id>/test_exam_eligible_students',
+            TestExamEligibleStudentsView.as_view(),
+            name='test_exam_eligible_students',
+        ),
+        path(
+            'course_unit/<int:course_unit_id>/test_exam_registration_sheet',
+            TestExamRegistrationPdfView.as_view(),
+            name='test_exam_registration_sheet',
+        ),
+        path(
+            'course_unit/<int:course_unit_id>/test_exam_registration_sheet.xlsx',
+            TestExamRegistrationExcelView.as_view(),
+            name='test_exam_registration_sheet_excel',
         ),
         path(
             'student/my_courses',
