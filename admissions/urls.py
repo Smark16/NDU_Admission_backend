@@ -18,6 +18,10 @@ from admissions.exemption_report_views import (
     ExemptionReportExcelView,
     ExemptionReportView,
 )
+from admissions.commitment_fee_report_views import (
+    CommitmentFeeReportExcelView,
+    CommitmentFeeReportView,
+)
 from admissions.registration_report_views import (
     RegistrationReportExcelView,
     RegistrationReportView,
@@ -199,6 +203,16 @@ urlpatterns = [
         'reports/exemptions/export/',
         ExemptionReportExcelView.as_view(),
         name='exemption_report_export',
+    ),
+    path(
+        'reports/commitment-fee/',
+        CommitmentFeeReportView.as_view(),
+        name='commitment_fee_report',
+    ),
+    path(
+        'reports/commitment-fee/export/',
+        CommitmentFeeReportExcelView.as_view(),
+        name='commitment_fee_report_export',
     ),
     path('list_bonafide_students/<int:pk>/', views.BonafideStudentDetail.as_view()),
     path(
