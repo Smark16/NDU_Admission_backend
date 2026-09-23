@@ -648,6 +648,13 @@ def registered_enrollments_for_course_unit(
     ``course_unit_ids``, when given, overrides both of the above and scopes the
     roster to exactly those CourseUnit PKs -- for a lecturer assigned to only some
     of a shared offering's linked programme units, not the offering as a whole.
+
+    Visibility: normally any actively-enrolled student on the programme shows up
+    even before they've registered (paid enough tuition). When
+    ``SystemSettings.restrict_lecturer_roster_to_registered`` is on, only students
+    who have actually registered (``registration_date`` set) or hold an active
+    scholarship award are visible -- everyone else is hidden from the lecturer
+    until they register or are awarded a scholarship.
     """
     if statuses is None:
         statuses = ["enrolled"]
@@ -660,17 +667,30 @@ def registered_enrollments_for_course_unit(
             else [course_unit.pk]
         )
     from django.db.models import Q
+    from accounts.models import SystemSettings
 
-    return (
+    restrict_to_registered = SystemSettings.get_settings().restrict_lecturer_roster_to_registered
+    if restrict_to_registered:
+        visibility_filter = Q(registration_date__isnull=False) | Q(
+            student__scholarship_awards__status="active"
+        )
+    else:
+        visibility_filter = Q(registration_date__isnull=False) | Q(
+            student__programme_enrollment__status="enrolled"
+        )
+
+    qs = (
         StudentCourseUnitEnrollment.objects.filter(
             course_unit_id__in=cu_ids,
             status__in=statuses,
         )
-        .filter(
-            Q(registration_date__isnull=False)
-            | Q(student__programme_enrollment__status="enrolled")
-        )
-        .select_related(
+        .filter(visibility_filter)
+    )
+    if restrict_to_registered:
+        qs = qs.distinct()
+
+    return (
+        qs.select_related(
             "student",
             "student__application",
             "student__admitted_program",

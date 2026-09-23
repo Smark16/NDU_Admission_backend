@@ -198,6 +198,15 @@ class SystemSettings(models.Model):
         null=True,
         help_text="Hero / background image on the login page left panel.",
     )
+    restrict_lecturer_roster_to_registered = models.BooleanField(
+        default=False,
+        help_text=(
+            "When on, lecturers only see registered (registration_date set) or "
+            "active-scholarship students in My Students, attendance, marks entry, "
+            "and course roster counts -- everyone else is hidden until they "
+            "register or are awarded a scholarship."
+        ),
+    )
 
     class Meta:
         verbose_name = "System Settings"

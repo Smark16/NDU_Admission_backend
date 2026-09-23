@@ -31,6 +31,7 @@ from .models import (
     TimetableSession,
 )
 from .permissions import LectureAttendanceAdminPermission
+from .shared_teaching import registered_enrollments_for_course_unit
 from .timetable_utils import (
     session_location_label,
     session_occurrence_bounds,
@@ -209,8 +210,8 @@ def _serialize_course_unit(course_unit: CourseUnit) -> dict:
             {"id": u.id, "name": u.get_full_name() or u.username, "email": u.email}
             for u in course_unit.lecturers.all()
         ],
-        "students_count": StudentCourseUnitEnrollment.objects.filter(
-            course_unit=course_unit, status="enrolled"
+        "students_count": registered_enrollments_for_course_unit(
+            course_unit, statuses=["enrolled"], merge_shared=False,
         ).count(),
     }
 
@@ -459,14 +460,11 @@ def _resolve_timetable_from_request(user, data_or_params) -> TimetableSession | 
 
 
 def _enrolled_students(course_unit: CourseUnit):
-    enrollments = (
-        StudentCourseUnitEnrollment.objects.filter(
-            course_unit=course_unit,
-            status="enrolled",
-        )
-        .select_related("student", "student__application")
-        .order_by("student__reg_no", "student__student_id")
-    )
+    enrollments = registered_enrollments_for_course_unit(
+        course_unit,
+        statuses=["enrolled"],
+        merge_shared=False,
+    ).order_by("student__reg_no", "student__student_id")
     return [e.student for e in enrollments]
 
 
