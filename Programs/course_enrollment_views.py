@@ -1217,11 +1217,20 @@ class GetLecturerCourses(APIView):
             semester = rep.semester
             program_batch = rep.program_batch or (semester.program_batch if semester else None)
 
-            # All enrolled students on this course (registered and not-yet-registered);
-            # merges rosters across every linked programme when shared.
-            enrollments = registered_enrollments_for_course_unit(
-                rep, statuses=["enrolled"]
-            ).select_related("student", "student__application", "student__admitted_campus")
+            # All enrolled students on this course (registered and not-yet-registered).
+            # A shared offering only merges rosters across every linked programme for
+            # lecturers explicitly assigned to the offering as a whole (offering.lecturers);
+            # a lecturer who is only on some of the linked programme CourseUnits sees just
+            # their own -- otherwise they'd see every other programme's students too.
+            is_offering_lecturer = sto is not None and sto.lecturers.filter(pk=user.pk).exists()
+            if sto is not None and not is_offering_lecturer:
+                enrollments = registered_enrollments_for_course_unit(
+                    rep, statuses=["enrolled"], course_unit_ids=[u.id for u in units],
+                ).select_related("student", "student__application", "student__admitted_campus")
+            else:
+                enrollments = registered_enrollments_for_course_unit(
+                    rep, statuses=["enrolled"]
+                ).select_related("student", "student__application", "student__admitted_campus")
 
             students = []
             campuses_seen = set()

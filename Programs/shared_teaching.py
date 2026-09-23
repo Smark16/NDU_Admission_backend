@@ -638,19 +638,27 @@ def registered_enrollments_for_course_unit(
     *,
     statuses: list[str] | None = None,
     merge_shared: bool = True,
+    course_unit_ids: list[int] | None = None,
 ) -> QuerySet[StudentCourseUnitEnrollment]:
     """Roster for LMS / marks.
 
     When ``merge_shared`` is true (default), merges all programme CourseUnits on the
     same SharedTeachingOffering. Moodle per-offering sync should pass ``merge_shared=False``.
+
+    ``course_unit_ids``, when given, overrides both of the above and scopes the
+    roster to exactly those CourseUnit PKs -- for a lecturer assigned to only some
+    of a shared offering's linked programme units, not the offering as a whole.
     """
     if statuses is None:
         statuses = ["enrolled"]
-    cu_ids = (
-        linked_course_unit_ids(course_unit)
-        if merge_shared
-        else [course_unit.pk]
-    )
+    if course_unit_ids is not None:
+        cu_ids = course_unit_ids
+    else:
+        cu_ids = (
+            linked_course_unit_ids(course_unit)
+            if merge_shared
+            else [course_unit.pk]
+        )
     from django.db.models import Q
 
     return (
