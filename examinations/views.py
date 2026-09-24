@@ -205,6 +205,8 @@ class LecturerCourseMarksView(APIView):
                     "grade_point": str(result.grade_point) if result and result.grade_point is not None else None,
                     "status": result.status if result else CourseUnitResult.STATUS_DRAFT,
                     "is_published": result.status == CourseUnitResult.STATUS_PUBLISHED if result else False,
+                    "hod_status": result.hod_status if result else CourseUnitResult.REVIEW_PENDING,
+                    "dean_status": result.dean_status if result else CourseUnitResult.REVIEW_PENDING,
                 }
             )
 
