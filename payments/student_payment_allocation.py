@@ -585,16 +585,22 @@ def _build_demand_lines(student: AdmittedStudent, international: bool) -> list[D
                 extra["exemption_immediate"] = True
             elif code == "EXEMPT_REMAIN_TUIT":
                 # Remaining-tuition total is spread across the same semester lines
-                # as EXEMPTION_COURSE (grand payment-schedule split). Gate like
-                # exemption slices: only this / prior SPE terms are due now.
+                # as EXEMPTION_COURSE (grand payment-schedule split), due for the
+                # current term same as EXEMPTION_COURSE. But once the student is
+                # actually promoted past that term, this slice is written off
+                # rather than carried forward as debt -- it was standing in for
+                # tuition on papers she didn't study that term, and once she's
+                # moved on there's nothing left to charge for (Accounts policy,
+                # confirmed 2026-09-24: this is separate from EXEMPTION_COURSE,
+                # the per-paper exemption-processing fee, which stays owed
+                # regardless of promotion).
                 extra["exemption_immediate"] = True
                 if pair is None:
                     billable = True
                 elif pair > (cy, ct):
                     billable = False
                 elif pair < (cy, ct):
-                    billable = True
-                    extra["prior_period_settled"] = True
+                    continue
                 else:
                     billable = True
             elif code == "EXEMPTION_COURSE":
