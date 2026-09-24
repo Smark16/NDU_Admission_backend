@@ -9,8 +9,11 @@ from rest_framework.views import APIView
 
 from Programs.models import CourseUnit
 
+from accounts.super_admin import user_is_super_admin
+from admissions.faculty_scope import user_can_access_course_unit
+
 from .models import CourseUnitResult, ResultChangeRequest
-from .permissions import CanApproveResultChanges, user_can_manage_course_marks
+from .permissions import CanApproveResultChanges, _has, user_can_manage_course_marks
 from .serializers import ResultChangeRequestSerializer
 from .services.publish import publish_result, sync_enrollment_from_result
 
@@ -95,10 +98,18 @@ class CreateResultChangeRequestView(APIView):
         if not reason:
             return Response({"detail": "reason is required."}, status=400)
 
+        supporting_document = request.FILES.get("supporting_document")
+        if not supporting_document:
+            return Response(
+                {"detail": "supporting_document is required (e.g. a re-marked script)."},
+                status=400,
+            )
+
         change = ResultChangeRequest.objects.create(
             result=result,
             requested_by=request.user,
             reason=reason,
+            supporting_document=supporting_document,
             old_ca_mark=result.ca_mark,
             old_exam_mark=result.exam_mark,
             old_final_mark=result.final_mark,
@@ -133,6 +144,20 @@ class ResultChangeRequestDetailView(APIView):
             change.save()
             return Response(ResultChangeRequestSerializer(change).data)
 
+        if not user_is_super_admin(request.user) and (
+            change.hod_status != ResultChangeRequest.STATUS_APPROVED
+            or change.dean_status != ResultChangeRequest.STATUS_APPROVED
+        ):
+            return Response(
+                {
+                    "detail": "Cannot give final approval: this request still needs HOD and "
+                    "Dean approval first.",
+                    "hod_status": change.hod_status,
+                    "dean_status": change.dean_status,
+                },
+                status=400,
+            )
+
         if request.data.get("new_ca_mark") is not None:
             change.new_ca_mark = request.data["new_ca_mark"]
         if request.data.get("new_exam_mark") is not None:
@@ -148,6 +173,96 @@ class ResultChangeRequestDetailView(APIView):
         with transaction.atomic():
             _apply_approved_change(change, reviewer=request.user)
 
+        return Response(ResultChangeRequestSerializer(change).data)
+
+
+class HODReviewResultChangeView(APIView):
+    """Stage 1: HOD approves or rejects a post-publish change request."""
+
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, request_id):
+        change = get_object_or_404(
+            ResultChangeRequest.objects.select_related(
+                "result", "result__enrollment", "result__enrollment__course_unit",
+            ),
+            pk=request_id,
+        )
+        course_unit = change.result.enrollment.course_unit
+        if not (
+            user_is_super_admin(request.user)
+            or _has(request.user, "examinations.review_result_changes_hod")
+        ):
+            return Response({"detail": "Forbidden."}, status=403)
+        if not user_can_access_course_unit(request.user, course_unit):
+            return Response(
+                {"detail": "This course unit is outside your assigned faculty."}, status=403,
+            )
+        if change.status != ResultChangeRequest.STATUS_PENDING:
+            return Response({"detail": "Request is not pending."}, status=400)
+
+        action = request.data.get("action")
+        if action not in ("approve", "reject"):
+            return Response({"detail": "action must be approve or reject."}, status=400)
+
+        change.hod_status = (
+            ResultChangeRequest.STATUS_APPROVED if action == "approve"
+            else ResultChangeRequest.STATUS_REJECTED
+        )
+        change.hod_reviewed_by = request.user
+        change.hod_reviewed_at = timezone.now()
+        if action == "reject":
+            change.status = ResultChangeRequest.STATUS_REJECTED
+            change.reviewed_by = request.user
+            change.reviewed_at = timezone.now()
+        change.save()
+        return Response(ResultChangeRequestSerializer(change).data)
+
+
+class DeanReviewResultChangeView(APIView):
+    """Stage 2: Dean approves or rejects an HOD-approved change request."""
+
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, request_id):
+        change = get_object_or_404(
+            ResultChangeRequest.objects.select_related(
+                "result", "result__enrollment", "result__enrollment__course_unit",
+            ),
+            pk=request_id,
+        )
+        course_unit = change.result.enrollment.course_unit
+        if not (
+            user_is_super_admin(request.user)
+            or _has(request.user, "examinations.review_result_changes_dean")
+        ):
+            return Response({"detail": "Forbidden."}, status=403)
+        if not user_can_access_course_unit(request.user, course_unit):
+            return Response(
+                {"detail": "This course unit is outside your assigned faculty."}, status=403,
+            )
+        if change.status != ResultChangeRequest.STATUS_PENDING:
+            return Response({"detail": "Request is not pending."}, status=400)
+        if change.hod_status != ResultChangeRequest.STATUS_APPROVED:
+            return Response(
+                {"detail": "This request has not been HOD-approved yet."}, status=400,
+            )
+
+        action = request.data.get("action")
+        if action not in ("approve", "reject"):
+            return Response({"detail": "action must be approve or reject."}, status=400)
+
+        change.dean_status = (
+            ResultChangeRequest.STATUS_APPROVED if action == "approve"
+            else ResultChangeRequest.STATUS_REJECTED
+        )
+        change.dean_reviewed_by = request.user
+        change.dean_reviewed_at = timezone.now()
+        if action == "reject":
+            change.status = ResultChangeRequest.STATUS_REJECTED
+            change.reviewed_by = request.user
+            change.reviewed_at = timezone.now()
+        change.save()
         return Response(ResultChangeRequestSerializer(change).data)
 
 

@@ -1,4 +1,5 @@
-"""Faculty Dean role — read-only admissions visibility within assigned faculties."""
+"""Faculty Dean role — read-only admissions visibility within assigned
+faculties, plus stage-2 marks approval (after HOD, before AR final publish)."""
 
 FACULTY_DEAN_GROUP = "Faculty Dean"
 
@@ -8,6 +9,12 @@ FACULTY_DEAN_PERMISSIONS = [
     ("admissions", "view_admittedstudent"),
     ("admissions", "view_admissionchangerequest"),
     ("admissions", "review_exemption_dean"),
+    # Marks approval chain, stage 2 (after HOD, before AR final publish)
+    ("accounts", "access_examinations"),
+    ("examinations", "review_marks_dean"),
+    ("examinations", "review_result_changes_dean"),
+    ("examinations", "publish_results"),
+    ("examinations", "view_all_results"),
 ]
 
 

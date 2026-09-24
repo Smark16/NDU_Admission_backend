@@ -8,6 +8,7 @@ from rest_framework.views import APIView
 
 import logging
 
+from accounts.super_admin import user_is_super_admin
 from admissions.faculty_scope import filter_course_units_for_user
 from admissions.models import AdmittedStudent
 from Programs.models import CourseUnit, StudentCourseUnitEnrollment
@@ -445,6 +446,8 @@ class PublishCourseMarksView(APIView):
         already_published_n = base_qs.filter(status=CourseUnitResult.STATUS_PUBLISHED).count()
 
         published = 0
+        not_dean_approved = 0
+        override = user_is_super_admin(request.user)
         with transaction.atomic():
             results = base_qs.filter(status__in=statuses).select_related(
                 "enrollment", "enrollment__student", "policy"
@@ -463,12 +466,26 @@ class PublishCourseMarksView(APIView):
             for result in results:
                 if result.status == CourseUnitResult.STATUS_DRAFT:
                     verify_result(result, user=request.user)
-                publish_result(result, user=request.user)
-                published += 1
+                try:
+                    publish_result(result, user=request.user, override=override)
+                    published += 1
+                except PermissionError:
+                    not_dean_approved += 1
 
         scope = "selected student(s)" if enrollment_ids is not None else "course"
         if published:
             message = f"Published {published} result(s) ({scope})."
+            if not_dean_approved:
+                message += (
+                    f" {not_dean_approved} result(s) still need Dean approval before "
+                    f"they can be published."
+                )
+        elif not_dean_approved:
+            message = (
+                f"Published 0 result(s). {not_dean_approved} result(s) are awaiting Dean "
+                f"approval — submit them for HOD/Dean review first, or ask a Super Admin "
+                f"to override."
+            )
         elif force:
             message = (
                 f"Published 0 result(s). No draft or submitted marks found for this {scope} "
@@ -502,6 +519,7 @@ class PublishCourseMarksView(APIView):
                 "draft_count": draft_n,
                 "verified_count": verified_n,
                 "already_published_count": already_published_n,
+                "not_dean_approved_count": not_dean_approved,
                 "enrollment_ids": enrollment_ids,
                 "message": message,
             }

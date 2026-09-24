@@ -48,9 +48,12 @@ HOD_PERMISSIONS = [
     ("Programs", "change_studentcourseunitenrollment"),
     ("Programs", "add_studentcourseunitenrollment"),
     ("Programs", "delete_studentcourseunitenrollment"),
-    # Exam publishing, exam timetabling, and retakes
+    # Exam review (stage 1 of the marks approval chain -- HOD no longer
+    # publishes directly; that now requires Dean approval + AR publish),
+    # exam timetabling, and retakes
     ("accounts", "access_examinations"),
-    ("examinations", "publish_results"),
+    ("examinations", "review_marks_hod"),
+    ("examinations", "review_result_changes_hod"),
     ("examinations", "view_all_results"),
     ("examinations", "manage_exam_schedule"),
     ("examinations", "manage_retakes"),

@@ -1,4 +1,6 @@
 """Phase 3: verify workflow, bulk publish, import, transcript, reports."""
+import logging
+
 from django.db import transaction
 from django.db.models import Count, Q
 from django.http import HttpResponse
@@ -44,6 +46,8 @@ from .services.transcript import (
     student_has_published_marks,
 )
 from .views import _get_course_unit_or_404, _student_for_user
+
+logger = logging.getLogger(__name__)
 
 
 class VerifyCourseMarksView(APIView):
@@ -105,6 +109,19 @@ class VerifyCourseMarksView(APIView):
                 verify_result(result, user=request.user)
                 verified += 1
 
+        if verified:
+            from .utils.email import send_marks_submitted_email
+
+            try:
+                send_marks_submitted_email(
+                    course_unit, submitted_by=request.user, submitted_count=verified,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to send marks-submitted notification for course_unit id=%s",
+                    course_unit_id,
+                )
+
         return Response(
             {
                 "course_unit_id": course_unit_id,
@@ -140,6 +157,9 @@ class BulkPublishView(APIView):
 
         verified_count = 0
         published_count = 0
+        not_dean_approved_count = 0
+        from accounts.super_admin import user_is_super_admin
+        override = user_is_super_admin(request.user)
 
         with transaction.atomic():
             if verify_only or not force:
@@ -178,14 +198,23 @@ class BulkPublishView(APIView):
                 for result in publish_qs:
                     if result.status == CourseUnitResult.STATUS_DRAFT:
                         verify_result(result, user=request.user)
-                    publish_result(result, user=request.user)
-                    published_count += 1
+                    try:
+                        publish_result(result, user=request.user, override=override)
+                        published_count += 1
+                    except PermissionError:
+                        not_dean_approved_count += 1
 
+        message = "Bulk operation complete."
+        if not_dean_approved_count:
+            message += (
+                f" {not_dean_approved_count} result(s) skipped -- awaiting Dean approval."
+            )
         return Response(
             {
                 "verified_count": verified_count,
                 "published_count": published_count,
-                "message": "Bulk operation complete.",
+                "not_dean_approved_count": not_dean_approved_count,
+                "message": message,
             }
         )
 

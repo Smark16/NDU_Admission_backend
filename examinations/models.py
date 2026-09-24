@@ -220,12 +220,21 @@ class AwardClassBand(models.Model):
 
 class CourseUnitResult(models.Model):
     STATUS_DRAFT = "draft"
-    STATUS_VERIFIED = "verified"
+    STATUS_VERIFIED = "verified"  # lecturer-submitted, awaiting HOD/Dean/AR review
     STATUS_PUBLISHED = "published"
     STATUS_CHOICES = [
         (STATUS_DRAFT, "Draft"),
-        (STATUS_VERIFIED, "Verified"),
+        (STATUS_VERIFIED, "Submitted"),
         (STATUS_PUBLISHED, "Published"),
+    ]
+
+    REVIEW_PENDING = "pending"
+    REVIEW_APPROVED = "approved"
+    REVIEW_REJECTED = "rejected"
+    REVIEW_CHOICES = [
+        (REVIEW_PENDING, "Pending"),
+        (REVIEW_APPROVED, "Approved"),
+        (REVIEW_REJECTED, "Rejected"),
     ]
 
     OUTCOME_PASS = "pass"
@@ -271,6 +280,39 @@ class CourseUnitResult(models.Model):
         blank=True,
         related_name="entered_course_results",
     )
+    # Multi-tier approval chain: Lecturer submits -> HOD -> Dean -> AR publishes.
+    submitted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="submitted_course_results",
+    )
+    submitted_at = models.DateTimeField(null=True, blank=True)
+    hod_status = models.CharField(
+        max_length=20, choices=REVIEW_CHOICES, default=REVIEW_PENDING, db_index=True,
+    )
+    hod_reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="hod_reviewed_course_results",
+    )
+    hod_reviewed_at = models.DateTimeField(null=True, blank=True)
+    hod_notes = models.CharField(max_length=255, blank=True, default="")
+    dean_status = models.CharField(
+        max_length=20, choices=REVIEW_CHOICES, default=REVIEW_PENDING, db_index=True,
+    )
+    dean_reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="dean_reviewed_course_results",
+    )
+    dean_reviewed_at = models.DateTimeField(null=True, blank=True)
+    dean_notes = models.CharField(max_length=255, blank=True, default="")
     published_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -300,6 +342,8 @@ class CourseUnitResult(models.Model):
             ("enter_marks", "Can enter course marks (lecturer)"),
             ("publish_results", "Can publish examination results"),
             ("view_all_results", "Can view all examination results"),
+            ("review_marks_hod", "Can review submitted marks (HOD stage)"),
+            ("review_marks_dean", "Can review submitted marks (Dean stage)"),
         ]
 
     def __str__(self):
@@ -520,9 +564,38 @@ class ResultChangeRequest(models.Model):
         null=True,
         blank=True,
         related_name="result_change_requests_reviewed",
+        help_text="Final (AR) stage reviewer -- HOD/Dean stages tracked separately below.",
     )
     reason = models.TextField()
     review_notes = models.TextField(blank=True, default="")
+    supporting_document = models.FileField(
+        upload_to="result_change_documents/",
+        null=True,
+        blank=True,
+        help_text="e.g. a re-marked script. Required at submission time (enforced in the view).",
+    )
+    hod_status = models.CharField(
+        max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING, db_index=True,
+    )
+    hod_reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="hod_reviewed_result_change_requests",
+    )
+    hod_reviewed_at = models.DateTimeField(null=True, blank=True)
+    dean_status = models.CharField(
+        max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING, db_index=True,
+    )
+    dean_reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="dean_reviewed_result_change_requests",
+    )
+    dean_reviewed_at = models.DateTimeField(null=True, blank=True)
 
     old_ca_mark = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
     old_exam_mark = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
@@ -544,7 +617,9 @@ class ResultChangeRequest(models.Model):
     class Meta:
         ordering = ["-requested_at"]
         permissions = [
-            ("approve_result_changes", "Can approve post-publish result changes"),
+            ("approve_result_changes", "Can give final (AR) approval on post-publish result changes"),
+            ("review_result_changes_hod", "Can review post-publish result changes (HOD stage)"),
+            ("review_result_changes_dean", "Can review post-publish result changes (Dean stage)"),
         ]
 
     def __str__(self):

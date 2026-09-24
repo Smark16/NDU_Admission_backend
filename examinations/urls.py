@@ -11,6 +11,8 @@ from .phase3_views import (
 )
 from .phase4_views import (
     CreateResultChangeRequestView,
+    DeanReviewResultChangeView,
+    HODReviewResultChangeView,
     ResultChangeRequestDetailView,
     ResultChangeRequestListView,
     UnlockPublishedResultView,
@@ -60,6 +62,7 @@ from .views import (
     StudentMyResultsView,
     UnpublishCourseMarksView,
 )
+from .marks_approval_views import DeanReviewMarksView, HODReviewMarksView
 
 urlpatterns = [
     path("policy/", ActivePolicyView.as_view(), name="examinations-policy"),
@@ -136,6 +139,16 @@ urlpatterns = [
         name="verify-course-marks",
     ),
     path(
+        "lecturer/courses/<int:course_unit_id>/review/hod/",
+        HODReviewMarksView.as_view(),
+        name="hod-review-course-marks",
+    ),
+    path(
+        "lecturer/courses/<int:course_unit_id>/review/dean/",
+        DeanReviewMarksView.as_view(),
+        name="dean-review-course-marks",
+    ),
+    path(
         "lecturer/courses/<int:course_unit_id>/publish/",
         PublishCourseMarksView.as_view(),
         name="publish-course-marks",
@@ -173,6 +186,16 @@ urlpatterns = [
         "change-requests/<int:request_id>/",
         ResultChangeRequestDetailView.as_view(),
         name="change-request-detail",
+    ),
+    path(
+        "change-requests/<int:request_id>/review/hod/",
+        HODReviewResultChangeView.as_view(),
+        name="hod-review-change-request",
+    ),
+    path(
+        "change-requests/<int:request_id>/review/dean/",
+        DeanReviewResultChangeView.as_view(),
+        name="dean-review-change-request",
     ),
     path(
         "results/<int:result_id>/unlock/",

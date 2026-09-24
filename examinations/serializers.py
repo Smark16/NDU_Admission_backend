@@ -402,6 +402,13 @@ class CourseUnitResultSerializer(serializers.ModelSerializer):
             "status",
             "is_published",
             "has_pending_change_request",
+            "submitted_at",
+            "hod_status",
+            "hod_reviewed_at",
+            "hod_notes",
+            "dean_status",
+            "dean_reviewed_at",
+            "dean_notes",
             "published_at",
         ]
 
@@ -437,6 +444,11 @@ class ResultChangeRequestSerializer(serializers.ModelSerializer):
             "old_grade_letter",
             "new_ca_mark",
             "new_exam_mark",
+            "supporting_document",
+            "hod_status",
+            "hod_reviewed_at",
+            "dean_status",
+            "dean_reviewed_at",
             "requested_at",
             "reviewed_at",
         ]

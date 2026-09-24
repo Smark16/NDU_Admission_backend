@@ -42,6 +42,18 @@ class AcademicDepartment(models.Model):
         blank=True,
         related_name="headed_academic_departments",
     )
+    exam_coordinator = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="exam_coordinator_departments",
+        help_text=(
+            "Notification-only role: CC'd on marks submissions alongside the HOD. "
+            "Historically also entered marks on lecturers' behalf; that capability "
+            "is being phased out."
+        ),
+    )
     is_active = models.BooleanField(default=True)
     sort_order = models.PositiveSmallIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -58,6 +70,22 @@ class AcademicDepartment(models.Model):
             return
         user.faculties.add(self.faculty)
         group, _ = Group.objects.get_or_create(name=HOD_GROUP)
+        user.groups.add(group)
+        if not user.is_staff:
+            user.is_staff = True
+            user.save(update_fields=["is_staff"])
+
+    def assign_exam_coordinator(self, user):
+        """Set Exam Coordinator on this department, grant the group, attach the faculty."""
+        from django.contrib.auth.models import Group
+        from admissions.exam_coordinator_role_setup import EXAM_COORDINATOR_GROUP
+
+        self.exam_coordinator = user
+        self.save(update_fields=["exam_coordinator", "updated_at"])
+        if not user:
+            return
+        user.faculties.add(self.faculty)
+        group, _ = Group.objects.get_or_create(name=EXAM_COORDINATOR_GROUP)
         user.groups.add(group)
         if not user.is_staff:
             user.is_staff = True
