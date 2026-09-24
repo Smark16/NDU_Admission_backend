@@ -613,6 +613,7 @@ class SystemSettingsSerializer(serializers.ModelSerializer):
             'login_cover_image',
             'portal_logo_url',
             'login_cover_url',
+            'restrict_lecturer_roster_to_registered',
             'updated_by_name',
             'updated_at',
         ]
