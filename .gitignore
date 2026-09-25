@@ -51,3 +51,11 @@ migrations/__pycache__/
 *.pid
 *.seed
 *.sqlite3-journal
+
+# Scratch scripts and one-off report outputs (repo root only)
+/_*.py
+/NDU_AUG2026_Intake_Program_Performance.xlsx
+/aug2026_program_performance.csv
+/commitment_paid_students.csv
+/debug_sort_keys.py
+/full_program_table.md
