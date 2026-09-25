@@ -166,7 +166,28 @@ def next_ay_offerings_for_student(student: AdmittedStudent) -> list[dict[str, An
         ).values_list("course_unit_id", flat=True)
     )
 
+    from .retake_limit import retake_limit_message, retake_limit_reached
+
     for paper in outstanding_papers_for_student(student):
+        if retake_limit_reached(student, paper.course_code):
+            offerings.append(
+                {
+                    "available": False,
+                    "course_unit_id": None,
+                    "course_code": paper.course_code,
+                    "course_name": paper.course_name,
+                    "registration_kind": registration_kind_for_outcome(paper.paper_outcome),
+                    "paper_outcome": paper.paper_outcome,
+                    "original_enrollment_id": paper.enrollment_id,
+                    "original_semester_label": paper.original_semester_label,
+                    "year_of_study": paper.year_of_study,
+                    "term_number": paper.term_number,
+                    "retake_limit_reached": True,
+                    "message": retake_limit_message(paper.course_code),
+                    "fee_preview": fee_preview,
+                }
+            )
+            continue
         cu = find_next_ay_course_unit(student, paper)
         if cu is None:
             offerings.append(

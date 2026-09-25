@@ -165,6 +165,16 @@ def register_student_for_course_units(
                         )
                         continue
 
+            if is_retake_offer:
+                from examinations.services.retake_limit import (
+                    retake_limit_message,
+                    retake_limit_reached,
+                )
+
+                if retake_limit_reached(student, cu.code):
+                    errors.append(retake_limit_message(cu.code))
+                    continue
+
             en = StudentCourseUnitEnrollment.objects.filter(student=student, course_unit=cu).first()
             if not en:
                 if is_retake_offer:

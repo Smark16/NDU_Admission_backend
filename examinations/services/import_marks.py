@@ -180,13 +180,30 @@ def build_marks_entry_csv(course_unit) -> tuple[str, str]:
     return filename, "\ufeff" + buf.getvalue()
 
 
-def import_marks_for_course(course_unit, rows: list[dict], *, user) -> dict:
-    """Apply import rows; returns {saved, errors}."""
+def _snapshot_result(result, *, created: bool) -> dict:
+    return {
+        "result": result,
+        "created_result": created,
+        "previous_ca_mark": result.ca_mark,
+        "previous_exam_mark": result.exam_mark,
+        "previous_final_mark": result.final_mark,
+        "previous_grade_letter": result.grade_letter or "",
+        "previous_grade_point": result.grade_point,
+        "previous_is_pass": result.is_pass,
+        "previous_paper_outcome": result.paper_outcome or "",
+        "previous_status": result.status or "",
+        "previous_edit_unlocked": bool(result.edit_unlocked),
+    }
+
+
+def import_marks_for_course(course_unit, rows: list[dict], *, user, filename: str = "") -> dict:
+    """Apply import rows; returns {saved, errors, batch_id}."""
     if not resolve_assessment_policy(course_unit=course_unit):
         raise ValidationError("No assessment policy configured.")
 
     saved = []
     errors = []
+    snapshots = []
 
     for row in rows:
         reg = row.get("reg_no", "")
@@ -221,7 +238,7 @@ def import_marks_for_course(course_unit, rows: list[dict], *, user) -> dict:
             errors.append({"reg_no": reg, "detail": "No assessment policy configured."})
             continue
 
-        result, _ = CourseUnitResult.objects.get_or_create(
+        result, created = CourseUnitResult.objects.get_or_create(
             enrollment=enrollment,
             defaults={"policy": policy, "entered_by": user},
         )
@@ -232,6 +249,7 @@ def import_marks_for_course(course_unit, rows: list[dict], *, user) -> dict:
             )
             continue
 
+        snapshot = _snapshot_result(result, created=created)
         result.policy = policy
         if row.get("ca_mark") is not None:
             result.ca_mark = row["ca_mark"]
@@ -247,8 +265,74 @@ def import_marks_for_course(course_unit, rows: list[dict], *, user) -> dict:
             result.recompute()
             result.full_clean()
             result.save()
+            snapshots.append(snapshot)
             saved.append(reg)
         except Exception as exc:
             errors.append({"reg_no": reg, "detail": str(exc)})
 
-    return {"saved_count": len(saved), "saved": saved, "errors": errors}
+    batch_id = None
+    if snapshots:
+        from ..models import MarksImportBatch, MarksImportChange
+
+        batch = MarksImportBatch.objects.create(
+            course_unit=course_unit,
+            filename=(filename or "")[:255],
+            uploaded_by=user if getattr(user, "is_authenticated", False) else None,
+            saved_count=len(snapshots),
+        )
+        MarksImportChange.objects.bulk_create(
+            [MarksImportChange(batch=batch, **snapshot) for snapshot in snapshots]
+        )
+        batch_id = batch.id
+
+    return {
+        "saved_count": len(saved),
+        "saved": saved,
+        "errors": errors,
+        "batch_id": batch_id,
+    }
+
+
+def purge_marks_import(batch) -> dict:
+    """Restore marks from before this upload. Skip rows published after the import."""
+    from django.utils import timezone
+
+    if batch.purged_at:
+        raise ValidationError("This import was already undone.")
+
+    restored = 0
+    deleted = 0
+    skipped = []
+    for change in list(batch.changes.select_related("result", "result__enrollment__student")):
+        result = change.result
+        published_after = (
+            result.status == CourseUnitResult.STATUS_PUBLISHED
+            and change.previous_status != CourseUnitResult.STATUS_PUBLISHED
+        )
+        if published_after:
+            skipped.append(result.enrollment.student.reg_no or str(result.enrollment_id))
+            continue
+        if change.created_result and result.status != CourseUnitResult.STATUS_PUBLISHED:
+            result.delete()
+            deleted += 1
+            continue
+        result.ca_mark = change.previous_ca_mark
+        result.exam_mark = change.previous_exam_mark
+        result.final_mark = change.previous_final_mark
+        result.grade_letter = change.previous_grade_letter or ""
+        result.grade_point = change.previous_grade_point
+        result.is_pass = change.previous_is_pass
+        result.paper_outcome = change.previous_paper_outcome or ""
+        result.status = change.previous_status or CourseUnitResult.STATUS_DRAFT
+        result.edit_unlocked = change.previous_edit_unlocked
+        result.save()
+        restored += 1
+
+    batch.purged_at = timezone.now()
+    batch.save(update_fields=["purged_at"])
+    return {
+        "restored": restored,
+        "deleted": deleted,
+        "skipped": skipped,
+        "purged_at": batch.purged_at.isoformat(),
+    }

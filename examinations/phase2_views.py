@@ -15,7 +15,7 @@ from Programs.models import CourseUnit, ProgramBatch, StudentCourseUnitEnrollmen
 
 from admissions.faculty_scope import assert_course_unit_access, assert_program_batch_access
 
-from .models import CourseUnitResult, ExamRetakeRegistration, ExamSession
+from .models import CourseUnitResult, ExamAttendance, ExamRetakeRegistration, ExamSession
 from .permissions import CanManageExamSchedule, CanManageRetakes, CanViewAllResults
 from .serializers import ExamRetakeRegistrationSerializer, ExamSessionSerializer
 from .services.clash import (
@@ -560,6 +560,17 @@ class ExamSessionSittingListView(APIView):
                     )
 
         eligible_count = sum(1 for r in rows if r["eligible_to_sit"])
+        enrollment_ids = [row.get("enrollment_id") for row in rows if row.get("enrollment_id")]
+        marked = {
+            mark.enrollment_id: mark.present
+            for mark in ExamAttendance.objects.filter(
+                exam_session=session,
+                enrollment_id__in=enrollment_ids,
+            )
+        }
+        for row in rows:
+            enrollment_id = row.get("enrollment_id")
+            row["sat"] = marked[enrollment_id] if enrollment_id in marked else None
 
         if _wants_csv(request):
             return _sitting_csv_response(
@@ -580,6 +591,44 @@ class ExamSessionSittingListView(APIView):
                 "rows": rows,
             }
         )
+
+
+class ExamSessionAttendanceView(APIView):
+    """Record whether a candidate sat this exam session."""
+
+    permission_classes = [IsAuthenticated, CanManageExamSchedule]
+
+    def post(self, request, session_id):
+        session = get_object_or_404(
+            ExamSession.objects.select_related("course_unit"),
+            pk=session_id,
+        )
+        assert_course_unit_access(request.user, session.course_unit)
+        enrollment_id = request.data.get("enrollment_id")
+        if not enrollment_id or "present" not in request.data:
+            return Response(
+                {"detail": "enrollment_id and present are required."},
+                status=400,
+            )
+        enrollment = get_object_or_404(StudentCourseUnitEnrollment, pk=enrollment_id)
+        on_course = enrollment.course_unit_id == session.course_unit_id
+        on_session = session.retake_registrations.filter(enrollment_id=enrollment.id).exists()
+        if not on_course and not on_session:
+            return Response(
+                {"detail": "That student is not on this exam session."},
+                status=400,
+            )
+        raw = request.data.get("present")
+        if isinstance(raw, str):
+            present = raw.strip().lower() in ("1", "true", "yes")
+        else:
+            present = bool(raw)
+        mark, _ = ExamAttendance.objects.update_or_create(
+            exam_session=session,
+            enrollment=enrollment,
+            defaults={"present": present, "marked_by": request.user},
+        )
+        return Response({"enrollment_id": enrollment.id, "present": mark.present})
 
 
 class CourseRetakeRegistrationsView(APIView):
@@ -637,6 +686,14 @@ class CourseRetakeRegistrationsView(APIView):
                         "can be registered for retake."
                     )
                 },
+                status=400,
+            )
+
+        from .services.retake_limit import retake_limit_message, retake_limit_reached
+
+        if retake_limit_reached(enrollment.student, course_unit.code):
+            return Response(
+                {"detail": retake_limit_message(course_unit.code)},
                 status=400,
             )
 
@@ -813,6 +870,14 @@ class StudentRetakeRequestView(APIView):
                         "Retake requests are only allowed for published failed or missed papers."
                     )
                 },
+                status=400,
+            )
+
+        from .services.retake_limit import retake_limit_message, retake_limit_reached
+
+        if retake_limit_reached(student, enrollment.course_unit.code):
+            return Response(
+                {"detail": retake_limit_message(enrollment.course_unit.code)},
                 status=400,
             )
 

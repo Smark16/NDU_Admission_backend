@@ -67,18 +67,23 @@
     .photo-box img { width: 80px; height: 92px; object-fit: cover; }
 
     /* ── OUTER BOX ── */
-    table.outer-box { border: 1px solid #000; width: 100%; border-collapse: collapse; }
+    table.outer-box {
+      border: 2px solid #000;
+      width: 100%;
+      border-collapse: collapse;
+    }
 
     /* Title inside box */
     .title-row {
       text-align: center;
       padding: 4px 0 3px;
-      border-bottom: 1px solid #000;
+      border-bottom: 2px solid #000;
     }
     .title-row span {
-      font-family: "Brush Script MT", "Comic Sans MS", cursive;
-      font-size: 24px;
-      font-weight: bold;
+      font-family: Edwardian;
+      font-size: 32px;
+      font-style: italic;
+      font-weight: normal;
     }
 
     /* ── BIO: horizontal rules only — no vertical column lines (ARMS) ── */
@@ -86,7 +91,7 @@
       width: 100%;
       border-collapse: collapse;
       border: 0;
-      border-bottom: 1px solid #000000;
+      border-bottom: 2px solid #000000;
     }
     .bio-table td {
       padding: 3px 6px;
@@ -98,7 +103,7 @@
       border-top: 0;
     }
     .bio-table tr.bio-hline td {
-      border-bottom: 1px solid #000000;
+      border-bottom: 2px solid #000000;
     }
     .bio-table .lbl { font-weight: bold; white-space: nowrap; padding-right: 4px; }
     .bio-table .bio-col {
@@ -124,7 +129,7 @@
     .results-col-left { width: 50%; }
     .results-col-right {
       width: 50%;
-      border-left: 1px solid #000000;
+      border-left: 2px solid #000000;
     }
 
     .year-block {
@@ -132,7 +137,7 @@
       border-collapse: collapse;
       border: none;
     }
-    .year-block.year-divider { border-top: 1px solid #000000; }
+    .year-block.year-divider { border-top: 2px solid #000000; }
 
     /* Semester header bars — solid black, white text (thin strip like ARMS) */
     .bar-black {
@@ -149,7 +154,7 @@
     .award-outline {
       width: 100%;
       border-collapse: collapse;
-      border: 1px solid #000000;
+      border: 2px solid #000000;
     }
     .award-outline td {
       background-color: #ffffff;
@@ -161,7 +166,7 @@
       vertical-align: middle;
     }
     .award-outline td.award-split {
-      border-right: 1px solid #000000;
+      border-right: 2px solid #000000;
     }
     .course-cols {
       width: 100%;
@@ -170,17 +175,14 @@
     }
     .course-cols td {
       border: 0 none transparent;
-      padding: 0 4px 1px 4px;
+      padding: 2px 4px 1px 4px;
       font-size: 9.5px;
       vertical-align: top;
     }
     .course-cols tr.col-lbl td {
       font-weight: bold;
-      padding: 2px 5px 3px 5px;
-      border-top: 0;
-      border-left: 0;
-      border-right: 0;
-      border-bottom: 1px solid #000000;
+      padding: 2px 5px 4px 5px;
+      border: 0;
     }
     .course-cols tr.course-data td {
       height: 14px;
@@ -209,8 +211,16 @@
     /* ── FOOTER ── */
     .footer-table { width: 100%; border-collapse: collapse; margin-top: 6px; }
     .footer-table td { vertical-align: bottom; font-size: 9px; }
-    .footer-left { font-style: italic; line-height: 1.6; width: 58%; padding-right: 10px; }
-    .footer-right { text-align: center; width: 42%; }
+    .footer-left { font-style: italic; line-height: 1.35; width: 62%; padding-right: 12px; vertical-align: top; }
+    .footer-right { text-align: center; width: 38%; }
+    .disclaimer-full {
+      font-style: italic;
+      font-size: 9px;
+      line-height: 1.35;
+      margin-top: 6px;
+      text-align: center;
+    }
+    .sig-name { font-size: 10px; text-align: center; }
     .sig-line { border-top: 1px solid #000; width: 230px; margin: 0 auto 4px; height: 22px; }
 
     .printed-by {
@@ -308,24 +318,48 @@
           Academic Registrars' Office, P.O. Box 7088, Kampala &ndash; Uganda. Phone: 256-392-73032
         </div>
       </td>
-      <td style="width: 18%; text-align: right; vertical-align: top;">
-        <div class="photo-box">
-          {% if student.photo_b64 %}
-            <img src="data:image/jpeg;base64,{{ student.photo_b64 }}" alt="" />
-          {% endif %}
-        </div>
+      <td width="84" style="width: 84px; text-align: right; vertical-align: top;">
+        <table border="1" cellspacing="0" cellpadding="0" width="80"
+               style="border:1px solid #666666; border-collapse:collapse;">
+          <tr>
+            <td width="80" height="92" bgcolor="#dce8f5" align="center" valign="middle"
+                style="width:80px; height:92px; background-color:#dce8f5; text-align:center; vertical-align:middle;">
+              {% if student.photo_b64 %}
+                <img src="data:image/jpeg;base64,{{ student.photo_b64 }}" width="78" height="90" alt="" />
+              {% else %}
+                <table border="0" cellspacing="0" cellpadding="0" width="80" height="92"
+                       style="width:80px;height:92px;">
+                  <tr>
+                    <td align="center" valign="bottom" style="height:34px;">
+                      <div style="width:28px;height:28px;margin:0 auto;background-color:#b9c6d6;border-radius:50%;"></div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td align="center" valign="top" style="height:34px;">
+                      <div style="width:52px;height:30px;margin:0 auto;background-color:#b9c6d6;border-radius:26px 26px 0 0;"></div>
+                    </td>
+                  </tr>
+                </table>
+              {% endif %}
+            </td>
+          </tr>
+        </table>
       </td>
     </tr>
   </table>
 
   <!-- ══ OUTER BOX (table — xhtml2pdf ignores div borders reliably) ══ -->
   <table class="outer-box" border="0" cellspacing="0" cellpadding="0" width="100%"
-         style="border:1px solid #000000;border-collapse:collapse;">
+         style="border:2px solid #000000;border-collapse:collapse;">
 
     <!-- Title -->
     <tr>
-      <td class="title-row" style="text-align:center;padding:4px 0 3px;border-bottom:1px solid #000000;">
-        <span>{{ document_title }}</span>
+      <td class="title-row" style="text-align:center;padding:1px 0 0;border-bottom:2px solid #000000;">
+        {% if title_b64 %}
+          <img src="{{ title_b64 }}" width="{{ title_width }}" height="{{ title_height }}" alt="{{ document_title }}" />
+        {% else %}
+          <span>{{ document_title }}</span>
+        {% endif %}
       </td>
     </tr>
 
@@ -334,24 +368,24 @@
       <td style="padding:0;border:0;">
     <table class="bio-table" border="0" cellspacing="0" cellpadding="0" width="100%">
       <tr class="bio-hline">
-        <td class="bio-col" style="border:0;border-bottom:1px solid #000;">
+        <td class="bio-col" style="border:0;border-bottom:2px solid #000;">
           <span class="lbl">NAME:</span> <span class="bio-val">{{ student.name }}</span>
         </td>
-        <td class="bio-col" style="border:0;border-bottom:1px solid #000;">
+        <td class="bio-col" style="border:0;border-bottom:2px solid #000;">
           <span class="lbl">SEX:</span> <span class="bio-val">{{ student.sex }}</span>
         </td>
-        <td class="bio-col" style="border:0;border-bottom:1px solid #000;">
+        <td class="bio-col" style="border:0;border-bottom:2px solid #000;">
           <span class="lbl">NATIONALITY:</span> <span class="bio-val">{{ student.nationality }}</span>
         </td>
       </tr>
       <tr class="bio-hline">
-        <td class="bio-col" style="border:0;border-bottom:1px solid #000;">
+        <td class="bio-col" style="border:0;border-bottom:2px solid #000;">
           <span class="lbl">REG No.:</span> <span class="bio-val">{{ student.reg_no }}</span>
         </td>
-        <td class="bio-col" style="border:0;border-bottom:1px solid #000;">
+        <td class="bio-col" style="border:0;border-bottom:2px solid #000;">
           <span class="lbl">HALL:</span> <span class="bio-val">{{ student.hall|default:"" }}</span>
         </td>
-        <td class="bio-col" style="border:0;border-bottom:1px solid #000;">
+        <td class="bio-col" style="border:0;border-bottom:2px solid #000;">
           <span class="lbl">FIRST REG.:</span> <span class="bio-val">{{ student.first_registration }}</span>
         </td>
       </tr>
@@ -367,100 +401,85 @@
       </td>
     </tr>
 
-    <!-- Results -->
+    <!-- Results: rules run border to border. Course rows have no lines across them. -->
     <tr>
       <td style="padding:0;border:0;">
     <table class="results-shell" border="0" cellspacing="0" cellpadding="0" width="100%">
+      {% for block in year_blocks %}
       <tr>
-        <td class="results-col-left" valign="top">
-          {% for block in year_blocks %}
-          <table class="year-block{% if not forloop.first %} year-divider{% endif %}" border="0" cellspacing="0" cellpadding="0" width="100%">
-            <tr>
-              <td class="bar-black yr-hdr" bgcolor="#000000"
-                  style="background-color:#000000;color:#ffffff;font-weight:bold;border:0;">
-                {{ block.left_header|safe }}
-              </td>
-            </tr>
-            <tr>
-              <td>
-                <table class="course-cols" border="0" cellspacing="0" cellpadding="0" width="100%">
-                  <tr class="col-lbl">
-                    <td class="c-code" style="border:0;border-bottom:1px solid #000;">Code</td>
-                    <td class="c-name" style="border:0;border-bottom:1px solid #000;">Course Name</td>
-                    <td class="c-cu" style="border:0;border-bottom:1px solid #000;">CU</td>
-                    <td class="c-score" style="border:0;border-bottom:1px solid #000;">Score</td>
-                    <td class="c-grade" style="border:0;border-bottom:1px solid #000;">Grade</td>
-                  </tr>
-                  {% for c in block.left_courses %}
-                  <tr class="course-data">
-                    <td class="c-code" style="border:0;">{% if c %}{{ c.code }}{% else %}&nbsp;{% endif %}</td>
-                    <td class="c-name" style="border:0;">{% if c %}{{ c.name }}{% else %}&nbsp;{% endif %}</td>
-                    <td class="c-cu" style="border:0;">{% if c %}{{ c.credit_units|default:"" }}{% else %}&nbsp;{% endif %}</td>
-                    <td class="c-score" style="border:0;">{% if show_scores and c %}{{ c.score }}{% else %}&nbsp;{% endif %}</td>
-                    <td class="c-grade" style="border:0;">{% if c %}{{ c.grade }}{% else %}&nbsp;{% endif %}</td>
-                  </tr>
-                  {% endfor %}
-                </table>
-              </td>
-            </tr>
-            <tr><td class="sem-totals">{{ block.left_totals|safe }}</td></tr>
-          </table>
-          {% endfor %}
+        <td width="50%" bgcolor="#000000" style="background-color:#000000;color:#ffffff;font-weight:bold;padding:1px 4px;border:0;{% if not forloop.first %}border-top:2px solid #000;{% endif %}">
+          {{ block.left_header|safe }}
         </td>
-
-        <td class="results-col-right" valign="top" style="border-left: 1px solid #000000;">
-          {% for block in year_blocks %}
-          <table class="year-block{% if not forloop.first %} year-divider{% endif %}" border="0" cellspacing="0" cellpadding="0" width="100%">
-            <tr>
-              <td class="bar-black yr-hdr" bgcolor="#000000"
-                  style="background-color:#000000;color:#ffffff;font-weight:bold;border:0;">
-                {{ block.right_header|safe }}
-              </td>
-            </tr>
-            <tr>
-              <td>
-                <table class="course-cols" border="0" cellspacing="0" cellpadding="0" width="100%">
-                  <tr class="col-lbl">
-                    <td class="c-code" style="border:0;border-bottom:1px solid #000;">Code</td>
-                    <td class="c-name" style="border:0;border-bottom:1px solid #000;">Course Name</td>
-                    <td class="c-cu" style="border:0;border-bottom:1px solid #000;">CU</td>
-                    <td class="c-score" style="border:0;border-bottom:1px solid #000;">Score</td>
-                    <td class="c-grade" style="border:0;border-bottom:1px solid #000;">Grade</td>
-                  </tr>
-                  {% for c in block.right_courses %}
-                  <tr class="course-data">
-                    <td class="c-code" style="border:0;">{% if c %}{{ c.code }}{% else %}&nbsp;{% endif %}</td>
-                    <td class="c-name" style="border:0;">{% if c %}{{ c.name }}{% else %}&nbsp;{% endif %}</td>
-                    <td class="c-cu" style="border:0;">{% if c %}{{ c.credit_units|default:"" }}{% else %}&nbsp;{% endif %}</td>
-                    <td class="c-score" style="border:0;">{% if show_scores and c %}{{ c.score }}{% else %}&nbsp;{% endif %}</td>
-                    <td class="c-grade" style="border:0;">{% if c %}{{ c.grade }}{% else %}&nbsp;{% endif %}</td>
-                  </tr>
-                  {% endfor %}
-                </table>
-              </td>
-            </tr>
-            <tr><td class="sem-totals">{{ block.right_totals|safe }}</td></tr>
-          </table>
-          {% endfor %}
+        <td width="50%" bgcolor="#000000" style="background-color:#000000;color:#ffffff;font-weight:bold;padding:1px 4px;border:0;border-left:2px solid #000;{% if not forloop.first %}border-top:2px solid #000;{% endif %}">
+          {{ block.right_header|safe }}
         </td>
       </tr>
-
-      <!-- Award: bordered box, bold text on white (not solid black fill) -->
-      <tr class="award-row-wrap">
-        <td colspan="2">
-          <table class="award-outline" border="1" cellspacing="0" cellpadding="0" bordercolor="#000000"
-                 width="100%" style="border:1px solid #000000;border-collapse:collapse;">
-            <tr>
-              <td width="50%" class="award-split"
-                  style="background-color:#ffffff;color:#000000;font-weight:bold;font-size:10px;padding:5px 7px;border:0;border-right:1px solid #000000;">
-                AWARD: {{ award|default:"" }}
-              </td>
-              <td width="50%"
-                  style="background-color:#ffffff;color:#000000;font-weight:bold;font-size:10px;padding:5px 7px;border:0;">
-                CLASS OF AWARD: {{ class_of_award|default:"" }}
-              </td>
+      <tr>
+        <td width="50%" style="padding:0;border:0;">
+          <table class="course-cols" border="0" cellspacing="0" cellpadding="0" width="100%">
+            <tr class="col-lbl">
+              <td class="c-code" style="border:0;">Code</td>
+              <td class="c-name" style="border:0;">Course Name</td>
+              <td class="c-cu" style="border:0;">CU</td>
+              <td class="c-score" style="border:0;">Score</td>
+              <td class="c-grade" style="border:0;">Grade</td>
             </tr>
           </table>
+        </td>
+        <td width="50%" style="padding:0;border:0;border-left:2px solid #000;">
+          <table class="course-cols" border="0" cellspacing="0" cellpadding="0" width="100%">
+            <tr class="col-lbl">
+              <td class="c-code" style="border:0;">Code</td>
+              <td class="c-name" style="border:0;">Course Name</td>
+              <td class="c-cu" style="border:0;">CU</td>
+              <td class="c-score" style="border:0;">Score</td>
+              <td class="c-grade" style="border:0;">Grade</td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+      <tr>
+        <td width="50%" bgcolor="#000000" height="2" style="background-color:#000000;padding:0;border:0;font-size:1px;line-height:2px;">&nbsp;</td>
+        <td width="50%" bgcolor="#000000" height="2" style="background-color:#000000;padding:0;border:0;border-left:2px solid #000;font-size:1px;line-height:2px;">&nbsp;</td>
+      </tr>
+      {% for pair in block.course_pairs %}
+      <tr>
+        <td width="50%" style="padding:0;border:0;">
+          <table class="course-cols" border="0" cellspacing="0" cellpadding="0" width="100%">
+            <tr class="course-data">
+              <td class="c-code" style="border:0;">{% if pair.left %}{{ pair.left.code }}{% else %}&nbsp;{% endif %}</td>
+              <td class="c-name" style="border:0;">{% if pair.left %}{{ pair.left.name }}{% else %}&nbsp;{% endif %}</td>
+              <td class="c-cu" style="border:0;">{% if pair.left %}{{ pair.left.credit_units|default:"" }}{% else %}&nbsp;{% endif %}</td>
+              <td class="c-score" style="border:0;">{% if show_scores and pair.left %}{{ pair.left.score }}{% else %}&nbsp;{% endif %}</td>
+              <td class="c-grade" style="border:0;">{% if pair.left %}{{ pair.left.grade }}{% else %}&nbsp;{% endif %}</td>
+            </tr>
+          </table>
+        </td>
+        <td width="50%" style="padding:0;border:0;border-left:2px solid #000;">
+          <table class="course-cols" border="0" cellspacing="0" cellpadding="0" width="100%">
+            <tr class="course-data">
+              <td class="c-code" style="border:0;">{% if pair.right %}{{ pair.right.code }}{% else %}&nbsp;{% endif %}</td>
+              <td class="c-name" style="border:0;">{% if pair.right %}{{ pair.right.name }}{% else %}&nbsp;{% endif %}</td>
+              <td class="c-cu" style="border:0;">{% if pair.right %}{{ pair.right.credit_units|default:"" }}{% else %}&nbsp;{% endif %}</td>
+              <td class="c-score" style="border:0;">{% if show_scores and pair.right %}{{ pair.right.score }}{% else %}&nbsp;{% endif %}</td>
+              <td class="c-grade" style="border:0;">{% if pair.right %}{{ pair.right.grade }}{% else %}&nbsp;{% endif %}</td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+      {% endfor %}
+      <tr>
+        <td class="sem-totals" width="50%" style="padding:2px 5px 4px 5px;border:0;font-weight:bold;">{{ block.left_totals|safe }}</td>
+        <td class="sem-totals" width="50%" style="padding:2px 5px 4px 5px;border:0;border-left:2px solid #000;font-weight:bold;">{{ block.right_totals|safe }}</td>
+      </tr>
+      {% endfor %}
+
+      <tr>
+        <td width="50%" style="padding:2px 7px;border:0;border-top:2px solid #000;font-weight:bold;">
+          AWARD: {{ award|default:"" }}
+        </td>
+        <td width="50%" style="padding:2px 7px;border:0;border-top:2px solid #000;border-left:2px solid #000;font-weight:bold;">
+          CLASS OF AWARD: {{ class_of_award|default:"" }}
         </td>
       </tr>
     </table>
@@ -469,18 +488,34 @@
   </table><!-- /outer-box -->
 
   <!-- ══ FOOTER ══ -->
+  {% if signature_layout == "testimonial" %}
   <table class="footer-table">
     <tr>
-      <td class="footer-left">{{ disclaimer|safe }}</td>
+      <td style="width:50%; text-align:center;">
+        <div class="sig-line"></div>
+        <div class="sig-name">{{ signatory_label }}</div>
+      </td>
+      <td style="width:50%; text-align:center;">
+        <div class="sig-line"></div>
+        <div class="sig-name">{{ signatory_label_2 }}</div>
+      </td>
+    </tr>
+  </table>
+  <div class="disclaimer-full">{{ disclaimer }}</div>
+  {% elif signature_layout == "provisional" %}
+  <table class="footer-table">
+    <tr>
+      <td class="footer-left">{{ disclaimer }}</td>
       <td class="footer-right">
         <div class="sig-line"></div>
         {{ signatory_label }}
       </td>
     </tr>
   </table>
+  {% endif %}
 
   <div class="printed-by">
-    Printed By {{ printed_by }}{% if printed_from %} . From {{ printed_from }}{% endif %} on {{ printed_at }}
+    Printed By {{ printed_by }}{% if printed_from %} From {{ printed_from }}{% endif %} on {{ printed_at }}
   </div>
 
 </body>

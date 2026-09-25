@@ -1,5 +1,6 @@
 from django.urls import path
 from accounts.views import *
+from accounts.system_health_views import SystemHealthView
 
 app_name = 'accounts'
 
@@ -66,6 +67,7 @@ urlpatterns = [
     path('update_system_settings', UpdateSystemSettings.as_view()),
 
     path('system_usage_report', SystemUsageReport.as_view()),
+    path('system_health', SystemHealthView.as_view()),
 
     path('users/bulk/template/', BulkUserTemplateDownload.as_view()),
     path('users/bulk/upload/', BulkUserUpload.as_view()),

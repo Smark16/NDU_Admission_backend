@@ -40,6 +40,10 @@ from .services.provisional_results_pdf import (
     render_provisional_results_html,
     render_provisional_results_pdf,
 )
+from .services.academic_broadsheet import (
+    academic_broadsheet_xlsx,
+    build_academic_broadsheet,
+)
 from .services.transcript import (
     TRANSCRIPT_REQUIRES_PUBLISHED_MARKS,
     build_student_transcript,
@@ -239,11 +243,74 @@ class ImportCourseMarksView(APIView):
 
         try:
             rows = parse_marks_upload(upload.name, upload.read())
-            outcome = import_marks_for_course(course_unit, rows, user=request.user)
+            outcome = import_marks_for_course(
+                course_unit,
+                rows,
+                user=request.user,
+                filename=upload.name or "",
+            )
         except Exception as exc:
             return Response({"detail": str(exc)}, status=400)
 
         return Response(outcome)
+
+
+class CourseMarksImportListView(APIView):
+    permission_classes = [IsAuthenticated, CanEnterMarksOrAssignedLecturer]
+
+    def get(self, request, course_unit_id):
+        course_unit = get_object_or_404(CourseUnit, pk=course_unit_id, is_active=True)
+        if not user_can_manage_course_marks(request.user, course_unit):
+            return Response(
+                {"detail": "You are not assigned to this course."},
+                status=403,
+            )
+        from .models import MarksImportBatch
+
+        batches = MarksImportBatch.objects.filter(course_unit=course_unit)[:20]
+        return Response(
+            {
+                "imports": [
+                    {
+                        "id": batch.id,
+                        "filename": batch.filename,
+                        "saved_count": batch.saved_count,
+                        "created_at": batch.created_at.isoformat() if batch.created_at else None,
+                        "purged_at": batch.purged_at.isoformat() if batch.purged_at else None,
+                    }
+                    for batch in batches
+                ]
+            }
+        )
+
+
+class PurgeMarksImportView(APIView):
+    permission_classes = [IsAuthenticated, CanEnterMarksOrAssignedLecturer]
+
+    def post(self, request, batch_id):
+        from django.core.exceptions import ValidationError
+
+        from .models import MarksImportBatch
+        from .services.import_marks import purge_marks_import
+
+        batch = get_object_or_404(
+            MarksImportBatch.objects.select_related("course_unit"),
+            pk=batch_id,
+        )
+        if not user_can_manage_course_marks(request.user, batch.course_unit):
+            return Response(
+                {"detail": "You are not assigned to this course."},
+                status=403,
+            )
+        try:
+            assert_marks_entry_allowed(batch.course_unit, user=request.user)
+        except PermissionError as exc:
+            return Response({"detail": str(exc)}, status=403)
+        try:
+            return Response(purge_marks_import(batch))
+        except ValidationError as exc:
+            detail = exc.messages[0] if getattr(exc, "messages", None) else str(exc)
+            return Response({"detail": detail}, status=400)
 
 
 class MarksEntryTemplateView(APIView):
@@ -315,11 +382,10 @@ class StudentTranscriptView(APIView):
                     {"detail": f"PDF generation failed: {exc}"},
                     status=500,
                 )
-            safe_reg = (student.reg_no or str(student.pk)).replace("/", "-")
-            prefix = doc_meta.get("filename_prefix", "Results")
+            filename = doc_meta.get("download_name") or "steward.pdf"
             response = HttpResponse(pdf_bytes, content_type="application/pdf")
             response["Content-Disposition"] = (
-                f'attachment; filename="{prefix}_{safe_reg}.pdf"'
+                f'attachment; filename="{filename}"'
             )
             return response
 
@@ -416,3 +482,50 @@ class ResultsReportView(APIView):
                 "courses": courses,
             }
         )
+
+
+class AcademicBroadsheetView(APIView):
+    """Programme results grid: Registration Number, Name, then Score / Grade / GP per course."""
+
+    permission_classes = [IsAuthenticated, CanViewAllResults]
+
+    def get(self, request):
+        def _int_param(name):
+            raw = (request.query_params.get(name) or "").strip()
+            if not raw:
+                return None
+            try:
+                return int(raw)
+            except (TypeError, ValueError):
+                return None
+
+        try:
+            def _flag(name):
+                return (request.query_params.get(name) or "").strip().lower() in (
+                    "1",
+                    "true",
+                    "yes",
+                )
+
+            payload = build_academic_broadsheet(
+                request.user,
+                program_id=_int_param("program_id"),
+                program_batch_id=_int_param("program_batch_id"),
+                semester_id=_int_param("semester_id"),
+                first_sitting_only=_flag("first_sitting_only"),
+                include_semester_one=_flag("include_semester_one"),
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
+
+        if (request.query_params.get("format") or "").strip().lower() == "xlsx":
+            label = (payload.get("program_name") or "programme").replace(" ", "_")
+            semester = (payload.get("semester_name") or "all_semesters").replace(" ", "_")
+            safe = "".join(ch if ch.isalnum() or ch in ("_", "-") else "_" for ch in f"{label}_{semester}")
+            response = HttpResponse(
+                academic_broadsheet_xlsx(payload),
+                content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+            response["Content-Disposition"] = f'attachment; filename="academic_report_{safe[:80]}.xlsx"'
+            return response
+        return Response(payload)

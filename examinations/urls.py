@@ -3,12 +3,16 @@ from django.urls import path
 from .exam_card_views import ExamCardVerifyView, StudentExamCardView
 from .phase3_views import (
     BulkPublishView,
+    CourseMarksImportListView,
     ImportCourseMarksView,
     MarksEntryTemplateView,
+    AcademicBroadsheetView,
+    PurgeMarksImportView,
     ResultsReportView,
     StudentTranscriptView,
     VerifyCourseMarksView,
 )
+from .progression_views import ProgressionReportView, StudentProgressionView
 from .phase4_views import (
     CreateResultChangeRequestView,
     DeanReviewResultChangeView,
@@ -25,6 +29,7 @@ from .phase2_views import (
     ExamSessionBulkGenerateView,
     ExamSessionDetailView,
     ExamSessionListView,
+    ExamSessionAttendanceView,
     ExamSessionSittingListView,
     StudentMyExamScheduleView,
     StudentRetakeRequestView,
@@ -164,12 +169,37 @@ urlpatterns = [
         name="import-course-marks",
     ),
     path(
+        "courses/<int:course_unit_id>/mark-imports/",
+        CourseMarksImportListView.as_view(),
+        name="course-mark-imports",
+    ),
+    path(
+        "mark-imports/<int:batch_id>/purge/",
+        PurgeMarksImportView.as_view(),
+        name="purge-mark-import",
+    ),
+    path(
         "courses/<int:course_unit_id>/marks-entry-template/",
         MarksEntryTemplateView.as_view(),
         name="marks-entry-template",
     ),
     path("bulk-publish/", BulkPublishView.as_view(), name="bulk-publish"),
     path("reports/summary/", ResultsReportView.as_view(), name="results-report"),
+    path(
+        "reports/academic-broadsheet/",
+        AcademicBroadsheetView.as_view(),
+        name="academic-broadsheet",
+    ),
+    path(
+        "reports/progression/",
+        ProgressionReportView.as_view(),
+        name="progression-report",
+    ),
+    path(
+        "students/<int:student_id>/progression/",
+        StudentProgressionView.as_view(),
+        name="student-progression",
+    ),
     path("student/transcript/", StudentTranscriptView.as_view(), name="student-transcript"),
     path(
         "students/<int:student_id>/transcript/",
@@ -249,6 +279,11 @@ urlpatterns = [
         "exam-sessions/<int:session_id>/sitting-list/",
         ExamSessionSittingListView.as_view(),
         name="exam-session-sitting-list",
+    ),
+    path(
+        "exam-sessions/<int:session_id>/attendance/",
+        ExamSessionAttendanceView.as_view(),
+        name="exam-session-attendance",
     ),
     path(
         "retakes/<int:registration_id>/",

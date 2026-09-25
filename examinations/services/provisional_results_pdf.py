@@ -23,18 +23,61 @@ from .program_display import program_award_display_name
 from .transcript import build_student_transcript
 
 PROVISIONAL_DISCLAIMER = (
-    "For Official Purposes, this document must carry the official<br />"
-    "signature of the Faculty Examination Officer and an official<br />"
-    "stamp. Please note that this is not an official<br />"
-    "transcript. Transcripts can only be obtained from the Academic<br />"
+    "For Official Purposes, this document must carry the official "
+    "signature of the Faculty Examination Officer and an official "
+    "stamp. Please note that this is not an official "
+    "transcript. Transcripts can only be obtained from the Academic "
     "Registrar"
 )
 
-TRANSCRIPT_DISCLAIMER = (
-    "For Official Purposes, this document must carry the official<br />"
-    "signature and stamp of the Academic Registrar. This academic<br />"
-    "transcript is issued under the authority of Ndejje University."
+TESTIMONIAL_DISCLAIMER = (
+    "For Official Purposes, this document must carry the official "
+    "signature of the Faculty Dean and Academic Registrar and an official "
+    "stamp. Please note that this is not an official "
+    "transcript. Transcripts can only be obtained from the Academic "
+    "Registrar"
 )
+
+
+def _results_document_chrome(program, *, graduated: bool) -> dict:
+    """
+    Match the ARMS results paper.
+
+    Diploma: Provisional Results, Faculty Examination Coordinator.
+    Certificate and bachelor's: Academic Testimonial, Dean and Academic Registrar.
+    The student download stays on that paper even when a graduation flag is set.
+    """
+    del graduated
+    blob = ""
+    if program is not None:
+        level = getattr(program, "academic_level", None)
+        blob = " ".join(
+            part
+            for part in (
+                getattr(level, "name", "") or "",
+                getattr(program, "name", "") or "",
+            )
+            if part
+        ).lower()
+    if "diploma" in blob:
+        return {
+            "title": "Provisional Results",
+            "filename_prefix": "steward",
+            "kind": "provisional_results",
+            "disclaimer": PROVISIONAL_DISCLAIMER,
+            "signature_layout": "provisional",
+            "signatory_label": "Faculty Examination Coordinator",
+            "signatory_label_2": "",
+        }
+    return {
+        "title": "Academic Testimonial",
+        "filename_prefix": "steward",
+        "kind": "academic_testimonial",
+        "disclaimer": TESTIMONIAL_DISCLAIMER,
+        "signature_layout": "testimonial",
+        "signatory_label": "Faculty Dean",
+        "signatory_label_2": "Academic Registrar",
+    }
 
 
 def _ordinal_year(n: int | None) -> str:
@@ -42,19 +85,6 @@ def _ordinal_year(n: int | None) -> str:
         return "YEAR"
     words = {1: "ONE", 2: "TWO", 3: "THREE", 4: "FOUR", 5: "FIVE", 6: "SIX"}
     return f"YEAR {words.get(n, str(n))}"
-
-
-MIN_COURSE_ROWS = 4
-
-
-def _row_count_for_semester(panel: dict, *, num_year_blocks: int) -> int:
-    """Row count per semester panel — ARMS does not pad empty semesters to match a filled sibling."""
-    actual = len(panel["courses"])
-    if actual == 0:
-        return 0
-    if actual < MIN_COURSE_ROWS and num_year_blocks <= 2:
-        return MIN_COURSE_ROWS
-    return actual
 
 
 def _pad_panels_to_program_years(
@@ -128,6 +158,26 @@ def _empty_panel(year_num: int, term_num: int, academic_year_label: str) -> dict
     }
 
 
+def _derive_year_term(sem) -> tuple[int, int]:
+    """Resolve (year_of_study, term_number) for a semester.
+
+    Falls back to its absolute `order` (1-based sequence within the batch)
+    when the curriculum-position fields are left unset, since those are
+    optional/nullable for legacy batches (see Semester docstring).
+    """
+    if sem.year_of_study and sem.term_number:
+        return sem.year_of_study, sem.term_number
+    terms_per_year = 2
+    try:
+        terms_per_year = int(sem.program_batch.program.max_terms_per_year or 0) or 2
+    except Exception:
+        terms_per_year = 2
+    order = sem.order or 1
+    year_num = sem.year_of_study or (((order - 1) // terms_per_year) + 1)
+    term_num = sem.term_number or (((order - 1) % terms_per_year) + 1)
+    return max(1, year_num), max(1, term_num)
+
+
 def _totals_text(panel: dict, *, tcu_label_only: bool = False) -> str:
     if tcu_label_only:
         return f"TCUs: {panel['term_tcus']}&nbsp;&nbsp;&nbsp;&nbsp; GPA: {panel['term_gpa']}"
@@ -169,13 +219,10 @@ def _build_year_blocks(panels: list[dict], *, max_years: int = 3) -> list[dict]:
             sems.append(_empty_panel(year_num, term_num, ay))
 
         left, right = sems[0], sems[1]
-        block_count = num_year_blocks or 1
-        left_rows = _pad_course_rows(
-            left["courses"], _row_count_for_semester(left, num_year_blocks=block_count)
-        )
-        right_rows = _pad_course_rows(
-            right["courses"], _row_count_for_semester(right, num_year_blocks=block_count)
-        )
+        # Same row count on both sides so the totals sit on one line, as on the ARMS paper.
+        row_count = max(len(left["courses"]), len(right["courses"]))
+        left_rows = _pad_course_rows(left["courses"], row_count)
+        right_rows = _pad_course_rows(right["courses"], row_count)
 
         year_blocks.append(
             {
@@ -190,6 +237,10 @@ def _build_year_blocks(panels: list[dict], *, max_years: int = 3) -> list[dict]:
                 ),
                 "left_courses": left_rows,
                 "right_courses": right_rows,
+                "course_pairs": [
+                    {"left": left_rows[index], "right": right_rows[index]}
+                    for index in range(row_count)
+                ],
                 # ARMS: only Year One Semester 1 shows TCUs; all other panels use CTCUs + CGPA
                 "left_totals": _totals_text(left, tcu_label_only=(year_num == 1)),
                 "right_totals": _totals_text(right),
@@ -197,6 +248,69 @@ def _build_year_blocks(panels: list[dict], *, max_years: int = 3) -> list[dict]:
         )
 
     return year_blocks
+
+
+def _steward_download_name(when=None) -> str:
+    """ARMS names the file rms_yyyyMMddhhmmss.pdf. STEWARD uses the same clock stamp."""
+    when = timezone.localtime(when or timezone.now())
+    return f"steward_{when.strftime('%Y%m%d%I%M%S')}.pdf"
+
+
+def _printed_at_label(when=None) -> str:
+    when = timezone.localtime(when or timezone.now())
+    hour = when.strftime("%I").lstrip("0") or "12"
+    return f"{when.strftime('%d/%m/%Y')} {hour}:{when.strftime('%M %p')}"
+
+
+def _bold_script_title(title: str) -> tuple[str, int, int]:
+    """Edwardian Script has no bold weight. Draw it large and overstrike the strokes."""
+    font_path = (
+        Path(settings.BASE_DIR)
+        / "examinations"
+        / "static"
+        / "examinations"
+        / "ITCEDSCR.TTF"
+    )
+    if not title or not font_path.is_file():
+        return "", 0, 0
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except ImportError:
+        return "", 0, 0
+
+    point_size = 118
+    font = ImageFont.truetype(str(font_path), point_size)
+    probe = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    bbox = probe.textbbox((0, 0), title, font=font)
+    pad = 10
+    width = (bbox[2] - bbox[0]) + pad * 2 + 8
+    height = (bbox[3] - bbox[1]) + pad * 2 + 6
+    image = Image.new("RGBA", (width, height), (255, 255, 255, 0))
+    draw = ImageDraw.Draw(image)
+    origin_x = pad - bbox[0]
+    origin_y = pad - bbox[1]
+    for dx in (-2, -1, 0, 1, 2):
+        draw.text((origin_x + dx, origin_y), title, font=font, fill=(0, 0, 0, 255))
+    draw.text((origin_x, origin_y + 1), title, font=font, fill=(0, 0, 0, 255))
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    # Show it larger than the previous 32px heading.
+    return f"data:image/png;base64,{encoded}", max(1, width // 2), max(1, height // 2)
+
+
+def _load_header_b64() -> str:
+    path = (
+        Path(settings.BASE_DIR)
+        / "examinations"
+        / "static"
+        / "examinations"
+        / "NdejjeHeader.png"
+    )
+    if not path.is_file():
+        return ""
+    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
 
 
 def _load_logo_b64() -> str:
@@ -254,7 +368,7 @@ def build_provisional_results_context(
             "kind": document_kind,
             "title": "Academic Transcript" if graduated else "Provisional Results",
             "is_graduated": graduated,
-            "filename_prefix": "Academic_Transcript" if graduated else "Provisional_Results",
+            "filename_prefix": "steward",
         }
 
     app = student.application
@@ -286,12 +400,14 @@ def build_provisional_results_context(
         sem = r.enrollment.course_unit.semester
         if not sem:
             continue
+        if r.final_mark is None:
+            continue
         by_semester_id.setdefault(sem.id, []).append(
             {
                 "code": r.enrollment.course_unit.code,
                 "name": r.enrollment.course_unit.name,
                 "credit_units": float(r.enrollment.course_unit.credit_units or 0) or None,
-                "score": int(r.final_mark) if r.final_mark is not None and show_scores else "",
+                "score": int(r.final_mark) if show_scores else "",
                 "grade": r.grade_letter or "",
                 "grade_point": float(r.grade_point) if r.grade_point is not None else None,
             }
@@ -301,14 +417,17 @@ def build_provisional_results_context(
     if program_batch:
         semesters_qs = Semester.objects.filter(
             program_batch=program_batch, is_active=True
-        ).order_by("year_of_study", "term_number", "order")
+        ).select_related("program_batch__program").order_by("order")
 
     panels = []
     cumulative_credits = Decimal("0")
     cumulative_weighted = Decimal("0")
 
     for sem in semesters_qs:
-        courses = by_semester_id.get(sem.id, [])
+        courses = sorted(
+            by_semester_id.get(sem.id, []),
+            key=lambda c: c["credit_units"] or 0,
+        )
         term_credits = Decimal("0")
         term_weighted = Decimal("0")
         for c in courses:
@@ -334,13 +453,14 @@ def build_provisional_results_context(
             y = sem.start_date.year
             ay = f"{y}/{y + 1}"
 
+        year_num, term_num = _derive_year_term(sem)
         panels.append(
             {
-                "year_heading": _ordinal_year(sem.year_of_study),
-                "year_num": sem.year_of_study or max(1, (sem.order or 1 + 1) // 2),
-                "term_num": sem.term_number or sem.order or 1,
+                "year_heading": _ordinal_year(year_num),
+                "year_num": year_num,
+                "term_num": term_num,
                 "academic_year": ay,
-                "semester_heading": f"Semester {sem.term_number or sem.order}",
+                "semester_heading": f"Semester {term_num}",
                 "courses": courses,
                 "term_tcus": int(term_credits) if term_credits else 0,
                 "term_ctcus": int(cumulative_credits) if cumulative_credits else 0,
@@ -359,21 +479,24 @@ def build_provisional_results_context(
                     "term_num": (idx % 2) + 1,
                     "academic_year": academic_year_label,
                     "semester_heading": f"Semester {(idx % 2) + 1}",
-                    "courses": [
-                        {
-                            "code": c["course_code"],
-                            "name": c["course_name"],
-                            "credit_units": c.get("credit_units"),
-                            "score": int(float(c["final_mark"]))
-                            if c.get("final_mark") and show_scores
-                            else "",
-                            "grade": c.get("grade_letter", ""),
-                            "grade_point": float(c["grade_point"])
-                            if c.get("grade_point")
-                            else None,
-                        }
-                        for c in block.get("courses", [])
-                    ],
+                    "courses": sorted(
+                        (
+                            {
+                                "code": c["course_code"],
+                                "name": c["course_name"],
+                                "credit_units": c.get("credit_units"),
+                                "score": int(float(c["final_mark"]))
+                                if c.get("final_mark") and show_scores
+                                else "",
+                                "grade": c.get("grade_letter", ""),
+                                "grade_point": float(c["grade_point"])
+                                if c.get("grade_point")
+                                else None,
+                            }
+                            for c in block.get("courses", [])
+                        ),
+                        key=lambda c: c["credit_units"] or 0,
+                    ),
                     "term_tcus": 0,
                     "term_ctcus": int(tr["summary"].get("total_credit_units") or 0),
                     "term_gpa": "0",
@@ -417,6 +540,7 @@ def build_provisional_results_context(
             and student.admitted_program.faculty
             else student.admitted_program.name
         )
+        faculty_name = faculty_name.replace("Faculty of", "").replace("FACULTY OF", "").strip()
 
     dob_str = ""
     if app and app.date_of_birth:
@@ -426,8 +550,19 @@ def build_provisional_results_context(
     nationality = (app.nationality.upper() if app and app.nationality else "UGANDAN") or "UGANDAN"
 
     graduated = doc_meta["is_graduated"]
+    chrome = _results_document_chrome(student.admitted_program, graduated=graduated)
+    printed_on = timezone.localtime()
+    doc_meta = {
+        **doc_meta,
+        "kind": chrome["kind"],
+        "title": chrome["title"],
+        "filename_prefix": chrome["filename_prefix"],
+        "download_name": _steward_download_name(printed_on),
+        "is_graduated": graduated,
+    }
     year_blocks = _build_year_blocks(panels, max_years=max_years)
     layout_mode = _layout_mode(year_blocks)
+    title_b64, title_width, title_height = _bold_script_title(chrome["title"])
 
     return {
         "student": {
@@ -445,18 +580,26 @@ def build_provisional_results_context(
         "layout_mode": layout_mode,
         "show_scores": show_scores,
         "logo_b64": _load_logo_b64(),
+        "header_b64": _load_header_b64(),
         "award": program_award_display_name(
             student.admitted_program.name if student.admitted_program else ""
         ).upper(),
         "class_of_award": class_of_award,
         "printed_by": printed_by or "NDU Portal",
         "printed_from": _client_ip(request),
-        "printed_at": timezone.localtime().strftime("%d/%m/%Y %I:%M %p"),
-        "document_title": doc_meta["title"],
-        "document_kind": doc_meta["kind"],
+        "printed_at": _printed_at_label(printed_on),
+        "document_title": chrome["title"],
+        "title_b64": title_b64,
+        "title_width": title_width,
+        "title_height": title_height,
+        "document_kind": chrome["kind"],
+        "filename_prefix": chrome["filename_prefix"],
+        "download_name": doc_meta["download_name"],
         "is_graduated": graduated,
-        "disclaimer": TRANSCRIPT_DISCLAIMER if graduated else PROVISIONAL_DISCLAIMER,
-        "signatory_label": "Academic Registrar" if graduated else "Faculty Examination Coordinator",
+        "disclaimer": chrome["disclaimer"],
+        "signature_layout": chrome["signature_layout"],
+        "signatory_label": chrome["signatory_label"],
+        "signatory_label_2": chrome["signatory_label_2"],
     }
 
 
@@ -491,16 +634,40 @@ def render_provisional_results_pdf(
         student, show_scores=show_scores, printed_by=printed_by, request=request
     )
     html = render_to_string("examinations/provisional_results.html", context)
-    from xhtml2pdf import pisa
+    from reportlab.lib.fonts import addMapping
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    from xhtml2pdf import default, pisa
 
     from accounts.portal_branding import xhtml2pdf_link_callback
+
+    script_font = (
+        Path(settings.BASE_DIR)
+        / "examinations"
+        / "static"
+        / "examinations"
+        / "ITCEDSCR.TTF"
+    )
+    if script_font.is_file() and "Edwardian" not in pdfmetrics.getRegisteredFontNames():
+        pdfmetrics.registerFont(TTFont("Edwardian", str(script_font)))
+    if "Edwardian" in pdfmetrics.getRegisteredFontNames():
+        for bold in (0, 1):
+            for italic in (0, 1):
+                addMapping("Edwardian", bold, italic, "Edwardian")
+        default.DEFAULT_FONT["edwardian"] = "Edwardian"
 
     pdf_buffer = io.BytesIO()
     result = pisa.CreatePDF(html, dest=pdf_buffer, link_callback=xhtml2pdf_link_callback)
     if result.err:
         raise RuntimeError("Results document PDF generation failed.")
     pdf_buffer.seek(0)
-    meta = get_transcript_document_meta(student)
+    meta = {
+        "kind": context.get("document_kind"),
+        "title": context.get("document_title"),
+        "filename_prefix": context.get("filename_prefix") or "steward",
+        "download_name": context.get("download_name") or _steward_download_name(),
+        "is_graduated": context.get("is_graduated"),
+    }
     return pdf_buffer.read(), meta
 
 

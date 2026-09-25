@@ -734,3 +734,119 @@ class MarksEntryWindow(models.Model):
             )
         if self.opens_at and self.closes_at and self.opens_at >= self.closes_at:
             raise ValidationError({"closes_at": "Closing time must be after opening time."})
+
+
+class StudentProgressionStanding(models.Model):
+    """Latest ARMS-style standing for a student, recomputed from published results."""
+
+    STATUS_NORMAL = "normal"
+    STATUS_PROBATION_COURSE = "probation_course"
+    STATUS_PROBATION_LOAD = "probation_load"
+    STATUS_DISCONTINUED_GPA = "discontinued_gpa"
+    STATUS_DISCONTINUED_COURSE = "discontinued_course"
+    STATUS_CHOICES = [
+        (STATUS_NORMAL, "Normal progress"),
+        (STATUS_PROBATION_COURSE, "Probation (course)"),
+        (STATUS_PROBATION_LOAD, "Probation (below load)"),
+        (STATUS_DISCONTINUED_GPA, "Discontinued (GPA)"),
+        (STATUS_DISCONTINUED_COURSE, "Discontinued (course)"),
+    ]
+
+    student = models.OneToOneField(
+        "admissions.AdmittedStudent",
+        on_delete=models.CASCADE,
+        related_name="progression_standing",
+    )
+    status = models.CharField(max_length=32, choices=STATUS_CHOICES, default=STATUS_NORMAL)
+    remark = models.CharField(max_length=500, blank=True, default="")
+    semester_gpa = models.DecimalField(max_digits=4, decimal_places=2, null=True, blank=True)
+    cgpa = models.DecimalField(max_digits=4, decimal_places=2, null=True, blank=True)
+    computed_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.student_id} {self.status}"
+
+
+class ExamAttendance(models.Model):
+    """Whether a candidate sat a scheduled exam session."""
+
+    exam_session = models.ForeignKey(
+        ExamSession,
+        on_delete=models.CASCADE,
+        related_name="attendance_marks",
+    )
+    enrollment = models.ForeignKey(
+        "Programs.StudentCourseUnitEnrollment",
+        on_delete=models.CASCADE,
+        related_name="exam_attendance_marks",
+    )
+    present = models.BooleanField(default=False)
+    marked_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="exam_attendance_marked",
+    )
+    marked_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ("exam_session", "enrollment")
+
+    def __str__(self):
+        return f"session {self.exam_session_id} enrollment {self.enrollment_id}"
+
+
+class MarksImportBatch(models.Model):
+    """One uploaded marks file, so a bad import can be undone."""
+
+    course_unit = models.ForeignKey(
+        "Programs.CourseUnit",
+        on_delete=models.CASCADE,
+        related_name="marks_import_batches",
+    )
+    filename = models.CharField(max_length=255, blank=True, default="")
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="marks_import_batches",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    purged_at = models.DateTimeField(null=True, blank=True)
+    saved_count = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Import #{self.pk} {self.course_unit_id}"
+
+
+class MarksImportChange(models.Model):
+    """Previous marks for one student row inside an import, used by purge."""
+
+    batch = models.ForeignKey(
+        MarksImportBatch,
+        on_delete=models.CASCADE,
+        related_name="changes",
+    )
+    result = models.ForeignKey(
+        CourseUnitResult,
+        on_delete=models.CASCADE,
+        related_name="import_changes",
+    )
+    created_result = models.BooleanField(default=False)
+    previous_ca_mark = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    previous_exam_mark = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    previous_final_mark = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    previous_grade_letter = models.CharField(max_length=5, blank=True, default="")
+    previous_grade_point = models.DecimalField(max_digits=4, decimal_places=1, null=True, blank=True)
+    previous_is_pass = models.BooleanField(null=True, blank=True)
+    previous_paper_outcome = models.CharField(max_length=16, blank=True, default="")
+    previous_status = models.CharField(max_length=20, blank=True, default="")
+    previous_edit_unlocked = models.BooleanField(default=False)
+
+    def __str__(self):
+        return f"Import change {self.pk}"

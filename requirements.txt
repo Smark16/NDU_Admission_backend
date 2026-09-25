@@ -77,6 +77,7 @@ Pillow==10.1.0
 qrcode==8.0
 prompt_toolkit==3.0.52
 prov==2.1.1
+psutil==6.1.1
 psycopg2-binary==2.9.9
 puremagic==2.2.0
 pycairo==1.29.0

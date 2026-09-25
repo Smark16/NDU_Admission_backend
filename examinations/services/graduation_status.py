@@ -28,19 +28,31 @@ def student_has_graduated(student: AdmittedStudent) -> bool:
 
 
 def get_transcript_document_meta(student: AdmittedStudent) -> dict:
-    graduated = student_has_graduated(student)
-    if graduated:
+    """Title shown before download. Diploma is Provisional Results; other levels are Academic Testimonial."""
+    program = getattr(student, "admitted_program", None)
+    blob = ""
+    if program is not None:
+        level = getattr(program, "academic_level", None)
+        blob = " ".join(
+            part
+            for part in (
+                getattr(level, "name", "") or "",
+                getattr(program, "name", "") or "",
+            )
+            if part
+        ).lower()
+    if "diploma" in blob:
         return {
-            "kind": "academic_transcript",
-            "title": "Academic Transcript",
-            "is_graduated": True,
-            "filename_prefix": "Academic_Transcript",
+            "kind": "provisional_results",
+            "title": "Provisional Results",
+            "is_graduated": False,
+            "filename_prefix": "steward",
         }
     return {
-        "kind": "provisional_results",
-        "title": "Provisional Results",
+        "kind": "academic_testimonial",
+        "title": "Academic Testimonial",
         "is_graduated": False,
-        "filename_prefix": "Provisional_Results",
+        "filename_prefix": "steward",
     }
 
 

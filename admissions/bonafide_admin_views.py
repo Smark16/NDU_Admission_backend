@@ -254,10 +254,9 @@ class BonafideTranscriptPdfView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
-        safe_reg = (student.reg_no or str(student.pk)).replace("/", "-")
-        prefix = doc_meta.get("filename_prefix", "Results")
+        filename = doc_meta.get("download_name") or "steward.pdf"
         response = HttpResponse(pdf_bytes, content_type="application/pdf")
-        response["Content-Disposition"] = f'inline; filename="{prefix}_{safe_reg}.pdf"'
+        response["Content-Disposition"] = f'inline; filename="{filename}"'
         return response
 
 
