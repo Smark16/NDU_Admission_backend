@@ -577,6 +577,8 @@ def exemption_billing_lines_for_request(
 
 def exemption_remaining_curriculum_lines_for_request(
     change_request: "AdmissionChangeRequest",
+    *,
+    entire_years: bool = False,
 ) -> list[dict]:
     """
     Remaining (non-exempted) papers for each semester touched by HOD-approved
@@ -624,6 +626,25 @@ def exemption_remaining_curriculum_lines_for_request(
 
     if not terms:
         return []
+
+    if entire_years:
+        years = {year for year, _term in terms}
+        expanded = set(terms)
+        for year in years:
+            found_terms = (
+                ProgramCurriculumLine.objects.filter(
+                    curriculum_version=version,
+                    program_id=owner_program_id,
+                    year_of_study=year,
+                    is_active=True,
+                )
+                .values_list("term_number", flat=True)
+                .distinct()
+            )
+            for term in found_terms:
+                if term:
+                    expanded.add((int(year), int(term)))
+        terms = expanded
 
     exempted_line_ids = set(
         StudentCurriculumOverride.objects.filter(
@@ -712,6 +733,74 @@ def exemption_remaining_curriculum_lines_for_request(
                 }
             )
     return out
+
+
+def exemption_year_billing_for_request(change_request: "AdmissionChangeRequest") -> dict:
+    """
+    Filing bill for Accounts: exemption fees plus remaining tuition for every
+    semester in each year that has an HOD-approved paper.
+    """
+    fees = exemption_billing_lines_for_request(change_request)
+    remaining = exemption_remaining_curriculum_lines_for_request(
+        change_request, entire_years=True
+    )
+    years: dict[int, dict] = {}
+
+    def bucket(year, term):
+        year_key = int(year) if year is not None else 0
+        term_key = int(term) if term is not None else 0
+        year_row = years.setdefault(
+            year_key,
+            {"year_of_study": year_key or None, "terms": {}, "year_total": 0.0},
+        )
+        return year_row["terms"].setdefault(
+            term_key,
+            {
+                "term_number": term_key or None,
+                "exemption_fees": [],
+                "remaining_papers": [],
+                "exemption_total": 0.0,
+                "remaining_total": 0.0,
+                "full_tuition": None,
+            },
+        )
+
+    for row in fees:
+        term_row = bucket(row.get("year_of_study"), row.get("term_number"))
+        amount = float(row["amount"]) if row.get("amount") is not None else 0.0
+        term_row["exemption_fees"].append(row)
+        term_row["exemption_total"] += amount
+    for row in remaining:
+        term_row = bucket(row.get("year_of_study"), row.get("term_number"))
+        amount = float(row["amount"]) if row.get("amount") is not None else 0.0
+        term_row["remaining_papers"].append(row)
+        term_row["remaining_total"] += amount
+        if row.get("full_tuition") is not None:
+            term_row["full_tuition"] = row.get("full_tuition")
+
+    year_list = []
+    grand = 0.0
+    for year_key in sorted(years):
+        year_row = years[year_key]
+        term_list = []
+        year_total = 0.0
+        for term_key in sorted(year_row["terms"]):
+            term_row = year_row["terms"][term_key]
+            term_row["term_total"] = term_row["exemption_total"] + term_row["remaining_total"]
+            year_total += term_row["term_total"]
+            term_list.append(term_row)
+        year_row["terms"] = term_list
+        year_row["year_total"] = year_total
+        grand += year_total
+        year_list.append(year_row)
+
+    rate = exemption_course_fee_rate(change_request)
+    return {
+        "is_alumnus": bool(change_request.exemption_is_alumnus),
+        "paper_rate": float(rate) if rate is not None else None,
+        "years": year_list,
+        "grand_total": grand,
+    }
 
 
 def exemption_course_fee_total(change_request: "AdmissionChangeRequest") -> Decimal:

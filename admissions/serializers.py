@@ -1653,18 +1653,21 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
     exemption_course_fee_total = serializers.SerializerMethodField()
     exemption_billing_lines = serializers.SerializerMethodField()
     exemption_remaining_curriculum_lines = serializers.SerializerMethodField()
+    exemption_year_billing = serializers.SerializerMethodField()
     exemption_split_presets = serializers.SerializerMethodField()
     suggested_promotion = serializers.SerializerMethodField()
     promotion_context = serializers.SerializerMethodField()
     exemption_promotion_applied = serializers.SerializerMethodField()
     exemption_promotion_pending_accounts = serializers.SerializerMethodField()
     verification_token = serializers.SerializerMethodField()
+    reg_no = serializers.CharField(source="admitted_student.reg_no", read_only=True, default="")
 
     class Meta:
         model = AdmissionChangeRequest
         fields = [
             'id', 'change_type', 'change_type_display', 'status', 'status_display',
             'student_name', 'student_id', 'admitted_student_pk',
+            'reg_no',
             'current_program_name', 'current_campus_name', 'current_study_mode',
             'new_program_name', 'new_campus_name', 'new_study_mode',
             'requested_year', 'requested_semester',
@@ -1680,6 +1683,7 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
             'exemption_course_fee_rate', 'exemption_course_fee_total',
             'exemption_billing_lines',
             'exemption_remaining_curriculum_lines',
+            'exemption_year_billing',
             'exemption_split_presets',
             'suggested_promotion', 'promotion_context',
             'exemption_promotion_year', 'exemption_promotion_term',
@@ -1844,6 +1848,20 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
         except Exception:
             return []
 
+    def get_exemption_year_billing(self, obj):
+        if obj.change_type != "exemption":
+            return None
+        if self.context.get("list_view"):
+            return None
+        if not self._request_user_can_view_finance():
+            return None
+        from admissions.exemption_services import exemption_year_billing_for_request
+
+        try:
+            return exemption_year_billing_for_request(obj)
+        except Exception:
+            return {"years": [], "grand_total": 0}
+
     def get_exemption_split_presets(self, obj):
         if obj.change_type != "exemption":
             return None
@@ -1921,6 +1939,7 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
             data["exemption_course_fee_total"] = None
             data["exemption_billing_lines"] = None
             data["exemption_remaining_curriculum_lines"] = None
+            data["exemption_year_billing"] = None
             data["exemption_split_presets"] = None
         return data
 
