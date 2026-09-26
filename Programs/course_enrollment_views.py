@@ -1166,7 +1166,10 @@ class GetLecturerCourses(APIView):
 
     def get(self, request):
         from examinations.services.marks_window import marks_entry_status
-        from Programs.shared_teaching import registered_enrollments_for_course_unit
+        from Programs.shared_teaching import (
+            lecturer_section_scope,
+            registered_enrollments_for_course_unit,
+        )
 
         user = request.user
 
@@ -1223,13 +1226,19 @@ class GetLecturerCourses(APIView):
             # a lecturer who is only on some of the linked programme CourseUnits sees just
             # their own -- otherwise they'd see every other programme's students too.
             is_offering_lecturer = sto is not None and sto.lecturers.filter(pk=user.pk).exists()
+
+            # A lecturer scoped to one physical stream/section (e.g. Stream I vs
+            # Stream II of the same merged class) only sees that section's students.
+            teaching_section_ids = lecturer_section_scope(user, units)
+
             if sto is not None and not is_offering_lecturer:
                 enrollments = registered_enrollments_for_course_unit(
                     rep, statuses=["enrolled"], course_unit_ids=[u.id for u in units],
+                    teaching_section_ids=teaching_section_ids,
                 ).select_related("student", "student__application", "student__admitted_campus")
             else:
                 enrollments = registered_enrollments_for_course_unit(
-                    rep, statuses=["enrolled"]
+                    rep, statuses=["enrolled"], teaching_section_ids=teaching_section_ids,
                 ).select_related("student", "student__application", "student__admitted_campus")
 
             students = []

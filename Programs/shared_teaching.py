@@ -4,7 +4,12 @@ from __future__ import annotations
 import re
 from django.db.models import Q, QuerySet
 
-from .models import CourseUnit, SharedTeachingOffering, StudentCourseUnitEnrollment
+from .models import (
+    CourseUnit,
+    CourseUnitSectionLecturer,
+    SharedTeachingOffering,
+    StudentCourseUnitEnrollment,
+)
 
 # Trailing digits: BEC 1102 / BAF1102 / BEX 1102 → "1102"
 _CODE_NUMBER_RE = re.compile(r"(\d{3,})\s*$")
@@ -633,12 +638,61 @@ def linked_course_units_qs(course_unit: CourseUnit) -> QuerySet[CourseUnit]:
     return CourseUnit.objects.filter(id__in=ids, is_active=True)
 
 
+def lecturer_section_scope(user, units) -> list[int] | None:
+    """Teaching sections this lecturer is explicitly limited to on these CourseUnits.
+
+    None means unscoped (sees every section) -- either there's no
+    CourseUnitSectionLecturer row at all for this lecturer on these units (the
+    common case: a plain CourseUnit.lecturers attachment with no section chosen),
+    or at least one row is explicitly ALL-scoped (teaching_section is null).
+    """
+    unit_ids = [u.id for u in units]
+    section_rows = CourseUnitSectionLecturer.objects.filter(
+        course_unit_id__in=unit_ids, lecturer=user,
+    )
+    if not section_rows.exists() or section_rows.filter(teaching_section__isnull=True).exists():
+        return None
+    return list(
+        section_rows.exclude(teaching_section__isnull=True)
+        .values_list("teaching_section_id", flat=True)
+        .distinct()
+    )
+
+
+def lecturer_roster_scope(user, course_unit: CourseUnit) -> tuple[list[int] | None, list[int] | None]:
+    """(course_unit_ids, teaching_section_ids) for a lecturer viewing one CourseUnit.
+
+    Mirrors GetLecturerCourses' rule: a lecturer explicitly on the
+    SharedTeachingOffering itself (offering.lecturers) sees the full merge across
+    every linked programme's CourseUnit; one only attached to some of the linked
+    units (CourseUnit.lecturers) sees just those -- otherwise they'd see every
+    other programme's students too. Layered on top, a lecturer assigned to a
+    specific teaching_section (via CourseUnitSectionLecturer) sees only that
+    section, not the whole merged cohort.
+    """
+    sto = course_unit.shared_teaching_offering
+    if sto is None:
+        units = [course_unit]
+        return None, lecturer_section_scope(user, units)
+
+    is_offering_lecturer = sto.lecturers.filter(pk=user.pk).exists()
+    linked = list(
+        CourseUnit.objects.filter(shared_teaching_offering_id=sto.id, is_active=True)
+    )
+    if is_offering_lecturer:
+        return None, lecturer_section_scope(user, linked)
+
+    my_units = [u for u in linked if u.lecturers.filter(pk=user.pk).exists()] or [course_unit]
+    return [u.id for u in my_units], lecturer_section_scope(user, my_units)
+
+
 def registered_enrollments_for_course_unit(
     course_unit: CourseUnit,
     *,
     statuses: list[str] | None = None,
     merge_shared: bool = True,
     course_unit_ids: list[int] | None = None,
+    teaching_section_ids: list[int] | None = None,
 ) -> QuerySet[StudentCourseUnitEnrollment]:
     """Roster for LMS / marks.
 
@@ -648,6 +702,11 @@ def registered_enrollments_for_course_unit(
     ``course_unit_ids``, when given, overrides both of the above and scopes the
     roster to exactly those CourseUnit PKs -- for a lecturer assigned to only some
     of a shared offering's linked programme units, not the offering as a whole.
+
+    ``teaching_section_ids``, when given, further restricts the roster to students
+    whose ``StudentProgrammeEnrollment.teaching_section`` is one of these -- for a
+    lecturer assigned to only one physical stream/section of a shared class (e.g.
+    Stream I vs Stream II), not the whole merged cohort.
 
     Visibility: normally any actively-enrolled student on the programme shows up
     even before they've registered (paid enough tuition). When
@@ -686,6 +745,8 @@ def registered_enrollments_for_course_unit(
         )
         .filter(visibility_filter)
     )
+    if teaching_section_ids is not None:
+        qs = qs.filter(student__programme_enrollment__teaching_section_id__in=teaching_section_ids)
     if restrict_to_registered:
         qs = qs.distinct()
 

@@ -13,6 +13,7 @@ from admissions.faculty_scope import filter_course_units_for_user
 from admissions.models import AdmittedStudent
 from Programs.models import CourseUnit, StudentCourseUnitEnrollment
 from Programs.shared_teaching import (
+    lecturer_roster_scope,
     linked_course_unit_ids,
     registered_enrollments_for_course_unit,
 )
@@ -169,9 +170,20 @@ class LecturerCourseMarksView(APIView):
             level = getattr(program, "academic_level", None) if program else None
             level_name = level.name if level else None
 
+        # A plain lecturer directly on this CourseUnit is scoped to their own
+        # linked units / teaching section (e.g. Stream I vs Stream II of the same
+        # merged class). Examinations-office staff (HOD/Dean/AR) who reached this
+        # course via office permissions rather than a direct attachment keep the
+        # full default merge -- unchanged from before.
+        course_unit_ids = teaching_section_ids = None
+        if course_unit.lecturers.filter(pk=request.user.pk).exists():
+            course_unit_ids, teaching_section_ids = lecturer_roster_scope(request.user, course_unit)
+
         enrollments = registered_enrollments_for_course_unit(
             course_unit,
             statuses=["enrolled", "completed", "failed"],
+            course_unit_ids=course_unit_ids,
+            teaching_section_ids=teaching_section_ids,
         ).select_related("student", "student__application", "course_result")
 
         rows = []
