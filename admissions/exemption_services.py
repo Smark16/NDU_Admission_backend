@@ -4124,11 +4124,11 @@ def advance_student_position_for_exemption(
 
 def ensure_exemption_verification_token(change_request: AdmissionChangeRequest) -> str | None:
     """
-    Issue (or return) the public QR token once HOD has reviewed with ≥1 approved paper.
+    Issue (or return) the public QR token once at least one paper is HOD-approved.
+
+    Students keep this token so they can print the HOD-approved form again later.
     """
     if change_request.change_type != "exemption":
-        return None
-    if not change_request.hod_reviewed_at:
         return None
     from admissions.models import ExemptionRequestLine
 
