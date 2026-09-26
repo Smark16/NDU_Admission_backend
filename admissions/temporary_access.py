@@ -231,18 +231,27 @@ def pass_to_dict(p: TemporaryAccessPass, *, request=None) -> dict[str, Any]:
     programme = getattr(award, "programme", None) if award else None
     student = p.student
     app = getattr(student, "application", None)
-    photo = None
-    if app is not None:
+
+    # Prefer the student's own updated ERP profile photo over the original
+    # application photo, which goes stale once they upload a new one.
+    raw_photo = None
+    student_user = getattr(student, "student_user", None)
+    profile = getattr(student_user, "profile", None) if student_user else None
+    if profile is not None and getattr(profile, "profile_photo", None):
+        raw_photo = profile.profile_photo
+    elif app is not None:
         raw_photo = getattr(app, "passport_photo", None) or getattr(app, "photo", None)
-        if raw_photo:
-            try:
-                url = raw_photo.url
-                if request is not None:
-                    photo = request.build_absolute_uri(url)
-                else:
-                    photo = url
-            except Exception:
-                photo = str(raw_photo) if raw_photo else None
+
+    photo = None
+    if raw_photo:
+        try:
+            url = raw_photo.url
+            if request is not None:
+                photo = request.build_absolute_uri(url)
+            else:
+                photo = url
+        except Exception:
+            photo = str(raw_photo) if raw_photo else None
 
     prog = getattr(student, "admitted_program", None)
     campus = getattr(student, "admitted_campus", None)
