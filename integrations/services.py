@@ -158,6 +158,16 @@ def moodle_launch_profile_for_student(
     }
 
 
+LMS_MIN_PERCENT = Decimal("60")
+
+
+def student_has_valid_temporary_pass(student: AdmittedStudent):
+    """Active pass whose valid_from / valid_until cover today, or None."""
+    from admissions.temporary_access import get_active_pass
+
+    return get_active_pass(student)
+
+
 def finance_status_for_student(student: AdmittedStudent) -> dict:
     cfg = MoodleIntegrationConfig.get_solo()
     try:
@@ -177,11 +187,11 @@ def finance_status_for_student(student: AdmittedStudent) -> dict:
     balance = Decimal(str(finance.get("balance") or 0))
     cleared_min = Decimal(str(cfg.cleared_min_percent))
     partial_min = Decimal(str(cfg.partial_min_percent))
+    active_pass = student_has_valid_temporary_pass(student)
+    paid_enough = percent >= LMS_MIN_PERCENT
 
-    if balance <= 0 or percent >= cleared_min:
+    if paid_enough or active_pass is not None:
         status = "CLEARED"
-    elif percent >= partial_min:
-        status = "PARTIAL"
     else:
         status = "BLOCKED"
 
@@ -197,6 +207,14 @@ def finance_status_for_student(student: AdmittedStudent) -> dict:
         "display_currency": finance.get("display_currency") or "UGX",
         "accounts_cleared": bool(getattr(student, "accounts_registration_cleared", False)),
         "commitment_met": bool(finance.get("commitment_met")),
+        "lms_min_percent": float(LMS_MIN_PERCENT),
+        "temporary_pass_access": active_pass is not None,
+        "temporary_pass_valid_from": (
+            active_pass.valid_from.isoformat() if active_pass and active_pass.valid_from else None
+        ),
+        "temporary_pass_valid_until": (
+            active_pass.valid_until.isoformat() if active_pass and active_pass.valid_until else None
+        ),
         "cleared_min_percent": float(cleared_min),
         "partial_min_percent": float(partial_min),
         "as_of": datetime.now(timezone.utc).isoformat(),
@@ -223,6 +241,8 @@ def lms_course_unit_enrollments_qs(student: AdmittedStudent):
 
     - Programme **Enrolled** (commitment met): assigned course units count, even
       before formal semester registration (registration_date may be null).
+    - Valid temporary pass (today is on or after valid_from and on or before
+      valid_until): same as enrolled.
     - Otherwise: only course units the student formally registered for.
     """
     from django.db.models import Q
@@ -230,7 +250,7 @@ def lms_course_unit_enrollments_qs(student: AdmittedStudent):
     from Programs.models import StudentCourseUnitEnrollment
 
     base = StudentCourseUnitEnrollment.objects.filter(student=student, status="enrolled")
-    if student_is_programme_enrolled(student):
+    if student_is_programme_enrolled(student) or student_has_valid_temporary_pass(student):
         return base
     return base.filter(registration_date__isnull=False)
 
