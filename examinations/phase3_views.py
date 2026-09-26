@@ -436,6 +436,24 @@ class ResultsReportView(APIView):
             .order_by("grade_letter")
         )
 
+        # Pre-publish visibility (super admin / HOD / exam coordinator, via
+        # CanViewAllResults) — same breakdown but across ALL statuses, so
+        # reviewers can see pass/fail and grade spread before publishing,
+        # not just after. Published numbers above remain the official ones.
+        all_pass_count = qs.filter(is_pass=True).count()
+        all_fail_count = qs.filter(is_pass=False).count()
+        all_total = all_pass_count + all_fail_count
+        all_pass_rate = (
+            round(100.0 * all_pass_count / all_total, 1) if all_total else None
+        )
+        all_grade_distribution = list(
+            qs.exclude(grade_letter="")
+            .exclude(grade_letter__isnull=True)
+            .values("grade_letter")
+            .annotate(count=Count("id"))
+            .order_by("grade_letter")
+        )
+
         courses = []
         if semester_id or program_batch_id or course_unit_id:
             cu_qs = filter_course_units_for_user(CourseUnit.objects.filter(is_active=True), request.user)
@@ -454,6 +472,9 @@ class ResultsReportView(APIView):
                 cu_pass = cu_published.filter(is_pass=True).count()
                 cu_fail = cu_published.filter(is_pass=False).count()
                 cu_pub_total = cu_pass + cu_fail
+                cu_all_pass = cu_results.filter(is_pass=True).count()
+                cu_all_fail = cu_results.filter(is_pass=False).count()
+                cu_all_total = cu_all_pass + cu_all_fail
                 courses.append(
                     {
                         "course_unit_id": cu.id,
@@ -468,6 +489,11 @@ class ResultsReportView(APIView):
                         "pass_rate": (
                             round(100.0 * cu_pass / cu_pub_total, 1) if cu_pub_total else None
                         ),
+                        "all_pass": cu_all_pass,
+                        "all_fail": cu_all_fail,
+                        "all_pass_rate": (
+                            round(100.0 * cu_all_pass / cu_all_total, 1) if cu_all_total else None
+                        ),
                     }
                 )
 
@@ -479,6 +505,11 @@ class ResultsReportView(APIView):
                 "published_total": published_total,
                 "pass_rate": pass_rate,
                 "grade_distribution": grade_distribution,
+                "all_pass": all_pass_count,
+                "all_fail": all_fail_count,
+                "all_total": all_total,
+                "all_pass_rate": all_pass_rate,
+                "all_grade_distribution": all_grade_distribution,
                 "courses": courses,
             }
         )
