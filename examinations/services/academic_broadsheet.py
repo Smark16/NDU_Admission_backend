@@ -42,7 +42,10 @@ def build_academic_broadsheet(
     first_sitting_only=False,
     include_semester_one=False,
 ) -> dict:
-    """Published marks only, scoped to the caller's faculty."""
+    """Scoped to the caller's faculty. Reachable only via AcademicBroadsheetView,
+    which requires CanViewAllResults (super admin / HOD / exam coordinator), so
+    every caller here is already privileged to see pre-publish marks — each mark
+    is tagged with its status (draft/verified/published) rather than hidden."""
     if not program_id and not program_batch_id:
         raise ValueError("Select a programme or a programme batch.")
 
@@ -156,20 +159,21 @@ def build_academic_broadsheet(
             result = enrollment.course_result
         except CourseUnitResult.DoesNotExist:
             result = None
-        if result is None or result.status != CourseUnitResult.STATUS_PUBLISHED:
-            row["marks"].setdefault(code, {"score": None, "grade": "", "gp": None})
+        if result is None:
+            row["marks"].setdefault(code, {"score": None, "grade": "", "gp": None, "status": ""})
             continue
         row["marks"][code] = {
             "score": _plain_number(result.final_mark),
             "grade": result.grade_letter or "",
             "gp": _plain_number(result.grade_point),
+            "status": result.status,
         }
 
     return {
         "program_name": program_name,
         "batch_name": batch_name,
         "semester_name": semester_name,
-        "published_only": True,
+        "published_only": False,
         "first_sitting_only": first_sitting_only,
         "include_semester_one": include_semester_one,
         "courses": courses,
@@ -195,7 +199,7 @@ def academic_broadsheet_xlsx(payload: dict) -> bytes:
     sheet["A1"] = title or "Academic report"
     sheet["A1"].font = Font(bold=True, size=14, color="2D2960")
     sheet.merge_cells(start_row=2, start_column=1, end_row=2, end_column=max(last_col, 2))
-    sheet["A2"] = "Published results only. Blank cells mean the student is not registered for that course, or the mark is not published yet."
+    sheet["A2"] = "Italic marks are not yet published (draft/verified) — figures may still change. Blank cells mean the student is not registered for that course."
     sheet["A2"].font = Font(italic=True, size=9, color="555555")
 
     header_fill = PatternFill("solid", fgColor="3E397B")
@@ -226,18 +230,26 @@ def academic_broadsheet_xlsx(payload: dict) -> bytes:
         excel_row = header_row + 1 + index
         fill = alt_fill if index % 2 else None
         values = [student.get("reg_no") or "", student.get("name") or ""]
+        pending_cols: set[int] = set()
         marks = student.get("marks") or {}
+        col_cursor = 3
         for course in courses:
             mark = marks.get(course["code"]) or {}
+            is_pending = bool(mark.get("status")) and mark.get("status") != CourseUnitResult.STATUS_PUBLISHED
+            if is_pending:
+                pending_cols.update((col_cursor, col_cursor + 1, col_cursor + 2))
             values.extend([
                 mark.get("score") if mark.get("score") is not None else "",
                 mark.get("grade") or "",
                 mark.get("gp") if mark.get("gp") is not None else "",
             ])
+            col_cursor += 3
         for col, value in enumerate(values, start=1):
             cell = sheet.cell(excel_row, col, value)
             cell.border = thin
             cell.alignment = left if col <= 2 else center
+            if col in pending_cols:
+                cell.font = Font(italic=True, color="7A6F9B")
             if fill is not None:
                 cell.fill = fill
 
