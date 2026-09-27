@@ -549,7 +549,10 @@ class AcademicBroadsheetView(APIView):
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=400)
 
-        if (request.query_params.get("format") or "").strip().lower() == "xlsx":
+        # Not "format" -- DRF's DefaultContentNegotiation treats ?format=<x> as its own
+        # renderer-selection override and raises Http404 when no renderer matches "xlsx",
+        # before this view method ever runs. Use a different query param name instead.
+        if (request.query_params.get("output") or "").strip().lower() == "xlsx":
             label = (payload.get("program_name") or "programme").replace(" ", "_")
             semester = (payload.get("semester_name") or "all_semesters").replace(" ", "_")
             safe = "".join(ch if ch.isalnum() or ch in ("_", "-") else "_" for ch in f"{label}_{semester}")
