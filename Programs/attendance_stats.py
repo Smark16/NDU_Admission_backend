@@ -10,6 +10,7 @@ from .models import (
     LectureAttendanceSession,
     StudentCourseUnitEnrollment,
 )
+from .shared_teaching import linked_course_unit_ids
 
 # Present / late / excused count toward attendance %; absent does not.
 ATTENDED_STATUSES = {
@@ -40,7 +41,7 @@ def student_course_attendance_summary(student, course_unit: CourseUnit, *, as_of
     as_of = as_of or dj_tz.localdate()
     sessions = list(
         LectureAttendanceSession.objects.filter(
-            course_unit=course_unit,
+            course_unit_id__in=linked_course_unit_ids(course_unit),
             session_date__lte=as_of,
         ).order_by("session_date")
     )
@@ -132,7 +133,7 @@ def course_unit_student_attendance_map(course_unit: CourseUnit, student_ids, *, 
     }
     sessions = list(
         LectureAttendanceSession.objects.filter(
-            course_unit=course_unit,
+            course_unit_id__in=linked_course_unit_ids(course_unit),
             session_date__lte=as_of,
         ).order_by("session_date")
     )

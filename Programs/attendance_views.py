@@ -31,7 +31,10 @@ from .models import (
     TimetableSession,
 )
 from .permissions import LectureAttendanceAdminPermission
-from .shared_teaching import registered_enrollments_for_course_unit
+from .shared_teaching import (
+    expand_linked_course_unit_ids,
+    registered_enrollments_for_course_unit,
+)
 from .timetable_utils import (
     session_location_label,
     session_occurrence_bounds,
@@ -1920,6 +1923,7 @@ class StudentAttendanceOpenSessionsView(APIView):
         )
         if not enrolled_cu_ids:
             return Response({"sessions": [], "history": []})
+        enrolled_cu_ids = expand_linked_course_unit_ids(enrolled_cu_ids)
 
         today = timezone_today()
         open_qs = (
@@ -2147,6 +2151,7 @@ class StudentAttendanceCheckInView(APIView):
         )
         if not enrolled_cu_ids:
             return Response({"detail": "You are not enrolled in any course units."}, status=403)
+        enrolled_cu_ids = expand_linked_course_unit_ids(enrolled_cu_ids)
 
         session = None
         session_id = request.data.get("session_id")

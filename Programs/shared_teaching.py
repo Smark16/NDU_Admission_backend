@@ -638,6 +638,30 @@ def linked_course_units_qs(course_unit: CourseUnit) -> QuerySet[CourseUnit]:
     return CourseUnit.objects.filter(id__in=ids, is_active=True)
 
 
+def expand_linked_course_unit_ids(course_unit_ids) -> list[int]:
+    """Given CourseUnit PKs, add every sibling that shares teaching with any of them.
+
+    Used to widen a student's own enrolled course_unit_ids so lookups (e.g.
+    attendance sessions) also match sessions recorded against a shared
+    offering's parent unit rather than the student's own cross-listed unit.
+    """
+    ids = list(course_unit_ids)
+    if not ids:
+        return ids
+    offering_ids = set(
+        CourseUnit.objects.filter(id__in=ids, shared_teaching_offering_id__isnull=False)
+        .values_list("shared_teaching_offering_id", flat=True)
+    )
+    expanded = set(ids)
+    if offering_ids:
+        expanded.update(
+            CourseUnit.objects.filter(
+                shared_teaching_offering_id__in=offering_ids, is_active=True,
+            ).values_list("id", flat=True)
+        )
+    return list(expanded)
+
+
 def lecturer_section_scope(user, units) -> list[int] | None:
     """Teaching sections this lecturer is explicitly limited to on these CourseUnits.
 
