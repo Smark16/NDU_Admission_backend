@@ -1915,14 +1915,33 @@ class StudentAttendanceOpenSessionsView(APIView):
         if not admitted:
             return Response({"detail": "Admitted student profile not found."}, status=404)
 
-        enrolled_cu_ids = list(
+        own_cu_ids = list(
             StudentCourseUnitEnrollment.objects.filter(
                 student=admitted, status="enrolled"
             ).values_list("course_unit_id", flat=True)
         )
-        if not enrolled_cu_ids:
+        if not own_cu_ids:
             return Response({"sessions": [], "history": []})
-        enrolled_cu_ids = expand_linked_course_unit_ids(enrolled_cu_ids)
+        enrolled_cu_ids = expand_linked_course_unit_ids(own_cu_ids)
+
+        # A shared session may be recorded against a sibling programme's
+        # CourseUnit (e.g. a cross-listed lecture taken on "BBA 1104" while
+        # this student's own unit is "BHR 1104"). Map back to the student's
+        # own unit so they see their own course code/name, not the sibling's.
+        own_units = list(CourseUnit.objects.filter(id__in=own_cu_ids))
+        own_unit_by_id = {u.id: u for u in own_units}
+        own_unit_by_offering = {
+            u.shared_teaching_offering_id: u
+            for u in own_units
+            if u.shared_teaching_offering_id
+        }
+
+        def _display_unit(course_unit: CourseUnit) -> CourseUnit:
+            if course_unit.id in own_unit_by_id:
+                return course_unit
+            return own_unit_by_offering.get(
+                course_unit.shared_teaching_offering_id, course_unit
+            )
 
         today = timezone_today()
         open_qs = (
@@ -1954,9 +1973,13 @@ class StudentAttendanceOpenSessionsView(APIView):
                     LectureAttendanceRecord.STATUS_EXCUSED,
                 )
             )
+            display_unit = _display_unit(session.course_unit)
             sessions_out.append(
                 {
                     **_serialize_session(session),
+                    "course_unit_id": display_unit.id,
+                    "course_code": display_unit.code,
+                    "course_name": display_unit.name,
                     "my_status": rec.status if rec else "",
                     "my_status_label": STATUS_LABELS.get(rec.status, "") if rec else "",
                     "can_self_check_in": session.student_check_in_open and not already,
@@ -1978,11 +2001,12 @@ class StudentAttendanceOpenSessionsView(APIView):
         }
         for session in hist_qs:
             rec = records.get(session.id)
+            display_unit = _display_unit(session.course_unit)
             history.append(
                 {
                     "id": session.id,
-                    "course_code": session.course_unit.code,
-                    "course_name": session.course_unit.name,
+                    "course_code": display_unit.code,
+                    "course_name": display_unit.name,
                     "session_date": session.session_date.isoformat(),
                     "status": rec.status if rec else "",
                     "status_label": STATUS_LABELS.get(rec.status, "Not marked")
