@@ -17,15 +17,18 @@
     .info-box table { width: 100%; border-collapse: collapse; border: 1px solid #999; }
     .info-box td { padding: 3px 6px; font-size: 8pt; vertical-align: top; border: 1px solid #999; }
     .label { color: #666; width: 22%; font-weight: bold; }
-    .sessions-table { width: 100%; border-collapse: collapse; margin-top: 4px; table-layout: fixed; }
-    .sessions-table th, .sessions-table td { border: 1px solid #999; }
-    .sessions-table th {
-      background: #3e397b; color: #fff; font-size: 7.5pt; text-align: center; padding: 4px 3px;
+    .sessions-table { width: 100%; border-collapse: collapse; margin-top: 4px; }
+    .sessions-table td { border: 1px solid #999; padding: 4px 4px; font-size: 8pt; vertical-align: middle; }
+    .sessions-table .head td {
+      background: #3e397b; color: #fff; font-size: 7.5pt; text-align: center; padding: 4px 3px; font-weight: bold;
     }
-    .sessions-table td {
-      padding: 4px 4px; font-size: 8pt; vertical-align: middle; word-wrap: break-word;
-    }
-    .sessions-table td.center { text-align: center; }
+    .col-num      { width: 6%; text-align: center; }
+    .col-reg      { width: 18%; }
+    .col-name     { width: 40%; }
+    .col-status   { width: 12%; text-align: center; }
+    .col-remark   { width: 24%; }
+    .col-mark     { width: 12%; text-align: center; }
+    .col-sign     { width: 12%; }
     .tick { width: 16px; height: 12px; border: 1px solid #444; display: inline-block; }
     .summary { margin-top: 6px; font-size: 8pt; color: #444; }
     .footer {
@@ -72,52 +75,37 @@
   </div>
 
   <table class="sessions-table">
-    <colgroup>
-      <col style="width: 24pt;" />
-      <col style="width: 85pt;" />
-      <col style="width: 180pt;" />
-      {% if blank_sheet %}
-      <col style="width: 65pt;" />
-      <col style="width: 65pt;" />
-      <col style="width: 95pt;" />
-      {% else %}
-      <col style="width: 65pt;" />
-      <col style="width: 160pt;" />
-      {% endif %}
-    </colgroup>
-    <thead>
-      <tr>
-        <th>#</th>
-        <th>Reg No</th>
-        <th>Student Name</th>
+    <tbody>
+      <tr class="head">
+        <td class="col-num">#</td>
+        <td class="col-reg">Reg No</td>
+        <td class="col-name">Student Name</td>
         {% if blank_sheet %}
-        <th>Present</th>
-        <th>Absent</th>
-        <th>Signature</th>
+        <td class="col-mark">Present</td>
+        <td class="col-mark">Absent</td>
+        <td class="col-sign">Signature</td>
         {% else %}
-        <th>Status</th>
-        <th>Remark</th>
+        <td class="col-status">Status</td>
+        <td class="col-remark">Remark</td>
         {% endif %}
       </tr>
-    </thead>
-    <tbody>
       {% for row in students %}
       <tr>
-        <td class="center">{{ forloop.counter }}</td>
-        <td>{{ row.reg_no }}</td>
-        <td>{{ row.name }}</td>
+        <td class="col-num">{{ forloop.counter }}</td>
+        <td class="col-reg">{{ row.reg_no }}</td>
+        <td class="col-name">{{ row.name }}</td>
         {% if blank_sheet %}
-        <td class="center"><span class="tick"></span></td>
-        <td class="center"><span class="tick"></span></td>
-        <td></td>
+        <td class="col-mark"><span class="tick"></span></td>
+        <td class="col-mark"><span class="tick"></span></td>
+        <td class="col-sign"></td>
         {% else %}
-        <td class="center">{{ row.status_label }}</td>
-        <td>{{ row.remark }}</td>
+        <td class="col-status">{{ row.status_label }}</td>
+        <td class="col-remark">{{ row.remark }}</td>
         {% endif %}
       </tr>
       {% empty %}
       <tr>
-        <td colspan="6" style="text-align:center; color:#666; padding:20px;">No enrolled students.</td>
+        <td colspan="{% if blank_sheet %}6{% else %}5{% endif %}" style="text-align:center; color:#666; padding:20px;">No enrolled students.</td>
       </tr>
       {% endfor %}
     </tbody>
