@@ -17,13 +17,15 @@
     .info-box table { width: 100%; border-collapse: collapse; border: 1px solid #999; }
     .info-box td { padding: 3px 6px; font-size: 8pt; vertical-align: top; border: 1px solid #999; }
     .label { color: #666; width: 22%; font-weight: bold; }
-    .sessions-table { width: 100%; border-collapse: collapse; margin-top: 4px; }
+    .sessions-table { width: 100%; border-collapse: collapse; margin-top: 4px; table-layout: fixed; }
+    .sessions-table th, .sessions-table td { border: 1px solid #999; }
     .sessions-table th {
-      background: #3e397b; color: #fff; font-size: 7.5pt; text-align: left; padding: 4px 4px;
+      background: #3e397b; color: #fff; font-size: 7.5pt; text-align: center; padding: 4px 3px;
     }
     .sessions-table td {
-      border-bottom: 1px solid #e5e5e5; padding: 4px 4px; font-size: 8pt; vertical-align: middle;
+      padding: 4px 4px; font-size: 8pt; vertical-align: middle; word-wrap: break-word;
     }
+    .sessions-table td.center { text-align: center; }
     .tick { width: 16px; height: 12px; border: 1px solid #444; display: inline-block; }
     .summary { margin-top: 6px; font-size: 8pt; color: #444; }
     .footer {
@@ -70,33 +72,46 @@
   </div>
 
   <table class="sessions-table">
+    <colgroup>
+      <col style="width: 24pt;" />
+      <col style="width: 85pt;" />
+      <col style="width: 180pt;" />
+      {% if blank_sheet %}
+      <col style="width: 65pt;" />
+      <col style="width: 65pt;" />
+      <col style="width: 95pt;" />
+      {% else %}
+      <col style="width: 65pt;" />
+      <col style="width: 160pt;" />
+      {% endif %}
+    </colgroup>
     <thead>
       <tr>
-        <th style="width: 6%;">#</th>
-        <th style="width: 18%;">Reg No</th>
-        <th style="width: 34%;">Student Name</th>
+        <th>#</th>
+        <th>Reg No</th>
+        <th>Student Name</th>
         {% if blank_sheet %}
-        <th style="width: 12%;">Present</th>
-        <th style="width: 12%;">Absent</th>
-        <th style="width: 18%;">Signature</th>
+        <th>Present</th>
+        <th>Absent</th>
+        <th>Signature</th>
         {% else %}
-        <th style="width: 14%;">Status</th>
-        <th style="width: 28%;">Remark</th>
+        <th>Status</th>
+        <th>Remark</th>
         {% endif %}
       </tr>
     </thead>
     <tbody>
       {% for row in students %}
       <tr>
-        <td>{{ forloop.counter }}</td>
+        <td class="center">{{ forloop.counter }}</td>
         <td>{{ row.reg_no }}</td>
         <td>{{ row.name }}</td>
         {% if blank_sheet %}
-        <td><span class="tick"></span></td>
-        <td><span class="tick"></span></td>
+        <td class="center"><span class="tick"></span></td>
+        <td class="center"><span class="tick"></span></td>
         <td></td>
         {% else %}
-        <td>{{ row.status_label }}</td>
+        <td class="center">{{ row.status_label }}</td>
         <td>{{ row.remark }}</td>
         {% endif %}
       </tr>
