@@ -2296,7 +2296,6 @@ class StudentAttendanceCheckInView(APIView):
 
         now = dj_tz.now()
         marked_via = LectureAttendanceRecord.SOURCE_QR
-        remark = "Attendance code check-in"
         rec, created = LectureAttendanceRecord.objects.get_or_create(
             attendance_session=session,
             student=admitted,
@@ -2304,7 +2303,6 @@ class StudentAttendanceCheckInView(APIView):
                 "status": LectureAttendanceRecord.STATUS_PRESENT,
                 "marked_via": marked_via,
                 "checked_in_at": now,
-                "remark": remark,
             },
         )
         if not created:
