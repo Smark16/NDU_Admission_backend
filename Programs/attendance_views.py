@@ -466,7 +466,6 @@ def _enrolled_students(course_unit: CourseUnit):
     enrollments = registered_enrollments_for_course_unit(
         course_unit,
         statuses=["enrolled"],
-        merge_shared=False,
     ).order_by("student__reg_no", "student__student_id")
     return [e.student for e in enrollments]
 
