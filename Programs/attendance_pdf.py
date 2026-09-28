@@ -1,6 +1,7 @@
 """PDF export for lecture attendance sheets."""
 from __future__ import annotations
 
+import base64
 import io
 from pathlib import Path
 
@@ -9,6 +10,18 @@ from django.template.loader import render_to_string
 from django.utils import timezone
 
 from accounts.portal_branding import load_portal_logo_b64_for_pdf, xhtml2pdf_link_callback
+
+
+def _qr_png_base64(data: str) -> str:
+    import qrcode
+
+    qr = qrcode.QRCode(version=None, box_size=4, border=2)
+    qr.add_data(data)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
 def _portal_branding() -> dict:
@@ -36,6 +49,7 @@ def build_attendance_sheet_context(
     taken_by_name: str,
     students: list[dict],
     blank_sheet: bool = False,
+    check_in_code: str | None = None,
 ) -> dict:
     branding = _portal_branding()
     present = sum(1 for s in students if s.get("status") == "present")
@@ -54,6 +68,8 @@ def build_attendance_sheet_context(
         "taken_by_name": taken_by_name or "—",
         "students": students,
         "blank_sheet": blank_sheet,
+        "check_in_code": check_in_code or "",
+        "check_in_qr_b64": _qr_png_base64(check_in_code) if check_in_code else "",
         "student_count": len(students),
         "present_count": present,
         "late_count": late,

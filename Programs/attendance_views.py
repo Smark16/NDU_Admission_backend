@@ -1158,6 +1158,11 @@ def _pdf_response(session: LectureAttendanceSession, *, blank_sheet: bool = Fals
         ),
         students=students,
         blank_sheet=blank_sheet,
+        check_in_code=(
+            _normalize_attendance_code(session.check_in_token)
+            if session.student_check_in_open
+            else None
+        ),
     )
     pdf_bytes = render_attendance_sheet_pdf(context)
     filename = safe_attendance_pdf_filename(course_unit.code, session.session_date)

@@ -7,10 +7,15 @@
     @page { size: A4 portrait; margin: 1cm 1.4cm; }
     body { font-family: Helvetica, Arial, sans-serif; font-size: 8.5pt; color: #222; }
     .header-table { width: 100%; border-collapse: collapse; margin-bottom: 3px; }
-    .header-table td { vertical-align: middle; text-align: center; padding: 0; }
+    .header-table td { vertical-align: middle; padding: 0; }
+    .header-cell { text-align: center; }
     .logo { width: 32px; height: 32px; }
     .doc-title { font-size: 9.5pt; font-weight: bold; margin-top: 1px; color: #3e397b; }
     .meta { font-size: 6.5pt; color: #555; margin-top: 0; }
+    .qr-cell { width: 78px; text-align: center; }
+    .qr-cell img { width: 60px; height: 60px; }
+    .qr-label { font-size: 6pt; color: #555; margin-top: 1px; }
+    .qr-code { font-size: 8pt; font-weight: bold; letter-spacing: 1px; color: #3e397b; }
     .info-box {
       margin: 0 0 8px 0; background: #f7f7fb;
     }
@@ -41,13 +46,23 @@
 <body>
   <table class="header-table">
     <tr>
-      <td>
+      {% if check_in_qr_b64 %}
+      <td class="qr-cell"></td>
+      {% endif %}
+      <td class="header-cell">
         {% if logo_b64 %}
         <img class="logo" src="data:image/png;base64,{{ logo_b64 }}" alt="University logo" />
         {% endif %}
         <div class="doc-title">{{ title }}</div>
         <div class="meta">Generated {{ generated_at }}</div>
       </td>
+      {% if check_in_qr_b64 %}
+      <td class="qr-cell">
+        <img src="data:image/png;base64,{{ check_in_qr_b64 }}" alt="Check-in QR code" />
+        <div class="qr-label">Scan or enter code</div>
+        <div class="qr-code">{{ check_in_code }}</div>
+      </td>
+      {% endif %}
     </tr>
   </table>
 
