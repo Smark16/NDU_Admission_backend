@@ -14,6 +14,9 @@ from .models import Batch
 
 
 class CanViewBoardReport(BasePermission):
+    """Matches RegistrationReportPermission -- the Admissions team's existing
+    reports access, not just the narrower reports-admin ERP permission."""
+
     message = "You do not have permission to view this report."
 
     def has_permission(self, request, view):
@@ -21,6 +24,12 @@ class CanViewBoardReport(BasePermission):
         if not u.is_authenticated:
             return False
         if user_is_super_admin(u):
+            return True
+        if u.has_perm("admissions.view_admittedstudent"):
+            return True
+        if u.has_perm("AdmissionReports.view_admissionreports"):
+            return True
+        if u.has_perm("admissions.verify_physical_documents"):
             return True
         return user_has_any_erp_perm(u, "access_reports")
 
