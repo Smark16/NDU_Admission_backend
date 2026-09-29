@@ -26,6 +26,7 @@ from admissions.registration_report_views import (
     RegistrationReportExcelView,
     RegistrationReportView,
 )
+from admissions.board_report_views import BoardReportIntakesView, BoardReportView
 from admissions.analytics_views import AnalyticsDashboardView
 from admissions.email_template_views import (
     EmailTemplateDetailView,
@@ -193,6 +194,16 @@ urlpatterns = [
         'reports/registration/export/',
         RegistrationReportExcelView.as_view(),
         name='registration_report_export',
+    ),
+    path(
+        'reports/board_report/',
+        BoardReportView.as_view(),
+        name='board_report',
+    ),
+    path(
+        'reports/board_report/intakes/',
+        BoardReportIntakesView.as_view(),
+        name='board_report_intakes',
     ),
     path(
         'reports/exemptions/',
