@@ -98,23 +98,36 @@ def _table1(batch_id: int) -> dict:
 
     admitted = {}
     registered = {}
+    course_registered = {}
     for s in AdmittedStudent.objects.filter(admitted_batch_id=batch_id).select_related("admitted_campus"):
         label = _campus_label(s.admitted_campus)
         admitted[label] = admitted.get(label, 0) + 1
-        if s.is_registered:
+        if s.accounts_registration_cleared:
             registered[label] = registered.get(label, 0) + 1
+        if s.is_registered:
+            course_registered[label] = course_registered.get(label, 0) + 1
 
     rows = []
-    tot_a = tot_ad = tot_r = 0
+    tot_a = tot_ad = tot_r = tot_cr = 0
     for label in ["Main Campus", "Kampala Campus"]:
         a = applicants.get(label, 0)
         ad = admitted.get(label, 0)
         r = registered.get(label, 0)
+        cr = course_registered.get(label, 0)
         tot_a += a
         tot_ad += ad
         tot_r += r
-        rows.append({"campus": label, "applicants": a, "admitted": ad, "registered": r, "rate": _rate(r, ad)})
-    total = {"campus": "Total", "applicants": tot_a, "admitted": tot_ad, "registered": tot_r, "rate": _rate(tot_r, tot_ad)}
+        tot_cr += cr
+        rows.append({
+            "campus": label, "applicants": a, "admitted": ad,
+            "registered": r, "rate": _rate(r, ad),
+            "course_registered": cr, "course_registered_rate": _rate(cr, ad),
+        })
+    total = {
+        "campus": "Total", "applicants": tot_a, "admitted": tot_ad,
+        "registered": tot_r, "rate": _rate(tot_r, tot_ad),
+        "course_registered": tot_cr, "course_registered_rate": _rate(tot_cr, tot_ad),
+    }
     return {"rows": rows, "total": total}
 
 
@@ -146,26 +159,42 @@ def _table2(batch_id: int) -> dict:
 
     admitted = {}
     registered = {}
+    course_registered = {}
     for s in AdmittedStudent.objects.filter(admitted_batch_id=batch_id).select_related("admitted_program", "admitted_program__faculty"):
         key = "HEC Students" if _is_hec(s.admitted_program.name) else _faculty_label(s.admitted_program.faculty)
         admitted[key] = admitted.get(key, 0) + 1
-        if s.is_registered:
+        if s.accounts_registration_cleared:
             registered[key] = registered.get(key, 0) + 1
+        if s.is_registered:
+            course_registered[key] = course_registered.get(key, 0) + 1
 
     rows = []
-    tot_a = tot_ad = tot_r = 0
+    tot_a = tot_ad = tot_r = tot_cr = 0
     for label in TABLE2_ORDER:
         a = applicants.get(label, 0)
         ad = admitted.get(label, 0)
         r = registered.get(label, 0)
+        cr = course_registered.get(label, 0)
         tot_a += a
         tot_ad += ad
         tot_r += r
-        rows.append({"faculty": label, "applicants": a, "admitted": ad, "registered": r, "rate": _rate(r, ad)})
+        tot_cr += cr
+        rows.append({
+            "faculty": label, "applicants": a, "admitted": ad,
+            "registered": r, "rate": _rate(r, ad),
+            "course_registered": cr, "course_registered_rate": _rate(cr, ad),
+        })
     if no_program_at_all:
-        rows.append({"faculty": "(no programme on record)", "applicants": no_program_at_all, "admitted": 0, "registered": 0, "rate": 0})
+        rows.append({
+            "faculty": "(no programme on record)", "applicants": no_program_at_all, "admitted": 0,
+            "registered": 0, "rate": 0, "course_registered": 0, "course_registered_rate": 0,
+        })
         tot_a += no_program_at_all
-    total = {"faculty": "Total", "applicants": tot_a, "admitted": tot_ad, "registered": tot_r, "rate": _rate(tot_r, tot_ad)}
+    total = {
+        "faculty": "Total", "applicants": tot_a, "admitted": tot_ad,
+        "registered": tot_r, "rate": _rate(tot_r, tot_ad),
+        "course_registered": tot_cr, "course_registered_rate": _rate(tot_cr, tot_ad),
+    }
     return {"rows": rows, "total": total}
 
 
@@ -224,6 +253,7 @@ def _table3(batch_id: int) -> dict:
 def _table4(batch_id: int) -> dict:
     admitted_counts = {}
     registered_counts = {}
+    course_registered_counts = {}
     for s in (
         AdmittedStudent.objects.filter(admitted_batch_id=batch_id)
         .exclude(admitted_program__name__icontains="Higher Education Certificate")
@@ -234,8 +264,10 @@ def _table4(batch_id: int) -> dict:
         prog = _clean_programme_name(s.admitted_program.name)
         key = (campus, fac, prog)
         admitted_counts[key] = admitted_counts.get(key, 0) + 1
-        if s.is_registered:
+        if s.accounts_registration_cleared:
             registered_counts[key] = registered_counts.get(key, 0) + 1
+        if s.is_registered:
+            course_registered_counts[key] = course_registered_counts.get(key, 0) + 1
 
     applicant_counts = {}
     apps_with_choice_ids = set()
@@ -270,18 +302,23 @@ def _table4(batch_id: int) -> dict:
         key = (campus, fac, prog)
         applicant_counts[key] = applicant_counts.get(key, 0) + 1
 
-    all_keys = set(admitted_counts) | set(applicant_counts) | set(registered_counts)
+    all_keys = set(admitted_counts) | set(applicant_counts) | set(registered_counts) | set(course_registered_counts)
     rows = []
     for campus, fac, prog in sorted(all_keys):
         a = applicant_counts.get((campus, fac, prog), 0)
         ad = admitted_counts.get((campus, fac, prog), 0)
         r = registered_counts.get((campus, fac, prog), 0)
-        rows.append({"campus": campus, "faculty": fac, "programme": prog, "applicants": a, "admitted": ad, "registered": r})
+        cr = course_registered_counts.get((campus, fac, prog), 0)
+        rows.append({
+            "campus": campus, "faculty": fac, "programme": prog,
+            "applicants": a, "admitted": ad, "registered": r, "course_registered": cr,
+        })
 
     total = {
         "applicants": sum(applicant_counts.values()),
         "admitted": sum(admitted_counts.values()),
         "registered": sum(registered_counts.values()),
+        "course_registered": sum(course_registered_counts.values()),
     }
     return {"rows": rows, "total": total}
 
@@ -348,31 +385,31 @@ def board_report_xlsx(payload: dict) -> bytes:
     # Table 1
     ws1 = wb.active
     ws1.title = "Table 1 - By Campus"
-    ws1.merge_cells("A1:D1")
+    ws1.merge_cells("A1:E1")
     ws1["A1"] = f"Table 1: Summary by Campus — {batch_name}"
     ws1["A1"].font = _TITLE_FONT
-    _write_header_row(ws1, 3, ["Campus", "Applicants", "Admitted", "Registered"])
+    _write_header_row(ws1, 3, ["Campus", "Applicants", "Admitted", "Registered", "Course Registered"])
     row = 4
     for r in payload["table1"]["rows"]:
-        _write_data_row(ws1, row, [r["campus"], r["applicants"], r["admitted"], r["registered"]])
+        _write_data_row(ws1, row, [r["campus"], r["applicants"], r["admitted"], r["registered"], r["course_registered"]])
         row += 1
     t = payload["table1"]["total"]
-    _write_data_row(ws1, row, [t["campus"], t["applicants"], t["admitted"], t["registered"]], bold=True)
-    _autosize(ws1, 4)
+    _write_data_row(ws1, row, [t["campus"], t["applicants"], t["admitted"], t["registered"], t["course_registered"]], bold=True)
+    _autosize(ws1, 5)
 
     # Table 2
     ws2 = wb.create_sheet("Table 2 - By Faculty")
-    ws2.merge_cells("A1:D1")
+    ws2.merge_cells("A1:E1")
     ws2["A1"] = f"Table 2: Applicants, Admitted, Registered by Faculty/School — {batch_name}"
     ws2["A1"].font = _TITLE_FONT
-    _write_header_row(ws2, 3, ["Faculty/School", "Applicants", "Admitted", "Registered"])
+    _write_header_row(ws2, 3, ["Faculty/School", "Applicants", "Admitted", "Registered", "Course Registered"])
     row = 4
     for r in payload["table2"]["rows"]:
-        _write_data_row(ws2, row, [r["faculty"], r["applicants"], r["admitted"], r["registered"]])
+        _write_data_row(ws2, row, [r["faculty"], r["applicants"], r["admitted"], r["registered"], r["course_registered"]])
         row += 1
     t = payload["table2"]["total"]
-    _write_data_row(ws2, row, [t["faculty"], t["applicants"], t["admitted"], t["registered"]], bold=True)
-    _autosize(ws2, 4)
+    _write_data_row(ws2, row, [t["faculty"], t["applicants"], t["admitted"], t["registered"], t["course_registered"]], bold=True)
+    _autosize(ws2, 5)
 
     # Table 3
     ws3 = wb.create_sheet("Table 3 - HEC Students")
@@ -399,17 +436,20 @@ def board_report_xlsx(payload: dict) -> bytes:
 
     # Table 4
     ws4 = wb.create_sheet("Table 4 - By Programme")
-    ws4.merge_cells("A1:F1")
+    ws4.merge_cells("A1:G1")
     ws4["A1"] = f"Table 4: Statistics by Faculty per Programme and campus — {batch_name}"
     ws4["A1"].font = _TITLE_FONT
-    _write_header_row(ws4, 3, ["Campus", "Faculty/School", "Programme", "Applicants", "Admitted", "Registered"])
+    _write_header_row(ws4, 3, ["Campus", "Faculty/School", "Programme", "Applicants", "Admitted", "Registered", "Course Registered"])
     row = 4
     for r in payload["table4"]["rows"]:
-        _write_data_row(ws4, row, [r["campus"], r["faculty"], r["programme"], r["applicants"], r["admitted"], r["registered"]])
+        _write_data_row(ws4, row, [
+            r["campus"], r["faculty"], r["programme"], r["applicants"], r["admitted"],
+            r["registered"], r["course_registered"],
+        ])
         row += 1
     t = payload["table4"]["total"]
-    _write_data_row(ws4, row, ["", "", "Total", t["applicants"], t["admitted"], t["registered"]], bold=True)
-    _autosize(ws4, 6)
+    _write_data_row(ws4, row, ["", "", "Total", t["applicants"], t["admitted"], t["registered"], t["course_registered"]], bold=True)
+    _autosize(ws4, 7)
 
     buf = BytesIO()
     wb.save(buf)
