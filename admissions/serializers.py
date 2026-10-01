@@ -1700,7 +1700,7 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
     def get_application_documents(self, obj):
         if self.context.get("list_view"):
             return []
-        if obj.change_type != "exemption":
+        if obj.change_type not in AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES:
             return []
         try:
             application = obj.admitted_student.application
@@ -1752,7 +1752,7 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
         return self._reviewer_name(getattr(obj, "hod_reviewed_by", None))
 
     def get_verification_token(self, obj):
-        if getattr(obj, "change_type", None) != "exemption":
+        if getattr(obj, "change_type", None) not in AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES:
             return None
         from admissions.exemption_services import ensure_exemption_verification_token
 
@@ -1777,7 +1777,7 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
         return user_can_view_student_finance(user)
 
     def get_form_fee_paid(self, obj):
-        if obj.change_type != "exemption":
+        if obj.change_type not in AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES:
             return None
         # List view: avoid per-row payment lookups — stamp is enough for the queue.
         if self.context.get("list_view"):
@@ -1795,7 +1795,7 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
             return bool(obj.form_fee_paid_at)
 
     def get_exemption_course_fee_rate(self, obj):
-        if obj.change_type != "exemption":
+        if obj.change_type not in AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES:
             return None
         if not self._request_user_can_view_finance():
             return None
@@ -1805,7 +1805,7 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
         return float(rate) if rate is not None else None
 
     def get_exemption_course_fee_total(self, obj):
-        if obj.change_type != "exemption":
+        if obj.change_type not in AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES:
             return None
         if self.context.get("list_view"):
             return None
@@ -1819,7 +1819,7 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
             return None
 
     def get_exemption_billing_lines(self, obj):
-        if obj.change_type != "exemption":
+        if obj.change_type not in AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES:
             return None
         if self.context.get("list_view"):
             return None
@@ -1833,7 +1833,7 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
             return []
 
     def get_exemption_remaining_curriculum_lines(self, obj):
-        if obj.change_type != "exemption":
+        if obj.change_type not in AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES:
             return None
         if self.context.get("list_view"):
             return None
@@ -1849,7 +1849,7 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
             return []
 
     def get_exemption_year_billing(self, obj):
-        if obj.change_type != "exemption":
+        if obj.change_type not in AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES:
             return None
         if self.context.get("list_view"):
             return None
@@ -1863,7 +1863,7 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
             return {"years": [], "grand_total": 0}
 
     def get_exemption_split_presets(self, obj):
-        if obj.change_type != "exemption":
+        if obj.change_type not in AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES:
             return None
         if self.context.get("list_view"):
             return None
@@ -1882,7 +1882,7 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
             }
 
     def get_suggested_promotion(self, obj):
-        if obj.change_type != "exemption" or obj.hod_status != "approved":
+        if obj.change_type not in AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES or obj.hod_status != "approved":
             return None
         if self.context.get("list_view"):
             return None
@@ -1894,7 +1894,7 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
             return None
 
     def get_exemption_promotion_applied(self, obj):
-        if obj.change_type != "exemption":
+        if obj.change_type not in AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES:
             return False
         from admissions.exemption_services import exemption_promotion_applied
 
@@ -1904,7 +1904,7 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
             return False
 
     def get_exemption_promotion_pending_accounts(self, obj):
-        if obj.change_type != "exemption":
+        if obj.change_type not in AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES:
             return False
         from admissions.exemption_services import exemption_promotion_pending_accounts
 
@@ -1914,7 +1914,7 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
             return False
 
     def get_promotion_context(self, obj):
-        if obj.change_type != "exemption" or obj.hod_status != "approved":
+        if obj.change_type not in AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES or obj.hod_status != "approved":
             return None
         if self.context.get("list_view"):
             return None
@@ -1926,7 +1926,7 @@ class AdmissionChangeRequestSerializer(serializers.ModelSerializer):
             return None
 
     def to_representation(self, instance):
-        if instance.change_type == "exemption":
+        if instance.change_type in AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES:
             from admissions.exemption_services import ensure_exemption_request_stages_synced
 
             ensure_exemption_request_stages_synced(instance)
