@@ -1881,6 +1881,85 @@ def _override_type_for_change_request(change_request: AdmissionChangeRequest) ->
     return "transferred" if change_request.change_type == "transfer_credit" else "exempted"
 
 
+def _record_transfer_credit_result(enrollment, line, *, change_request: AdmissionChangeRequest, decided_by) -> None:
+    """
+    Create/refresh a published CourseUnitResult for an approved transfer-credit
+    paper, so it shows on the transcript with the grade earned elsewhere.
+
+    grade_point stays None by design -- build_student_transcript only folds a
+    result into the CGPA average when grade_point is set, so this counts
+    toward total credit units / graduation requirements but never dilutes the
+    CGPA with a grade Ndejje did not itself assess.
+
+    Silently no-ops when there's no operational CourseUnit yet for this
+    curriculum slot in the student's batch -- the curriculum override still
+    marks the requirement satisfied; Registry needs to create the course unit
+    before the transcript line can be added.
+    """
+    from django.utils import timezone
+
+    from Programs.models import CourseUnit, StudentCourseUnitEnrollment
+    from examinations.models import CourseUnitResult
+    from examinations.services.policy_resolver import resolve_assessment_policy
+
+    if line.curriculum_line_id is None:
+        return
+    catalog_id = line.curriculum_line.catalog_course_id
+    if not catalog_id:
+        return
+
+    course_unit = (
+        CourseUnit.objects.filter(
+            program_batch_id=enrollment.program_batch_id,
+            catalog_unit_id=catalog_id,
+            is_active=True,
+        )
+        .order_by("id")
+        .first()
+    )
+    if course_unit is None:
+        return
+
+    student = change_request.admitted_student
+    cu_enrollment, _ = StudentCourseUnitEnrollment.objects.get_or_create(
+        student=student,
+        course_unit=course_unit,
+        defaults={
+            "status": "completed",
+            "source": "transferred",
+            "registration_date": timezone.now(),
+        },
+    )
+    if cu_enrollment.status != "completed" or cu_enrollment.source != "transferred":
+        cu_enrollment.status = "completed"
+        cu_enrollment.source = "transferred"
+        cu_enrollment.save(update_fields=["status", "source", "updated_at"])
+
+    policy = resolve_assessment_policy(enrollment=cu_enrollment)
+    if policy is None:
+        return
+
+    now = timezone.now()
+    remark = f"Transfer credit from {change_request.exemption_attained_at or 'another institution'}"
+    CourseUnitResult.objects.update_or_create(
+        enrollment=cu_enrollment,
+        defaults={
+            "policy": policy,
+            "grade_letter": (line.score_obtained or "")[:5],
+            "grade_point": None,
+            "is_pass": True,
+            "paper_outcome": CourseUnitResult.OUTCOME_PASS,
+            "remark": remark[:255],
+            "status": CourseUnitResult.STATUS_PUBLISHED,
+            "hod_status": CourseUnitResult.REVIEW_APPROVED,
+            "dean_status": CourseUnitResult.REVIEW_APPROVED,
+            "entered_by": decided_by,
+            "published_by": decided_by,
+            "published_at": now,
+        },
+    )
+
+
 def _upsert_exemption_override(
     enrollment,
     line,
@@ -1902,6 +1981,8 @@ def _upsert_exemption_override(
             "decided_by": decided_by,
         },
     )
+    if override_type == "transferred":
+        _record_transfer_credit_result(enrollment, line, change_request=change_request, decided_by=decided_by)
     if was_created:
         return True
     existing = StudentCurriculumOverride.objects.filter(

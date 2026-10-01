@@ -54,7 +54,15 @@ def build_student_transcript(student: AdmittedStudent) -> dict:
     )
 
     semesters: dict[str, dict] = {}
+    # total_credit_units: every credit the student has earned, including
+    # transfer credit (for graduation requirement tracking).
+    # gpa_credits/weighted_gp: only credits with a real Ndejje-assessed
+    # grade_point, used solely for the CGPA average. Transfer-credit results
+    # are recorded with grade_point=None by design (the grade was assessed
+    # elsewhere) -- they must stay out of BOTH sides of that ratio, or they'd
+    # dilute the CGPA by inflating the denominator with no matching numerator.
     total_credits = 0
+    gpa_credits = 0
     weighted_gp = 0
 
     for r in results:
@@ -67,9 +75,11 @@ def build_student_transcript(student: AdmittedStudent) -> dict:
         )
         credits = float(cu.credit_units) if cu.credit_units else 0
         gp = float(r.grade_point) if r.grade_point is not None else None
-        if credits and gp is not None:
+        if credits:
             total_credits += credits
-            weighted_gp += credits * gp
+            if gp is not None:
+                gpa_credits += credits
+                weighted_gp += credits * gp
 
         block["courses"].append(
             {
@@ -85,7 +95,7 @@ def build_student_transcript(student: AdmittedStudent) -> dict:
             }
         )
 
-    cgpa = round(weighted_gp / total_credits, 2) if total_credits else None
+    cgpa = round(weighted_gp / gpa_credits, 2) if gpa_credits else None
 
     document = get_transcript_document_meta(student)
     published_count = len(results)
