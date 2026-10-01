@@ -127,6 +127,12 @@ def _notify_student(
     }
 
 
+def _guide_url() -> str:
+    from accounts.portal_branding import get_erp_frontend_url
+
+    return f"{get_erp_frontend_url()}/guides/student-email-eduroam-guide.html"
+
+
 DEFAULT_NOTIFY_TITLE = "Your Ndejje University email is ready"
 DEFAULT_NOTIFY_MESSAGE = (
     "Dear {first_name},\n\n"
@@ -138,6 +144,7 @@ DEFAULT_NOTIFY_MESSAGE = (
     "2) Install geteduroam from the Google Play Store.\n"
     "3) Search \"renu\" and choose RENU Managed IdP (not RENU - GT Tests).\n"
     "4) Log in with your university email and your new password.\n\n"
+    "Full step-by-step guide with screenshots: {guide_url}\n\n"
     "Reg no: {reg_no}\n"
 )
 

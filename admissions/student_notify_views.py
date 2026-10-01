@@ -32,6 +32,8 @@ def _personalise_text(
     student_id="",
     university_email="",
 ) -> str:
+    from integrations.zimbra_provisioning import _guide_url
+
     return (
         (text or "")
         .replace("{first_name}", first or "")
@@ -39,6 +41,7 @@ def _personalise_text(
         .replace("{reg_no}", reg_no or "")
         .replace("{student_id}", student_id or "")
         .replace("{university_email}", university_email or "")
+        .replace("{guide_url}", _guide_url())
     )
 
 
@@ -115,6 +118,7 @@ def _filtered_students(params) -> list[AdmittedStudent]:
     academic_batch_id = params.get("academic_batch_id")
     study_mode = (params.get("study_mode") or "").strip()
     registered = (params.get("registered") or "all").strip().lower()
+    has_university_email = (params.get("has_university_email") or "all").strip().lower()
 
     if program_id not in (None, "", "all"):
         try:
@@ -145,6 +149,10 @@ def _filtered_students(params) -> list[AdmittedStudent]:
         qs = qs.filter(is_registered=True)
     elif registered in ("unregistered", "not_registered"):
         qs = qs.filter(is_registered=False)
+    if has_university_email in ("yes", "has", "true"):
+        qs = qs.exclude(university_email="")
+    elif has_university_email in ("no", "missing", "false"):
+        qs = qs.filter(university_email="")
 
     raw_ids = params.get("user_ids")
     if raw_ids is not None:
