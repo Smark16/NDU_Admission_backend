@@ -941,7 +941,14 @@ class AdmissionChangeRequest(models.Model):
         ('dead_semester', 'Dead Semester'),
         ('dead_year', 'Dead Year'),
         ('exemption', 'Course Exemption'),
+        ('transfer_credit', 'Transfer Credit'),
     ]
+    # change_type values that run through the shared exemption/transfer-credit
+    # pipeline: same form fee, same HOD -> Dean -> AR -> Accounts stages, same
+    # per-line course decisions. Transfer credit differs only in that its
+    # approved lines are shown on the transcript with the grade earned
+    # elsewhere, instead of being excluded as a waived paper.
+    CREDIT_RECOGNITION_TYPES = ('exemption', 'transfer_credit')
     STATUS_CHOICES = [
         ('pending', 'Pending Review'),
         ('approved', 'Approved'),

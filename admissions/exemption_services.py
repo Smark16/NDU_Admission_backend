@@ -147,7 +147,7 @@ def student_has_paid_exemption_form_fee(student: AdmittedStudent) -> bool:
 
 
 def exemption_submission_is_unpaid(change_request: AdmissionChangeRequest) -> bool:
-    if getattr(change_request, "change_type", None) != "exemption":
+    if getattr(change_request, "change_type", None) not in AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES:
         return False
     student = getattr(change_request, "admitted_student", None)
     if student is None:
@@ -158,7 +158,7 @@ def exemption_submission_is_unpaid(change_request: AdmissionChangeRequest) -> bo
 def unpaid_exemption_submissions_qs():
     paid_ids = prompt_paid_exemption_form_fee_qs().values_list("student_id", flat=True)
     return (
-        AdmissionChangeRequest.objects.filter(change_type="exemption")
+        AdmissionChangeRequest.objects.filter(change_type__in=AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES)
         .exclude(admitted_student_id__in=paid_ids)
         .select_related(
             "admitted_student",
@@ -221,7 +221,7 @@ def return_unpaid_exemption_submission(
     Pending: reject (does not use up a student attempt).
     Approved: only if undo_approved — reverse curriculum exemptions, then reject.
     """
-    if change_request.change_type != "exemption":
+    if change_request.change_type not in AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES:
         raise ValueError("Not an exemption request.")
     if not exemption_submission_is_unpaid(change_request):
         raise ValueError("This student has already paid the exemption form fee.")
@@ -259,10 +259,14 @@ def return_unpaid_exemption_submission(
     }
 
 
-def exemption_application_attempt_state(student: AdmittedStudent) -> dict:
-    """Students get one application, plus one more if HOD rejects. Fee stays paid."""
+def exemption_application_attempt_state(student: AdmittedStudent, *, change_type: str = "exemption") -> dict:
+    """Students get one application, plus one more if HOD rejects. Fee stays paid.
+
+    Attempts are tracked per change_type -- exemption and transfer_credit each
+    get their own independent attempt budget, even though they share the same
+    draft slot (only one may be in progress at a time)."""
     qs = AdmissionChangeRequest.objects.filter(
-        admitted_student=student, change_type="exemption"
+        admitted_student=student, change_type=change_type
     ).exclude(review_notes__startswith=UNPAID_RETURN_MARKER)
     pending = qs.filter(status="pending").exists()
     approved = qs.filter(status="approved").exists()
@@ -329,7 +333,7 @@ def exemption_terms_already_committed(student: AdmittedStudent) -> set[tuple[int
     if enrollment is not None:
         for year, term in StudentCurriculumOverride.objects.filter(
             enrollment=enrollment,
-            override_type="exempted",
+            override_type__in=("exempted", "transferred"),
         ).values_list("curriculum_line__year_of_study", "curriculum_line__term_number"):
             key = _term_key(year, term)
             if key:
@@ -337,7 +341,7 @@ def exemption_terms_already_committed(student: AdmittedStudent) -> set[tuple[int
 
     for year, term in ExemptionRequestLine.objects.filter(
         change_request__admitted_student=student,
-        change_request__change_type="exemption",
+        change_request__change_type__in=AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES,
         change_request__status__in=("pending", "approved"),
     ).exclude(decision=ExemptionRequestLine.DECISION_REJECTED).values_list(
         "year_of_study", "term_number"
@@ -436,7 +440,7 @@ EXEMPTION_COURSE_FEE_ALUMNI_UGX = Decimal(
 
 def exemption_course_fee_rate(change_request: "AdmissionChangeRequest") -> Decimal | None:
     """Flat UGX rate per approved paper (alumni vs external)."""
-    if getattr(change_request, "change_type", None) != "exemption":
+    if getattr(change_request, "change_type", None) not in AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES:
         return None
     if change_request.exemption_is_alumnus:
         return EXEMPTION_COURSE_FEE_ALUMNI_UGX
@@ -984,7 +988,7 @@ def _form_fee_status_dict(
         paid_at = charge.paid_at
         AdmissionChangeRequest.objects.filter(
             admitted_student=student,
-            change_type="exemption",
+            change_type__in=AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES,
             form_fee_charge=charge,
             form_fee_paid_at__isnull=True,
         ).update(form_fee_paid_at=paid_at or timezone.now())
@@ -1086,7 +1090,9 @@ def exemption_form_fee_report(status_filter: str | None = None) -> list[dict]:
             req_filter |= Q(form_fee_charge_id__in=charge_ids)
         if student_pks:
             req_filter |= Q(admitted_student_id__in=student_pks)
-        req_qs = AdmissionChangeRequest.objects.filter(change_type="exemption").filter(req_filter).order_by(
+        req_qs = AdmissionChangeRequest.objects.filter(
+            change_type__in=AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES
+        ).filter(req_filter).order_by(
             "created_at"
         )
         for r in req_qs:
@@ -1301,18 +1307,29 @@ def clear_exemption_draft(student: AdmittedStudent) -> None:
     student.save(update_fields=["exemption_form_draft", "exemption_form_draft_updated_at", "updated_at"])
 
 
-def submit_exemption_from_draft(student: AdmittedStudent, *, requested_by, staff_submit: bool = False):
+def submit_exemption_from_draft(
+    student: AdmittedStudent, *, requested_by, staff_submit: bool = False,
+    change_type: str = "exemption",
+):
     """
-    Create a pending exemption change request from the saved draft.
-    Staff submit is allowed without uploaded files (desk help after the 50k is paid).
+    Create a pending exemption/transfer-credit change request from the saved
+    draft. Staff submit is allowed without uploaded files (desk help after
+    the 50k is paid). ``change_type`` picks which of the two shared-pipeline
+    request types this draft becomes -- the draft itself is one slot per
+    student, so only one of the two may be in progress at a time.
     """
     from admissions.models import ExemptionRequestLine
     from Programs.models import ProgramCurriculumLine
 
+    if change_type not in AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES:
+        raise ValueError(f"Invalid change_type for this pipeline: {change_type!r}")
+
     if AdmissionChangeRequest.objects.filter(
-        admitted_student=student, change_type="exemption", status="pending"
+        admitted_student=student,
+        change_type__in=AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES,
+        status="pending",
     ).exists():
-        raise ValueError("This student already has a pending exemption application.")
+        raise ValueError("This student already has a pending exemption/transfer-credit application.")
 
     assert_exemption_registration_required(student)
     assert_exemption_resubmit_allowed(student)
@@ -1400,7 +1417,7 @@ def submit_exemption_from_draft(student: AdmittedStudent, *, requested_by, staff
             current_program=student.admitted_program,
             current_campus=student.admitted_campus,
             current_study_mode=student.study_mode,
-            change_type="exemption",
+            change_type=change_type,
             reason=reason[:8000],
             form_fee_charge_id=access.get("charge_id"),
             form_fee_paid_at=timezone.now() if access.get("paid") else None,
@@ -1554,7 +1571,7 @@ def list_eligible_exemption_courses(student: AdmittedStudent) -> list[dict]:
     pending_line_ids = set(
         AdmissionChangeRequest.objects.filter(
             admitted_student=student,
-            change_type="exemption",
+            change_type__in=AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES,
             status="pending",
         ).values_list("exemption_lines__curriculum_line_id", flat=True)
     )
@@ -1853,6 +1870,17 @@ def _exemption_override_note(change_request: AdmissionChangeRequest, line) -> st
     return notes[:2000]
 
 
+def _override_type_for_change_request(change_request: AdmissionChangeRequest) -> str:
+    """'transferred' for transfer-credit requests, 'exempted' for exemption requests.
+
+    Both are satisfied/no-retake outcomes for curriculum purposes; the
+    distinction matters downstream for transcript display -- transferred
+    papers print with the grade earned elsewhere, exempted papers don't
+    print at all.
+    """
+    return "transferred" if change_request.change_type == "transfer_credit" else "exempted"
+
+
 def _upsert_exemption_override(
     enrollment,
     line,
@@ -1860,15 +1888,16 @@ def _upsert_exemption_override(
     change_request: AdmissionChangeRequest,
     decided_by,
 ) -> bool:
-    """Ensure an exempted StudentCurriculumOverride exists for this paper."""
+    """Ensure an exempted/transferred StudentCurriculumOverride exists for this paper."""
     from Programs.models import StudentCurriculumOverride
 
+    override_type = _override_type_for_change_request(change_request)
     line_notes = _exemption_override_note(change_request, line)
     _, was_created = StudentCurriculumOverride.objects.get_or_create(
         enrollment=enrollment,
         curriculum_line_id=line.curriculum_line_id,
         defaults={
-            "override_type": "exempted",
+            "override_type": override_type,
             "notes": line_notes,
             "decided_by": decided_by,
         },
@@ -1879,8 +1908,8 @@ def _upsert_exemption_override(
         enrollment=enrollment,
         curriculum_line_id=line.curriculum_line_id,
     ).first()
-    if existing and existing.override_type != "exempted":
-        existing.override_type = "exempted"
+    if existing and existing.override_type != override_type:
+        existing.override_type = override_type
         existing.notes = line_notes
         existing.decided_by = decided_by
         existing.save(
@@ -1902,7 +1931,7 @@ def apply_hod_exemption_overrides(
     """
     from admissions.models import ExemptionRequestLine
 
-    if change_request.change_type != "exemption":
+    if change_request.change_type not in AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES:
         return 0
     student = change_request.admitted_student
     try:
@@ -2178,7 +2207,7 @@ def apply_exemption_overrides(change_request: AdmissionChangeRequest, decided_by
     from admissions.models import ExemptionRequestLine
     from Programs.models import StudentCurriculumOverride
 
-    if change_request.change_type != "exemption":
+    if change_request.change_type not in AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES:
         return 0
     student = change_request.admitted_student
     try:
@@ -2350,7 +2379,7 @@ def exemption_tuition_finance_unlocked(student: AdmittedStudent) -> bool:
     """
     return AdmissionChangeRequest.objects.filter(
         admitted_student=student,
-        change_type="exemption",
+        change_type__in=AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES,
         accounts_status__in=("billed", "confirmed"),
     ).exists()
 
@@ -2735,7 +2764,7 @@ def exemption_ready_for_hod_promotion(change_request: AdmissionChangeRequest) ->
     """True when HOD has approved papers and no promotion target is stored yet."""
     from admissions.models import ExemptionRequestLine
 
-    if change_request.change_type != "exemption":
+    if change_request.change_type not in AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES:
         return False
     if change_request.hod_status != "approved":
         return False
@@ -2755,7 +2784,7 @@ def _exemption_stage_reopen_pipeline_ok(
 ) -> tuple[bool, str]:
     """Hard blocks shared by full-stage and per-paper reopen."""
     stage = (stage or "").strip().lower()
-    if change_request.change_type != "exemption":
+    if change_request.change_type not in AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES:
         return False, "Not an exemption request."
     if stage not in ("hod", "dean", "ar"):
         return False, 'stage must be "hod", "dean", or "ar".'
@@ -3239,7 +3268,7 @@ def reopen_exemption_accounts_billing(
     """
     from django.db import transaction
 
-    if change_request.change_type != "exemption":
+    if change_request.change_type not in AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES:
         raise ValueError("Not an exemption request.")
     if change_request.accounts_status not in ("billed", "confirmed"):
         raise ValueError(
@@ -3319,7 +3348,7 @@ def apply_exemption_promotion_for_billed(
     Use when billing ran without applying SPE, or when HOD confirmed late.
     Optional year/term stores (or updates) the target, then applies immediately.
     """
-    if change_request.change_type != "exemption":
+    if change_request.change_type not in AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES:
         raise ValueError("Not an exemption request.")
     if change_request.hod_status != "approved":
         raise ValueError("HOD must approve papers before promotion.")
@@ -3451,7 +3480,7 @@ def exemption_can_return_to_hod(
 ) -> tuple[bool, str]:
     """Dean or AR may send a HOD-approved request back for full HOD re-review."""
     from_stage = (from_stage or "").strip().lower()
-    if change_request.change_type != "exemption":
+    if change_request.change_type not in AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES:
         return False, "Not an exemption request."
     if change_request.hod_status != "approved":
         return False, "HOD has not approved this request yet."
@@ -3605,7 +3634,7 @@ def super_admin_return_exemption_to_hod(
     If Accounts has already billed, set undo_billing=True to remove pending
     charges and reverse promotion first.
     """
-    if change_request.change_type != "exemption":
+    if change_request.change_type not in AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES:
         raise ValueError("Not an exemption request.")
     if not (reason or "").strip():
         raise ValueError("Enter a reason for returning this request to HOD.")
@@ -3786,7 +3815,7 @@ def set_exemption_promotion_target_for_accounts(
     Used when HOD left the wrong promotion (or none). Does not move SPE yet —
     ``apply_stored_exemption_promotion`` runs after charges are posted.
     """
-    if change_request.change_type != "exemption":
+    if change_request.change_type not in AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES:
         raise ValueError("Not an exemption request.")
     if change_request.hod_status != "approved":
         raise ValueError("HOD must approve papers before Accounts can set promotion.")
@@ -3872,7 +3901,7 @@ def finalize_exemption_effects(change_request: AdmissionChangeRequest, *, decide
     Year/semester promotion is applied later when Accounts bills — not here —
     so fee structure does not open before exemption charges exist.
     """
-    if change_request.change_type != "exemption":
+    if change_request.change_type not in AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES:
         return {"applied": False, "reason": "not_exemption"}
     if change_request.ar_status != "approved":
         raise ValueError("AR must approve the exemption before effects can be applied.")
@@ -3926,7 +3955,7 @@ def add_exemption_line_from_curriculum(
     from admissions.models import ExemptionRequestLine
     from Programs.models import ProgramCurriculumLine
 
-    if change_request.change_type != "exemption":
+    if change_request.change_type not in AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES:
         raise ValueError("Only exemption requests accept additional papers.")
     if change_request.status == "rejected":
         raise ValueError("Cannot add papers to a rejected exemption request.")
@@ -3979,7 +4008,7 @@ def update_exemption_line_score(
     """
     from admissions.models import ExemptionRequestLine
 
-    if change_request.change_type != "exemption":
+    if change_request.change_type not in AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES:
         raise ValueError("Only exemption requests have paper scores.")
     if change_request.status == "rejected":
         raise ValueError("Cannot edit scores on a rejected exemption request.")
@@ -4012,7 +4041,7 @@ def delete_exemption_line(
     """
     from admissions.models import ExemptionRequestLine
 
-    if change_request.change_type != "exemption":
+    if change_request.change_type not in AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES:
         raise ValueError("Only exemption requests have papers to delete.")
     if change_request.status == "rejected":
         raise ValueError("Cannot delete papers from a rejected exemption request.")
@@ -4217,7 +4246,7 @@ def ensure_exemption_verification_token(change_request: AdmissionChangeRequest) 
 
     Students keep this token so they can print the HOD-approved form again later.
     """
-    if change_request.change_type != "exemption":
+    if change_request.change_type not in AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES:
         return None
     from admissions.models import ExemptionRequestLine
 
@@ -4253,7 +4282,7 @@ def public_verify_exemption(token: str, *, request=None) -> dict:
             .prefetch_related("exemption_lines")
             .get(
                 exemption_verification_token=token,
-                change_type="exemption",
+                change_type__in=AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES,
             )
         )
     except (AdmissionChangeRequest.DoesNotExist, ValueError):
