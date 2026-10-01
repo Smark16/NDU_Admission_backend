@@ -99,7 +99,7 @@ def _table1(batch_id: int) -> dict:
     admitted = {}
     registered = {}
     course_registered = {}
-    for s in AdmittedStudent.objects.filter(admitted_batch_id=batch_id).select_related("admitted_campus"):
+    for s in AdmittedStudent.objects.filter(admitted_batch_id=batch_id, is_admitted=True).select_related("admitted_campus"):
         label = _campus_label(s.admitted_campus)
         admitted[label] = admitted.get(label, 0) + 1
         if s.accounts_registration_cleared:
@@ -160,7 +160,7 @@ def _table2(batch_id: int) -> dict:
     admitted = {}
     registered = {}
     course_registered = {}
-    for s in AdmittedStudent.objects.filter(admitted_batch_id=batch_id).select_related("admitted_program", "admitted_program__faculty"):
+    for s in AdmittedStudent.objects.filter(admitted_batch_id=batch_id, is_admitted=True).select_related("admitted_program", "admitted_program__faculty"):
         key = "HEC Students" if _is_hec(s.admitted_program.name) else _faculty_label(s.admitted_program.faculty)
         admitted[key] = admitted.get(key, 0) + 1
         if s.accounts_registration_cleared:
@@ -216,7 +216,7 @@ def _table3_classify(program_name: str) -> str:
 def _table3(batch_id: int) -> dict:
     counts = {}
     for s in (
-        AdmittedStudent.objects.filter(admitted_batch_id=batch_id, admitted_program__name__icontains="Higher Education Certificate")
+        AdmittedStudent.objects.filter(admitted_batch_id=batch_id, is_admitted=True, admitted_program__name__icontains="Higher Education Certificate")
         .select_related("admitted_program", "admitted_campus")
     ):
         subject = _table3_classify(s.admitted_program.name)
@@ -255,7 +255,7 @@ def _table4(batch_id: int) -> dict:
     registered_counts = {}
     course_registered_counts = {}
     for s in (
-        AdmittedStudent.objects.filter(admitted_batch_id=batch_id)
+        AdmittedStudent.objects.filter(admitted_batch_id=batch_id, is_admitted=True)
         .exclude(admitted_program__name__icontains="Higher Education Certificate")
         .select_related("admitted_program", "admitted_program__faculty", "admitted_campus")
     ):
