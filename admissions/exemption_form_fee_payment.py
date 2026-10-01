@@ -84,7 +84,7 @@ def sync_exemption_form_fee_paid_at(payment: StudentTuitionPayment) -> None:
     # (SchoolPay→tuition mis-allocations often leave form_fee_charge_id unset).
     AdmissionChangeRequest.objects.filter(
         admitted_student_id=payment.student_id,
-        change_type="exemption",
+        change_type__in=AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES,
         form_fee_paid_at__isnull=True,
     ).filter(
         Q(form_fee_charge_id=payment.pk) | Q(form_fee_charge_id__isnull=True)

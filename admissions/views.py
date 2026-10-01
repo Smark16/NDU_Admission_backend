@@ -4811,9 +4811,9 @@ class StudentChangeRequestListCreate(APIView):
         ).first()
         if not req:
             return Response({"detail": "Request not found."}, status=404)
-        if req.change_type != "exemption":
+        if req.change_type not in AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES:
             return Response(
-                {"detail": "Only course exemption applications can be deleted here."},
+                {"detail": "Only course exemption/transfer credit applications can be deleted here."},
                 status=400,
             )
         if req.status == "approved":
@@ -4847,7 +4847,7 @@ class StudentChangeRequestListCreate(APIView):
             return Response({"detail": "Missing request id."}, status=400)
 
         obj = AdmissionChangeRequest.objects.filter(
-            pk=pk, admitted_student=admission, change_type="exemption"
+            pk=pk, admitted_student=admission, change_type__in=AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES
         ).first()
         if not obj:
             return Response({"detail": "Exemption application not found."}, status=404)
@@ -5123,10 +5123,17 @@ class StudentChangeRequestListCreate(APIView):
         if not admission:
             return Response({'detail': 'No active admission found.'}, status=404)
 
-        # Block if there's already a pending request of the same type
+        # Block if there's already a pending request of the same type. Exemption
+        # and transfer_credit share one pending-request slot (same draft/form
+        # fee gate), so a pending one of either blocks submitting the other.
         change_type = request.data.get('change_type')
+        dup_type_filter = (
+            {"change_type__in": AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES}
+            if change_type in AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES
+            else {"change_type": change_type}
+        )
         if AdmissionChangeRequest.objects.filter(
-            admitted_student=admission, change_type=change_type, status='pending'
+            admitted_student=admission, status='pending', **dup_type_filter
         ).exists():
             return Response(
                 {'detail': 'You already have a pending request of this type. Please wait for it to be reviewed.'},
@@ -5165,7 +5172,7 @@ class StudentChangeRequestListCreate(APIView):
         data = dict(serializer.validated_data)
         curriculum_line_ids = data.pop('curriculum_line_ids', None) or []
 
-        if change_type == 'exemption':
+        if change_type in AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES:
             from admissions.exemption_services import (
                 ExemptionNotEligible,
                 assert_exemption_registration_required,
@@ -5363,7 +5370,7 @@ class StudentChangeRequestListCreate(APIView):
                     current_program=admission.admitted_program,
                     current_campus=admission.admitted_campus,
                     current_study_mode=admission.study_mode,
-                    change_type="exemption",
+                    change_type=change_type,
                     reason=data.get("reason", ""),
                     form_fee_charge_id=access["charge_id"],
                     form_fee_paid_at=timezone.now() if access.get("paid") else None,
@@ -5617,7 +5624,7 @@ class AdminReturnUnpaidExemptionView(APIView):
         req_obj = get_object_or_404(
             AdmissionChangeRequest.objects.select_related("admitted_student"),
             pk=pk,
-            change_type="exemption",
+            change_type__in=AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES,
         )
         assert_admitted_student_access(request.user, req_obj.admitted_student)
         undo_approved = bool(request.data.get("undo_approved"))
@@ -5738,7 +5745,8 @@ class AdminExemptionApplicationView(APIView):
         access = exemption_form_fee_status(student)
         pending = (
             AdmissionChangeRequest.objects.filter(
-                admitted_student=student, change_type="exemption"
+                admitted_student=student,
+                change_type__in=AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES,
             )
             .select_related("new_program", "new_campus", "reviewed_by")
             .prefetch_related("exemption_lines", "supporting_documents")
@@ -5798,9 +5806,13 @@ class AdminExemptionApplicationView(APIView):
             pk=student_pk,
         )
         assert_admitted_student_access(request.user, student)
+        change_type = request.data.get("change_type") or "exemption"
+        if change_type not in AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES:
+            return Response({"detail": f"Invalid change_type: {change_type!r}"}, status=400)
         try:
             obj, access = submit_exemption_from_draft(
-                student, requested_by=request.user, staff_submit=True
+                student, requested_by=request.user, staff_submit=True,
+                change_type=change_type,
             )
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=400)
@@ -6039,7 +6051,7 @@ class AdminChangeRequestList(APIView):
             qs = qs.filter(change_type=change_type)
 
         stage = (request.query_params.get("stage") or "").strip().lower()
-        if change_type == "exemption" and stage:
+        if change_type in AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES and stage:
             from admissions.exemption_stages import filter_exemption_requests_for_stage
 
             qs = filter_exemption_requests_for_stage(qs, stage, status_filter or None)
@@ -6111,7 +6123,7 @@ class AdminExemptionCurriculumView(APIView):
                 "admitted_student__admitted_program"
             ).prefetch_related("exemption_lines"),
             pk=pk,
-            change_type="exemption",
+            change_type__in=AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES,
         )
         qs = filter_admission_change_requests_for_user(
             AdmissionChangeRequest.objects.filter(pk=req_obj.pk),
@@ -6169,7 +6181,7 @@ class AdminChangeRequestReview(APIView):
         if action not in ('approve', 'reject'):
             return Response({'detail': 'action must be "approve" or "reject".'}, status=400)
 
-        if req_obj.change_type == "exemption":
+        if req_obj.change_type in AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES:
             from admissions.exemption_stages import (
                 apply_exemption_stage_review,
                 exemption_stage_is_actionable,
@@ -6251,7 +6263,7 @@ class AdminChangeRequestReview(APIView):
 
         try:
             with transaction.atomic():
-                if req_obj.change_type == "exemption":
+                if req_obj.change_type in AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES:
                     stage = (request.data.get("stage") or "hod").strip().lower()
                     if stage == "hod":
                         from admissions.exemption_services import (
@@ -6408,7 +6420,7 @@ class AdminExemptionStageReopenView(APIView):
         req_obj = get_object_or_404(
             AdmissionChangeRequest.objects.prefetch_related("exemption_lines"),
             pk=pk,
-            change_type="exemption",
+            change_type__in=AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES,
         )
         stage = (request.data.get("stage") or "").strip().lower()
         if stage not in ("hod", "dean", "ar"):
@@ -6473,7 +6485,7 @@ class AdminExemptionLineReopenView(APIView):
         req_obj = get_object_or_404(
             AdmissionChangeRequest.objects.prefetch_related("exemption_lines"),
             pk=pk,
-            change_type="exemption",
+            change_type__in=AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES,
         )
         stage = (request.data.get("stage") or "").strip().lower()
         if stage not in ("hod", "dean", "ar"):
@@ -6539,7 +6551,7 @@ class AdminExemptionReturnToHodView(APIView):
         req_obj = get_object_or_404(
             AdmissionChangeRequest.objects.prefetch_related("exemption_lines"),
             pk=pk,
-            change_type="exemption",
+            change_type__in=AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES,
         )
         from_stage = (request.data.get("from_stage") or "").strip().lower()
         if from_stage not in ("dean", "ar"):
@@ -6614,7 +6626,7 @@ class AdminExemptionSuperAdminReturnToHodView(APIView):
         req_obj = get_object_or_404(
             AdmissionChangeRequest.objects.prefetch_related("exemption_lines"),
             pk=pk,
-            change_type="exemption",
+            change_type__in=AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES,
         )
         reason = (request.data.get("reason") or request.data.get("review_notes") or "").strip()
         undo_billing = request.data.get("undo_billing", False)
@@ -6668,7 +6680,7 @@ class AdminExemptionLineAddView(APIView):
         req_obj = get_object_or_404(
             AdmissionChangeRequest.objects.select_related("admitted_student"),
             pk=pk,
-            change_type="exemption",
+            change_type__in=AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES,
         )
         if not (
             user_can_approve_exemption_requests(request.user)
@@ -6753,7 +6765,7 @@ class AdminExemptionLineScoreView(APIView):
         req_obj = get_object_or_404(
             AdmissionChangeRequest.objects.select_related("admitted_student"),
             pk=pk,
-            change_type="exemption",
+            change_type__in=AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES,
         )
         if not self._can_edit_papers(request.user):
             return Response(
@@ -6805,7 +6817,7 @@ class AdminExemptionLineScoreView(APIView):
                 "exemption_lines"
             ),
             pk=pk,
-            change_type="exemption",
+            change_type__in=AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES,
         )
         if not self._can_edit_papers(request.user):
             return Response(
@@ -6872,7 +6884,10 @@ class ExemptionAdvancePositionView(APIView):
             user_can_review_exemption_dean,
         )
 
-        req_obj = get_object_or_404(AdmissionChangeRequest, pk=pk, change_type="exemption")
+        req_obj = get_object_or_404(
+            AdmissionChangeRequest, pk=pk,
+            change_type__in=AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES,
+        )
 
         if not (
             user_can_approve_exemption_requests(request.user)
@@ -6960,7 +6975,7 @@ class ExemptionReopenAccountsBillingView(APIView):
         req_obj = get_object_or_404(
             AdmissionChangeRequest.objects.prefetch_related("exemption_lines"),
             pk=pk,
-            change_type="exemption",
+            change_type__in=AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES,
         )
         reverse_promotion = request.data.get("reverse_promotion", True)
         if isinstance(reverse_promotion, str):
@@ -7015,7 +7030,10 @@ class ExemptionApplyPromotionView(APIView):
         )
         from admissions.serializers import AdmissionChangeRequestSerializer
 
-        req_obj = get_object_or_404(AdmissionChangeRequest, pk=pk, change_type="exemption")
+        req_obj = get_object_or_404(
+            AdmissionChangeRequest, pk=pk,
+            change_type__in=AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES,
+        )
 
         if not (
             user_is_super_admin(request.user)
