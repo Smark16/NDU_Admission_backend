@@ -432,6 +432,8 @@ def board_report_xlsx(payload: dict) -> bytes:
     _write_data_row(ws3, row, ["Total", payload["table3"]["main"]["total"]], bold=True)
     row += 2
     _write_data_row(ws3, row, ["International Students", payload["table3"]["international"]], bold=True)
+    row += 1
+    _write_data_row(ws3, row, ["Grand Total (Kampala + Main + International)", payload["table3"]["grand_total"]], bold=True)
     _autosize(ws3, 2)
 
     # Table 4
