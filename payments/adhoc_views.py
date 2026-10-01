@@ -924,7 +924,7 @@ class StudentExemptionChargesCreateView(APIView):
             ),
             pk=change_request_id,
             admitted_student=student,
-            change_type="exemption",
+            change_type__in=AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES,
         )
         if req.hod_status != "approved":
             return Response(

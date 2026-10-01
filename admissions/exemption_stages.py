@@ -4,6 +4,7 @@ from __future__ import annotations
 from django.utils import timezone
 
 from accounts.super_admin import user_is_super_admin
+from admissions.models import AdmissionChangeRequest
 
 EXEMPTION_STAGE_CHOICES = [
     ("pending", "Pending"),
@@ -32,7 +33,7 @@ def exemption_stage_status(change_request, stage: str) -> str:
 
 
 def prior_exemption_stage_approved(change_request, stage: str) -> bool:
-    if change_request.change_type != "exemption":
+    if change_request.change_type not in AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES:
         return True
     if stage == "hod":
         return True
@@ -47,7 +48,7 @@ def prior_exemption_stage_approved(change_request, stage: str) -> bool:
 
 
 def exemption_stage_is_actionable(change_request, stage: str) -> bool:
-    if change_request.change_type != "exemption":
+    if change_request.change_type not in AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES:
         return False
     if not prior_exemption_stage_approved(change_request, stage):
         return False
@@ -108,7 +109,7 @@ def compute_exemption_pipeline_from_lines(lines) -> tuple[str, str, str]:
 
 def sync_exemption_overall_status(change_request) -> None:
     """Keep legacy ``status`` aligned with pipeline outcomes."""
-    if change_request.change_type != "exemption":
+    if change_request.change_type not in AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES:
         return
     if (
         change_request.hod_status == "rejected"

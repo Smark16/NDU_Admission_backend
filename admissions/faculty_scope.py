@@ -246,11 +246,14 @@ def filter_admission_change_requests_for_user(queryset: QuerySet, user) -> Query
         return queryset
     if not dept_ids:
         return queryset.none()
-    # Course exemptions: faculty-wide for HOD. Many Business (and other) programmes
-    # still have Program.department unset, so department-only filtering hid most
-    # applicants. Other change-request types stay department-scoped.
+    # Course exemptions and transfer credit: faculty-wide for HOD. Many Business
+    # (and other) programmes still have Program.department unset, so
+    # department-only filtering hid most applicants. Other change-request
+    # types stay department-scoped.
+    from admissions.models import AdmissionChangeRequest
+
     return queryset.filter(
-        Q(change_type="exemption")
+        Q(change_type__in=AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES)
         | Q(admitted_student__admitted_program__department_id__in=dept_ids)
         | Q(current_program__department_id__in=dept_ids)
         | Q(new_program__department_id__in=dept_ids)

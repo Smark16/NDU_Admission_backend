@@ -436,7 +436,7 @@ def pending_exemption_covers_course_unit(course_unit_enrollment) -> bool:
 
     return AdmissionChangeRequest.objects.filter(
         admitted_student=course_unit_enrollment.student,
-        change_type="exemption",
+        change_type__in=AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES,
         status="pending",
         exemption_lines__course_code__iexact=code,
         exemption_lines__year_of_study=sem.year_of_study,
