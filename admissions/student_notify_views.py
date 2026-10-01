@@ -11,7 +11,10 @@ from admissions.models import AdmittedStudent, PortalNotification
 from ndu_portal.send_grid import send_configurable_email
 
 User = get_user_model()
-MAX_EMAIL_SENDS = 2500
+# Emails are queued to Celery (one task per recipient) rather than sent
+# synchronously in this request, so this is just a sanity ceiling against a
+# mistaken filter selection -- not a timeout-avoidance limit anymore.
+MAX_EMAIL_SENDS = 20000
 AUDIENCES = ("students", "lecturers", "admins", "staff")
 
 
@@ -348,28 +351,29 @@ class StudentNotifySendView(APIView):
             portal_created = len(rows)
 
         if want_email:
+            from admissions.tasks import celery_send_notify_broadcast_email
+
             for _user, ttl, msg, email in recipients:
                 if not email:
                     skipped_no_email += 1
                     continue
-                if send_configurable_email(email, ttl, msg):
-                    emailed += 1
-                else:
-                    email_failed += 1
+                celery_send_notify_broadcast_email.delay(email, ttl, msg)
+                emailed += 1
 
         parts = []
         if want_portal:
             parts.append(f"Portal bell: {portal_created}")
         if want_email:
-            parts.append(f"Email sent: {emailed}")
+            parts.append(f"Email queued: {emailed}")
             if skipped_no_email:
                 parts.append(f"no email: {skipped_no_email}")
-            if email_failed:
-                parts.append(f"email failed: {email_failed}")
 
         return Response(
             {
-                "detail": "Sent. " + "; ".join(parts) + ".",
+                "detail": (
+                    "Sent. " + "; ".join(parts) + "."
+                    + (" Emails are sending in the background -- check back shortly." if want_email else "")
+                ),
                 "count": len(recipients),
                 "portal_created": portal_created,
                 "emailed": emailed,

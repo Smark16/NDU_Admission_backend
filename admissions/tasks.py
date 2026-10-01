@@ -47,6 +47,24 @@ def celery_admission_email(self, application_id, admission_id):
 
     send_admission_email(application, admission)
 
+@shared_task(bind=True, max_retries=3, default_retry_delay=30)
+def celery_send_notify_broadcast_email(self, to_email, subject, body):
+    """One recipient's email from the admin "Notify users" broadcast
+    (StudentNotifySendView). Queued per-recipient so a large audience
+    (hundreds/thousands) can never make that view block long enough to
+    hit a gunicorn worker timeout -- see the Zimbra credentials rollout
+    incident where a synchronous send of 1435 emails got the worker
+    SIGKILLed partway through with no record of who was actually sent."""
+    from ndu_portal.send_grid import send_configurable_email
+
+    try:
+        ok = send_configurable_email(to_email, subject, body)
+        if not ok:
+            raise RuntimeError(f"SendGrid rejected send to {to_email}")
+    except Exception as e:
+        logger.exception("Notify broadcast email failed for %s: %s", to_email, e)
+        raise self.retry(exc=e)
+
 @shared_task
 def celery_admission_update(admission_id):
     Admission = apps.get_model('admissions', 'AdmittedStudent')
