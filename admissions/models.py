@@ -519,6 +519,11 @@ class AdmittedStudent(models.Model):
     )
     schoolpay_code = models.CharField(max_length=100, unique=True, null=True, blank=True)
     is_registered_with_schoolpay = models.BooleanField(default=False)
+    university_email = models.EmailField(
+        blank=True,
+        default="",
+        help_text="Institutional mailbox on educ.ndu.ac.ug (Zimbra), provisioned or imported.",
+    )
 
     # Admission information
     admission_date = models.DateTimeField(default=timezone.now)
@@ -638,6 +643,11 @@ class AdmittedStudent(models.Model):
                 fields=["schoolpay_code"],
                 condition=Q(schoolpay_code__isnull=False) & ~Q(schoolpay_code=""),
                 name="unique_admittedstudent_schoolpay_code",
+            ),
+            models.UniqueConstraint(
+                fields=["university_email"],
+                condition=~Q(university_email=""),
+                name="unique_admittedstudent_university_email",
             ),
         ]
  

@@ -1,6 +1,14 @@
 from django.urls import path
 
-from . import admin_views, election_views, eligible_voter_views, moodle_attendance_views, moodle_launch_views, moodle_views
+from . import (
+    admin_views,
+    election_views,
+    eligible_voter_views,
+    moodle_attendance_views,
+    moodle_launch_views,
+    moodle_views,
+    zimbra_views,
+)
 
 urlpatterns = [
     # Super Admin (JWT)
@@ -10,6 +18,18 @@ urlpatterns = [
         admin_views.MoodleRotateKeyView.as_view(),
         name="moodle_rotate_key",
     ),
+    path("zimbra/config", zimbra_views.ZimbraConfigView.as_view(), name="zimbra_config"),
+    path(
+        "zimbra/test-connection",
+        zimbra_views.ZimbraTestConnectionView.as_view(),
+        name="zimbra_test_connection",
+    ),
+    path(
+        "zimbra/import-mapping",
+        zimbra_views.ZimbraImportMappingView.as_view(),
+        name="zimbra_import_mapping",
+    ),
+    path("zimbra/provision", zimbra_views.ZimbraProvisionView.as_view(), name="zimbra_provision"),
     # Student portal (JWT) — signed LMS launch
     path(
         "moodle/launch",

@@ -23,13 +23,22 @@ def _can_notify(user) -> bool:
     return user.has_perm("accounts.access_user_management") or user.has_perm("accounts.view_user")
 
 
-def _personalise_text(text: str, *, first="", last="", reg_no="", student_id="") -> str:
+def _personalise_text(
+    text: str,
+    *,
+    first="",
+    last="",
+    reg_no="",
+    student_id="",
+    university_email="",
+) -> str:
     return (
         (text or "")
         .replace("{first_name}", first or "")
         .replace("{last_name}", last or "")
         .replace("{reg_no}", reg_no or "")
         .replace("{student_id}", student_id or "")
+        .replace("{university_email}", university_email or "")
     )
 
 
@@ -47,6 +56,7 @@ def _personalise_student(text: str, student: AdmittedStudent) -> str:
         last=last,
         reg_no=student.reg_no or "",
         student_id=student.student_id or "",
+        university_email=(student.university_email or "").strip(),
     )
 
 

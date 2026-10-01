@@ -72,3 +72,52 @@ class MoodleApiAccessLog(models.Model):
 
     def __str__(self):
         return f"{self.endpoint} {self.http_status} @ {self.created_at}"
+
+
+class ZimbraIntegrationConfig(models.Model):
+    """Singleton (pk=1) configuration for Zimbra Admin SOAP integration."""
+
+    is_enabled = models.BooleanField(default=False)
+    admin_soap_url = models.URLField(
+        blank=True,
+        default="https://ndejjemail.ndu.ac.ug:7071/service/admin/soap",
+        help_text="Zimbra Admin SOAP endpoint.",
+    )
+    admin_username = models.CharField(max_length=255, blank=True, default="")
+    admin_password = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="Admin password for SOAP auth. Never returned by the API.",
+    )
+    domain = models.CharField(max_length=255, blank=True, default="educ.ndu.ac.ug")
+    default_password = models.CharField(
+        max_length=128,
+        blank=True,
+        default="NduStudent#2026",
+        help_text="Temporary mailbox password; paired with zimbraPasswordMustChange.",
+    )
+    verify_ssl = models.BooleanField(
+        default=True,
+        help_text="Verify TLS certificates when calling the Admin SOAP URL.",
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+
+    class Meta:
+        verbose_name = "Zimbra integration config"
+        verbose_name_plural = "Zimbra integration config"
+
+    def __str__(self):
+        return "Zimbra integration"
+
+    @classmethod
+    def get_solo(cls) -> "ZimbraIntegrationConfig":
+        obj, _ = cls.objects.get_or_create(pk=1)
+        return obj
