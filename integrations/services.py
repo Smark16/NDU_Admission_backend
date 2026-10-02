@@ -129,6 +129,7 @@ def student_profile_payload(student: AdmittedStudent, user: User | None = None) 
         "lastname": lastname,
         "full_name": student.full_name or "",
         "email": (getattr(app, "email", None) or getattr(user, "email", None) or "") if (app or user) else "",
+        "university_email": (student.university_email or "").strip(),
         "programme": student.admitted_program.name if student.admitted_program_id else None,
         "campus": student.admitted_campus.name if student.admitted_campus_id else None,
         "accounts_registration_cleared": bool(
