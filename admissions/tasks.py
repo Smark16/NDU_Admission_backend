@@ -85,17 +85,50 @@ def celery_provision_zimbra_on_admission(self, admission_id):
         logger.exception("Zimbra auto-provisioning unexpected error for admission %s: %s", admission_id, e)
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=30)
-def celery_send_notify_broadcast_email(self, to_email, subject, body):
+def celery_send_notify_broadcast_email(self, to_email, subject, body, attachments=None, is_html=False):
     """One recipient's email from the admin "Notify users" broadcast
     (StudentNotifySendView). Queued per-recipient so a large audience
     (hundreds/thousands) can never make that view block long enough to
     hit a gunicorn worker timeout -- see the Zimbra credentials rollout
     incident where a synchronous send of 1435 emails got the worker
-    SIGKILLed partway through with no record of who was actually sent."""
+    SIGKILLed partway through with no record of who was actually sent.
+
+    attachments: optional list of {filename, mime_type, content_b64}.
+    is_html: when True, body is HTML (Gmail-like rich text from Notify users).
+    """
+    import base64
+
+    from django.utils.html import strip_tags
+
     from ndu_portal.send_grid import send_configurable_email
 
     try:
-        ok = send_configurable_email(to_email, subject, body)
+        parsed = []
+        for item in attachments or []:
+            if not isinstance(item, dict):
+                continue
+            b64 = item.get("content_b64") or ""
+            if not b64:
+                continue
+            try:
+                raw = base64.b64decode(b64)
+            except Exception:
+                continue
+            parsed.append(
+                {
+                    "content": raw,
+                    "filename": item.get("filename") or "attachment",
+                    "mime_type": item.get("mime_type") or "application/octet-stream",
+                }
+            )
+        ok = send_configurable_email(
+            to_email,
+            subject,
+            body,
+            is_html=bool(is_html),
+            plain_text_fallback=strip_tags(body) if is_html else None,
+            attachments=parsed or None,
+        )
         if not ok:
             raise RuntimeError(f"SendGrid rejected send to {to_email}")
     except Exception as e:

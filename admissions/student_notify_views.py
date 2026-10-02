@@ -16,6 +16,20 @@ User = get_user_model()
 # mistaken filter selection -- not a timeout-avoidance limit anymore.
 MAX_EMAIL_SENDS = 20000
 AUDIENCES = ("students", "lecturers", "admins", "staff")
+MAX_NOTIFY_ATTACHMENTS = 3
+MAX_NOTIFY_ATTACHMENT_BYTES = 5 * 1024 * 1024  # 5 MB each
+ALLOWED_NOTIFY_ATTACHMENT_TYPES = {
+    "application/pdf",
+    "image/jpeg",
+    "image/png",
+    "image/gif",
+    "image/webp",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "text/plain",
+}
 
 
 def _can_notify(user) -> bool:
@@ -197,6 +211,134 @@ def _audience(params) -> str:
     return a if a in AUDIENCES else "students"
 
 
+def _truthy(val) -> bool:
+    if isinstance(val, bool):
+        return val
+    return str(val or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _sanitize_notify_html(html: str) -> str:
+    """Allow a small Gmail-like subset; strip scripts/styles/event handlers."""
+    import re
+    from html.parser import HTMLParser
+    from html import escape
+
+    allowed = {
+        "b",
+        "strong",
+        "i",
+        "em",
+        "u",
+        "p",
+        "br",
+        "ul",
+        "ol",
+        "li",
+        "a",
+        "div",
+        "span",
+    }
+    void_tags = {"br"}
+
+    class _Sanitizer(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=True)
+            self.out: list[str] = []
+
+        def handle_starttag(self, tag, attrs):
+            tag = tag.lower()
+            if tag not in allowed:
+                return
+            if tag == "a":
+                href = ""
+                for k, v in attrs:
+                    if k.lower() == "href" and v:
+                        href = v.strip()
+                        break
+                if not re.match(r"^(https?:|mailto:|/)", href, re.I):
+                    self.out.append("<a>")
+                else:
+                    self.out.append(f'<a href="{escape(href, quote=True)}">')
+                return
+            if tag in void_tags:
+                self.out.append(f"<{tag}>")
+                return
+            self.out.append(f"<{tag}>")
+
+        def handle_endtag(self, tag):
+            tag = tag.lower()
+            if tag in allowed and tag not in void_tags:
+                self.out.append(f"</{tag}>")
+
+        def handle_data(self, data):
+            self.out.append(escape(data))
+
+        def handle_entityref(self, name):
+            self.out.append(f"&{name};")
+
+        def handle_charref(self, name):
+            self.out.append(f"&#{name};")
+
+    parser = _Sanitizer()
+    try:
+        parser.feed(html or "")
+        parser.close()
+    except Exception:
+        from django.utils.html import escape as dj_escape
+
+        return dj_escape(html or "")
+    return "".join(parser.out)
+
+
+def _parse_notify_attachments(request) -> tuple[list[dict], str | None]:
+    """
+    Read uploaded files from multipart ``attachments`` (or single ``attachment``).
+
+    Returns (attachments_for_celery, error_detail).
+    Each celery item: {filename, mime_type, content_b64}.
+    """
+    import base64
+    import mimetypes
+
+    files = []
+    if hasattr(request, "FILES"):
+        files = list(request.FILES.getlist("attachments") or [])
+        if not files:
+            one = request.FILES.get("attachment")
+            if one:
+                files = [one]
+    if not files:
+        return [], None
+    if len(files) > MAX_NOTIFY_ATTACHMENTS:
+        return [], f"At most {MAX_NOTIFY_ATTACHMENTS} attachments are allowed."
+
+    out: list[dict] = []
+    for f in files:
+        raw = f.read()
+        if len(raw) > MAX_NOTIFY_ATTACHMENT_BYTES:
+            return [], (
+                f"{getattr(f, 'name', 'file')} is larger than "
+                f"{MAX_NOTIFY_ATTACHMENT_BYTES // (1024 * 1024)} MB."
+            )
+        mime = (getattr(f, "content_type", None) or "").strip().lower()
+        if not mime or mime == "application/octet-stream":
+            guess, _ = mimetypes.guess_type(getattr(f, "name", "") or "")
+            mime = (guess or "application/octet-stream").lower()
+        if mime not in ALLOWED_NOTIFY_ATTACHMENT_TYPES:
+            return [], (
+                f"{getattr(f, 'name', 'file')} type ({mime}) is not allowed. "
+                "Use PDF, images, Word, Excel, or plain text."
+            )
+        out.append(
+            {
+                "filename": (getattr(f, "name", None) or "attachment")[:180],
+                "mime_type": mime,
+                "content_b64": base64.b64encode(raw).decode("ascii"),
+            }
+        )
+    return out, None
+
+
 def _preview_students(students: list[AdmittedStudent], program_id) -> dict:
     sample = []
     for s in students[:8]:
@@ -271,21 +413,74 @@ class StudentNotifySendView(APIView):
         channel = (request.data.get("channel") or "portal").strip().lower()
         test_email = (request.data.get("test_email") or "").strip()
         audience = _audience(request.data)
+        is_html = _truthy(request.data.get("is_html"))
 
-        if not title or not message:
+        if is_html:
+            from django.utils.html import strip_tags
+
+            message = _sanitize_notify_html(message)
+            if not title or not strip_tags(message).strip():
+                return Response({"detail": "Title and message are required."}, status=400)
+        elif not title or not message:
             return Response({"detail": "Title and message are required."}, status=400)
         if channel not in ("portal", "email", "both"):
             return Response({"detail": "channel must be portal, email, or both."}, status=400)
 
+        attachments, attach_err = _parse_notify_attachments(request)
+        if attach_err:
+            return Response({"detail": attach_err}, status=400)
+        if attachments and channel == "portal":
+            return Response(
+                {
+                    "detail": (
+                        "Attachments can only be sent with Email or Portal bell and email. "
+                        "Switch the channel, or remove the attachments."
+                    )
+                },
+                status=400,
+            )
+
         if test_email:
+            from django.utils.html import strip_tags
+
             body = _personalise_text(
                 message,
                 first=request.user.first_name or "Colleague",
                 last=request.user.last_name or "",
             )
-            note = "\n\n---\n(This is a test. Placeholders used your staff name.)\n"
-            if send_configurable_email(test_email, title, body + note):
-                return Response({"detail": f"Test email sent to {test_email}."})
+            if is_html:
+                note = "<p><br>---<br>(This is a test. Placeholders used your staff name.)</p>"
+                body_out = body + note
+            else:
+                note = "\n\n---\n(This is a test. Placeholders used your staff name.)\n"
+                body_out = body + note
+            parsed_atts = []
+            for item in attachments:
+                import base64
+
+                parsed_atts.append(
+                    {
+                        "content": base64.b64decode(item["content_b64"]),
+                        "filename": item["filename"],
+                        "mime_type": item["mime_type"],
+                    }
+                )
+            if send_configurable_email(
+                test_email,
+                title,
+                body_out,
+                is_html=is_html,
+                plain_text_fallback=strip_tags(body_out) if is_html else None,
+                attachments=parsed_atts or None,
+            ):
+                return Response(
+                    {
+                        "detail": (
+                            f"Test email sent to {test_email}"
+                            + (f" with {len(attachments)} attachment(s)." if attachments else ".")
+                        )
+                    }
+                )
             return Response(
                 {"detail": "Failed to send test email. Check SendGrid configuration."},
                 status=502,
@@ -342,8 +537,14 @@ class StudentNotifySendView(APIView):
         skipped_no_email = 0
 
         if want_portal:
+            from django.utils.html import strip_tags
+
             rows = [
-                PortalNotification(recipient=user, title=ttl, message=msg)
+                PortalNotification(
+                    recipient=user,
+                    title=ttl,
+                    message=strip_tags(msg) if is_html else msg,
+                )
                 for user, ttl, msg, _email in recipients
                 if user is not None
             ]
@@ -357,7 +558,13 @@ class StudentNotifySendView(APIView):
                 if not email:
                     skipped_no_email += 1
                     continue
-                celery_send_notify_broadcast_email.delay(email, ttl, msg)
+                celery_send_notify_broadcast_email.delay(
+                    email,
+                    ttl,
+                    msg,
+                    attachments or None,
+                    is_html,
+                )
                 emailed += 1
 
         parts = []
@@ -365,6 +572,8 @@ class StudentNotifySendView(APIView):
             parts.append(f"Portal bell: {portal_created}")
         if want_email:
             parts.append(f"Email queued: {emailed}")
+            if attachments:
+                parts.append(f"attachments: {len(attachments)}")
             if skipped_no_email:
                 parts.append(f"no email: {skipped_no_email}")
 
