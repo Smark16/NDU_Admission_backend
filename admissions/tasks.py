@@ -47,6 +47,43 @@ def celery_admission_email(self, application_id, admission_id):
 
     send_admission_email(application, admission)
 
+@shared_task(bind=True, max_retries=3, default_retry_delay=60)
+def celery_provision_zimbra_on_admission(self, admission_id):
+    """Auto-create/link the student's @educ.ndu.ac.ug mailbox on admission
+    and notify them (portal bell + personal email, with the setup guide
+    link) -- the automatic equivalent of the admin "Provision one student"
+    button. Skips quietly if the Zimbra integration isn't configured yet;
+    retries on transient request errors, not on permanent config errors."""
+    from integrations import zimbra_client, zimbra_provisioning
+    from integrations.models import ZimbraIntegrationConfig
+
+    cfg = ZimbraIntegrationConfig.get_solo()
+    if not cfg.is_enabled:
+        logger.info("Zimbra integration disabled; skipping auto-provisioning for admission %s", admission_id)
+        return
+
+    Admission = apps.get_model("admissions", "AdmittedStudent")
+    student = (
+        Admission.objects.select_related(
+            "student_user", "application", "admitted_program", "admitted_batch", "intended_program_batch"
+        )
+        .filter(pk=admission_id)
+        .first()
+    )
+    if not student:
+        logger.warning("Zimbra auto-provisioning: admission %s not found", admission_id)
+        return
+
+    try:
+        zimbra_provisioning.provision_student(student, notify=True, channel="both")
+    except zimbra_client.ZimbraConfigError as e:
+        logger.info("Zimbra not fully configured; skipping auto-provisioning for admission %s: %s", admission_id, e)
+    except zimbra_client.ZimbraRequestError as e:
+        logger.warning("Zimbra auto-provisioning request error for admission %s: %s", admission_id, e)
+        raise self.retry(exc=e)
+    except Exception as e:
+        logger.exception("Zimbra auto-provisioning unexpected error for admission %s: %s", admission_id, e)
+
 @shared_task(bind=True, max_retries=3, default_retry_delay=30)
 def celery_send_notify_broadcast_email(self, to_email, subject, body):
     """One recipient's email from the admin "Notify users" broadcast

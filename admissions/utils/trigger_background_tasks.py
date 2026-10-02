@@ -40,6 +40,17 @@ def queue_admission_notification_emails(admission_id: int, application_id: int) 
             application_id,
             admission_id,
         )
+
+    try:
+        from admissions.tasks import celery_provision_zimbra_on_admission
+
+        celery_provision_zimbra_on_admission.delay(admission_id)
+    except Exception:
+        logger.exception(
+            "Failed to queue Zimbra auto-provisioning for admission=%s",
+            admission_id,
+        )
+
     try:
         from admissions.models import AdmittedStudent
         from admissions.tasks import celery_application_notification
