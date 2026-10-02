@@ -91,6 +91,21 @@ class ZimbraIntegrationConfig(models.Model):
         help_text="Admin password for SOAP auth. Never returned by the API.",
     )
     domain = models.CharField(max_length=255, blank=True, default="educ.ndu.ac.ug")
+    webmail_base_url = models.URLField(
+        blank=True,
+        default="https://ndejjemail.ndu.ac.ug",
+        help_text="Student-facing webmail URL (no trailing slash) used for SSO launch.",
+    )
+    preauth_key = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text=(
+            "Domain preauth key for Zimbra SSO launch (zmprov gdpak <domain> on the mail "
+            "server). Never returned by the API. Lets students open webmail from the "
+            "student portal without re-entering their Zimbra password."
+        ),
+    )
     default_password = models.CharField(
         max_length=128,
         blank=True,

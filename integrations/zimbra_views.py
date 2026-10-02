@@ -21,6 +21,8 @@ def _config_payload(cfg: ZimbraIntegrationConfig) -> dict:
         "domain": cfg.domain or "",
         "default_password": cfg.default_password or "",
         "verify_ssl": bool(cfg.verify_ssl),
+        "webmail_base_url": cfg.webmail_base_url or "",
+        "preauth_key_configured": bool((cfg.preauth_key or "").strip()),
         "updated_at": cfg.updated_at.isoformat() if cfg.updated_at else None,
     }
 
@@ -61,6 +63,15 @@ class ZimbraConfigView(APIView):
 
         if "verify_ssl" in data:
             cfg.verify_ssl = bool(data.get("verify_ssl"))
+
+        if "webmail_base_url" in data:
+            cfg.webmail_base_url = (data.get("webmail_base_url") or "").strip().rstrip("/")
+
+        if "preauth_key" in data:
+            key = data.get("preauth_key")
+            # Omit / null / blank keeps existing key; non-empty replaces.
+            if key is not None and str(key).strip() != "":
+                cfg.preauth_key = str(key).strip()
 
         cfg.updated_by = request.user
         cfg.save()

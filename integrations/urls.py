@@ -7,6 +7,7 @@ from . import (
     moodle_attendance_views,
     moodle_launch_views,
     moodle_views,
+    zimbra_launch_views,
     zimbra_views,
 )
 
@@ -35,6 +36,11 @@ urlpatterns = [
         "moodle/launch",
         moodle_launch_views.StudentMoodleLaunchView.as_view(),
         name="moodle_student_launch",
+    ),
+    path(
+        "zimbra/launch",
+        zimbra_launch_views.StudentZimbraLaunchView.as_view(),
+        name="zimbra_student_launch",
     ),
     # E-voting (student JWT → ERP → e-voting API key)
     path("election/status", election_views.ElectionStatusView.as_view(), name="election_status"),
