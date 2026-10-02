@@ -1115,6 +1115,7 @@ class BonafideStudentSerializer(serializers.ModelSerializer):
             "gender",
             "phone",
             "email",
+            "university_email",
             "date_of_birth",
             "nationality",
             "reg_no",
