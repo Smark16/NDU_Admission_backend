@@ -332,6 +332,194 @@ def course_unit_ids_for_enrollment_due_terms(enrollment) -> tuple[list[int], str
     return unit_ids, None
 
 
+def _find_active_course_unit_on_semester(semester, *, code: str | None, curriculum_line_id: int | None):
+    """Return an active CourseUnit on ``semester`` by curriculum line, then code."""
+    if semester is None:
+        return None
+    if curriculum_line_id:
+        cu = (
+            CourseUnit.objects.filter(
+                semester=semester,
+                curriculum_line_id=curriculum_line_id,
+                is_active=True,
+            )
+            .order_by("id")
+            .first()
+        )
+        if cu:
+            return cu
+    if code:
+        return (
+            CourseUnit.objects.filter(
+                semester=semester,
+                code__iexact=code.strip(),
+                is_active=True,
+            )
+            .order_by("id")
+            .first()
+        )
+    return None
+
+
+def ensure_course_unit_on_semester_for_line(semester, curriculum_line):
+    """
+    Ensure an operational CourseUnit exists on ``semester`` for ``curriculum_line``.
+
+    Used when a deferred/backlog path moves a paper onto a term whose blueprint
+    does not normally carry that line (e.g. Y3 paper brought forward to Y2S1).
+    """
+    if semester is None or curriculum_line is None:
+        return None
+    catalog = curriculum_line.catalog_course
+    if catalog is None:
+        return None
+    code = (catalog.code or "").strip()
+    if not code:
+        return None
+
+    existing = _find_active_course_unit_on_semester(
+        semester,
+        code=code,
+        curriculum_line_id=curriculum_line.id,
+    )
+    if existing:
+        return existing
+
+    # Avoid duplicate inactive/active code clashes on the same semester.
+    clash = CourseUnit.objects.filter(semester=semester, code__iexact=code).order_by("id").first()
+    if clash:
+        if not clash.is_active:
+            clash.is_active = True
+            clash.curriculum_line_id = clash.curriculum_line_id or curriculum_line.id
+            clash.catalog_unit_id = clash.catalog_unit_id or catalog.id
+            clash.save(update_fields=["is_active", "curriculum_line", "catalog_unit", "updated_at"])
+        return clash
+
+    batch = semester.program_batch
+    cu = CourseUnit.objects.create(
+        name=(catalog.title or code).strip(),
+        code=code,
+        credit_units=catalog.credit_units,
+        catalog_unit=catalog,
+        curriculum_line=curriculum_line,
+        semester=semester,
+        program_batch=batch,
+        is_active=True,
+    )
+    return cu
+
+
+def resolve_course_unit_for_path_override(
+    override,
+    enrollment,
+    *,
+    current_semester=None,
+    create_if_missing: bool = True,
+):
+    """
+    Resolve the CourseUnit a student should register for a deferred/backlog override.
+
+    Prefers the student's current (effective) semester so early-take paths work
+    (Y3 blueprint deferred to Y2S1). Falls back to the blueprint semester offering
+    (classic deferral / backlog). Optionally creates on the current semester when
+    still missing (used when saving overrides / repair scripts — not on GET).
+    """
+    if override is None or enrollment is None:
+        return None
+    line = override.curriculum_line
+    if line is None:
+        return None
+    catalog = line.catalog_course
+    code = (catalog.code or "").strip() if catalog else None
+
+    if current_semester is None and enrollment.program_batch_id:
+        current_semester = (
+            Semester.objects.filter(
+                program_batch_id=enrollment.program_batch_id,
+                year_of_study=enrollment.current_year_of_study,
+                term_number=enrollment.current_term_number,
+                is_active=True,
+            )
+            .order_by("order", "id")
+            .first()
+        )
+
+    # 1) Current / effective term offering (early-take and same-term backlog)
+    cu = _find_active_course_unit_on_semester(
+        current_semester,
+        code=code,
+        curriculum_line_id=line.id,
+    )
+    if cu:
+        return cu
+
+    # 2) Blueprint term offering (paper stays on its original cohort semester)
+    if enrollment.program_batch_id and line.year_of_study and line.term_number:
+        blueprint_semester = (
+            Semester.objects.filter(
+                program_batch_id=enrollment.program_batch_id,
+                year_of_study=line.year_of_study,
+                term_number=line.term_number,
+                is_active=True,
+            )
+            .order_by("order", "id")
+            .first()
+        )
+        if blueprint_semester and (
+            current_semester is None or blueprint_semester.id != current_semester.id
+        ):
+            cu = _find_active_course_unit_on_semester(
+                blueprint_semester,
+                code=code,
+                curriculum_line_id=line.id,
+            )
+            if cu:
+                return cu
+
+    # 3) Create on current semester so the student can register this term
+    if create_if_missing and current_semester is not None:
+        return ensure_course_unit_on_semester_for_line(current_semester, line)
+    return None
+
+
+def ensure_offering_for_deferred_override(override, enrollment=None):
+    """
+    When a deferred/backlog override is saved, ensure a CourseUnit exists on the
+    effective (or current) semester so registration can offer it.
+    """
+    if override is None or override.override_type not in ("deferred", "backlog"):
+        return None
+    if not override.effective_year_of_study or not override.effective_term_number:
+        return None
+
+    enrollment = enrollment or override.enrollment
+    if enrollment is None or not enrollment.program_batch_id:
+        return None
+
+    effective_semester = (
+        Semester.objects.filter(
+            program_batch_id=enrollment.program_batch_id,
+            year_of_study=override.effective_year_of_study,
+            term_number=override.effective_term_number,
+            is_active=True,
+        )
+        .order_by("order", "id")
+        .first()
+    )
+    if effective_semester is None:
+        return None
+
+    line = override.curriculum_line
+    existing = _find_active_course_unit_on_semester(
+        effective_semester,
+        code=(line.catalog_course.code if line and line.catalog_course_id else None),
+        curriculum_line_id=line.id if line else None,
+    )
+    if existing:
+        return existing
+    return ensure_course_unit_on_semester_for_line(effective_semester, line)
+
+
 def withdraw_enrollments_for_exempted_papers(enrollment) -> int:
     """
     Mark active enrollments withdrawn when the paper is exempted/transferred.

@@ -657,12 +657,15 @@ class GetAvailableCoursesForRegistration(APIView):
 
                 from .enrollment_course_assignment import (
                     course_unit_ids_for_enrollment_due_terms,
+                    resolve_course_unit_for_path_override,
                 )
 
                 due_unit_ids, _due_skip = course_unit_ids_for_enrollment_due_terms(spe)
                 available_course_unit_ids.update(due_unit_ids)
 
                 # ── Step 3: Deferred / backlog overrides effective NOW ────────────
+                # Prefer current-term offering (early-take Y3→Y2S1), then blueprint.
+                # Create on the current term if still missing so early-take registers.
                 active_overrides = [
                     o for o in overrides.values()
                     if o.override_type in ('deferred', 'backlog')
@@ -670,33 +673,14 @@ class GetAvailableCoursesForRegistration(APIView):
                     and o.effective_term_number == curr_term
                 ]
                 for override in active_overrides:
-                    # Find operational semester for the override's blueprint position
-                    blueprint_year = override.curriculum_line.year_of_study
-                    blueprint_term = override.curriculum_line.term_number
-                    target_semester = Semester.objects.filter(
-                        program_batch=spe.program_batch,
-                        year_of_study=blueprint_year,
-                        term_number=blueprint_term,
-                        is_active=True,
-                    ).first()
-                    if target_semester:
-                        cu = CourseUnit.objects.filter(
-                            code=override.curriculum_line.catalog_course.code,
-                            semester=target_semester,
-                            is_active=True,
-                        ).first()
-                        if cu:
-                            available_course_unit_ids.add(cu.id)
-                    else:
-                        # No semester for the original blueprint term — look in current semester
-                        if current_semester:
-                            cu = CourseUnit.objects.filter(
-                                code=override.curriculum_line.catalog_course.code,
-                                semester=current_semester,
-                                is_active=True,
-                            ).first()
-                            if cu:
-                                available_course_unit_ids.add(cu.id)
+                    cu = resolve_course_unit_for_path_override(
+                        override,
+                        spe,
+                        current_semester=current_semester,
+                        create_if_missing=True,
+                    )
+                    if cu:
+                        available_course_unit_ids.add(cu.id)
 
                 # No whole-batch dump when the current semester is missing — that
                 # leaked Year 3+ / other-term units. Sync offerings instead.
@@ -1079,6 +1063,7 @@ class GetStudentEnrolledCourses(APIView):
             'schoolpay_code': getattr(admitted_student, "effective_schoolpay_code", None)
             or admitted_student.student_id,
             'student_name': admitted_student.full_name,
+            'university_email': (getattr(admitted_student, "university_email", None) or "").strip() or None,
             'program': admitted_student.admitted_program.name if admitted_student.admitted_program else None,
             'campus': admitted_student.admitted_campus.name if admitted_student.admitted_campus else None,
             'passport_photo': photo_url,

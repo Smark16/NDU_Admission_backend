@@ -387,7 +387,12 @@ def _default_programme_semester_label(student: AdmittedStudent) -> str:
 
 
 def _semester_windows_for_student(student: AdmittedStudent) -> list[tuple]:
-    """Unique cohort semesters with date windows, earliest first."""
+    """Unique cohort semesters with date windows.
+
+    Each row is ``(start, end, name, year_of_study, term_number)``.
+    Sorted by academic position, then start date — not start date alone —
+    so overlapping / mis-dated windows do not steal labels from earlier terms.
+    """
     from datetime import date as date_cls
 
     windows: list[tuple] = []
@@ -402,13 +407,28 @@ def _semester_windows_for_student(student: AdmittedStudent) -> list[tuple]:
         seen.add(int(rule.semester_id))
         end = getattr(sem, "end_date", None)
         name = (sem.name or "").strip() or f"Semester {sem.order or ''}".strip()
-        windows.append((start, end if isinstance(end, date_cls) else end, name))
-    windows.sort(key=lambda w: w[0])
+        year = getattr(sem, "year_of_study", None)
+        term = getattr(sem, "term_number", None)
+        windows.append(
+            (
+                start,
+                end if isinstance(end, date_cls) else end,
+                name,
+                int(year) if year is not None else 99,
+                int(term) if term is not None else 99,
+            )
+        )
+    windows.sort(key=lambda w: (w[3], w[4], w[0]))
     return windows
 
 
 def _semester_label_for_paid_at(paid_at, student: AdmittedStudent, windows: list[tuple] | None = None) -> str:
-    """Map a payment timestamp to the cohort semester that owned that date."""
+    """Map a payment timestamp to the cohort semester that owned that date.
+
+    When several semester calendars overlap (bad admin dates), prefer the
+    student's current SPE term if it contains the date, else the academically
+    earliest containing term — not whichever window starts first on the calendar.
+    """
     from payments.student_payment_allocation import _as_date
 
     d = _as_date(paid_at)
@@ -416,22 +436,46 @@ def _semester_label_for_paid_at(paid_at, student: AdmittedStudent, windows: list
     if d is None or not wins:
         return _default_programme_semester_label(student)
 
-    for start, end, name in wins:
+    # Normalize legacy 3-tuples from older callers/tests.
+    norm: list[tuple] = []
+    for w in wins:
+        if len(w) >= 5:
+            norm.append((w[0], w[1], w[2], int(w[3]), int(w[4])))
+        else:
+            norm.append((w[0], w[1], w[2], 99, 99))
+
+    matches = []
+    for start, end, name, year, term in norm:
         if d < start:
             continue
         if end is None or d <= end:
-            return name
+            matches.append((start, end, name, year, term))
 
-    if d < wins[0][0]:
-        return wins[0][2]
+    if matches:
+        spe_year = spe_term = None
+        try:
+            spe = getattr(student, "programme_enrollment", None)
+            if spe is not None:
+                spe_year = int(spe.current_year_of_study)
+                spe_term = int(spe.current_term_number)
+        except Exception:
+            spe_year = spe_term = None
+        if spe_year is not None and spe_term is not None:
+            for _s, _e, name, year, term in matches:
+                if year == spe_year and term == spe_term:
+                    return name
+        matches.sort(key=lambda m: (m[3], m[4], m[0]))
+        return matches[0][2]
 
-    best = wins[0][2]
-    for start, _end, name in wins:
-        if start <= d:
-            best = name
-        else:
-            break
-    return best
+    # Outside every window: use academically first term for early payments,
+    # otherwise the latest academic term that has already started.
+    by_academic = sorted(norm, key=lambda w: (w[3], w[4], w[0]))
+    if d < by_academic[0][0]:
+        return by_academic[0][2]
+    started = [w for w in by_academic if w[0] <= d]
+    if started:
+        return started[-1][2]
+    return by_academic[0][2]
 
 
 def _is_internal_reallocation(payment: StudentTuitionPayment) -> bool:

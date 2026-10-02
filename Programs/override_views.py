@@ -290,6 +290,13 @@ class EnrollmentOverrideListCreate(APIView):
             decided_by=request.user,
         )
 
+        if override.override_type in ("deferred", "backlog"):
+            from Programs.enrollment_course_assignment import (
+                ensure_offering_for_deferred_override,
+            )
+
+            ensure_offering_for_deferred_override(override, enrollment)
+
         return Response(_override_to_dict(override), status=status.HTTP_201_CREATED)
 
 
@@ -341,6 +348,13 @@ class OverrideDetailView(APIView):
         override.notes                   = request.data.get("notes",                   override.notes)
         override.decided_by              = request.user
         override.save()
+
+        if override.override_type in ("deferred", "backlog"):
+            from Programs.enrollment_course_assignment import (
+                ensure_offering_for_deferred_override,
+            )
+
+            ensure_offering_for_deferred_override(override, override.enrollment)
 
         return Response(_override_to_dict(override))
 
