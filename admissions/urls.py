@@ -323,6 +323,7 @@ urlpatterns = [
 
     # notifications
     path('list_user_notification', views.ListNotifications.as_view()),
+    path('mark_notifications_read', views.MarkNotificationsRead.as_view()),
     path('email_templates', EmailTemplateListView.as_view(), name='email_template_list'),
     path('email_templates/<str:key>', EmailTemplateDetailView.as_view(), name='email_template_detail'),
     path('email_templates/<str:key>/preview', EmailTemplatePreviewView.as_view(), name='email_template_preview'),

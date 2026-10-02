@@ -4658,6 +4658,26 @@ class ListNotifications(generics.ListAPIView):
         return Response(serializer.data, status=200)
 
 
+class MarkNotificationsRead(APIView):
+    """Mark the current user's portal notifications as read. Called when the
+    notification bell dropdown is opened; this is the only place
+    PortalNotification.is_read ever gets set to True."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        ids = request.data.get("ids")
+        qs = PortalNotification.objects.filter(recipient=request.user, is_read=False)
+        if isinstance(ids, list) and ids:
+            try:
+                ids = [int(x) for x in ids]
+            except (TypeError, ValueError):
+                return Response({"detail": "ids must be a list of integers."}, status=400)
+            qs = qs.filter(id__in=ids)
+        updated = qs.update(is_read=True)
+        return Response({"marked_read": updated}, status=200)
+
+
 #========================================pdf download=================================================
 
 class DownloadAdmissionPDF(APIView):
