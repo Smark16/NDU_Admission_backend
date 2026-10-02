@@ -151,3 +151,58 @@ class ZimbraProvisionView(APIView):
             )
 
         return Response({"detail": "Provisioned.", **result})
+
+
+class ZimbraDeactivationCandidatesView(APIView):
+    """Students with a revoked admission whose Zimbra mailbox is still
+    active -- a review list for staff, not an auto-action."""
+
+    permission_classes = [IsAuthenticated, IsSuperAdminOnly]
+
+    def get(self, request):
+        students = zimbra_provisioning.deactivation_candidates()
+        rows = [
+            {
+                "admission_id": s.id,
+                "reg_no": s.reg_no or "",
+                "student_id": s.student_id or "",
+                "name": zimbra_provisioning.student_display_name(s),
+                "university_email": s.university_email or "",
+                "programme": s.admitted_program.name if s.admitted_program_id else "",
+                "campus": s.admitted_campus.name if s.admitted_campus_id else "",
+                "intake": s.admitted_batch.name if s.admitted_batch_id else "",
+            }
+            for s in students
+        ]
+        return Response({"count": len(rows), "candidates": rows})
+
+
+class ZimbraDeactivateAccountsView(APIView):
+    permission_classes = [IsAuthenticated, IsSuperAdminOnly]
+
+    def post(self, request):
+        data = request.data or {}
+        admission_ids = data.get("admission_ids")
+        if not isinstance(admission_ids, list) or not admission_ids:
+            return Response(
+                {"detail": "Send admission_ids as a non-empty list of integers."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            admission_ids = [int(x) for x in admission_ids]
+        except (TypeError, ValueError):
+            return Response({"detail": "admission_ids must all be integers."}, status=status.HTTP_400_BAD_REQUEST)
+        if len(admission_ids) > 500:
+            return Response({"detail": "Too many at once (max 500)."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            result = zimbra_provisioning.deactivate_students(admission_ids)
+        except zimbra_client.ZimbraConfigError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except zimbra_client.ZimbraRequestError as exc:
+            return Response(
+                {"detail": str(exc), "code": exc.code},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        return Response({"detail": "Deactivation finished.", **result})

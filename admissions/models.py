@@ -524,6 +524,11 @@ class AdmittedStudent(models.Model):
         default="",
         help_text="Institutional mailbox on educ.ndu.ac.ug (Zimbra), provisioned or imported.",
     )
+    university_email_deactivated_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the Zimbra mailbox was deactivated (e.g. after admission revocation). Null = still active.",
+    )
 
     # Admission information
     admission_date = models.DateTimeField(default=timezone.now)

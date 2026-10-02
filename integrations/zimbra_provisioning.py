@@ -4,6 +4,8 @@ from __future__ import annotations
 import logging
 import re
 
+from django.utils import timezone
+
 from admissions.models import AdmittedStudent, PortalNotification
 from ndu_portal.send_grid import send_configurable_email
 
@@ -289,6 +291,63 @@ def provision_student(
         "dl_added": dl_added,
         "dl_error": dl_error,
         "notify": notify_result,
+    }
+
+
+def deactivation_candidates() -> list[AdmittedStudent]:
+    """Students whose admission was revoked, who still have a Zimbra mailbox
+    on file, and whose mailbox hasn't already been deactivated.
+
+    This is a review list, not an auto-action -- staff pick which of these
+    to actually deactivate via deactivate_students().
+    """
+    return list(
+        AdmittedStudent.objects.filter(
+            is_admitted=False,
+            university_email_deactivated_at__isnull=True,
+        )
+        .exclude(university_email="")
+        .select_related("application", "admitted_program", "admitted_campus", "admitted_batch")
+        .order_by("application__last_name", "application__first_name")
+    )
+
+
+def deactivate_students(admission_ids: list[int]) -> dict:
+    """Set zimbraAccountStatus=closed for each student's mailbox (locks it
+    out, keeps mail/data intact) and stamps university_email_deactivated_at.
+    Students already deactivated or without a university_email are skipped.
+    """
+    cfg = zimbra_client.require_enabled_config()
+    token = zimbra_client.authenticate(cfg)
+
+    deactivated = []
+    skipped = []
+    errors = []
+
+    students = AdmittedStudent.objects.filter(pk__in=admission_ids)
+    for student in students:
+        email = (student.university_email or "").strip()
+        if not email:
+            skipped.append({"reg_no": student.reg_no, "reason": "no university_email on file"})
+            continue
+        if student.university_email_deactivated_at:
+            skipped.append({"reg_no": student.reg_no, "reason": "already deactivated"})
+            continue
+        try:
+            zimbra_client.set_account_status(email, "closed", auth_token=token, cfg=cfg)
+        except zimbra_client.ZimbraRequestError as exc:
+            errors.append({"reg_no": student.reg_no, "email": email, "detail": str(exc)[:300]})
+            continue
+        student.university_email_deactivated_at = timezone.now()
+        student.save(update_fields=["university_email_deactivated_at", "updated_at"])
+        deactivated.append({"reg_no": student.reg_no, "email": email})
+
+    return {
+        "deactivated": deactivated,
+        "skipped": skipped,
+        "errors": errors,
+        "deactivated_count": len(deactivated),
+        "error_count": len(errors),
     }
 
 

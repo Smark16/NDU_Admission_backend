@@ -31,6 +31,16 @@ urlpatterns = [
         name="zimbra_import_mapping",
     ),
     path("zimbra/provision", zimbra_views.ZimbraProvisionView.as_view(), name="zimbra_provision"),
+    path(
+        "zimbra/deactivation-candidates",
+        zimbra_views.ZimbraDeactivationCandidatesView.as_view(),
+        name="zimbra_deactivation_candidates",
+    ),
+    path(
+        "zimbra/deactivate",
+        zimbra_views.ZimbraDeactivateAccountsView.as_view(),
+        name="zimbra_deactivate",
+    ),
     # Student portal (JWT) — signed LMS launch
     path(
         "moodle/launch",

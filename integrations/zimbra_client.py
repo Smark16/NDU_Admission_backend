@@ -187,6 +187,37 @@ def create_account(
     return account or {}
 
 
+def set_account_status(
+    email: str,
+    status: str,
+    *,
+    auth_token: str,
+    cfg: ZimbraIntegrationConfig | None = None,
+) -> None:
+    """Modify zimbraAccountStatus (e.g. 'closed' to deactivate, 'active' to
+    reinstate) for an existing account. Deactivating locks the mailbox out
+    without deleting any mail/data -- reversible by setting it back to
+    'active'."""
+    cfg = cfg or require_enabled_config()
+    account = get_account(email, auth_token=auth_token, cfg=cfg)
+    if not account:
+        raise ZimbraRequestError(f"No such account: {email}", code="NO_SUCH_ACCOUNT")
+    account_id = account.get("id")
+    if not account_id:
+        raise ZimbraRequestError(f"Could not resolve Zimbra account id for {email}")
+    _soap_post(
+        cfg,
+        {
+            "ModifyAccountRequest": {
+                "_jsns": "urn:zimbraAdmin",
+                "id": account_id,
+                "a": [{"n": "zimbraAccountStatus", "_content": status}],
+            }
+        },
+        auth_token=auth_token,
+    )
+
+
 def add_distribution_list_member(
     dl_email: str,
     member_email: str,
