@@ -6071,9 +6071,22 @@ class AdminChangeRequestList(APIView):
             qs = qs.filter(change_type=change_type)
 
         stage = (request.query_params.get("stage") or "").strip().lower()
-        if change_type in AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES and stage:
-            from admissions.exemption_stages import filter_exemption_requests_for_stage
+        # Exemptions UI sends stage=hod|dean|ar|accounts without change_type
+        # (it shows both exemption + transfer_credit). Stage filters must still
+        # apply — otherwise "Billed" wrongly filters request.status, not accounts_status.
+        from admissions.exemption_stages import (
+            EXEMPTION_PIPELINE_STAGES,
+            filter_exemption_requests_for_stage,
+        )
 
+        if stage in EXEMPTION_PIPELINE_STAGES and (
+            not change_type
+            or change_type in AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES
+        ):
+            if not change_type:
+                qs = qs.filter(
+                    change_type__in=AdmissionChangeRequest.CREDIT_RECOGNITION_TYPES
+                )
             qs = filter_exemption_requests_for_stage(qs, stage, status_filter or None)
         elif status_filter:
             qs = qs.filter(status=status_filter)
