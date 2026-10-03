@@ -194,6 +194,7 @@ def _verified_registration_roster_entry(adm):
         "physical_documents_verified": bool(adm.physical_documents_verified),
         "verified_at": verified_at,
         "verified_by": verified_by,
+        "physical_documents_notes": (adm.physical_documents_notes or "").strip(),
         "is_registered": bool(adm.is_registered),
     }
 
@@ -223,6 +224,7 @@ def _verified_registration_roster_excel_row(adm):
         "Y" if entry["physical_documents_verified"] else "N",
         entry["verified_at"],
         entry["verified_by"],
+        (entry.get("physical_documents_notes") or "").replace("\r\n", " ").replace("\n", " ")[:2000],
     ]
 
 
@@ -976,6 +978,7 @@ class ExportFirstRegistrationReportExcel(APIView):
             "PHYS DOCS VERIFIED",
             "VERIFIED AT",
             "VERIFIED BY",
+            "VERIFICATION NOTES",
         ]
         n_cols = len(headers)
         rows = [_verified_registration_roster_excel_row(adm) for adm in admitted_students]
