@@ -4078,6 +4078,60 @@ class MarkPhysicalDocumentsVerified(APIView):
         return Response(BonafideStudentProfileSerializer(student).data, status=200)
 
 
+class UpdatePhysicalDocumentsNotes(APIView):
+    """Update AR verification notes without changing verified status."""
+
+    permission_classes = [IsAuthenticated, VerifyPhysicalDocumentsPermission]
+
+    def patch(self, request, pk):
+        return self._update(request, pk)
+
+    def post(self, request, pk):
+        return self._update(request, pk)
+
+    def _update(self, request, pk):
+        if "notes" not in request.data:
+            return Response(
+                {"detail": 'Send JSON body {"notes": "..."} to update verification notes.'},
+                status=400,
+            )
+        notes = (request.data.get("notes") or "").strip()[:4000]
+        student = get_object_or_404(AdmittedStudent, pk=pk)
+        assert_admitted_student_access(request.user, student)
+
+        prior = (student.physical_documents_notes or "").strip()
+        if prior == notes:
+            student = AdmittedStudent.objects.select_related(
+                "physical_documents_verified_by",
+                "accounts_registration_cleared_by",
+                "admitted_program__faculty",
+                "admitted_batch",
+                "admitted_campus",
+                "application__applicant",
+            ).get(pk=student.pk)
+            return Response(BonafideStudentProfileSerializer(student).data, status=200)
+
+        student.physical_documents_notes = notes
+        student.save(update_fields=["physical_documents_notes", "updated_at"])
+        log_audit_event(
+            request.user,
+            "phys_notes",
+            student,
+            f"Physical document verification notes updated for admitted student id={student.pk} "
+            f"student_id={student.student_id}. Notes: {notes[:500] or '(cleared)'}",
+            request,
+        )
+        student = AdmittedStudent.objects.select_related(
+            "physical_documents_verified_by",
+            "accounts_registration_cleared_by",
+            "admitted_program__faculty",
+            "admitted_batch",
+            "admitted_campus",
+            "application__applicant",
+        ).get(pk=student.pk)
+        return Response(BonafideStudentProfileSerializer(student).data, status=200)
+
+
 class ClearPhysicalDocumentsVerification(APIView):
     """Clear AR physical-document verification. Requires confirm + a written reason."""
 

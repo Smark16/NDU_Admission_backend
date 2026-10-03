@@ -263,6 +263,11 @@ urlpatterns = [
         views.MarkPhysicalDocumentsVerified.as_view(),
     ),
     path(
+        'admitted_students/<int:pk>/physical_documents_notes/',
+        views.UpdatePhysicalDocumentsNotes.as_view(),
+        name='update_physical_documents_notes',
+    ),
+    path(
         'admitted_students/<int:pk>/clear_physical_documents/',
         views.ClearPhysicalDocumentsVerification.as_view(),
     ),
