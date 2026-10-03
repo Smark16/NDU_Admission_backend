@@ -116,10 +116,10 @@ def user_can_bill_exemption_accounts(user) -> bool:
     if user.has_perm("admissions.bill_exemption_accounts"):
         return True
     from accounts.finance_access import (
-        user_can_configure_fee_plans,
         user_can_view_student_finance,
         user_in_bursar_clearance_groups,
     )
+    from Programs.permissions import user_can_configure_fee_plans
 
     if user_in_bursar_clearance_groups(user):
         return True
